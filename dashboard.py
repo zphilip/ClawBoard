@@ -1019,8 +1019,8 @@ def index(request: Request):
                 with ui.expansion(T['exp_hardware'], icon='developer_board').classes('w-full'):
                     w_hw_enabled    = ui.checkbox('enabled', value=bool(hardware.get('enabled', False)))
                     cur_ht = hardware.get('transport', 'none')
-                    w_hw_transport  = ui.select(['none', 'native', 'serial', 'probe'], label='transport',
-                        value=cur_ht if cur_ht in ['none','native','serial','probe'] else 'none').classes('w-full')
+                    w_hw_transport  = ui.select(['None', 'native', 'serial', 'probe'], label='transport',
+                        value=cur_ht if cur_ht in ['None','native','serial','probe'] else 'None').classes('w-full')
                     w_hw_baud       = ui.number('baud_rate',           value=hardware.get('baud_rate', 115200), min=1200, step=9600).classes('w-full')
                     w_hw_datasheets = ui.checkbox('workspace_datasheets', value=bool(hardware.get('workspace_datasheets', False)))
 
