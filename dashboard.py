@@ -4,7 +4,7 @@ import os
 import subprocess
 
 SCRIPT_DIR  = os.path.dirname(os.path.abspath(__file__))
-PATHS       = [os.path.join(SCRIPT_DIR, 'config.toml'), 'config.toml']
+PATHS       = [os.path.join(SCRIPT_DIR, 'config/config.toml'), 'config.toml']
 CONFIG_PATH = next((p for p in PATHS if os.path.exists(p)), PATHS[0])
 
 PROVIDER_IDS = [
