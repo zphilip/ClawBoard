@@ -1,7 +1,8 @@
 STRINGS = {
-    # App
-    'app_title': '⚙️ ZeroClaw ClawBoard',
-    # Tabs
+    # ── App ──────────────────────────────────────────────────────────────────
+    'app_title':       '⚙️ ZeroClaw ClawBoard',
+    'lbl_lang_switch': '🌐 English',
+    # ── Tabs ─────────────────────────────────────────────────────────────────
     'tab_general':   '通用',
     'tab_providers': 'Providers',
     'tab_autonomy':  '自主',
@@ -12,20 +13,21 @@ STRINGS = {
     'tab_security':  '安全',
     'tab_features':  '功能',
     'tab_system':    '系统',
-    # General tab
+    # ── General ──────────────────────────────────────────────────────────────
     'section_api':     'API 与模型',
     'lbl_api_key':     'API Key（全局默认）',
     'section_secrets': '加密 & 身份',
-    # Providers tab
+    # ── Providers ────────────────────────────────────────────────────────────
     'section_providers':     '模型提供商 (model_providers.*)',
     'hint_providers':        '每个卡片 = config.toml 中的 [model_providers.<alias>]',
     'lbl_new_alias':         '新 alias（如 openai, groq, local…）',
     'btn_add_provider':      '+ 添加 Provider',
     'warn_alias_empty':      '请输入 alias',
     'warn_alias_exists':     'alias "{}" 已存在',
-    'lbl_provider_base_url': 'base_url（可选，覆盖默认值）',
+    'lbl_provider_name':     'name / 供应商 ID',
+    'lbl_provider_base_url': 'base_url（可选，覆盖默认）',
     'lbl_provider_api_key':  'api_key（可选，覆盖全局）',
-    # Autonomy tab
+    # ── Autonomy ─────────────────────────────────────────────────────────────
     'section_autonomy':     '权限等级',
     'lbl_allowed_commands': 'allowed_commands（每行一个）',
     'lbl_auto_approve':     'auto_approve（每行一个）',
@@ -33,25 +35,27 @@ STRINGS = {
     'lbl_forbidden_paths':  'forbidden_paths（每行一个）',
     'lbl_allowed_roots':    'allowed_roots（每行一个）',
     'lbl_shell_env':        'shell_env_passthrough（每行一个）',
-    # Agent tab
+    # ── Agent ────────────────────────────────────────────────────────────────
     'section_agent':  'Agent 行为',
     'section_obs':    '可观测性 (observability)',
     'section_skills': '技能 (skills)',
-    # Memory tab
+    # ── Memory ───────────────────────────────────────────────────────────────
     'section_storage':   '存储',
     'section_embedding': '向量嵌入',
     'section_cache':     '响应缓存 & 快照',
-    # Comms tab
+    # ── Comms ────────────────────────────────────────────────────────────────
+    'section_gateway':         'Gateway',
+    'section_tunnel':          'Tunnel（隧道）',
     'section_channels_global': 'channels_config 全局',
-    'lbl_cli': 'cli（启用 CLI 频道）',
-    # Channels tab
+    'lbl_cli':                 'cli（启用 CLI 频道）',
+    # ── Channels ─────────────────────────────────────────────────────────────
     'section_channels':    '频道配置 (channels_config.*)',
     'hint_channels':       '每个卡片 = config.toml 中的 [channels_config.<channel>]',
     'lbl_channel_type':    '选择频道类型',
     'btn_add_channel':     '+ 添加频道',
     'warn_channel_empty':  '请选择频道类型',
     'warn_channel_exists': '{} 已添加',
-    # Security tab
+    # ── Security ─────────────────────────────────────────────────────────────
     'exp_resources':   '资源限制 (security.resources)',
     'exp_sandbox':     '沙箱 (security.sandbox)',
     'exp_audit':       '审计 (security.audit)',
@@ -61,29 +65,36 @@ STRINGS = {
     'exp_scheduler':   '调度器 (scheduler)',
     'lbl_otp_actions': 'gated_actions（每行一个）',
     'lbl_otp_domains': 'gated_domains（每行一个，支持 *.example.com）',
-    # Features tab
-    'exp_multimodal':   '多模态 (multimodal)',
-    'exp_cost':         '费用控制 (cost)',
-    'lbl_wf_allowed':   'allowed_domains（每行一个，* = 全部）',
-    'lbl_wf_blocked':   'blocked_domains（每行一个）',
-    'lbl_http_allowed': 'allowed_domains（每行一个，* = 全部公网）',
-    'lbl_br_allowed':   'allowed_domains（每行一个）',
-    # System tab
+    # ── Features ─────────────────────────────────────────────────────────────
+    'exp_webfetch':    'Web Fetch',
+    'exp_websearch':   'Web Search',
+    'exp_httpreq':     'HTTP Request',
+    'exp_browser':     'Browser',
+    'exp_multimodal':  '多模态 (multimodal)',
+    'exp_cost':        '费用控制 (cost)',
+    'exp_composio':    'Composio',
+    'exp_hooks':       'Hooks',
+    'exp_hardware':    'Hardware / 硬件',
+    'lbl_wf_allowed':  'allowed_domains（每行一个，* = 全部）',
+    'lbl_wf_blocked':  'blocked_domains（每行一个）',
+    'lbl_http_allowed':'allowed_domains（每行一个，* = 全部公网）',
+    'lbl_br_allowed':  'allowed_domains（每行一个）',
+    # ── System ───────────────────────────────────────────────────────────────
     'section_transcription': '转录 (transcription)',
     'section_heartbeat':     '心跳 (heartbeat)',
     'section_cron':          '定时任务 (cron)',
     'section_logs':          '服务日志',
     'btn_view_logs':         '最近日志',
     'btn_service_status':    '服务状态',
-    # Action bar
+    # ── Action bar ───────────────────────────────────────────────────────────
     'btn_save':         '💾 保存',
     'btn_save_restart': '🔄 保存并重启',
-    # Notifications
+    # ── Notifications ─────────────────────────────────────────────────────────
     'notify_saved':           '✅ 配置已保存',
-    'notify_save_fail':       '❌ 保存失败: {}',
+    'notify_save_fail':       '❌ 保存失败：{}',
     'notify_saved_restarted': '✅ 已保存，zeroclaw.service 已重启',
-    'notify_restart_fail':    '⚠️ 已保存，重启失败: {}',
-    'notify_op_fail':         '❌ 操作失败: {}',
-    'notify_service':         'zeroclaw.service: {}',
+    'notify_restart_fail':    '⚠️ 已保存，重启失败：{}',
+    'notify_op_fail':         '❌ 操作失败：{}',
+    'notify_service':         'zeroclaw.service：{}',
     'notify_sudo_required':   '需要 sudo 权限',
 }

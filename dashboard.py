@@ -1,7 +1,8 @@
 from nicegui import ui
-import toml
-import os
-import subprocess
+from fastapi import Request
+import toml, os, subprocess
+import locales.zh as zh_strings
+import locales.en as en_strings
 
 SCRIPT_DIR  = os.path.dirname(os.path.abspath(__file__))
 PATHS       = [os.path.join(SCRIPT_DIR, 'config/config.toml'), 'config.toml']
@@ -184,7 +185,11 @@ def lines_to_list(text):
     return [l.strip() for l in text.splitlines() if l.strip()]
 
 @ui.page('/')
-def index():
+def index(request: Request):
+    lang       = request.query_params.get('lang', 'zh')
+    T          = zh_strings.STRINGS if lang == 'zh' else en_strings.STRINGS
+    other_lang = 'en' if lang == 'zh' else 'zh'
+
     conf = load_config()
     provider_panels = {}
     channel_panels  = {}
@@ -197,12 +202,12 @@ def index():
                     def _rm(a=alias, c=card):
                         provider_panels.pop(a, None); c.delete()
                     ui.button(icon='delete', on_click=_rm).props('flat round dense color=negative')
-                w_name = ui.select(PROVIDER_IDS, label='name / provider-id',
+                w_name = ui.select(PROVIDER_IDS, label=T['lbl_provider_name'],
                     value=mp_data.get('name', alias) if mp_data.get('name', alias) in PROVIDER_IDS else PROVIDER_IDS[0]
                 ).classes('w-full')
-                w_base_url    = ui.input('base_url (optional override)', value=str(mp_data.get('base_url', ''))).classes('w-full')
+                w_base_url    = ui.input(T['lbl_provider_base_url'], value=str(mp_data.get('base_url', ''))).classes('w-full')
                 w_openai_auth = ui.checkbox('requires_openai_auth', value=bool(mp_data.get('requires_openai_auth', False)))
-                w_api_key_mp  = ui.input('api_key (per-provider, optional)', value=str(mp_data.get('api_key', '')),
+                w_api_key_mp  = ui.input(T['lbl_provider_api_key'], value=str(mp_data.get('api_key', '')),
                                          password=True, password_toggle_button=True).classes('w-full')
                 provider_panels[alias] = {'name': w_name, 'base_url': w_base_url,
                                           'requires_openai_auth': w_openai_auth, 'api_key': w_api_key_mp}
@@ -239,7 +244,6 @@ def index():
                 channel_panels[ch_key] = widgets
 
     def collect():
-        # ── 通用 ──────────────────────────────────────────────────────────────
         conf['api_key']             = w_api_key.value
         conf['default_provider']    = w_default_provider.value
         conf['default_model']       = w_default_model.value
@@ -247,7 +251,6 @@ def index():
         conf.setdefault('secrets',  {})['encrypt'] = w_secrets_encrypt.value
         conf.setdefault('identity', {})['format']  = w_identity_format.value
 
-        # ── Providers ─────────────────────────────────────────────────────────
         conf['model_providers'] = {}
         for alias, wmap in provider_panels.items():
             entry = {'name': wmap['name'].value, 'base_url': wmap['base_url'].value,
@@ -255,7 +258,6 @@ def index():
             if wmap['api_key'].value: entry['api_key'] = wmap['api_key'].value
             conf['model_providers'][alias] = entry
 
-        # ── Autonomy ──────────────────────────────────────────────────────────
         a = conf.setdefault('autonomy', {})
         a['level']                            = w_auto_level.value
         a['workspace_only']                   = w_auto_workspace.value
@@ -270,7 +272,6 @@ def index():
         a['allowed_roots']                    = lines_to_list(w_auto_allowed_roots.value)
         a['shell_env_passthrough']            = lines_to_list(w_auto_shell_env.value)
 
-        # ── Agent ─────────────────────────────────────────────────────────────
         ag = conf.setdefault('agent', {})
         ag['compact_context']      = w_agent_compact.value
         ag['parallel_tools']       = w_agent_parallel.value
@@ -278,21 +279,18 @@ def index():
         ag['max_history_messages'] = to_int(w_agent_max_hist.value, 50)
         ag['tool_dispatcher']      = w_agent_tool_dispatcher.value
 
-        # ── Observability ─────────────────────────────────────────────────────
         o = conf.setdefault('observability', {})
-        o['backend']                 = w_obs_backend.value
-        o['runtime_trace_mode']      = w_obs_trace_mode.value
-        o['otel_endpoint']           = w_obs_otel_endpoint.value
-        o['otel_service_name']       = w_obs_otel_service.value
-        o['runtime_trace_path']      = w_obs_trace_path.value
+        o['backend']                   = w_obs_backend.value
+        o['runtime_trace_mode']        = w_obs_trace_mode.value
+        o['otel_endpoint']             = w_obs_otel_endpoint.value
+        o['otel_service_name']         = w_obs_otel_service.value
+        o['runtime_trace_path']        = w_obs_trace_path.value
         o['runtime_trace_max_entries'] = to_int(w_obs_trace_max.value, 200)
 
-        # ── Skills ────────────────────────────────────────────────────────────
         sk = conf.setdefault('skills', {})
-        sk['open_skills_enabled']  = w_skills_open.value
+        sk['open_skills_enabled']   = w_skills_open.value
         sk['prompt_injection_mode'] = w_skills_mode.value
 
-        # ── Memory ────────────────────────────────────────────────────────────
         m = conf.setdefault('memory', {})
         m['backend']                    = w_mem_backend.value
         m['auto_save']                  = w_mem_auto_save.value
@@ -315,7 +313,6 @@ def index():
         m['snapshot_on_hygiene']        = w_mem_snap_hygiene.value
         m['auto_hydrate']               = w_mem_auto_hydrate.value
 
-        # ── Gateway ───────────────────────────────────────────────────────────
         g = conf.setdefault('gateway', {})
         g['port']              = to_int(w_gw_port.value, 42617)
         g['host']              = w_gw_host.value
@@ -324,7 +321,6 @@ def index():
 
         conf.setdefault('tunnel', {})['provider'] = w_tunnel.value
 
-        # ── Channels ──────────────────────────────────────────────────────────
         ch_conf = conf.setdefault('channels_config', {})
         ch_conf['cli']                  = w_cli_enabled.value
         ch_conf['message_timeout_secs'] = to_int(w_msg_timeout.value, 300)
@@ -341,7 +337,6 @@ def index():
                 else:                     entry[fkey] = w.value
             ch_conf[ch_key] = entry
 
-        # ── Security ──────────────────────────────────────────────────────────
         sec = conf.setdefault('security', {})
         sr = sec.setdefault('resources', {})
         sr['max_memory_mb']        = to_int(w_sec_mem.value, 512)
@@ -358,32 +353,29 @@ def index():
         sa['sign_events'] = w_sec_audit_sign.value
 
         so = sec.setdefault('otp', {})
-        so['enabled']           = w_sec_otp_enabled.value
-        so['method']            = w_sec_otp_method.value
-        so['token_ttl_secs']    = to_int(w_sec_otp_ttl.value, 30)
-        so['cache_valid_secs']  = to_int(w_sec_otp_cache.value, 300)
-        so['gated_actions']     = lines_to_list(w_sec_otp_actions.value)
-        so['gated_domains']     = lines_to_list(w_sec_otp_domains.value)
+        so['enabled']          = w_sec_otp_enabled.value
+        so['method']           = w_sec_otp_method.value
+        so['token_ttl_secs']   = to_int(w_sec_otp_ttl.value, 30)
+        so['cache_valid_secs'] = to_int(w_sec_otp_cache.value, 300)
+        so['gated_actions']    = lines_to_list(w_sec_otp_actions.value)
+        so['gated_domains']    = lines_to_list(w_sec_otp_domains.value)
 
         se = sec.setdefault('estop', {})
         se['enabled']               = w_sec_estop_enabled.value
         se['state_file']            = w_sec_estop_file.value
         se['require_otp_to_resume'] = w_sec_estop_otp.value
 
-        # ── Reliability ───────────────────────────────────────────────────────
         r = conf.setdefault('reliability', {})
         r['provider_retries']             = to_int(w_rel_retries.value, 2)
         r['provider_backoff_ms']          = to_int(w_rel_backoff.value, 500)
         r['channel_initial_backoff_secs'] = to_int(w_rel_ch_backoff.value, 2)
         r['channel_max_backoff_secs']     = to_int(w_rel_ch_max.value, 60)
 
-        # ── Scheduler ─────────────────────────────────────────────────────────
         s = conf.setdefault('scheduler', {})
         s['enabled']        = w_sched_enabled.value
         s['max_tasks']      = to_int(w_sched_tasks.value, 64)
         s['max_concurrent'] = to_int(w_sched_concurrent.value, 4)
 
-        # ── Web Fetch ─────────────────────────────────────────────────────────
         wf = conf.setdefault('web_fetch', {})
         wf['enabled']          = w_wf_enabled.value
         wf['allowed_domains']  = lines_to_list(w_wf_domains.value)
@@ -391,21 +383,18 @@ def index():
         wf['max_response_size']= to_int(w_wf_max_size.value, 500000)
         wf['timeout_secs']     = to_int(w_wf_timeout.value, 30)
 
-        # ── Web Search ────────────────────────────────────────────────────────
         ws = conf.setdefault('web_search', {})
-        ws['enabled']     = w_ws_enabled.value
-        ws['provider']    = w_ws_provider.value
-        ws['max_results'] = to_int(w_ws_max.value, 5)
-        ws['timeout_secs']= to_int(w_ws_timeout.value, 15)
+        ws['enabled']      = w_ws_enabled.value
+        ws['provider']     = w_ws_provider.value
+        ws['max_results']  = to_int(w_ws_max.value, 5)
+        ws['timeout_secs'] = to_int(w_ws_timeout.value, 15)
 
-        # ── HTTP Request ──────────────────────────────────────────────────────
         hr = conf.setdefault('http_request', {})
         hr['enabled']          = w_http_enabled.value
         hr['allowed_domains']  = lines_to_list(w_http_domains.value)
         hr['max_response_size']= to_int(w_http_max_size.value, 1000000)
         hr['timeout_secs']     = to_int(w_http_timeout.value, 30)
 
-        # ── Browser ───────────────────────────────────────────────────────────
         br = conf.setdefault('browser', {})
         br['enabled']             = w_br_enabled.value
         br['allowed_domains']     = lines_to_list(w_br_domains.value)
@@ -413,13 +402,11 @@ def index():
         br['native_headless']     = w_br_headless.value
         br['native_webdriver_url']= w_br_webdriver.value
 
-        # ── Multimodal ────────────────────────────────────────────────────────
         mm = conf.setdefault('multimodal', {})
         mm['max_images']         = to_int(w_mm_images.value, 4)
         mm['max_image_size_mb']  = to_int(w_mm_image_size.value, 5)
         mm['allow_remote_fetch'] = w_mm_remote.value
 
-        # ── Cost ──────────────────────────────────────────────────────────────
         c = conf.setdefault('cost', {})
         c['enabled']           = w_cost_enabled.value
         c['daily_limit_usd']   = to_float(w_cost_daily.value, 10.0)
@@ -427,34 +414,28 @@ def index():
         c['warn_at_percent']   = to_int(w_cost_warn.value, 80)
         c['allow_override']    = w_cost_override.value
 
-        # ── Composio ──────────────────────────────────────────────────────────
         cp = conf.setdefault('composio', {})
         cp['enabled']   = w_comp_enabled.value
         cp['entity_id'] = w_comp_entity.value
 
-        # ── Hooks ─────────────────────────────────────────────────────────────
         conf.setdefault('hooks', {})['enabled'] = w_hooks_enabled.value
 
-        # ── Hardware ──────────────────────────────────────────────────────────
         hw = conf.setdefault('hardware', {})
         hw['enabled']             = w_hw_enabled.value
         hw['transport']           = w_hw_transport.value
         hw['baud_rate']           = to_int(w_hw_baud.value, 115200)
         hw['workspace_datasheets']= w_hw_datasheets.value
 
-        # ── Transcription ─────────────────────────────────────────────────────
         tr = conf.setdefault('transcription', {})
         tr['enabled']          = w_tr_enabled.value
         tr['api_url']          = w_tr_url.value
         tr['model']            = w_tr_model.value
         tr['max_duration_secs']= to_int(w_tr_max_duration.value, 120)
 
-        # ── Heartbeat ─────────────────────────────────────────────────────────
         hb = conf.setdefault('heartbeat', {})
         hb['enabled']          = w_hb_enabled.value
         hb['interval_minutes'] = to_int(w_hb_interval.value, 30)
 
-        # ── Cron ──────────────────────────────────────────────────────────────
         cr = conf.setdefault('cron', {})
         cr['enabled']         = w_cron_enabled.value
         cr['max_run_history'] = to_int(w_cron_max_history.value, 50)
@@ -462,24 +443,24 @@ def index():
     def do_save():
         try:
             collect(); save_config(conf)
-            ui.notify('✅ 配置已保存', type='positive')
+            ui.notify(T['notify_saved'], type='positive')
         except Exception as e:
-            ui.notify(f'❌ 保存失败: {e}', type='negative')
+            ui.notify(T['notify_save_fail'].format(e), type='negative')
 
     def do_save_restart():
         try:
             collect(); save_config(conf)
             ok, err = restart_service()
-            if ok:  ui.notify('✅ 已保存，zeroclaw.service 已重启', type='positive')
-            else:   ui.notify(f'⚠️ 已保存，重启失败: {err or "需要 sudo 权限"}', type='warning')
+            if ok:  ui.notify(T['notify_saved_restarted'], type='positive')
+            else:   ui.notify(T['notify_restart_fail'].format(err or T['notify_sudo_required']), type='warning')
         except Exception as e:
-            ui.notify(f'❌ 操作失败: {e}', type='negative')
+            ui.notify(T['notify_op_fail'].format(e), type='negative')
 
     def do_status():
         st = service_status()
-        ui.notify(f'zeroclaw.service: {st}', type='positive' if st == 'active' else 'negative')
+        ui.notify(T['notify_service'].format(st), type='positive' if st == 'active' else 'negative')
 
-    # ── Shortcuts ────────────────────────────────────────────────────────────
+    # ── shortcuts ─────────────────────────────────────────────────────────────
     top          = conf
     autonomy     = conf.get('autonomy',    {})
     agent_c      = conf.get('agent',       {})
@@ -514,28 +495,32 @@ def index():
 
     # ── Header ────────────────────────────────────────────────────────────────
     with ui.header().classes('bg-blue-9 text-white q-pa-sm row items-center justify-between'):
-        ui.label('⚙️ ZeroClaw ClawBoard').classes('text-h6')
-        ui.button(icon='info', on_click=do_status).props('flat round dense color=white')
+        ui.label(T['app_title']).classes('text-h6')
+        with ui.row().classes('gap-1 items-center'):
+            ui.button(T['lbl_lang_switch'],
+                on_click=lambda: ui.navigate.to(f'/?lang={other_lang}')
+            ).props('flat dense color=white no-caps')
+            ui.button(icon='info', on_click=do_status).props('flat round dense color=white')
 
     with ui.column().classes('w-full q-px-sm q-pt-sm'):
         with ui.tabs().classes('w-full bg-blue-1') as tabs:
-            t_gen   = ui.tab('通用',      icon='tune')
-            t_prov  = ui.tab('Providers', icon='cloud')
-            t_auto  = ui.tab('自主',      icon='psychology')
-            t_agent = ui.tab('Agent',     icon='smart_toy')
-            t_mem   = ui.tab('记忆',      icon='memory')
-            t_comm  = ui.tab('通信',      icon='hub')
-            t_ch    = ui.tab('Channels',  icon='forum')
-            t_sec   = ui.tab('安全',      icon='security')
-            t_feat  = ui.tab('功能',      icon='extension')
-            t_sys   = ui.tab('系统',      icon='computer')
+            t_gen   = ui.tab(T['tab_general'],   icon='tune')
+            t_prov  = ui.tab(T['tab_providers'],  icon='cloud')
+            t_auto  = ui.tab(T['tab_autonomy'],   icon='psychology')
+            t_agent = ui.tab(T['tab_agent'],      icon='smart_toy')
+            t_mem   = ui.tab(T['tab_memory'],     icon='memory')
+            t_comm  = ui.tab(T['tab_comms'],      icon='hub')
+            t_ch    = ui.tab(T['tab_channels'],   icon='forum')
+            t_sec   = ui.tab(T['tab_security'],   icon='security')
+            t_feat  = ui.tab(T['tab_features'],   icon='extension')
+            t_sys   = ui.tab(T['tab_system'],     icon='computer')
 
         with ui.tab_panels(tabs, value=t_gen).classes('w-full'):
 
-            # ══ 通用 ════════════════════════════════════════════════════════
+            # ══ General ══════════════════════════════════════════════════════
             with ui.tab_panel(t_gen):
-                ui.label('API 与模型').classes('text-subtitle2 text-grey-7 q-mt-sm')
-                w_api_key = ui.input('API Key (global default)', value=str(top.get('api_key', '')),
+                ui.label(T['section_api']).classes('text-subtitle2 text-grey-7 q-mt-sm')
+                w_api_key = ui.input(T['lbl_api_key'], value=str(top.get('api_key', '')),
                     password=True, password_toggle_button=True).classes('w-full')
                 cur_prov = str(top.get('default_provider', 'dashscope'))
                 w_default_provider = ui.select(PROVIDER_IDS, label='default_provider',
@@ -544,62 +529,59 @@ def index():
                     value=str(top.get('default_model', 'anthropic/claude-sonnet-4-6'))).classes('w-full')
                 w_temperature = ui.number('default_temperature',
                     value=top.get('default_temperature', 0.7), min=0.0, max=2.0, step=0.1).classes('w-full')
-
                 ui.separator().classes('q-my-sm')
-                ui.label('加密 & 身份').classes('text-subtitle2 text-grey-7')
+                ui.label(T['section_secrets']).classes('text-subtitle2 text-grey-7')
                 w_secrets_encrypt = ui.checkbox('secrets.encrypt', value=bool(secrets_c.get('encrypt', True)))
                 cur_id = str(identity.get('format', 'openclaw'))
                 w_identity_format = ui.select(['openclaw', 'aieos'], label='identity.format',
                     value=cur_id if cur_id in ['openclaw','aieos'] else 'openclaw').classes('w-full')
 
-            # ══ Providers ═══════════════════════════════════════════════════
+            # ══ Providers ════════════════════════════════════════════════════
             with ui.tab_panel(t_prov):
-                ui.label('模型提供商 (model_providers.*)').classes('text-subtitle2 text-grey-7 q-mt-sm')
-                ui.label('每个卡片 = config.toml 中的 [model_providers.<alias>]').classes('text-caption text-grey-5')
+                ui.label(T['section_providers']).classes('text-subtitle2 text-grey-7 q-mt-sm')
+                ui.label(T['hint_providers']).classes('text-caption text-grey-5')
                 provider_container = ui.column().classes('w-full')
                 for alias, mp_data in conf.get('model_providers', {}).items():
                     build_provider_card(provider_container, alias, mp_data)
                 ui.separator().classes('q-my-sm')
                 with ui.row().classes('w-full gap-2 items-end'):
-                    new_alias_input = ui.input('新 alias (如 openai, groq, local…)').classes('flex-1')
+                    new_alias_input = ui.input(T['lbl_new_alias']).classes('flex-1')
                     def _add_provider():
                         alias = new_alias_input.value.strip()
-                        if not alias: ui.notify('请输入 alias', type='warning'); return
-                        if alias in provider_panels: ui.notify(f'alias "{alias}" 已存在', type='warning'); return
+                        if not alias: ui.notify(T['warn_alias_empty'], type='warning'); return
+                        if alias in provider_panels: ui.notify(T['warn_alias_exists'].format(alias), type='warning'); return
                         build_provider_card(provider_container, alias, {}); new_alias_input.value = ''
-                    ui.button('+ 添加 Provider', on_click=_add_provider).props('outline color=blue')
+                    ui.button(T['btn_add_provider'], on_click=_add_provider).props('outline color=blue')
 
-            # ══ 自主 ════════════════════════════════════════════════════════
+            # ══ Autonomy ══════════════════════════════════════════════════════
             with ui.tab_panel(t_auto):
-                ui.label('权限等级').classes('text-subtitle2 text-grey-7 q-mt-sm')
+                ui.label(T['section_autonomy']).classes('text-subtitle2 text-grey-7 q-mt-sm')
                 cur_lvl = autonomy.get('level', 'supervised')
                 w_auto_level = ui.select(['read_only', 'supervised', 'full'], label='autonomy.level',
                     value=cur_lvl if cur_lvl in ['read_only','supervised','full'] else 'supervised').classes('w-full')
                 w_auto_workspace        = ui.checkbox('workspace_only',                   value=autonomy.get('workspace_only', True))
                 w_auto_require_approval = ui.checkbox('require_approval_for_medium_risk', value=autonomy.get('require_approval_for_medium_risk', True))
                 w_auto_block_high       = ui.checkbox('block_high_risk_commands',          value=autonomy.get('block_high_risk_commands', True))
-
                 ui.separator().classes('q-my-sm')
-                w_auto_max_actions = ui.number('max_actions_per_hour',   value=autonomy.get('max_actions_per_hour', 20),   min=1,  step=1).classes('w-full')
-                w_auto_max_cost    = ui.number('max_cost_per_day_cents',  value=autonomy.get('max_cost_per_day_cents', 500), min=0,  step=10).classes('w-full')
-
+                w_auto_max_actions = ui.number('max_actions_per_hour',  value=autonomy.get('max_actions_per_hour', 20),   min=1,  step=1).classes('w-full')
+                w_auto_max_cost    = ui.number('max_cost_per_day_cents', value=autonomy.get('max_cost_per_day_cents', 500), min=0,  step=10).classes('w-full')
                 ui.separator().classes('q-my-sm')
-                ui.label('allowed_commands（每行一个）').classes('text-caption text-grey-6')
+                ui.label(T['lbl_allowed_commands']).classes('text-caption text-grey-6')
                 w_auto_cmds = ui.textarea(value='\n'.join(autonomy.get('allowed_commands', []))).classes('w-full').props('outlined rows=5')
-                ui.label('auto_approve（每行一个）').classes('text-caption text-grey-6')
+                ui.label(T['lbl_auto_approve']).classes('text-caption text-grey-6')
                 w_auto_approve = ui.textarea(value='\n'.join(autonomy.get('auto_approve', []))).classes('w-full').props('outlined rows=3')
-                ui.label('always_ask（每行一个）').classes('text-caption text-grey-6')
+                ui.label(T['lbl_always_ask']).classes('text-caption text-grey-6')
                 w_auto_always_ask = ui.textarea(value='\n'.join(autonomy.get('always_ask', []))).classes('w-full').props('outlined rows=3')
-                ui.label('forbidden_paths（每行一个）').classes('text-caption text-grey-6')
+                ui.label(T['lbl_forbidden_paths']).classes('text-caption text-grey-6')
                 w_auto_forbidden = ui.textarea(value='\n'.join(autonomy.get('forbidden_paths', []))).classes('w-full').props('outlined rows=5')
-                ui.label('allowed_roots（每行一个）').classes('text-caption text-grey-6')
+                ui.label(T['lbl_allowed_roots']).classes('text-caption text-grey-6')
                 w_auto_allowed_roots = ui.textarea(value='\n'.join(autonomy.get('allowed_roots', []))).classes('w-full').props('outlined rows=3')
-                ui.label('shell_env_passthrough（每行一个）').classes('text-caption text-grey-6')
+                ui.label(T['lbl_shell_env']).classes('text-caption text-grey-6')
                 w_auto_shell_env = ui.textarea(value='\n'.join(autonomy.get('shell_env_passthrough', []))).classes('w-full').props('outlined rows=3')
 
-            # ══ Agent ════════════════════════════════════════════════════════
+            # ══ Agent ══════════════════════════════════════════════════════════
             with ui.tab_panel(t_agent):
-                ui.label('Agent 行为').classes('text-subtitle2 text-grey-7 q-mt-sm')
+                ui.label(T['section_agent']).classes('text-subtitle2 text-grey-7 q-mt-sm')
                 w_agent_compact  = ui.checkbox('compact_context', value=agent_c.get('compact_context', False))
                 w_agent_parallel = ui.checkbox('parallel_tools',  value=agent_c.get('parallel_tools', False))
                 w_agent_max_iter = ui.number('max_tool_iterations',  value=agent_c.get('max_tool_iterations', 10),  min=1, step=1).classes('w-full')
@@ -607,9 +589,8 @@ def index():
                 cur_disp = agent_c.get('tool_dispatcher', 'auto')
                 w_agent_tool_dispatcher = ui.select(['auto', 'sequential', 'parallel'], label='tool_dispatcher',
                     value=cur_disp if cur_disp in ['auto','sequential','parallel'] else 'auto').classes('w-full')
-
                 ui.separator().classes('q-my-sm')
-                ui.label('可观测性 (observability)').classes('text-subtitle2 text-grey-7')
+                ui.label(T['section_obs']).classes('text-subtitle2 text-grey-7')
                 cur_obs = obs.get('backend', 'none')
                 w_obs_backend = ui.select(['none', 'noop', 'log', 'prometheus', 'otel'], label='backend',
                     value=cur_obs if cur_obs in ['none','noop','log','prometheus','otel'] else 'none').classes('w-full')
@@ -620,17 +601,16 @@ def index():
                 w_obs_otel_service  = ui.input('otel_service_name', value=str(obs.get('otel_service_name', 'zeroclaw'))).classes('w-full')
                 w_obs_trace_path    = ui.input('runtime_trace_path', value=str(obs.get('runtime_trace_path', 'state/runtime-trace.jsonl'))).classes('w-full')
                 w_obs_trace_max     = ui.number('runtime_trace_max_entries', value=obs.get('runtime_trace_max_entries', 200), min=10, step=50).classes('w-full')
-
                 ui.separator().classes('q-my-sm')
-                ui.label('技能 (skills)').classes('text-subtitle2 text-grey-7')
+                ui.label(T['section_skills']).classes('text-subtitle2 text-grey-7')
                 w_skills_open = ui.checkbox('open_skills_enabled', value=skills.get('open_skills_enabled', False))
                 cur_pm = skills.get('prompt_injection_mode', 'full')
                 w_skills_mode = ui.select(['full', 'compact'], label='prompt_injection_mode',
                     value=cur_pm if cur_pm in ['full','compact'] else 'full').classes('w-full')
 
-            # ══ 记忆 ════════════════════════════════════════════════════════
+            # ══ Memory ═══════════════════════════════════════════════════════
             with ui.tab_panel(t_mem):
-                ui.label('存储').classes('text-subtitle2 text-grey-7 q-mt-sm')
+                ui.label(T['section_storage']).classes('text-subtitle2 text-grey-7 q-mt-sm')
                 cur_mb = memory.get('backend', 'sqlite')
                 w_mem_backend = ui.select(['sqlite', 'lucid', 'markdown', 'none'], label='backend',
                     value=cur_mb if cur_mb in ['sqlite','lucid','markdown','none'] else 'sqlite').classes('w-full')
@@ -640,9 +620,8 @@ def index():
                 w_mem_archive_days  = ui.number('archive_after_days',          value=memory.get('archive_after_days', 7),   min=1, step=1).classes('w-full')
                 w_mem_purge_days    = ui.number('purge_after_days',            value=memory.get('purge_after_days', 30),    min=1, step=1).classes('w-full')
                 w_mem_conv_retention= ui.number('conversation_retention_days', value=memory.get('conversation_retention_days', 30), min=1, step=1).classes('w-full')
-
                 ui.separator().classes('q-my-sm')
-                ui.label('向量嵌入').classes('text-subtitle2 text-grey-7')
+                ui.label(T['section_embedding']).classes('text-subtitle2 text-grey-7')
                 cur_ep = memory.get('embedding_provider', 'none')
                 w_mem_embed_provider = ui.select(['none', 'openai', 'custom:<url>'], label='embedding_provider',
                     value=cur_ep if cur_ep in ['none','openai','custom:<url>'] else 'none').classes('w-full')
@@ -653,156 +632,141 @@ def index():
                 w_mem_min_relevance= ui.number('min_relevance_score',  value=memory.get('min_relevance_score', 0.4),     min=0.0, max=1.0, step=0.05).classes('w-full')
                 w_mem_cache_size   = ui.number('embedding_cache_size', value=memory.get('embedding_cache_size', 10000),  min=0,   step=1000).classes('w-full')
                 w_mem_chunk_tokens = ui.number('chunk_max_tokens',     value=memory.get('chunk_max_tokens', 512),        min=64,  step=64).classes('w-full')
-
                 ui.separator().classes('q-my-sm')
-                ui.label('响应缓存 & 快照').classes('text-subtitle2 text-grey-7')
-                w_mem_resp_cache    = ui.checkbox('response_cache_enabled', value=memory.get('response_cache_enabled', False))
-                w_mem_snapshot      = ui.checkbox('snapshot_enabled',       value=memory.get('snapshot_enabled', False))
-                w_mem_snap_hygiene  = ui.checkbox('snapshot_on_hygiene',    value=memory.get('snapshot_on_hygiene', False))
-                w_mem_resp_ttl      = ui.number('response_cache_ttl_minutes',  value=memory.get('response_cache_ttl_minutes', 60),   min=1, step=5).classes('w-full')
-                w_mem_resp_max      = ui.number('response_cache_max_entries',  value=memory.get('response_cache_max_entries', 5000), min=0, step=500).classes('w-full')
+                ui.label(T['section_cache']).classes('text-subtitle2 text-grey-7')
+                w_mem_resp_cache   = ui.checkbox('response_cache_enabled', value=memory.get('response_cache_enabled', False))
+                w_mem_snapshot     = ui.checkbox('snapshot_enabled',       value=memory.get('snapshot_enabled', False))
+                w_mem_snap_hygiene = ui.checkbox('snapshot_on_hygiene',    value=memory.get('snapshot_on_hygiene', False))
+                w_mem_resp_ttl     = ui.number('response_cache_ttl_minutes',  value=memory.get('response_cache_ttl_minutes', 60),   min=1, step=5).classes('w-full')
+                w_mem_resp_max     = ui.number('response_cache_max_entries',  value=memory.get('response_cache_max_entries', 5000), min=0, step=500).classes('w-full')
 
-            # ══ 通信 ════════════════════════════════════════════════════════
+            # ══ Comms ════════════════════════════════════════════════════════
             with ui.tab_panel(t_comm):
-                ui.label('Gateway').classes('text-subtitle2 text-grey-7 q-mt-sm')
+                ui.label(T['section_gateway']).classes('text-subtitle2 text-grey-7 q-mt-sm')
                 w_gw_port    = ui.number('port', value=gateway.get('port', 42617), min=1024, max=65535, step=1).classes('w-full')
                 w_gw_host    = ui.input('host',  value=str(gateway.get('host', '127.0.0.1'))).classes('w-full')
                 w_gw_pairing = ui.checkbox('require_pairing',   value=gateway.get('require_pairing', True))
                 w_gw_public  = ui.checkbox('allow_public_bind', value=gateway.get('allow_public_bind', False))
-
                 ui.separator().classes('q-my-sm')
-                ui.label('Tunnel').classes('text-subtitle2 text-grey-7')
+                ui.label(T['section_tunnel']).classes('text-subtitle2 text-grey-7')
                 cur_tn = tunnel.get('provider', 'none')
                 w_tunnel = ui.select(['none', 'cloudflare', 'ngrok'], label='tunnel.provider',
                     value=cur_tn if cur_tn in ['none','cloudflare','ngrok'] else 'none').classes('w-full')
-
                 ui.separator().classes('q-my-sm')
-                ui.label('channels_config 全局').classes('text-subtitle2 text-grey-7')
-                w_cli_enabled = ui.checkbox('cli (启用 CLI 频道)', value=ch_conf_top.get('cli', True))
+                ui.label(T['section_channels_global']).classes('text-subtitle2 text-grey-7')
+                w_cli_enabled = ui.checkbox(T['lbl_cli'], value=ch_conf_top.get('cli', True))
                 w_msg_timeout = ui.number('message_timeout_secs', value=ch_conf_top.get('message_timeout_secs', 300), min=30, step=30).classes('w-full')
 
-            # ══ Channels ═════════════════════════════════════════════════════
+            # ══ Channels ════════════════════════════════════════════════════
             with ui.tab_panel(t_ch):
-                ui.label('频道配置 (channels_config.*)').classes('text-subtitle2 text-grey-7 q-mt-sm')
-                ui.label('每个卡片 = config.toml 中的 [channels_config.<channel>]').classes('text-caption text-grey-5')
+                ui.label(T['section_channels']).classes('text-subtitle2 text-grey-7 q-mt-sm')
+                ui.label(T['hint_channels']).classes('text-caption text-grey-5')
                 channel_container = ui.column().classes('w-full')
                 for ch_key in CHANNEL_KEYS:
                     if ch_key in ch_conf_top and isinstance(ch_conf_top[ch_key], dict):
                         build_channel_card(channel_container, ch_key, ch_conf_top[ch_key])
                 ui.separator().classes('q-my-sm')
                 with ui.row().classes('w-full gap-2 items-end'):
-                    new_ch_select = ui.select({k: v for k, v in CHANNEL_LABELS.items()}, label='选择频道类型').classes('flex-1')
+                    new_ch_select = ui.select({k: v for k, v in CHANNEL_LABELS.items()},
+                        label=T['lbl_channel_type']).classes('flex-1')
                     def _add_channel():
                         ch_key = new_ch_select.value
-                        if not ch_key: ui.notify('请选择频道类型', type='warning'); return
-                        if ch_key in channel_panels: ui.notify(f'{CHANNEL_LABELS.get(ch_key, ch_key)} 已添加', type='warning'); return
+                        if not ch_key: ui.notify(T['warn_channel_empty'], type='warning'); return
+                        if ch_key in channel_panels:
+                            ui.notify(T['warn_channel_exists'].format(CHANNEL_LABELS.get(ch_key, ch_key)), type='warning'); return
                         build_channel_card(channel_container, ch_key, {})
-                    ui.button('+ 添加频道', on_click=_add_channel).props('outline color=green')
+                    ui.button(T['btn_add_channel'], on_click=_add_channel).props('outline color=green')
 
-            # ══ 安全 ════════════════════════════════════════════════════════
+            # ══ Security ════════════════════════════════════════════════════
             with ui.tab_panel(t_sec):
-                with ui.expansion('资源限制 (security.resources)', icon='memory').classes('w-full'):
+                with ui.expansion(T['exp_resources'], icon='memory').classes('w-full'):
                     w_sec_mem         = ui.number('max_memory_mb',        value=sec_res.get('max_memory_mb', 512),        min=64,  step=64).classes('w-full')
                     w_sec_cpu         = ui.number('max_cpu_time_seconds', value=sec_res.get('max_cpu_time_seconds', 60),  min=5,   step=5).classes('w-full')
                     w_sec_procs       = ui.number('max_subprocesses',     value=sec_res.get('max_subprocesses', 10),      min=1,   step=1).classes('w-full')
                     w_sec_mem_monitor = ui.checkbox('memory_monitoring',  value=bool(sec_res.get('memory_monitoring', True)))
-
-                with ui.expansion('沙箱 (security.sandbox)', icon='shield').classes('w-full'):
+                with ui.expansion(T['exp_sandbox'], icon='shield').classes('w-full'):
                     cur_sb = sec_sandbox.get('backend', 'auto')
                     w_sec_sandbox = ui.select(['auto', 'firejail', 'none'], label='sandbox.backend',
                         value=cur_sb if cur_sb in ['auto','firejail','none'] else 'auto').classes('w-full')
-
-                with ui.expansion('审计 (security.audit)', icon='fact_check').classes('w-full'):
+                with ui.expansion(T['exp_audit'], icon='fact_check').classes('w-full'):
                     w_sec_audit_enabled  = ui.checkbox('enabled',     value=bool(sec_audit.get('enabled', True)))
                     w_sec_audit_log_path = ui.input('log_path',       value=str(sec_audit.get('log_path', 'audit.log'))).classes('w-full')
                     w_sec_audit_max      = ui.number('max_size_mb',   value=sec_audit.get('max_size_mb', 100), min=1, step=10).classes('w-full')
                     w_sec_audit_sign     = ui.checkbox('sign_events', value=bool(sec_audit.get('sign_events', False)))
-
-                with ui.expansion('OTP (security.otp)', icon='lock').classes('w-full'):
+                with ui.expansion(T['exp_otp'], icon='lock').classes('w-full'):
                     w_sec_otp_enabled = ui.checkbox('enabled', value=bool(sec_otp.get('enabled', False)))
                     cur_om = sec_otp.get('method', 'totp')
                     w_sec_otp_method  = ui.select(['totp', 'pairing', 'cli-prompt'], label='method',
                         value=cur_om if cur_om in ['totp','pairing','cli-prompt'] else 'totp').classes('w-full')
-                    w_sec_otp_ttl     = ui.number('token_ttl_secs',   value=sec_otp.get('token_ttl_secs', 30),     min=10, step=5).classes('w-full')
-                    w_sec_otp_cache   = ui.number('cache_valid_secs', value=sec_otp.get('cache_valid_secs', 300),  min=30, step=30).classes('w-full')
-                    ui.label('gated_actions（每行一个）').classes('text-caption text-grey-6')
+                    w_sec_otp_ttl     = ui.number('token_ttl_secs',   value=sec_otp.get('token_ttl_secs', 30),    min=10, step=5).classes('w-full')
+                    w_sec_otp_cache   = ui.number('cache_valid_secs', value=sec_otp.get('cache_valid_secs', 300), min=30, step=30).classes('w-full')
+                    ui.label(T['lbl_otp_actions']).classes('text-caption text-grey-6')
                     w_sec_otp_actions = ui.textarea(value='\n'.join(sec_otp.get('gated_actions',
                         ['shell', 'file_write', 'browser_open', 'browser', 'memory_forget']))).classes('w-full').props('outlined rows=4')
-                    ui.label('gated_domains（每行一个，支持 *.example.com）').classes('text-caption text-grey-6')
+                    ui.label(T['lbl_otp_domains']).classes('text-caption text-grey-6')
                     w_sec_otp_domains = ui.textarea(value='\n'.join(sec_otp.get('gated_domains', []))).classes('w-full').props('outlined rows=3')
-
-                with ui.expansion('紧急停止 (security.estop)', icon='emergency').classes('w-full'):
+                with ui.expansion(T['exp_estop'], icon='emergency').classes('w-full'):
                     w_sec_estop_enabled = ui.checkbox('enabled',               value=bool(sec_estop.get('enabled', False)))
                     w_sec_estop_file    = ui.input('state_file',               value=str(sec_estop.get('state_file', '~/.zeroclaw/estop-state.json'))).classes('w-full')
                     w_sec_estop_otp     = ui.checkbox('require_otp_to_resume', value=bool(sec_estop.get('require_otp_to_resume', True)))
-
-                with ui.expansion('可靠性 (reliability)', icon='sync').classes('w-full'):
-                    w_rel_retries    = ui.number('provider_retries',             value=reliability.get('provider_retries', 2),             min=0, step=1).classes('w-full')
-                    w_rel_backoff    = ui.number('provider_backoff_ms',          value=reliability.get('provider_backoff_ms', 500),         min=0, step=100).classes('w-full')
-                    w_rel_ch_backoff = ui.number('channel_initial_backoff_secs', value=reliability.get('channel_initial_backoff_secs', 2),  min=1, step=1).classes('w-full')
-                    w_rel_ch_max     = ui.number('channel_max_backoff_secs',     value=reliability.get('channel_max_backoff_secs', 60),     min=5, step=5).classes('w-full')
-
-                with ui.expansion('调度器 (scheduler)', icon='schedule').classes('w-full'):
+                with ui.expansion(T['exp_reliability'], icon='sync').classes('w-full'):
+                    w_rel_retries    = ui.number('provider_retries',             value=reliability.get('provider_retries', 2),            min=0, step=1).classes('w-full')
+                    w_rel_backoff    = ui.number('provider_backoff_ms',          value=reliability.get('provider_backoff_ms', 500),        min=0, step=100).classes('w-full')
+                    w_rel_ch_backoff = ui.number('channel_initial_backoff_secs', value=reliability.get('channel_initial_backoff_secs', 2), min=1, step=1).classes('w-full')
+                    w_rel_ch_max     = ui.number('channel_max_backoff_secs',     value=reliability.get('channel_max_backoff_secs', 60),    min=5, step=5).classes('w-full')
+                with ui.expansion(T['exp_scheduler'], icon='schedule').classes('w-full'):
                     w_sched_enabled    = ui.checkbox('enabled', value=scheduler.get('enabled', True))
                     w_sched_tasks      = ui.number('max_tasks',      value=scheduler.get('max_tasks', 64),     min=1, step=8).classes('w-full')
                     w_sched_concurrent = ui.number('max_concurrent', value=scheduler.get('max_concurrent', 4), min=1, step=1).classes('w-full')
 
-            # ══ 功能 ════════════════════════════════════════════════════════
+            # ══ Features ════════════════════════════════════════════════════
             with ui.tab_panel(t_feat):
-                with ui.expansion('Web Fetch', icon='download').classes('w-full'):
+                with ui.expansion(T['exp_webfetch'], icon='download').classes('w-full'):
                     w_wf_enabled  = ui.checkbox('enabled', value=web_fetch.get('enabled', False))
-                    ui.label('allowed_domains（每行一个，* = 全部）').classes('text-caption text-grey-6')
+                    ui.label(T['lbl_wf_allowed']).classes('text-caption text-grey-6')
                     w_wf_domains  = ui.textarea(value='\n'.join(web_fetch.get('allowed_domains', ['*']))).classes('w-full').props('outlined rows=3')
-                    ui.label('blocked_domains（每行一个）').classes('text-caption text-grey-6')
+                    ui.label(T['lbl_wf_blocked']).classes('text-caption text-grey-6')
                     w_wf_blocked  = ui.textarea(value='\n'.join(web_fetch.get('blocked_domains', []))).classes('w-full').props('outlined rows=3')
                     w_wf_max_size = ui.number('max_response_size (bytes)', value=web_fetch.get('max_response_size', 500000), min=1000, step=100000).classes('w-full')
                     w_wf_timeout  = ui.number('timeout_secs',              value=web_fetch.get('timeout_secs', 30),         min=5,    step=5).classes('w-full')
-
-                with ui.expansion('Web Search', icon='search').classes('w-full'):
+                with ui.expansion(T['exp_websearch'], icon='search').classes('w-full'):
                     w_ws_enabled  = ui.checkbox('enabled', value=web_search.get('enabled', False))
                     cur_wsp = web_search.get('provider', 'duckduckgo')
                     w_ws_provider = ui.select(['duckduckgo', 'google', 'bing'], label='provider',
                         value=cur_wsp if cur_wsp in ['duckduckgo','google','bing'] else 'duckduckgo').classes('w-full')
-                    w_ws_max      = ui.number('max_results', value=web_search.get('max_results', 5),  min=1, step=1).classes('w-full')
+                    w_ws_max      = ui.number('max_results',  value=web_search.get('max_results', 5),   min=1, step=1).classes('w-full')
                     w_ws_timeout  = ui.number('timeout_secs', value=web_search.get('timeout_secs', 15), min=5, step=5).classes('w-full')
-
-                with ui.expansion('HTTP Request', icon='http').classes('w-full'):
-                    w_http_enabled   = ui.checkbox('enabled', value=http_request.get('enabled', False))
-                    ui.label('allowed_domains（每行一个，* = 全部公网）').classes('text-caption text-grey-6')
-                    w_http_domains   = ui.textarea(value='\n'.join(http_request.get('allowed_domains', []))).classes('w-full').props('outlined rows=3')
-                    w_http_max_size  = ui.number('max_response_size (bytes)', value=http_request.get('max_response_size', 1000000), min=1000, step=100000).classes('w-full')
-                    w_http_timeout   = ui.number('timeout_secs',              value=http_request.get('timeout_secs', 30),           min=5,    step=5).classes('w-full')
-
-                with ui.expansion('Browser', icon='open_in_browser').classes('w-full'):
+                with ui.expansion(T['exp_httpreq'], icon='http').classes('w-full'):
+                    w_http_enabled  = ui.checkbox('enabled', value=http_request.get('enabled', False))
+                    ui.label(T['lbl_http_allowed']).classes('text-caption text-grey-6')
+                    w_http_domains  = ui.textarea(value='\n'.join(http_request.get('allowed_domains', []))).classes('w-full').props('outlined rows=3')
+                    w_http_max_size = ui.number('max_response_size (bytes)', value=http_request.get('max_response_size', 1000000), min=1000, step=100000).classes('w-full')
+                    w_http_timeout  = ui.number('timeout_secs',              value=http_request.get('timeout_secs', 30),           min=5,    step=5).classes('w-full')
+                with ui.expansion(T['exp_browser'], icon='open_in_browser').classes('w-full'):
                     w_br_enabled   = ui.checkbox('enabled', value=browser.get('enabled', False))
-                    ui.label('allowed_domains（每行一个）').classes('text-caption text-grey-6')
+                    ui.label(T['lbl_br_allowed']).classes('text-caption text-grey-6')
                     w_br_domains   = ui.textarea(value='\n'.join(browser.get('allowed_domains', []))).classes('w-full').props('outlined rows=3')
                     cur_bb = browser.get('backend', 'agent_browser')
                     w_br_backend   = ui.select(['agent_browser', 'rust_native', 'computer_use', 'auto'], label='backend',
                         value=cur_bb if cur_bb in ['agent_browser','rust_native','computer_use','auto'] else 'agent_browser').classes('w-full')
                     w_br_headless  = ui.checkbox('native_headless',      value=bool(browser.get('native_headless', True)))
                     w_br_webdriver = ui.input('native_webdriver_url',    value=str(browser.get('native_webdriver_url', 'http://127.0.0.1:9515'))).classes('w-full')
-
-                with ui.expansion('多模态 (multimodal)', icon='image').classes('w-full'):
+                with ui.expansion(T['exp_multimodal'], icon='image').classes('w-full'):
                     w_mm_images     = ui.number('max_images',        value=multimodal.get('max_images', 4),        min=1, step=1).classes('w-full')
                     w_mm_image_size = ui.number('max_image_size_mb', value=multimodal.get('max_image_size_mb', 5), min=1, step=1).classes('w-full')
                     w_mm_remote     = ui.checkbox('allow_remote_fetch', value=bool(multimodal.get('allow_remote_fetch', False)))
-
-                with ui.expansion('费用控制 (cost)', icon='attach_money').classes('w-full'):
-                    w_cost_enabled  = ui.checkbox('enabled',          value=cost.get('enabled', False))
-                    w_cost_override = ui.checkbox('allow_override',   value=bool(cost.get('allow_override', False)))
-                    w_cost_daily    = ui.number('daily_limit_usd',    value=cost.get('daily_limit_usd', 10.0),    min=0, step=1.0).classes('w-full')
-                    w_cost_monthly  = ui.number('monthly_limit_usd',  value=cost.get('monthly_limit_usd', 100.0), min=0, step=5.0).classes('w-full')
-                    w_cost_warn     = ui.number('warn_at_percent',    value=cost.get('warn_at_percent', 80),      min=10, max=100, step=5).classes('w-full')
-
-                with ui.expansion('Composio', icon='hub').classes('w-full'):
+                with ui.expansion(T['exp_cost'], icon='attach_money').classes('w-full'):
+                    w_cost_enabled  = ui.checkbox('enabled',         value=cost.get('enabled', False))
+                    w_cost_override = ui.checkbox('allow_override',  value=bool(cost.get('allow_override', False)))
+                    w_cost_daily    = ui.number('daily_limit_usd',   value=cost.get('daily_limit_usd', 10.0),    min=0, step=1.0).classes('w-full')
+                    w_cost_monthly  = ui.number('monthly_limit_usd', value=cost.get('monthly_limit_usd', 100.0), min=0, step=5.0).classes('w-full')
+                    w_cost_warn     = ui.number('warn_at_percent',   value=cost.get('warn_at_percent', 80),      min=10, max=100, step=5).classes('w-full')
+                with ui.expansion(T['exp_composio'], icon='hub').classes('w-full'):
                     w_comp_enabled = ui.checkbox('enabled', value=bool(composio_c.get('enabled', False)))
                     w_comp_entity  = ui.input('entity_id', value=str(composio_c.get('entity_id', 'default'))).classes('w-full')
-
-                with ui.expansion('Hooks', icon='webhook').classes('w-full'):
+                with ui.expansion(T['exp_hooks'], icon='webhook').classes('w-full'):
                     w_hooks_enabled = ui.checkbox('hooks.enabled', value=bool(hooks.get('enabled', True)))
-
-                with ui.expansion('Hardware', icon='developer_board').classes('w-full'):
+                with ui.expansion(T['exp_hardware'], icon='developer_board').classes('w-full'):
                     w_hw_enabled    = ui.checkbox('enabled', value=bool(hardware.get('enabled', False)))
                     cur_ht = hardware.get('transport', 'none')
                     w_hw_transport  = ui.select(['none', 'native', 'serial', 'probe'], label='transport',
@@ -810,36 +774,33 @@ def index():
                     w_hw_baud       = ui.number('baud_rate',           value=hardware.get('baud_rate', 115200), min=1200, step=9600).classes('w-full')
                     w_hw_datasheets = ui.checkbox('workspace_datasheets', value=bool(hardware.get('workspace_datasheets', False)))
 
-            # ══ 系统 ════════════════════════════════════════════════════════
+            # ══ System ══════════════════════════════════════════════════════
             with ui.tab_panel(t_sys):
-                ui.label('转录 (transcription)').classes('text-subtitle2 text-grey-7 q-mt-sm')
+                ui.label(T['section_transcription']).classes('text-subtitle2 text-grey-7 q-mt-sm')
                 w_tr_enabled      = ui.checkbox('enabled', value=transcription.get('enabled', False))
                 w_tr_url          = ui.input('api_url', value=str(transcription.get('api_url', 'https://api.groq.com/openai/v1/audio/transcriptions'))).classes('w-full')
                 w_tr_model        = ui.input('model',   value=str(transcription.get('model', 'whisper-large-v3-turbo'))).classes('w-full')
                 w_tr_max_duration = ui.number('max_duration_secs', value=transcription.get('max_duration_secs', 120), min=10, step=10).classes('w-full')
-
                 ui.separator().classes('q-my-sm')
-                ui.label('心跳 (heartbeat)').classes('text-subtitle2 text-grey-7')
+                ui.label(T['section_heartbeat']).classes('text-subtitle2 text-grey-7')
                 w_hb_enabled  = ui.checkbox('enabled', value=heartbeat.get('enabled', False))
                 w_hb_interval = ui.number('interval_minutes', value=heartbeat.get('interval_minutes', 30), min=1, step=5).classes('w-full')
-
                 ui.separator().classes('q-my-sm')
-                ui.label('定时任务 (cron)').classes('text-subtitle2 text-grey-7')
+                ui.label(T['section_cron']).classes('text-subtitle2 text-grey-7')
                 w_cron_enabled     = ui.checkbox('enabled', value=cron.get('enabled', True))
                 w_cron_max_history = ui.number('max_run_history', value=cron.get('max_run_history', 50), min=1, step=10).classes('w-full')
-
                 ui.separator().classes('q-my-sm')
-                ui.label('服务日志').classes('text-subtitle2 text-grey-7')
+                ui.label(T['section_logs']).classes('text-subtitle2 text-grey-7')
                 with ui.row().classes('w-full gap-2'):
-                    ui.button('最近日志', icon='article', on_click=lambda: ui.notify(
+                    ui.button(T['btn_view_logs'], icon='article', on_click=lambda: ui.notify(
                         subprocess.getoutput('journalctl -u zeroclaw.service -n 30 --no-pager'),
                         multi_line=True, timeout=15000)).props('outline').classes('flex-1')
-                    ui.button('服务状态', icon='info', on_click=do_status).props('outline').classes('flex-1')
+                    ui.button(T['btn_service_status'], icon='info', on_click=do_status).props('outline').classes('flex-1')
 
         ui.separator()
         with ui.row().classes('w-full gap-2 q-pa-sm'):
-            ui.button('💾 保存',       on_click=do_save).props('elevated').classes('flex-1 bg-blue text-white')
-            ui.button('🔄 保存并重启', on_click=do_save_restart).props('elevated').classes('flex-1 bg-green text-white')
+            ui.button(T['btn_save'],         on_click=do_save).props('elevated').classes('flex-1 bg-blue text-white')
+            ui.button(T['btn_save_restart'], on_click=do_save_restart).props('elevated').classes('flex-1 bg-green text-white')
 
 
 ui.run(title='ClawBoard', port=8080, reload=False, host='0.0.0.0')
