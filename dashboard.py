@@ -319,7 +319,8 @@ def save_config(conf):
         toml.dump(conf, f)
 
 def deploy_config():
-    """Backup CONFIG_PATH → .bak, then sudo-copy to DEPLOY_CONFIG_PATH.
+    """Backup CONFIG_PATH → .bak, then copy directly to DEPLOY_CONFIG_PATH.
+    No sudo needed: zeroclaw owns /var/lib/zeroclaw/.
     Returns (ok: bool, message: str)."""
     import shutil
     # Step 1: backup local copy
@@ -328,18 +329,28 @@ def deploy_config():
         shutil.copy2(CONFIG_PATH, bak)
     except Exception as e:
         return False, f'Backup failed: {e}'
-    # Step 2: ensure target directory exists, then copy
-    r = subprocess.run(
-        ['cp', CONFIG_PATH, DEPLOY_CONFIG_PATH],
-        capture_output=True, text=True
-    )
-    if r.returncode != 0:
-        err = r.stderr.strip() or 'cp failed (check permissions)'
-        return False, err
+    # Step 2: ensure target directory exists, copy directly (no sudo)
+    try:
+        os.makedirs(os.path.dirname(DEPLOY_CONFIG_PATH), exist_ok=True)
+        shutil.copy2(CONFIG_PATH, DEPLOY_CONFIG_PATH)
+    except PermissionError:
+        return False, (
+            f'Permission denied writing to {DEPLOY_CONFIG_PATH}. '
+            f'Fix with: sudo chown zeroclaw "{os.path.dirname(DEPLOY_CONFIG_PATH)}"'
+        )
+    except Exception as e:
+        return False, str(e)
     return True, ''
 
 def restart_service():
-    r = subprocess.run(['sudo', 'systemctl', 'restart', 'zeroclaw.service'], capture_output=True, text=True)
+    """Restart via systemctl. Requires a narrow sudoers rule — no password needed.
+    Add with: sudo visudo -f /etc/sudoers.d/clawboard
+      zeroclaw ALL=(root) NOPASSWD: /usr/bin/systemctl restart zeroclaw.service
+    """
+    r = subprocess.run(
+        ['sudo', '/usr/bin/systemctl', 'restart', 'zeroclaw.service'],
+        capture_output=True, text=True
+    )
     return r.returncode == 0, r.stderr.strip()
 
 def service_status():
