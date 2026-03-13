@@ -330,11 +330,11 @@ def deploy_config():
         return False, f'Backup failed: {e}'
     # Step 2: ensure target directory exists, then copy
     r = subprocess.run(
-        ['sudo', 'cp', CONFIG_PATH, DEPLOY_CONFIG_PATH],
+        ['cp', CONFIG_PATH, DEPLOY_CONFIG_PATH],
         capture_output=True, text=True
     )
     if r.returncode != 0:
-        err = r.stderr.strip() or 'sudo cp failed (check sudoers)'
+        err = r.stderr.strip() or 'cp failed (check permissions)'
         return False, err
     return True, ''
 
