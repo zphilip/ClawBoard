@@ -5,9 +5,10 @@ from datetime import datetime
 import locales.zh as zh_strings
 import locales.en as en_strings
 
-SCRIPT_DIR  = os.path.dirname(os.path.abspath(__file__))
-PATHS       = [os.path.join(SCRIPT_DIR, 'config/config.toml'), 'config.toml']
-CONFIG_PATH = next((p for p in PATHS if os.path.exists(p)), PATHS[0])
+SCRIPT_DIR        = os.path.dirname(os.path.abspath(__file__))
+PATHS             = [os.path.join(SCRIPT_DIR, 'config/config.toml'), 'config.toml']
+CONFIG_PATH       = next((p for p in PATHS if os.path.exists(p)), PATHS[0])
+DEPLOY_CONFIG_PATH = '/var/lib/zeroclaw/.zeroclaw/config.toml'  # real zeroclaw config
 
 # ── Auth ─────────────────────────────────────────────────────────────────────
 AUTH_FILE      = os.path.join(SCRIPT_DIR, 'config', 'auth.json')
@@ -35,14 +36,32 @@ def _verify_pw(pw, stored):
     except Exception: return False
 
 def _is_authed():
-    """True if this browser session is authenticated or has a valid paired-device token."""
-    if app.storage.user.get('auth'): return True
-    tok = app.storage.browser.get('device_token', '')
-    if tok:
-        d = _load_auth()
-        if d and any(dv['token'] == tok for dv in d.get('paired_devices', [])):
-            app.storage.user['auth'] = True
+    """True if this browser session is authenticated or has a valid paired-device token.
+    Uses app.storage.browser (cookie-based, always available) as the primary truth source
+    so it works during the initial HTTP request before the WebSocket session is ready.
+    """
+    # Fast path: WS session already marked (may raise before WS connects – catch it)
+    try:
+        if app.storage.user.get('auth'):
             return True
+    except Exception:
+        pass
+    # Reliable path: check the browser-persistent device token against auth.json
+    tok = app.storage.browser.get('device_token', '')
+    if not tok:
+        return False
+    d = _load_auth()
+    if d and any(dv['token'] == tok for dv in d.get('paired_devices', [])):
+        try:
+            app.storage.user['auth'] = True   # cache for this WS session if available
+        except Exception:
+            pass
+        return True
+    # Token in browser but not in auth.json → it was revoked; clear it
+    try:
+        del app.storage.browser['device_token']
+    except Exception:
+        pass
     return False
 
 def _logout():
@@ -52,9 +71,14 @@ def _logout():
         if d:
             d['paired_devices'] = [dv for dv in d.get('paired_devices', []) if dv['token'] != tok]
             _save_auth(d)
-        if 'device_token' in app.storage.browser:
+        try:
             del app.storage.browser['device_token']
-    app.storage.user['auth'] = False
+        except Exception:
+            pass
+    try:
+        app.storage.user['auth'] = False
+    except Exception:
+        pass
     ui.navigate.to('/login')
 
 
@@ -290,6 +314,26 @@ def load_config():
 def save_config(conf):
     with open(CONFIG_PATH, 'w') as f:
         toml.dump(conf, f)
+
+def deploy_config():
+    """Backup CONFIG_PATH → .bak, then sudo-copy to DEPLOY_CONFIG_PATH.
+    Returns (ok: bool, message: str)."""
+    import shutil
+    # Step 1: backup local copy
+    bak = CONFIG_PATH + '.bak'
+    try:
+        shutil.copy2(CONFIG_PATH, bak)
+    except Exception as e:
+        return False, f'Backup failed: {e}'
+    # Step 2: ensure target directory exists, then copy
+    r = subprocess.run(
+        ['sudo', 'cp', CONFIG_PATH, DEPLOY_CONFIG_PATH],
+        capture_output=True, text=True
+    )
+    if r.returncode != 0:
+        err = r.stderr.strip() or 'sudo cp failed (check sudoers)'
+        return False, err
+    return True, ''
 
 def restart_service():
     r = subprocess.run(['sudo', 'systemctl', 'restart', 'zeroclaw.service'], capture_output=True, text=True)
@@ -576,10 +620,21 @@ def index(request: Request):
 
     def do_save_restart():
         try:
-            collect(); save_config(conf)
-            ok, err = restart_service()
-            if ok:  ui.notify(T['notify_saved_restarted'], type='positive')
-            else:   ui.notify(T['notify_restart_fail'].format(err or T['notify_sudo_required']), type='warning')
+            # 1. Collect form values → save to config/config.toml
+            collect()
+            save_config(conf)
+            # 2. Backup config/config.toml → config/config.toml.bak
+            #    then sudo-copy to DEPLOY_CONFIG_PATH
+            ok_deploy, deploy_err = deploy_config()
+            if not ok_deploy:
+                ui.notify(f'⚠️ Saved locally but deploy failed: {deploy_err}', type='warning')
+                return
+            # 3. Restart the service
+            ok_svc, svc_err = restart_service()
+            if ok_svc:
+                ui.notify(T['notify_saved_restarted'], type='positive')
+            else:
+                ui.notify(T['notify_restart_fail'].format(svc_err or T['notify_sudo_required']), type='warning')
         except Exception as e:
             ui.notify(T['notify_op_fail'].format(e), type='negative')
 
