@@ -1,12 +1,138 @@
-from nicegui import ui
+from nicegui import ui, app
 from fastapi import Request
-import toml, os, subprocess
+import toml, os, subprocess, hashlib, hmac, secrets, json, time as _time
+from datetime import datetime
 import locales.zh as zh_strings
 import locales.en as en_strings
 
 SCRIPT_DIR  = os.path.dirname(os.path.abspath(__file__))
 PATHS       = [os.path.join(SCRIPT_DIR, 'config/config.toml'), 'config.toml']
 CONFIG_PATH = next((p for p in PATHS if os.path.exists(p)), PATHS[0])
+
+# ── Auth ─────────────────────────────────────────────────────────────────────
+AUTH_FILE      = os.path.join(SCRIPT_DIR, 'config', 'auth.json')
+_invite_tokens = {}  # one-time tokens → expiry_unix
+
+def _load_auth():
+    try:
+        with open(AUTH_FILE) as f: return json.load(f)
+    except Exception: return None
+
+def _save_auth(data):
+    os.makedirs(os.path.dirname(AUTH_FILE), exist_ok=True)
+    with open(AUTH_FILE, 'w') as f: json.dump(data, f, indent=2)
+
+def _hash_pw(pw):
+    salt = secrets.token_hex(16)
+    h = hashlib.pbkdf2_hmac('sha256', pw.encode(), salt.encode(), 200_000)
+    return f'{salt}:{h.hex()}'
+
+def _verify_pw(pw, stored):
+    try:
+        salt, h = stored.split(':', 1)
+        h2 = hashlib.pbkdf2_hmac('sha256', pw.encode(), salt.encode(), 200_000)
+        return hmac.compare_digest(h, h2.hex())
+    except Exception: return False
+
+def _is_authed():
+    """True if this browser session is authenticated or has a valid paired-device token."""
+    if app.storage.user.get('auth'): return True
+    tok = app.storage.browser.get('device_token', '')
+    if tok:
+        d = _load_auth()
+        if d and any(dv['token'] == tok for dv in d.get('paired_devices', [])):
+            app.storage.user['auth'] = True
+            return True
+    return False
+
+def _logout():
+    tok = app.storage.browser.get('device_token', '')
+    if tok:
+        d = _load_auth()
+        if d:
+            d['paired_devices'] = [dv for dv in d.get('paired_devices', []) if dv['token'] != tok]
+            _save_auth(d)
+        if 'device_token' in app.storage.browser:
+            del app.storage.browser['device_token']
+    app.storage.user['auth'] = False
+    ui.navigate.to('/login')
+
+
+@ui.page('/login')
+def login_page():
+    if _is_authed(): ui.navigate.to('/'); return
+    if _load_auth() is None: ui.navigate.to('/setup'); return
+    with ui.card().classes('absolute-center w-80 shadow-2'):
+        ui.label('🔒 ClawBoard').classes('text-h5 text-center w-full q-mb-md')
+        w_pw   = ui.input('Password', password=True, password_toggle_button=True).classes('w-full')
+        w_rem  = ui.checkbox('Remember this device', value=False)
+        w_name = ui.input('Device name (optional)', value='').classes('w-full')
+        def do_login():
+            d = _load_auth()
+            if d and _verify_pw(w_pw.value, d['password_hash']):
+                app.storage.user['auth'] = True
+                if w_rem.value:
+                    tok = secrets.token_urlsafe(32)
+                    dname = w_name.value.strip() or f'Device {datetime.now().strftime("%m-%d %H:%M")}'
+                    d.setdefault('paired_devices', []).append(
+                        {'token': tok, 'name': dname, 'paired_at': int(_time.time())}
+                    )
+                    _save_auth(d)
+                    app.storage.browser['device_token'] = tok
+                ui.navigate.to('/')
+            else:
+                ui.notify('❌ Wrong password', type='negative')
+                w_pw.set_value('')
+        w_pw.on('keydown.enter', lambda e: do_login())
+        ui.button('Login', on_click=do_login).props('elevated').classes('w-full bg-blue-8 text-white q-mt-sm')
+
+
+@ui.page('/setup')
+def setup_page():
+    if _load_auth() is not None: ui.navigate.to('/login'); return
+    with ui.card().classes('absolute-center w-80 shadow-2'):
+        ui.label('⚙️ First-time Setup').classes('text-h5 text-center w-full')
+        ui.label('No password set. Create one to secure the dashboard.').classes(
+            'text-caption text-grey-6 text-center q-mb-md')
+        w_p1 = ui.input('Password',         password=True, password_toggle_button=True).classes('w-full')
+        w_p2 = ui.input('Confirm Password', password=True, password_toggle_button=True).classes('w-full')
+        def do_setup():
+            if len(w_p1.value) < 6:
+                ui.notify('Password must be ≥ 6 characters', type='warning'); return
+            if w_p1.value != w_p2.value:
+                ui.notify('Passwords do not match', type='warning'); return
+            _save_auth({'password_hash': _hash_pw(w_p1.value), 'paired_devices': []})
+            app.storage.user['auth'] = True
+            ui.notify('✅ Password set!', type='positive')
+            ui.timer(0.8, lambda: ui.navigate.to('/'), once=True)
+        ui.button('Set Password', on_click=do_setup).props('elevated').classes(
+            'w-full bg-green-8 text-white q-mt-sm')
+
+
+@ui.page('/pair')
+def pair_page(request: Request):
+    tok = request.query_params.get('token', '')
+    exp = _invite_tokens.get(tok, 0)
+    if not tok or _time.time() > exp:
+        with ui.card().classes('absolute-center w-72 shadow-2'):
+            ui.label('⚠️ Invite invalid or expired').classes(
+                'text-h6 text-negative text-center w-full')
+        return
+    del _invite_tokens[tok]
+    d = _load_auth()
+    if not d: ui.navigate.to('/setup'); return
+    device_tok = secrets.token_urlsafe(32)
+    d.setdefault('paired_devices', []).append(
+        {'token': device_tok, 'name': f'Invited {datetime.now().strftime("%m-%d %H:%M")}', 'paired_at': int(_time.time())}
+    )
+    _save_auth(d)
+    app.storage.browser['device_token'] = device_tok
+    app.storage.user['auth'] = True
+    with ui.card().classes('absolute-center w-72 shadow-2'):
+        ui.label('✅ Device Paired!').classes('text-h5 text-center w-full')
+        ui.label('Redirecting to dashboard…').classes('text-caption text-center text-grey-6')
+    ui.timer(1.5, lambda: ui.navigate.to('/'), once=True)
+
 
 PROVIDER_IDS = [
     'openrouter', 'anthropic', 'openai', 'ollama', 'gemini', 'venice',
@@ -186,6 +312,7 @@ def lines_to_list(text):
 
 @ui.page('/')
 def index(request: Request):
+    if not _is_authed(): ui.navigate.to('/login'); return
     lang       = request.query_params.get('lang', 'zh')
     T          = zh_strings.STRINGS if lang == 'zh' else en_strings.STRINGS
     other_lang = 'en' if lang == 'zh' else 'zh'
@@ -501,6 +628,7 @@ def index(request: Request):
                 on_click=lambda: ui.navigate.to(f'/?lang={other_lang}')
             ).props('flat dense color=white no-caps')
             ui.button(icon='info', on_click=do_status).props('flat round dense color=white')
+            ui.button(icon='logout', on_click=_logout).props('flat round dense color=white').tooltip('Logout')
 
     with ui.column().classes('w-full q-px-sm q-pt-sm'):
         with ui.tabs().classes('w-full bg-blue-1') as tabs:
@@ -679,6 +807,59 @@ def index(request: Request):
 
             # ══ Security ════════════════════════════════════════════════════
             with ui.tab_panel(t_sec):
+                with ui.expansion('🔒 Dashboard Access', icon='vpn_key').classes('w-full'):
+                    ui.label('Change Password').classes('text-subtitle2 q-mt-xs')
+                    w_cur_pw  = ui.input('Current password', password=True, password_toggle_button=True).classes('w-full')
+                    w_new_pw  = ui.input('New password',     password=True, password_toggle_button=True).classes('w-full')
+                    w_new_pw2 = ui.input('Confirm new',      password=True, password_toggle_button=True).classes('w-full')
+                    def do_change_pw():
+                        d = _load_auth()
+                        if not d or not _verify_pw(w_cur_pw.value, d['password_hash']):
+                            ui.notify('❌ Current password incorrect', type='negative'); return
+                        if len(w_new_pw.value) < 6:
+                            ui.notify('Min 6 characters', type='warning'); return
+                        if w_new_pw.value != w_new_pw2.value:
+                            ui.notify('Passwords do not match', type='warning'); return
+                        d['password_hash'] = _hash_pw(w_new_pw.value)
+                        _save_auth(d)
+                        ui.notify('✅ Password changed', type='positive')
+                        w_cur_pw.set_value(''); w_new_pw.set_value(''); w_new_pw2.set_value('')
+                    ui.button('Change Password', on_click=do_change_pw).props('outline color=blue').classes('q-mb-sm')
+                    ui.separator()
+                    ui.label('Paired Devices').classes('text-subtitle2 q-mt-xs')
+                    device_list = ui.column().classes('w-full')
+                    def _refresh_devices():
+                        device_list.clear()
+                        d2 = _load_auth()
+                        devs = d2.get('paired_devices', []) if d2 else []
+                        if not devs:
+                            with device_list:
+                                ui.label('No paired devices').classes('text-caption text-grey-5')
+                            return
+                        for dv in devs:
+                            dt = datetime.fromtimestamp(dv['paired_at']).strftime('%Y-%m-%d %H:%M')
+                            with device_list:
+                                with ui.row().classes('w-full items-center justify-between'):
+                                    ui.label(f"📱 {dv['name']}  ({dt})").classes('text-caption')
+                                    def _revoke(t=dv['token']):
+                                        d3 = _load_auth()
+                                        if d3:
+                                            d3['paired_devices'] = [x for x in d3.get('paired_devices', []) if x['token'] != t]
+                                            _save_auth(d3)
+                                        _refresh_devices()
+                                    ui.button(icon='delete', on_click=_revoke).props('flat round dense color=negative')
+                    _refresh_devices()
+                    ui.separator()
+                    invite_lbl = ui.label('').classes('text-caption text-blue-7 q-mt-xs break-all')
+                    def _gen_invite():
+                        it = secrets.token_urlsafe(16)
+                        _invite_tokens[it] = _time.time() + 300
+                        base = str(request.base_url).rstrip('/')
+                        link = f'{base}/pair?token={it}'
+                        invite_lbl.set_text(f'🔗 {link}  (valid 5 min)')
+                        ui.clipboard.write(link)
+                        ui.notify('✅ Invite link copied to clipboard', type='positive')
+                    ui.button('🔗 Generate Invite Link', on_click=_gen_invite).props('outline color=green')
                 with ui.expansion(T['exp_resources'], icon='memory').classes('w-full'):
                     w_sec_mem         = ui.number('max_memory_mb',        value=sec_res.get('max_memory_mb', 512),        min=64,  step=64).classes('w-full')
                     w_sec_cpu         = ui.number('max_cpu_time_seconds', value=sec_res.get('max_cpu_time_seconds', 60),  min=5,   step=5).classes('w-full')
@@ -803,4 +984,5 @@ def index(request: Request):
             ui.button(T['btn_save_restart'], on_click=do_save_restart).props('elevated').classes('flex-1 bg-green text-white')
 
 
-ui.run(title='ClawBoard', port=8080, reload=False, host='0.0.0.0')
+ui.run(title='ClawBoard', port=8080, reload=False, host='0.0.0.0',
+       storage_secret='clawboard-dashboard-secret')
