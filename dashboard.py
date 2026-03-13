@@ -305,11 +305,14 @@ CHANNEL_KEYS   = list(CHANNEL_SCHEMAS.keys())
 CHANNEL_LABELS = {k: v['label'] for k, v in CHANNEL_SCHEMAS.items()}
 
 def load_config():
-    try:
-        with open(CONFIG_PATH, 'r') as f:
-            return toml.load(f)
-    except Exception:
-        return {}
+    """Load from the live deploy path first; fall back to local config/config.toml."""
+    for path in [DEPLOY_CONFIG_PATH, CONFIG_PATH]:
+        try:
+            with open(path, 'r') as f:
+                return toml.load(f)
+        except Exception:
+            continue
+    return {}
 
 def save_config(conf):
     with open(CONFIG_PATH, 'w') as f:
