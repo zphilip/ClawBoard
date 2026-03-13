@@ -1,0 +1,16 @@
+# secrets / local config
+config.toml
+
+# Python
+venv/
+__pycache__/
+*.pyc
+*.pyo
+.env
+
+# editor
+*.swp
+.DS_Store
+
+# copies / scratch
+*copy*
