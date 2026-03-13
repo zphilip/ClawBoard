@@ -985,4 +985,4 @@ def index(request: Request):
 
 
 ui.run(title='ClawBoard', port=8080, reload=False, host='0.0.0.0',
-       storage_secret='clawboard-dashboard-secret')
+       storage_secret='clawboard-dashboard-secret',show=False)
