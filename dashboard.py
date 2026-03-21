@@ -727,8 +727,8 @@ def index(request: Request):
     with zc_content:
         ui.label('🦾 ZeroClaw Dashboard').classes('text-h6 text-blue-9 q-mb-xs')
         with ui.tabs().classes('w-full bg-blue-1') as zc_sub_tabs:
-            t_zc_cfg  = ui.tab('Configuration', icon='settings')
-            t_zc_pair = ui.tab('Pair Device',   icon='devices')
+            t_zc_cfg  = ui.tab(T['tab_configuration'], icon='settings')
+            t_zc_pair = ui.tab(T['tab_pair_device'],   icon='devices')
 
         with ui.tab_panels(zc_sub_tabs, value=t_zc_cfg).classes('w-full'):
 
@@ -1075,12 +1075,22 @@ def index(request: Request):
                                 ['zeroclaw', 'gateway', 'get-paircode', '--new'],
                                 capture_output=True, text=True, timeout=15
                             )
-                            code = (r.stdout.strip() or r.stderr.strip())
+                            raw = (r.stdout.strip() or r.stderr.strip())
                             if r.returncode != 0:
                                 paircode_lbl.set_text('Error')
-                                paircode_status.set_text(f'Command failed: {code}')
-                                ui.notify(f'❌ {code}', type='negative')
+                                paircode_status.set_text(f'Command failed: {raw}')
+                                ui.notify(f'❌ {raw}', type='negative')
                                 return
+                            # Extract just the code from the box:
+                            #   │  752167  │
+                            code = raw  # fallback: full output
+                            for _line in raw.splitlines():
+                                _s = _line.strip()
+                                if _s.startswith('│') and _s.endswith('│'):
+                                    _inner = _s[1:-1].strip()
+                                    if _inner:
+                                        code = _inner
+                                        break
                             paircode_lbl.set_text(code)
                             # push to 2in13 display
                             disp_r = subprocess.run(
@@ -1155,8 +1165,8 @@ def index(request: Request):
     with pc_content:
         ui.label('🐾 PicoClaw Dashboard').classes('text-h6 text-purple-8 q-mb-xs')
         with ui.tabs().classes('w-full bg-purple-1') as pc_sub_tabs:
-            t_pc_cfg  = ui.tab('Configuration', icon='settings')
-            t_pc_pair = ui.tab('Pair Device',   icon='devices')
+            t_pc_cfg  = ui.tab(T['tab_configuration'], icon='settings')
+            t_pc_pair = ui.tab(T['tab_pair_device'],   icon='devices')
 
         with ui.tab_panels(pc_sub_tabs, value=t_pc_cfg).classes('w-full'):
 
@@ -1573,6 +1583,10 @@ def index(request: Request):
     def _switch_dash(name):
         zc_content.set_visibility(name == 'zeroclaw')
         pc_content.set_visibility(name == 'picoclaw')
+        btn_zc._props['color'] = 'blue-8'   if name == 'zeroclaw' else 'grey-7'
+        btn_pc._props['color'] = 'purple-8' if name == 'picoclaw' else 'grey-7'
+        btn_zc.update()
+        btn_pc.update()
 
     btn_zc.on('click', lambda: _switch_dash('zeroclaw'))
     btn_pc.on('click', lambda: _switch_dash('picoclaw'))

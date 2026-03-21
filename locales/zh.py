@@ -1,8 +1,10 @@
 STRINGS = {
     # ── App ──────────────────────────────────────────────────────────────────
-    'app_title':       '⚙️ ZeroClaw ClawBoard',
+    'app_title':       '⚙️ ClawBoard',
     'lbl_lang_switch': '🌐 English',
-    # ── Tabs ─────────────────────────────────────────────────────────────────
+    # ── Tabs ───────────────────────────────────────────────────────────────────
+    'tab_configuration': '配置',
+    'tab_pair_device':   '配对设备',
     'tab_general':   '通用',
     'tab_providers': 'Providers',
     'tab_autonomy':  '自主',
