@@ -4,6 +4,11 @@ import time
 import signal
 import logging
 import subprocess
+import json
+import textwrap
+from io import BytesIO
+from urllib.parse import quote
+from urllib.request import urlopen
 from PIL import Image, ImageDraw, ImageFont
 
 # ── Driver path setup ─────────────────────────────────────────────────────
@@ -19,8 +24,10 @@ logging.basicConfig(level=logging.INFO)
 
 # ── Handoff file written by clawberry_paircode.py ─────────────────────────
 _HERE            = os.path.dirname(os.path.realpath(__file__))
-PAIRCODE_FILE    = os.path.join(_HERE, 'config', 'clawberry_paircode.txt')
-DISPLAY_SECONDS  = 120          # how long to show pair code before resuming
+DISPLAY_REQUEST_FILE = os.path.join(_HERE, 'config', 'clawberry_paircode.txt')
+DISPLAY_SECONDS  = 120          # how long to show temporary content before resuming
+MONITOR_REFRESH_SECONDS = 60
+POLL_SECONDS = 1
 
 _FONT_BOLD = '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf'
 _FONT_REG  = '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf'
@@ -66,6 +73,38 @@ def get_service_status(service_name):
         return "Running" if status == "active" else "Stopped"
     except:
         return "Unknown"
+
+
+def _read_display_request():
+    """Read and remove the next pending display request."""
+    if not os.path.exists(DISPLAY_REQUEST_FILE):
+        return None
+    try:
+        with open(DISPLAY_REQUEST_FILE) as f:
+            raw = f.read().strip()
+        os.remove(DISPLAY_REQUEST_FILE)
+        if not raw:
+            return None
+        try:
+            payload = json.loads(raw)
+            if isinstance(payload, dict):
+                return payload
+        except json.JSONDecodeError:
+            return {'kind': 'paircode', 'code': raw, 'seconds': DISPLAY_SECONDS}
+    except Exception as e:
+        logging.warning("Error handling display request file: %s", e)
+        try:
+            os.remove(DISPLAY_REQUEST_FILE)
+        except Exception:
+            pass
+    return None
+
+
+def _fetch_qr_image(text, size=220):
+    """Fetch a QR image for *text* using QuickChart."""
+    qr_url = f'https://quickchart.io/qr?size={size}&margin=1&text={quote(text, safe="")}'
+    with urlopen(qr_url, timeout=15) as r:
+        return Image.open(BytesIO(r.read())).convert('1')
 
 
 # ── Screens ───────────────────────────────────────────────────────────────
@@ -128,32 +167,79 @@ def draw_paircode(epd, code):
     epd.sleep()
 
 
+def draw_picoclaw_qr(epd, url, token=''):
+    """Render a PicoClaw pairing QR screen."""
+    W, H = epd.height, epd.width
+    image = Image.new('1', (W, H), 255)
+    draw  = ImageDraw.Draw(image)
+
+    f_title = _load_font(_FONT_BOLD, 15)
+    f_small = _load_font(_FONT_REG, 12)
+    f_tiny  = _load_font(_FONT_REG, 10)
+
+    draw.text((8, 4), "PicoClaw Pair QR", font=f_title, fill=0)
+    draw.line((8, 22, W - 8, 22), fill=0)
+
+    qr_size = min(H - 34, 88)
+    try:
+        qr_img = _fetch_qr_image(url).resize((qr_size, qr_size))
+        image.paste(qr_img, (8, 28))
+    except Exception as e:
+        logging.warning("Could not fetch QR image: %s", e)
+        draw.rectangle((8, 28, 8 + qr_size, 28 + qr_size), outline=0, width=2)
+        draw.text((26, 62), "QR", font=f_title, fill=0)
+
+    text_x = 8 + qr_size + 10
+    for idx, line in enumerate(textwrap.wrap(url, width=22)[:4]):
+        draw.text((text_x, 30 + idx * 13), line, font=f_small, fill=0)
+
+    token_line = f"token: {token[:12]}..." if len(token) > 12 else f"token: {token}"
+    draw.text((text_x, H - 20), token_line, font=f_tiny, fill=0)
+
+    epd.init()
+    epd.display(epd.getbuffer(image))
+    epd.sleep()
+
+
+def _handle_display_request(epd, payload):
+    kind = payload.get('kind', 'paircode')
+    seconds = int(payload.get('seconds', DISPLAY_SECONDS) or DISPLAY_SECONDS)
+
+    if kind == 'pico_qr':
+        url = str(payload.get('url', '')).strip()
+        token = str(payload.get('token', '')).strip()
+        if url:
+            logging.info("PicoClaw QR request — showing for %ss", seconds)
+            draw_picoclaw_qr(epd, url, token)
+            time.sleep(seconds)
+        return
+
+    code = str(payload.get('code', '')).strip()
+    if code:
+        logging.info("Pair code request: '%s' — showing for %ss", code, seconds)
+        draw_paircode(epd, code)
+        time.sleep(seconds)
+
+
 # ── Main loop ─────────────────────────────────────────────────────────────
 epd = epd2in13_V4.EPD()
 logging.info("ClawBerry display service starting...")
 
 while True:
-    # ── Check for a pending pair code request ─────────────────────────────
-    if os.path.exists(PAIRCODE_FILE):
-        try:
-            with open(PAIRCODE_FILE) as f:
-                code = f.read().strip()
-            os.remove(PAIRCODE_FILE)
-            if code:
-                logging.info("Pair code request: '%s' — showing for %ds", code, DISPLAY_SECONDS)
-                draw_paircode(epd, code)
-                # Stay on pair code screen for DISPLAY_SECONDS
-                time.sleep(DISPLAY_SECONDS)
-                # Fall through to normal refresh below
-        except Exception as e:
-            logging.warning("Error handling paircode file: %s", e)
-            try:
-                os.remove(PAIRCODE_FILE)
-            except Exception:
-                pass
+    payload = _read_display_request()
+    if payload:
+        _handle_display_request(epd, payload)
+        continue
 
     # ── Normal status screen ──────────────────────────────────────────────
     logging.info("Refreshing monitor screen...")
     draw_monitor(epd)
     logging.info("Waiting for next update...")
-    time.sleep(60)
+    waited = 0
+    while waited < MONITOR_REFRESH_SECONDS:
+        time.sleep(POLL_SECONDS)
+        waited += POLL_SECONDS
+        payload = _read_display_request()
+        if payload:
+            _handle_display_request(epd, payload)
+            break

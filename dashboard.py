@@ -2,6 +2,7 @@ from nicegui import ui, app
 from fastapi import Request
 import toml, os, sys, subprocess, hashlib, hmac, secrets, json, time as _time
 from datetime import datetime
+from urllib.parse import quote
 import locales.zh as zh_strings
 import locales.en as en_strings
 
@@ -1590,6 +1591,40 @@ def index(request: Request):
                 with ui.card().classes('w-full q-pa-md'):
                     ui.label(T['pc_pair_title']).classes('text-h6 text-purple-8')
                     ui.label(T['pc_pair_hint']).classes('text-caption text-grey-6 q-mt-xs')
+                    pico_channel = pc_channels.get('pico', {})
+                    pico_token = str(pico_channel.get('token', '')).strip()
+                    pico_port = int(pc_gateway.get('port', 18790) or 18790)
+                    pico_host = request.url.hostname or 'localhost'
+                    pico_scheme = request.url.scheme or 'http'
+                    pico_url = f'{pico_scheme}://{pico_host}:{pico_port}?token={pico_token}' if pico_token else ''
+                    pico_qr_url = f'https://quickchart.io/qr?size=260&margin=1&text={quote(pico_url, safe="")}' if pico_url else ''
+
+                    if pico_token:
+                        ui.input(T['pc_pair_token'], value=pico_token).props('readonly').classes('w-full q-mt-sm')
+                        ui.input(T['pc_pair_url'], value=pico_url).props('readonly').classes('w-full')
+
+                        with ui.row().classes('w-full items-start gap-4 q-mt-sm'):
+                            with ui.card().classes('q-pa-sm items-center bg-white'):
+                                ui.label(T['pc_pair_qr']).classes('text-caption text-grey-7 q-mb-xs')
+                                ui.image(pico_qr_url).classes('w-56 h-56')
+
+                            with ui.column().classes('gap-2 q-mt-md'):
+                                def _copy_pico_url(url=pico_url):
+                                    ui.clipboard.write(url)
+                                    ui.notify(T['pc_pair_copy_ok'], type='positive')
+
+                                def _show_pico_qr(url=pico_url, token=pico_token):
+                                    try:
+                                        from clawberry_paircode import request_picoclaw_qr_display
+                                        request_picoclaw_qr_display(url, token)
+                                        ui.notify(T['pc_pair_queue_ok'], type='positive')
+                                    except Exception as exc:
+                                        ui.notify(f'❌ {exc}', type='negative')
+
+                                ui.button(T['pc_pair_copy_url'], on_click=_copy_pico_url).props('outline color=purple-8')
+                                ui.button(T['pc_pair_show_display'], on_click=_show_pico_qr).props('elevated color=purple-8')
+                    else:
+                        ui.label(T['pc_pair_missing_token']).classes('text-negative q-mt-sm')
 
     # ── Sidebar navigation wiring ──────────────────────────────────────────────
     def _switch_dash(name):
