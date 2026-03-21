@@ -17,7 +17,9 @@ import logging
 logging.basicConfig(level=logging.INFO)
 
 # Shared handoff file — service polls this path
-PAIRCODE_FILE = '/tmp/clawberry_paircode.txt'
+_HERE         = os.path.dirname(os.path.realpath(__file__))
+PAIRCODE_FILE = os.path.join(_HERE, 'config', 'clawberry_paircode.txt')
+os.makedirs(os.path.dirname(PAIRCODE_FILE), exist_ok=True)
 
 
 def request_paircode_display(code: str) -> None:

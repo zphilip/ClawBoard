@@ -18,7 +18,8 @@ from waveshare_epd import epd2in13_V4
 logging.basicConfig(level=logging.INFO)
 
 # ── Handoff file written by clawberry_paircode.py ─────────────────────────
-PAIRCODE_FILE    = '/tmp/clawberry_paircode.txt'
+_HERE            = os.path.dirname(os.path.realpath(__file__))
+PAIRCODE_FILE    = os.path.join(_HERE, 'config', 'clawberry_paircode.txt')
 DISPLAY_SECONDS  = 120          # how long to show pair code before resuming
 
 _FONT_BOLD = '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf'
