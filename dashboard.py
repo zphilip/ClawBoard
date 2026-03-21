@@ -691,7 +691,9 @@ def index(request: Request):
 
     # ── Header ────────────────────────────────────────────────────────────────
     with ui.header().classes('bg-blue-9 text-white q-pa-sm row items-center justify-between'):
-        ui.label(T['app_title']).classes('text-h6')
+        with ui.row().classes('items-center gap-1'):
+            ui.button(icon='menu', on_click=lambda: drawer.toggle()).props('flat round dense color=white')
+            ui.label(T['app_title']).classes('text-h6')
         with ui.row().classes('gap-1 items-center'):
             ui.button(T['lbl_lang_switch'],
                 on_click=lambda: ui.navigate.to(f'/?lang={other_lang}')
@@ -699,203 +701,406 @@ def index(request: Request):
             ui.button(icon='info', on_click=do_status).props('flat round dense color=white')
             ui.button(icon='logout', on_click=_logout).props('flat round dense color=white').tooltip('Logout')
 
-    with ui.column().classes('w-full q-px-sm q-pt-sm'):
-        with ui.tabs().classes('w-full bg-blue-1') as tabs:
-            t_gen   = ui.tab(T['tab_general'],   icon='tune')
-            t_prov  = ui.tab(T['tab_providers'],  icon='cloud')
-            t_auto  = ui.tab(T['tab_autonomy'],   icon='psychology')
-            t_agent = ui.tab(T['tab_agent'],      icon='smart_toy')
-            t_mem   = ui.tab(T['tab_memory'],     icon='memory')
-            t_comm  = ui.tab(T['tab_comms'],      icon='hub')
-            t_ch    = ui.tab(T['tab_channels'],   icon='forum')
-            t_sec   = ui.tab(T['tab_security'],   icon='security')
-            t_feat  = ui.tab(T['tab_features'],   icon='extension')
-            t_sys   = ui.tab(T['tab_system'],     icon='computer')
+    # ── Sidebar ───────────────────────────────────────────────────────────────
+    with ui.left_drawer(value=True, bordered=True).classes('bg-grey-1') as drawer:
+        ui.label('ClawBoard').classes('text-subtitle1 text-bold text-blue-9 q-pa-sm q-pb-xs')
+        ui.separator()
+        btn_zc = ui.button('🦾 ZeroClaw', icon='terminal').props('flat align=left color=blue-8').classes('w-full q-mt-xs')
+        btn_pc = ui.button('🐾 PicoClaw',  icon='memory'  ).props('flat align=left color=grey-7').classes('w-full')
 
-        with ui.tab_panels(tabs, value=t_gen).classes('w-full'):
+    # ══ ZeroClaw Dashboard ════════════════════════════════════════════════════
+    zc_content = ui.column().classes('w-full q-px-sm q-pt-sm')
+    with zc_content:
+        ui.label('🦾 ZeroClaw Dashboard').classes('text-h6 text-blue-9 q-mb-xs')
+        with ui.tabs().classes('w-full bg-blue-1') as zc_sub_tabs:
+            t_zc_cfg  = ui.tab('Configuration', icon='settings')
+            t_zc_pair = ui.tab('Pair Device',   icon='devices')
 
-            # ══ General ══════════════════════════════════════════════════════
-            with ui.tab_panel(t_gen):
-                ui.label(T['section_api']).classes('text-subtitle2 text-grey-7 q-mt-sm')
-                w_api_key = ui.input(T['lbl_api_key'], value=str(top.get('api_key', '')),
-                    password=True, password_toggle_button=True).classes('w-full')
-                cur_prov = str(top.get('default_provider', 'dashscope'))
-                w_default_provider = ui.select(PROVIDER_IDS, label='default_provider',
-                    value=cur_prov if cur_prov in PROVIDER_IDS else PROVIDER_IDS[0]).classes('w-full')
-                w_default_model = ui.input('default_model',
-                    value=str(top.get('default_model', 'anthropic/claude-sonnet-4-6'))).classes('w-full')
-                w_temperature = ui.number('default_temperature',
-                    value=top.get('default_temperature', 0.7), min=0.0, max=2.0, step=0.1).classes('w-full')
-                ui.separator().classes('q-my-sm')
-                ui.label(T['section_secrets']).classes('text-subtitle2 text-grey-7')
-                w_secrets_encrypt = ui.checkbox('secrets.encrypt', value=bool(secrets_c.get('encrypt', True)))
-                cur_id = str(identity.get('format', 'openclaw'))
-                w_identity_format = ui.select(['openclaw', 'aieos'], label='identity.format',
-                    value=cur_id if cur_id in ['openclaw','aieos'] else 'openclaw').classes('w-full')
+        with ui.tab_panels(zc_sub_tabs, value=t_zc_cfg).classes('w-full'):
 
-            # ══ Providers ════════════════════════════════════════════════════
-            with ui.tab_panel(t_prov):
-                ui.label(T['section_providers']).classes('text-subtitle2 text-grey-7 q-mt-sm')
-                ui.label(T['hint_providers']).classes('text-caption text-grey-5')
-                provider_container = ui.column().classes('w-full')
-                for alias, mp_data in conf.get('model_providers', {}).items():
-                    build_provider_card(provider_container, alias, mp_data)
-                ui.separator().classes('q-my-sm')
-                with ui.row().classes('w-full gap-2 items-end'):
-                    new_alias_input = ui.input(T['lbl_new_alias']).classes('flex-1')
-                    def _add_provider():
-                        alias = new_alias_input.value.strip()
-                        if not alias: ui.notify(T['warn_alias_empty'], type='warning'); return
-                        if alias in provider_panels: ui.notify(T['warn_alias_exists'].format(alias), type='warning'); return
-                        build_provider_card(provider_container, alias, {}); new_alias_input.value = ''
-                    ui.button(T['btn_add_provider'], on_click=_add_provider).props('outline color=blue')
+            # ── ZeroClaw › Configuration ───────────────────────────────────
+            with ui.tab_panel(t_zc_cfg):
+                with ui.tabs().classes('w-full bg-blue-1') as tabs:
+                    t_gen   = ui.tab(T['tab_general'],   icon='tune')
+                    t_prov  = ui.tab(T['tab_providers'],  icon='cloud')
+                    t_auto  = ui.tab(T['tab_autonomy'],   icon='psychology')
+                    t_agent = ui.tab(T['tab_agent'],      icon='smart_toy')
+                    t_mem   = ui.tab(T['tab_memory'],     icon='memory')
+                    t_comm  = ui.tab(T['tab_comms'],      icon='hub')
+                    t_ch    = ui.tab(T['tab_channels'],   icon='forum')
+                    t_sec   = ui.tab(T['tab_security'],   icon='security')
+                    t_feat  = ui.tab(T['tab_features'],   icon='extension')
+                    t_sys   = ui.tab(T['tab_system'],     icon='computer')
 
-            # ══ Autonomy ══════════════════════════════════════════════════════
-            with ui.tab_panel(t_auto):
-                ui.label(T['section_autonomy']).classes('text-subtitle2 text-grey-7 q-mt-sm')
-                cur_lvl = autonomy.get('level', 'supervised')
-                w_auto_level = ui.select(['read_only', 'supervised', 'full'], label='autonomy.level',
-                    value=cur_lvl if cur_lvl in ['read_only','supervised','full'] else 'supervised').classes('w-full')
-                w_auto_workspace        = ui.checkbox('workspace_only',                   value=autonomy.get('workspace_only', True))
-                w_auto_require_approval = ui.checkbox('require_approval_for_medium_risk', value=autonomy.get('require_approval_for_medium_risk', True))
-                w_auto_block_high       = ui.checkbox('block_high_risk_commands',          value=autonomy.get('block_high_risk_commands', True))
-                ui.separator().classes('q-my-sm')
-                w_auto_max_actions = ui.number('max_actions_per_hour',  value=autonomy.get('max_actions_per_hour', 20),   min=1,  step=1).classes('w-full')
-                w_auto_max_cost    = ui.number('max_cost_per_day_cents', value=autonomy.get('max_cost_per_day_cents', 500), min=0,  step=10).classes('w-full')
-                ui.separator().classes('q-my-sm')
-                ui.label(T['lbl_allowed_commands']).classes('text-caption text-grey-6')
-                w_auto_cmds = ui.textarea(value='\n'.join(autonomy.get('allowed_commands', []))).classes('w-full').props('outlined rows=5')
-                ui.label(T['lbl_auto_approve']).classes('text-caption text-grey-6')
-                w_auto_approve = ui.textarea(value='\n'.join(autonomy.get('auto_approve', []))).classes('w-full').props('outlined rows=3')
-                ui.label(T['lbl_always_ask']).classes('text-caption text-grey-6')
-                w_auto_always_ask = ui.textarea(value='\n'.join(autonomy.get('always_ask', []))).classes('w-full').props('outlined rows=3')
-                ui.label(T['lbl_forbidden_paths']).classes('text-caption text-grey-6')
-                w_auto_forbidden = ui.textarea(value='\n'.join(autonomy.get('forbidden_paths', []))).classes('w-full').props('outlined rows=5')
-                ui.label(T['lbl_allowed_roots']).classes('text-caption text-grey-6')
-                w_auto_allowed_roots = ui.textarea(value='\n'.join(autonomy.get('allowed_roots', []))).classes('w-full').props('outlined rows=3')
-                ui.label(T['lbl_shell_env']).classes('text-caption text-grey-6')
-                w_auto_shell_env = ui.textarea(value='\n'.join(autonomy.get('shell_env_passthrough', []))).classes('w-full').props('outlined rows=3')
+                with ui.tab_panels(tabs, value=t_gen).classes('w-full'):
 
-            # ══ Agent ══════════════════════════════════════════════════════════
-            with ui.tab_panel(t_agent):
-                ui.label(T['section_agent']).classes('text-subtitle2 text-grey-7 q-mt-sm')
-                w_agent_compact  = ui.checkbox('compact_context', value=agent_c.get('compact_context', False))
-                w_agent_parallel = ui.checkbox('parallel_tools',  value=agent_c.get('parallel_tools', False))
-                w_agent_max_iter = ui.number('max_tool_iterations',  value=agent_c.get('max_tool_iterations', 10),  min=1, step=1).classes('w-full')
-                w_agent_max_hist = ui.number('max_history_messages', value=agent_c.get('max_history_messages', 50), min=1, step=5).classes('w-full')
-                cur_disp = agent_c.get('tool_dispatcher', 'auto')
-                w_agent_tool_dispatcher = ui.select(['auto', 'sequential', 'parallel'], label='tool_dispatcher',
-                    value=cur_disp if cur_disp in ['auto','sequential','parallel'] else 'auto').classes('w-full')
-                ui.separator().classes('q-my-sm')
-                ui.label(T['section_obs']).classes('text-subtitle2 text-grey-7')
-                cur_obs = obs.get('backend', 'none')
-                w_obs_backend = ui.select(['none', 'noop', 'log', 'prometheus', 'otel'], label='backend',
-                    value=cur_obs if cur_obs in ['none','noop','log','prometheus','otel'] else 'none').classes('w-full')
-                cur_tm = obs.get('runtime_trace_mode', 'none')
-                w_obs_trace_mode = ui.select(['none', 'rolling', 'full'], label='runtime_trace_mode',
-                    value=cur_tm if cur_tm in ['none','rolling','full'] else 'none').classes('w-full')
-                w_obs_otel_endpoint = ui.input('otel_endpoint', value=str(obs.get('otel_endpoint', 'http://localhost:4318'))).classes('w-full')
-                w_obs_otel_service  = ui.input('otel_service_name', value=str(obs.get('otel_service_name', 'zeroclaw'))).classes('w-full')
-                w_obs_trace_path    = ui.input('runtime_trace_path', value=str(obs.get('runtime_trace_path', 'state/runtime-trace.jsonl'))).classes('w-full')
-                w_obs_trace_max     = ui.number('runtime_trace_max_entries', value=obs.get('runtime_trace_max_entries', 200), min=10, step=50).classes('w-full')
-                ui.separator().classes('q-my-sm')
-                ui.label(T['section_skills']).classes('text-subtitle2 text-grey-7')
-                w_skills_open = ui.checkbox('open_skills_enabled', value=skills.get('open_skills_enabled', False))
-                cur_pm = skills.get('prompt_injection_mode', 'full')
-                w_skills_mode = ui.select(['full', 'compact'], label='prompt_injection_mode',
-                    value=cur_pm if cur_pm in ['full','compact'] else 'full').classes('w-full')
+                    # ══ General ══════════════════════════════════════════════
+                    with ui.tab_panel(t_gen):
+                        ui.label(T['section_api']).classes('text-subtitle2 text-grey-7 q-mt-sm')
+                        w_api_key = ui.input(T['lbl_api_key'], value=str(top.get('api_key', '')),
+                            password=True, password_toggle_button=True).classes('w-full')
+                        cur_prov = str(top.get('default_provider', 'dashscope'))
+                        w_default_provider = ui.select(PROVIDER_IDS, label='default_provider',
+                            value=cur_prov if cur_prov in PROVIDER_IDS else PROVIDER_IDS[0]).classes('w-full')
+                        w_default_model = ui.input('default_model',
+                            value=str(top.get('default_model', 'anthropic/claude-sonnet-4-6'))).classes('w-full')
+                        w_temperature = ui.number('default_temperature',
+                            value=top.get('default_temperature', 0.7), min=0.0, max=2.0, step=0.1).classes('w-full')
+                        ui.separator().classes('q-my-sm')
+                        ui.label(T['section_secrets']).classes('text-subtitle2 text-grey-7')
+                        w_secrets_encrypt = ui.checkbox('secrets.encrypt', value=bool(secrets_c.get('encrypt', True)))
+                        cur_id = str(identity.get('format', 'openclaw'))
+                        w_identity_format = ui.select(['openclaw', 'aieos'], label='identity.format',
+                            value=cur_id if cur_id in ['openclaw','aieos'] else 'openclaw').classes('w-full')
 
-            # ══ Memory ═══════════════════════════════════════════════════════
-            with ui.tab_panel(t_mem):
-                ui.label(T['section_storage']).classes('text-subtitle2 text-grey-7 q-mt-sm')
-                cur_mb = memory.get('backend', 'sqlite')
-                w_mem_backend = ui.select(['sqlite', 'lucid', 'markdown', 'none'], label='backend',
-                    value=cur_mb if cur_mb in ['sqlite','lucid','markdown','none'] else 'sqlite').classes('w-full')
-                w_mem_auto_save     = ui.checkbox('auto_save',       value=memory.get('auto_save', True))
-                w_mem_hygiene       = ui.checkbox('hygiene_enabled', value=memory.get('hygiene_enabled', True))
-                w_mem_auto_hydrate  = ui.checkbox('auto_hydrate',    value=memory.get('auto_hydrate', True))
-                w_mem_archive_days  = ui.number('archive_after_days',          value=memory.get('archive_after_days', 7),   min=1, step=1).classes('w-full')
-                w_mem_purge_days    = ui.number('purge_after_days',            value=memory.get('purge_after_days', 30),    min=1, step=1).classes('w-full')
-                w_mem_conv_retention= ui.number('conversation_retention_days', value=memory.get('conversation_retention_days', 30), min=1, step=1).classes('w-full')
-                ui.separator().classes('q-my-sm')
-                ui.label(T['section_embedding']).classes('text-subtitle2 text-grey-7')
-                cur_ep = memory.get('embedding_provider', 'none')
-                w_mem_embed_provider = ui.select(['none', 'openai', 'custom:<url>'], label='embedding_provider',
-                    value=cur_ep if cur_ep in ['none','openai','custom:<url>'] else 'none').classes('w-full')
-                w_mem_embed_model  = ui.input('embedding_model',   value=str(memory.get('embedding_model', 'text-embedding-3-small'))).classes('w-full')
-                w_mem_embed_dims   = ui.number('embedding_dimensions', value=memory.get('embedding_dimensions', 1536),   min=64,  step=128).classes('w-full')
-                w_mem_vec_weight   = ui.number('vector_weight',        value=memory.get('vector_weight', 0.7),           min=0.0, max=1.0, step=0.05).classes('w-full')
-                w_mem_kw_weight    = ui.number('keyword_weight',       value=memory.get('keyword_weight', 0.3),          min=0.0, max=1.0, step=0.05).classes('w-full')
-                w_mem_min_relevance= ui.number('min_relevance_score',  value=memory.get('min_relevance_score', 0.4),     min=0.0, max=1.0, step=0.05).classes('w-full')
-                w_mem_cache_size   = ui.number('embedding_cache_size', value=memory.get('embedding_cache_size', 10000),  min=0,   step=1000).classes('w-full')
-                w_mem_chunk_tokens = ui.number('chunk_max_tokens',     value=memory.get('chunk_max_tokens', 512),        min=64,  step=64).classes('w-full')
-                ui.separator().classes('q-my-sm')
-                ui.label(T['section_cache']).classes('text-subtitle2 text-grey-7')
-                w_mem_resp_cache   = ui.checkbox('response_cache_enabled', value=memory.get('response_cache_enabled', False))
-                w_mem_snapshot     = ui.checkbox('snapshot_enabled',       value=memory.get('snapshot_enabled', False))
-                w_mem_snap_hygiene = ui.checkbox('snapshot_on_hygiene',    value=memory.get('snapshot_on_hygiene', False))
-                w_mem_resp_ttl     = ui.number('response_cache_ttl_minutes',  value=memory.get('response_cache_ttl_minutes', 60),   min=1, step=5).classes('w-full')
-                w_mem_resp_max     = ui.number('response_cache_max_entries',  value=memory.get('response_cache_max_entries', 5000), min=0, step=500).classes('w-full')
+                    # ══ Providers ════════════════════════════════════════════
+                    with ui.tab_panel(t_prov):
+                        ui.label(T['section_providers']).classes('text-subtitle2 text-grey-7 q-mt-sm')
+                        ui.label(T['hint_providers']).classes('text-caption text-grey-5')
+                        provider_container = ui.column().classes('w-full')
+                        for alias, mp_data in conf.get('model_providers', {}).items():
+                            build_provider_card(provider_container, alias, mp_data)
+                        ui.separator().classes('q-my-sm')
+                        with ui.row().classes('w-full gap-2 items-end'):
+                            new_alias_input = ui.input(T['lbl_new_alias']).classes('flex-1')
+                            def _add_provider():
+                                alias = new_alias_input.value.strip()
+                                if not alias: ui.notify(T['warn_alias_empty'], type='warning'); return
+                                if alias in provider_panels: ui.notify(T['warn_alias_exists'].format(alias), type='warning'); return
+                                build_provider_card(provider_container, alias, {}); new_alias_input.value = ''
+                            ui.button(T['btn_add_provider'], on_click=_add_provider).props('outline color=blue')
 
-            # ══ Comms ════════════════════════════════════════════════════════
-            with ui.tab_panel(t_comm):
-                ui.label(T['section_gateway']).classes('text-subtitle2 text-grey-7 q-mt-sm')
-                w_gw_port    = ui.number('port', value=gateway.get('port', 42617), min=1024, max=65535, step=1).classes('w-full')
-                w_gw_host    = ui.input('host',  value=str(gateway.get('host', '127.0.0.1'))).classes('w-full')
-                w_gw_pairing = ui.checkbox('require_pairing',   value=gateway.get('require_pairing', True))
-                w_gw_public  = ui.checkbox('allow_public_bind', value=gateway.get('allow_public_bind', False))
-                ui.separator().classes('q-my-sm')
-                ui.label(T['section_tunnel']).classes('text-subtitle2 text-grey-7')
-                cur_tn = tunnel.get('provider', 'none')
-                w_tunnel = ui.select(['none', 'cloudflare', 'ngrok'], label='tunnel.provider',
-                    value=cur_tn if cur_tn in ['none','cloudflare','ngrok'] else 'none').classes('w-full')
-                ui.separator().classes('q-my-sm')
-                ui.label(T['section_channels_global']).classes('text-subtitle2 text-grey-7')
-                w_cli_enabled = ui.checkbox(T['lbl_cli'], value=ch_conf_top.get('cli', True))
-                w_msg_timeout = ui.number('message_timeout_secs', value=ch_conf_top.get('message_timeout_secs', 300), min=30, step=30).classes('w-full')
+                    # ══ Autonomy ═════════════════════════════════════════════
+                    with ui.tab_panel(t_auto):
+                        ui.label(T['section_autonomy']).classes('text-subtitle2 text-grey-7 q-mt-sm')
+                        cur_lvl = autonomy.get('level', 'supervised')
+                        w_auto_level = ui.select(['read_only', 'supervised', 'full'], label='autonomy.level',
+                            value=cur_lvl if cur_lvl in ['read_only','supervised','full'] else 'supervised').classes('w-full')
+                        w_auto_workspace        = ui.checkbox('workspace_only',                   value=autonomy.get('workspace_only', True))
+                        w_auto_require_approval = ui.checkbox('require_approval_for_medium_risk', value=autonomy.get('require_approval_for_medium_risk', True))
+                        w_auto_block_high       = ui.checkbox('block_high_risk_commands',          value=autonomy.get('block_high_risk_commands', True))
+                        ui.separator().classes('q-my-sm')
+                        w_auto_max_actions = ui.number('max_actions_per_hour',  value=autonomy.get('max_actions_per_hour', 20),   min=1,  step=1).classes('w-full')
+                        w_auto_max_cost    = ui.number('max_cost_per_day_cents', value=autonomy.get('max_cost_per_day_cents', 500), min=0,  step=10).classes('w-full')
+                        ui.separator().classes('q-my-sm')
+                        ui.label(T['lbl_allowed_commands']).classes('text-caption text-grey-6')
+                        w_auto_cmds = ui.textarea(value='\n'.join(autonomy.get('allowed_commands', []))).classes('w-full').props('outlined rows=5')
+                        ui.label(T['lbl_auto_approve']).classes('text-caption text-grey-6')
+                        w_auto_approve = ui.textarea(value='\n'.join(autonomy.get('auto_approve', []))).classes('w-full').props('outlined rows=3')
+                        ui.label(T['lbl_always_ask']).classes('text-caption text-grey-6')
+                        w_auto_always_ask = ui.textarea(value='\n'.join(autonomy.get('always_ask', []))).classes('w-full').props('outlined rows=3')
+                        ui.label(T['lbl_forbidden_paths']).classes('text-caption text-grey-6')
+                        w_auto_forbidden = ui.textarea(value='\n'.join(autonomy.get('forbidden_paths', []))).classes('w-full').props('outlined rows=5')
+                        ui.label(T['lbl_allowed_roots']).classes('text-caption text-grey-6')
+                        w_auto_allowed_roots = ui.textarea(value='\n'.join(autonomy.get('allowed_roots', []))).classes('w-full').props('outlined rows=3')
+                        ui.label(T['lbl_shell_env']).classes('text-caption text-grey-6')
+                        w_auto_shell_env = ui.textarea(value='\n'.join(autonomy.get('shell_env_passthrough', []))).classes('w-full').props('outlined rows=3')
 
-            # ══ Channels ════════════════════════════════════════════════════
-            with ui.tab_panel(t_ch):
-                ui.label(T['section_channels']).classes('text-subtitle2 text-grey-7 q-mt-sm')
-                ui.label(T['hint_channels']).classes('text-caption text-grey-5')
-                channel_container = ui.column().classes('w-full')
-                for ch_key in CHANNEL_KEYS:
-                    if ch_key in ch_conf_top and isinstance(ch_conf_top[ch_key], dict):
-                        build_channel_card(channel_container, ch_key, ch_conf_top[ch_key])
-                ui.separator().classes('q-my-sm')
-                with ui.row().classes('w-full gap-2 items-end'):
-                    new_ch_select = ui.select({k: v for k, v in CHANNEL_LABELS.items()},
-                        label=T['lbl_channel_type']).classes('flex-1')
-                    def _add_channel():
-                        ch_key = new_ch_select.value
-                        if not ch_key: ui.notify(T['warn_channel_empty'], type='warning'); return
-                        if ch_key in channel_panels:
-                            ui.notify(T['warn_channel_exists'].format(CHANNEL_LABELS.get(ch_key, ch_key)), type='warning'); return
-                        build_channel_card(channel_container, ch_key, {})
-                    ui.button(T['btn_add_channel'], on_click=_add_channel).props('outline color=green')
+                    # ══ Agent ════════════════════════════════════════════════
+                    with ui.tab_panel(t_agent):
+                        ui.label(T['section_agent']).classes('text-subtitle2 text-grey-7 q-mt-sm')
+                        w_agent_compact  = ui.checkbox('compact_context', value=agent_c.get('compact_context', False))
+                        w_agent_parallel = ui.checkbox('parallel_tools',  value=agent_c.get('parallel_tools', False))
+                        w_agent_max_iter = ui.number('max_tool_iterations',  value=agent_c.get('max_tool_iterations', 10),  min=1, step=1).classes('w-full')
+                        w_agent_max_hist = ui.number('max_history_messages', value=agent_c.get('max_history_messages', 50), min=1, step=5).classes('w-full')
+                        cur_disp = agent_c.get('tool_dispatcher', 'auto')
+                        w_agent_tool_dispatcher = ui.select(['auto', 'sequential', 'parallel'], label='tool_dispatcher',
+                            value=cur_disp if cur_disp in ['auto','sequential','parallel'] else 'auto').classes('w-full')
+                        ui.separator().classes('q-my-sm')
+                        ui.label(T['section_obs']).classes('text-subtitle2 text-grey-7')
+                        cur_obs = obs.get('backend', 'none')
+                        w_obs_backend = ui.select(['none', 'noop', 'log', 'prometheus', 'otel'], label='backend',
+                            value=cur_obs if cur_obs in ['none','noop','log','prometheus','otel'] else 'none').classes('w-full')
+                        cur_tm = obs.get('runtime_trace_mode', 'none')
+                        w_obs_trace_mode = ui.select(['none', 'rolling', 'full'], label='runtime_trace_mode',
+                            value=cur_tm if cur_tm in ['none','rolling','full'] else 'none').classes('w-full')
+                        w_obs_otel_endpoint = ui.input('otel_endpoint', value=str(obs.get('otel_endpoint', 'http://localhost:4318'))).classes('w-full')
+                        w_obs_otel_service  = ui.input('otel_service_name', value=str(obs.get('otel_service_name', 'zeroclaw'))).classes('w-full')
+                        w_obs_trace_path    = ui.input('runtime_trace_path', value=str(obs.get('runtime_trace_path', 'state/runtime-trace.jsonl'))).classes('w-full')
+                        w_obs_trace_max     = ui.number('runtime_trace_max_entries', value=obs.get('runtime_trace_max_entries', 200), min=10, step=50).classes('w-full')
+                        ui.separator().classes('q-my-sm')
+                        ui.label(T['section_skills']).classes('text-subtitle2 text-grey-7')
+                        w_skills_open = ui.checkbox('open_skills_enabled', value=skills.get('open_skills_enabled', False))
+                        cur_pm = skills.get('prompt_injection_mode', 'full')
+                        w_skills_mode = ui.select(['full', 'compact'], label='prompt_injection_mode',
+                            value=cur_pm if cur_pm in ['full','compact'] else 'full').classes('w-full')
 
-            # ══ Security ════════════════════════════════════════════════════
-            with ui.tab_panel(t_sec):
-                with ui.expansion('🔒 Dashboard Access', icon='vpn_key').classes('w-full'):
-                    ui.label('Change Password').classes('text-subtitle2 q-mt-xs')
-                    w_cur_pw  = ui.input('Current password', password=True, password_toggle_button=True).classes('w-full')
-                    w_new_pw  = ui.input('New password',     password=True, password_toggle_button=True).classes('w-full')
-                    w_new_pw2 = ui.input('Confirm new',      password=True, password_toggle_button=True).classes('w-full')
-                    def do_change_pw():
-                        d = _load_auth()
-                        if not d or not _verify_pw(w_cur_pw.value, d['password_hash']):
-                            ui.notify('❌ Current password incorrect', type='negative'); return
-                        if len(w_new_pw.value) < 6:
-                            ui.notify('Min 6 characters', type='warning'); return
-                        if w_new_pw.value != w_new_pw2.value:
-                            ui.notify('Passwords do not match', type='warning'); return
-                        d['password_hash'] = _hash_pw(w_new_pw.value)
-                        _save_auth(d)
-                        ui.notify('✅ Password changed', type='positive')
-                        w_cur_pw.set_value(''); w_new_pw.set_value(''); w_new_pw2.set_value('')
-                    ui.button('Change Password', on_click=do_change_pw).props('outline color=blue').classes('q-mb-sm')
-                    ui.separator()
-                    ui.label('Paired Devices').classes('text-subtitle2 q-mt-xs')
+                    # ══ Memory ═══════════════════════════════════════════════
+                    with ui.tab_panel(t_mem):
+                        ui.label(T['section_storage']).classes('text-subtitle2 text-grey-7 q-mt-sm')
+                        cur_mb = memory.get('backend', 'sqlite')
+                        w_mem_backend = ui.select(['sqlite', 'lucid', 'markdown', 'none'], label='backend',
+                            value=cur_mb if cur_mb in ['sqlite','lucid','markdown','none'] else 'sqlite').classes('w-full')
+                        w_mem_auto_save     = ui.checkbox('auto_save',       value=memory.get('auto_save', True))
+                        w_mem_hygiene       = ui.checkbox('hygiene_enabled', value=memory.get('hygiene_enabled', True))
+                        w_mem_auto_hydrate  = ui.checkbox('auto_hydrate',    value=memory.get('auto_hydrate', True))
+                        w_mem_archive_days  = ui.number('archive_after_days',          value=memory.get('archive_after_days', 7),   min=1, step=1).classes('w-full')
+                        w_mem_purge_days    = ui.number('purge_after_days',            value=memory.get('purge_after_days', 30),    min=1, step=1).classes('w-full')
+                        w_mem_conv_retention= ui.number('conversation_retention_days', value=memory.get('conversation_retention_days', 30), min=1, step=1).classes('w-full')
+                        ui.separator().classes('q-my-sm')
+                        ui.label(T['section_embedding']).classes('text-subtitle2 text-grey-7')
+                        cur_ep = memory.get('embedding_provider', 'none')
+                        w_mem_embed_provider = ui.select(['none', 'openai', 'custom:<url>'], label='embedding_provider',
+                            value=cur_ep if cur_ep in ['none','openai','custom:<url>'] else 'none').classes('w-full')
+                        w_mem_embed_model  = ui.input('embedding_model',   value=str(memory.get('embedding_model', 'text-embedding-3-small'))).classes('w-full')
+                        w_mem_embed_dims   = ui.number('embedding_dimensions', value=memory.get('embedding_dimensions', 1536),   min=64,  step=128).classes('w-full')
+                        w_mem_vec_weight   = ui.number('vector_weight',        value=memory.get('vector_weight', 0.7),           min=0.0, max=1.0, step=0.05).classes('w-full')
+                        w_mem_kw_weight    = ui.number('keyword_weight',       value=memory.get('keyword_weight', 0.3),          min=0.0, max=1.0, step=0.05).classes('w-full')
+                        w_mem_min_relevance= ui.number('min_relevance_score',  value=memory.get('min_relevance_score', 0.4),     min=0.0, max=1.0, step=0.05).classes('w-full')
+                        w_mem_cache_size   = ui.number('embedding_cache_size', value=memory.get('embedding_cache_size', 10000),  min=0,   step=1000).classes('w-full')
+                        w_mem_chunk_tokens = ui.number('chunk_max_tokens',     value=memory.get('chunk_max_tokens', 512),        min=64,  step=64).classes('w-full')
+                        ui.separator().classes('q-my-sm')
+                        ui.label(T['section_cache']).classes('text-subtitle2 text-grey-7')
+                        w_mem_resp_cache   = ui.checkbox('response_cache_enabled', value=memory.get('response_cache_enabled', False))
+                        w_mem_snapshot     = ui.checkbox('snapshot_enabled',       value=memory.get('snapshot_enabled', False))
+                        w_mem_snap_hygiene = ui.checkbox('snapshot_on_hygiene',    value=memory.get('snapshot_on_hygiene', False))
+                        w_mem_resp_ttl     = ui.number('response_cache_ttl_minutes',  value=memory.get('response_cache_ttl_minutes', 60),   min=1, step=5).classes('w-full')
+                        w_mem_resp_max     = ui.number('response_cache_max_entries',  value=memory.get('response_cache_max_entries', 5000), min=0, step=500).classes('w-full')
+
+                    # ══ Comms ════════════════════════════════════════════════
+                    with ui.tab_panel(t_comm):
+                        ui.label(T['section_gateway']).classes('text-subtitle2 text-grey-7 q-mt-sm')
+                        w_gw_port    = ui.number('port', value=gateway.get('port', 42617), min=1024, max=65535, step=1).classes('w-full')
+                        w_gw_host    = ui.input('host',  value=str(gateway.get('host', '127.0.0.1'))).classes('w-full')
+                        w_gw_pairing = ui.checkbox('require_pairing',   value=gateway.get('require_pairing', True))
+                        w_gw_public  = ui.checkbox('allow_public_bind', value=gateway.get('allow_public_bind', False))
+                        ui.separator().classes('q-my-sm')
+                        ui.label(T['section_tunnel']).classes('text-subtitle2 text-grey-7')
+                        cur_tn = tunnel.get('provider', 'none')
+                        w_tunnel = ui.select(['none', 'cloudflare', 'ngrok'], label='tunnel.provider',
+                            value=cur_tn if cur_tn in ['none','cloudflare','ngrok'] else 'none').classes('w-full')
+                        ui.separator().classes('q-my-sm')
+                        ui.label(T['section_channels_global']).classes('text-subtitle2 text-grey-7')
+                        w_cli_enabled = ui.checkbox(T['lbl_cli'], value=ch_conf_top.get('cli', True))
+                        w_msg_timeout = ui.number('message_timeout_secs', value=ch_conf_top.get('message_timeout_secs', 300), min=30, step=30).classes('w-full')
+
+                    # ══ Channels ═════════════════════════════════════════════
+                    with ui.tab_panel(t_ch):
+                        ui.label(T['section_channels']).classes('text-subtitle2 text-grey-7 q-mt-sm')
+                        ui.label(T['hint_channels']).classes('text-caption text-grey-5')
+                        channel_container = ui.column().classes('w-full')
+                        for ch_key in CHANNEL_KEYS:
+                            if ch_key in ch_conf_top and isinstance(ch_conf_top[ch_key], dict):
+                                build_channel_card(channel_container, ch_key, ch_conf_top[ch_key])
+                        ui.separator().classes('q-my-sm')
+                        with ui.row().classes('w-full gap-2 items-end'):
+                            new_ch_select = ui.select({k: v for k, v in CHANNEL_LABELS.items()},
+                                label=T['lbl_channel_type']).classes('flex-1')
+                            def _add_channel():
+                                ch_key = new_ch_select.value
+                                if not ch_key: ui.notify(T['warn_channel_empty'], type='warning'); return
+                                if ch_key in channel_panels:
+                                    ui.notify(T['warn_channel_exists'].format(CHANNEL_LABELS.get(ch_key, ch_key)), type='warning'); return
+                                build_channel_card(channel_container, ch_key, {})
+                            ui.button(T['btn_add_channel'], on_click=_add_channel).props('outline color=green')
+
+                    # ══ Security ═════════════════════════════════════════════
+                    with ui.tab_panel(t_sec):
+                        with ui.expansion('🔒 Dashboard Access', icon='vpn_key').classes('w-full'):
+                            ui.label('Change Password').classes('text-subtitle2 q-mt-xs')
+                            w_cur_pw  = ui.input('Current password', password=True, password_toggle_button=True).classes('w-full')
+                            w_new_pw  = ui.input('New password',     password=True, password_toggle_button=True).classes('w-full')
+                            w_new_pw2 = ui.input('Confirm new',      password=True, password_toggle_button=True).classes('w-full')
+                            def do_change_pw():
+                                d = _load_auth()
+                                if not d or not _verify_pw(w_cur_pw.value, d['password_hash']):
+                                    ui.notify('❌ Current password incorrect', type='negative'); return
+                                if len(w_new_pw.value) < 6:
+                                    ui.notify('Min 6 characters', type='warning'); return
+                                if w_new_pw.value != w_new_pw2.value:
+                                    ui.notify('Passwords do not match', type='warning'); return
+                                d['password_hash'] = _hash_pw(w_new_pw.value)
+                                _save_auth(d)
+                                ui.notify('✅ Password changed', type='positive')
+                                w_cur_pw.set_value(''); w_new_pw.set_value(''); w_new_pw2.set_value('')
+                            ui.button('Change Password', on_click=do_change_pw).props('outline color=blue').classes('q-mb-sm')
+                        with ui.expansion(T['exp_resources'], icon='memory').classes('w-full'):
+                            w_sec_mem         = ui.number('max_memory_mb',        value=sec_res.get('max_memory_mb', 512),        min=64,  step=64).classes('w-full')
+                            w_sec_cpu         = ui.number('max_cpu_time_seconds', value=sec_res.get('max_cpu_time_seconds', 60),  min=5,   step=5).classes('w-full')
+                            w_sec_procs       = ui.number('max_subprocesses',     value=sec_res.get('max_subprocesses', 10),      min=1,   step=1).classes('w-full')
+                            w_sec_mem_monitor = ui.checkbox('memory_monitoring',  value=bool(sec_res.get('memory_monitoring', True)))
+                        with ui.expansion(T['exp_sandbox'], icon='shield').classes('w-full'):
+                            cur_sb = sec_sandbox.get('backend', 'auto')
+                            w_sec_sandbox = ui.select(['auto', 'firejail', 'none'], label='sandbox.backend',
+                                value=cur_sb if cur_sb in ['auto','firejail','none'] else 'auto').classes('w-full')
+                        with ui.expansion(T['exp_audit'], icon='fact_check').classes('w-full'):
+                            w_sec_audit_enabled  = ui.checkbox('enabled',     value=bool(sec_audit.get('enabled', True)))
+                            w_sec_audit_log_path = ui.input('log_path',       value=str(sec_audit.get('log_path', 'audit.log'))).classes('w-full')
+                            w_sec_audit_max      = ui.number('max_size_mb',   value=sec_audit.get('max_size_mb', 100), min=1, step=10).classes('w-full')
+                            w_sec_audit_sign     = ui.checkbox('sign_events', value=bool(sec_audit.get('sign_events', False)))
+                        with ui.expansion(T['exp_otp'], icon='lock').classes('w-full'):
+                            w_sec_otp_enabled = ui.checkbox('enabled', value=bool(sec_otp.get('enabled', False)))
+                            cur_om = sec_otp.get('method', 'totp')
+                            w_sec_otp_method  = ui.select(['totp', 'pairing', 'cli-prompt'], label='method',
+                                value=cur_om if cur_om in ['totp','pairing','cli-prompt'] else 'totp').classes('w-full')
+                            w_sec_otp_ttl     = ui.number('token_ttl_secs',   value=sec_otp.get('token_ttl_secs', 30),    min=10, step=5).classes('w-full')
+                            w_sec_otp_cache   = ui.number('cache_valid_secs', value=sec_otp.get('cache_valid_secs', 300), min=30, step=30).classes('w-full')
+                            ui.label(T['lbl_otp_actions']).classes('text-caption text-grey-6')
+                            w_sec_otp_actions = ui.textarea(value='\n'.join(sec_otp.get('gated_actions',
+                                ['shell', 'file_write', 'browser_open', 'browser', 'memory_forget']))).classes('w-full').props('outlined rows=4')
+                            ui.label(T['lbl_otp_domains']).classes('text-caption text-grey-6')
+                            w_sec_otp_domains = ui.textarea(value='\n'.join(sec_otp.get('gated_domains', []))).classes('w-full').props('outlined rows=3')
+                        with ui.expansion(T['exp_estop'], icon='emergency').classes('w-full'):
+                            w_sec_estop_enabled = ui.checkbox('enabled',               value=bool(sec_estop.get('enabled', False)))
+                            w_sec_estop_file    = ui.input('state_file',               value=str(sec_estop.get('state_file', '~/.zeroclaw/estop-state.json'))).classes('w-full')
+                            w_sec_estop_otp     = ui.checkbox('require_otp_to_resume', value=bool(sec_estop.get('require_otp_to_resume', True)))
+                        with ui.expansion(T['exp_reliability'], icon='sync').classes('w-full'):
+                            w_rel_retries    = ui.number('provider_retries',             value=reliability.get('provider_retries', 2),            min=0, step=1).classes('w-full')
+                            w_rel_backoff    = ui.number('provider_backoff_ms',          value=reliability.get('provider_backoff_ms', 500),        min=0, step=100).classes('w-full')
+                            w_rel_ch_backoff = ui.number('channel_initial_backoff_secs', value=reliability.get('channel_initial_backoff_secs', 2), min=1, step=1).classes('w-full')
+                            w_rel_ch_max     = ui.number('channel_max_backoff_secs',     value=reliability.get('channel_max_backoff_secs', 60),    min=5, step=5).classes('w-full')
+                        with ui.expansion(T['exp_scheduler'], icon='schedule').classes('w-full'):
+                            w_sched_enabled    = ui.checkbox('enabled', value=scheduler.get('enabled', True))
+                            w_sched_tasks      = ui.number('max_tasks',      value=scheduler.get('max_tasks', 64),     min=1, step=8).classes('w-full')
+                            w_sched_concurrent = ui.number('max_concurrent', value=scheduler.get('max_concurrent', 4), min=1, step=1).classes('w-full')
+
+                    # ══ Features ═════════════════════════════════════════════
+                    with ui.tab_panel(t_feat):
+                        with ui.expansion(T['exp_webfetch'], icon='download').classes('w-full'):
+                            w_wf_enabled  = ui.checkbox('enabled', value=web_fetch.get('enabled', False))
+                            ui.label(T['lbl_wf_allowed']).classes('text-caption text-grey-6')
+                            w_wf_domains  = ui.textarea(value='\n'.join(web_fetch.get('allowed_domains', ['*']))).classes('w-full').props('outlined rows=3')
+                            ui.label(T['lbl_wf_blocked']).classes('text-caption text-grey-6')
+                            w_wf_blocked  = ui.textarea(value='\n'.join(web_fetch.get('blocked_domains', []))).classes('w-full').props('outlined rows=3')
+                            w_wf_max_size = ui.number('max_response_size (bytes)', value=web_fetch.get('max_response_size', 500000), min=1000, step=100000).classes('w-full')
+                            w_wf_timeout  = ui.number('timeout_secs',              value=web_fetch.get('timeout_secs', 30),         min=5,    step=5).classes('w-full')
+                        with ui.expansion(T['exp_websearch'], icon='search').classes('w-full'):
+                            w_ws_enabled  = ui.checkbox('enabled', value=web_search.get('enabled', False))
+                            cur_wsp = web_search.get('provider', 'duckduckgo')
+                            w_ws_provider = ui.select(['duckduckgo', 'google', 'bing'], label='provider',
+                                value=cur_wsp if cur_wsp in ['duckduckgo','google','bing'] else 'duckduckgo').classes('w-full')
+                            w_ws_max      = ui.number('max_results',  value=web_search.get('max_results', 5),   min=1, step=1).classes('w-full')
+                            w_ws_timeout  = ui.number('timeout_secs', value=web_search.get('timeout_secs', 15), min=5, step=5).classes('w-full')
+                        with ui.expansion(T['exp_httpreq'], icon='http').classes('w-full'):
+                            w_http_enabled  = ui.checkbox('enabled', value=http_request.get('enabled', False))
+                            ui.label(T['lbl_http_allowed']).classes('text-caption text-grey-6')
+                            w_http_domains  = ui.textarea(value='\n'.join(http_request.get('allowed_domains', []))).classes('w-full').props('outlined rows=3')
+                            w_http_max_size = ui.number('max_response_size (bytes)', value=http_request.get('max_response_size', 1000000), min=1000, step=100000).classes('w-full')
+                            w_http_timeout  = ui.number('timeout_secs',              value=http_request.get('timeout_secs', 30),           min=5,    step=5).classes('w-full')
+                        with ui.expansion(T['exp_browser'], icon='open_in_browser').classes('w-full'):
+                            w_br_enabled   = ui.checkbox('enabled', value=browser.get('enabled', False))
+                            ui.label(T['lbl_br_allowed']).classes('text-caption text-grey-6')
+                            w_br_domains   = ui.textarea(value='\n'.join(browser.get('allowed_domains', []))).classes('w-full').props('outlined rows=3')
+                            cur_bb = browser.get('backend', 'agent_browser')
+                            w_br_backend   = ui.select(['agent_browser', 'rust_native', 'computer_use', 'auto'], label='backend',
+                                value=cur_bb if cur_bb in ['agent_browser','rust_native','computer_use','auto'] else 'agent_browser').classes('w-full')
+                            w_br_headless  = ui.checkbox('native_headless',      value=bool(browser.get('native_headless', True)))
+                            w_br_webdriver = ui.input('native_webdriver_url',    value=str(browser.get('native_webdriver_url', 'http://127.0.0.1:9515'))).classes('w-full')
+                        with ui.expansion(T['exp_multimodal'], icon='image').classes('w-full'):
+                            w_mm_images     = ui.number('max_images',        value=multimodal.get('max_images', 4),        min=1, step=1).classes('w-full')
+                            w_mm_image_size = ui.number('max_image_size_mb', value=multimodal.get('max_image_size_mb', 5), min=1, step=1).classes('w-full')
+                            w_mm_remote     = ui.checkbox('allow_remote_fetch', value=bool(multimodal.get('allow_remote_fetch', False)))
+                        with ui.expansion(T['exp_cost'], icon='attach_money').classes('w-full'):
+                            w_cost_enabled  = ui.checkbox('enabled',         value=cost.get('enabled', False))
+                            w_cost_override = ui.checkbox('allow_override',  value=bool(cost.get('allow_override', False)))
+                            w_cost_daily    = ui.number('daily_limit_usd',   value=cost.get('daily_limit_usd', 10.0),    min=0, step=1.0).classes('w-full')
+                            w_cost_monthly  = ui.number('monthly_limit_usd', value=cost.get('monthly_limit_usd', 100.0), min=0, step=5.0).classes('w-full')
+                            w_cost_warn     = ui.number('warn_at_percent',   value=cost.get('warn_at_percent', 80),      min=10, max=100, step=5).classes('w-full')
+                        with ui.expansion(T['exp_composio'], icon='hub').classes('w-full'):
+                            w_comp_enabled = ui.checkbox('enabled', value=bool(composio_c.get('enabled', False)))
+                            w_comp_entity  = ui.input('entity_id', value=str(composio_c.get('entity_id', 'default'))).classes('w-full')
+                        with ui.expansion(T['exp_hooks'], icon='webhook').classes('w-full'):
+                            w_hooks_enabled = ui.checkbox('hooks.enabled', value=bool(hooks.get('enabled', True)))
+                        with ui.expansion(T['exp_hardware'], icon='developer_board').classes('w-full'):
+                            w_hw_enabled    = ui.checkbox('enabled', value=bool(hardware.get('enabled', False)))
+                            cur_ht = hardware.get('transport', 'none')
+                            w_hw_transport  = ui.select(['None', 'native', 'serial', 'probe'], label='transport',
+                                value=cur_ht if cur_ht in ['None','native','serial','probe'] else 'None').classes('w-full')
+                            w_hw_baud       = ui.number('baud_rate',           value=hardware.get('baud_rate', 115200), min=1200, step=9600).classes('w-full')
+                            w_hw_datasheets = ui.checkbox('workspace_datasheets', value=bool(hardware.get('workspace_datasheets', False)))
+
+                    # ══ System ═══════════════════════════════════════════════
+                    with ui.tab_panel(t_sys):
+                        ui.label(T['section_transcription']).classes('text-subtitle2 text-grey-7 q-mt-sm')
+                        w_tr_enabled      = ui.checkbox('enabled', value=transcription.get('enabled', False))
+                        w_tr_url          = ui.input('api_url', value=str(transcription.get('api_url', 'https://api.groq.com/openai/v1/audio/transcriptions'))).classes('w-full')
+                        w_tr_model        = ui.input('model',   value=str(transcription.get('model', 'whisper-large-v3-turbo'))).classes('w-full')
+                        w_tr_max_duration = ui.number('max_duration_secs', value=transcription.get('max_duration_secs', 120), min=10, step=10).classes('w-full')
+                        ui.separator().classes('q-my-sm')
+                        ui.label(T['section_heartbeat']).classes('text-subtitle2 text-grey-7')
+                        w_hb_enabled  = ui.checkbox('enabled', value=heartbeat.get('enabled', False))
+                        w_hb_interval = ui.number('interval_minutes', value=heartbeat.get('interval_minutes', 30), min=1, step=5).classes('w-full')
+                        ui.separator().classes('q-my-sm')
+                        ui.label(T['section_cron']).classes('text-subtitle2 text-grey-7')
+                        w_cron_enabled     = ui.checkbox('enabled', value=cron.get('enabled', True))
+                        w_cron_max_history = ui.number('max_run_history', value=cron.get('max_run_history', 50), min=1, step=10).classes('w-full')
+                        ui.separator().classes('q-my-sm')
+                        ui.label(T['section_logs']).classes('text-subtitle2 text-grey-7')
+                        with ui.row().classes('w-full gap-2'):
+                            ui.button(T['btn_view_logs'], icon='article', on_click=lambda: ui.notify(
+                                subprocess.getoutput('journalctl -u zeroclaw.service -n 30 --no-pager'),
+                                multi_line=True, timeout=15000)).props('outline').classes('flex-1')
+                            ui.button(T['btn_service_status'], icon='info', on_click=do_status).props('outline').classes('flex-1')
+
+                ui.separator()
+                with ui.row().classes('w-full gap-2 q-pa-sm'):
+                    ui.button(T['btn_save'],         on_click=do_save).props('elevated').classes('flex-1 bg-blue text-white')
+                    ui.button(T['btn_save_restart'], on_click=do_save_restart).props('elevated').classes('flex-1 bg-green text-white')
+
+            # ── ZeroClaw › Pair Device ─────────────────────────────────────
+            with ui.tab_panel(t_zc_pair):
+                # ── Gateway pair code ──────────────────────────────────────
+                with ui.card().classes('w-full q-mb-sm'):
+                    ui.label('🔑 Gateway Pair Code').classes('text-subtitle1 text-bold q-mb-xs')
+                    ui.label(
+                        'Generate a new pair code for the ZeroClaw gateway. '
+                        'The code will also be sent to the 2.13″ e-ink display.'
+                    ).classes('text-caption text-grey-6 q-mb-sm')
+                    paircode_box = ui.card().classes('w-full bg-grey-2 q-pa-md items-center').style('display:none')
+                    with paircode_box:
+                        paircode_lbl = ui.label('').classes(
+                            'text-h4 text-bold text-blue-9 text-center letter-spacing-wide'
+                        )
+                        paircode_status = ui.label('').classes('text-caption text-grey-6 text-center q-mt-xs')
+                    def _gen_paircode():
+                        paircode_box.style('display:block')
+                        paircode_lbl.set_text('…')
+                        paircode_status.set_text('Generating…')
+                        try:
+                            r = subprocess.run(
+                                ['zeroclaw', 'gateway', 'get-paircode', '-new'],
+                                capture_output=True, text=True, timeout=15
+                            )
+                            code = (r.stdout.strip() or r.stderr.strip())
+                            if r.returncode != 0:
+                                paircode_lbl.set_text('Error')
+                                paircode_status.set_text(f'Command failed: {code}')
+                                ui.notify(f'❌ {code}', type='negative')
+                                return
+                            paircode_lbl.set_text(code)
+                            # push to 2in13 display
+                            disp_r = subprocess.run(
+                                ['zeroclaw', 'display', 'show', '--text', code],
+                                capture_output=True, text=True, timeout=10
+                            )
+                            if disp_r.returncode == 0:
+                                paircode_status.set_text('✅ Shown on 2.13″ display')
+                                ui.notify('✅ Pair code generated & shown on display', type='positive')
+                            else:
+                                paircode_status.set_text('⚠️ Display update failed — see notify')
+                                ui.notify(
+                                    f'Pair code generated but display error: {disp_r.stderr.strip() or disp_r.stdout.strip()}',
+                                    type='warning'
+                                )
+                        except FileNotFoundError:
+                            paircode_lbl.set_text('N/A')
+                            paircode_status.set_text('zeroclaw command not found')
+                            ui.notify('❌ zeroclaw not found in PATH', type='negative')
+                        except subprocess.TimeoutExpired:
+                            paircode_lbl.set_text('Timeout')
+                            paircode_status.set_text('Command timed out')
+                            ui.notify('❌ Command timed out', type='negative')
+                        except Exception as exc:
+                            paircode_lbl.set_text('Error')
+                            paircode_status.set_text(str(exc))
+                            ui.notify(f'❌ {exc}', type='negative')
+                    ui.button('🔑 Generate New Pair Code', on_click=_gen_paircode).props(
+                        'elevated color=blue-8'
+                    ).classes('w-full q-mb-xs')
+
+                # ── Paired Devices ─────────────────────────────────────────
+                with ui.card().classes('w-full q-mb-sm'):
+                    ui.label('📱 Paired Devices').classes('text-subtitle1 text-bold q-mb-xs')
                     device_list = ui.column().classes('w-full')
                     def _refresh_devices():
                         device_list.clear()
@@ -929,128 +1134,33 @@ def index(request: Request):
                         ui.clipboard.write(link)
                         ui.notify('✅ Invite link copied to clipboard', type='positive')
                     ui.button('🔗 Generate Invite Link', on_click=_gen_invite).props('outline color=green')
-                with ui.expansion(T['exp_resources'], icon='memory').classes('w-full'):
-                    w_sec_mem         = ui.number('max_memory_mb',        value=sec_res.get('max_memory_mb', 512),        min=64,  step=64).classes('w-full')
-                    w_sec_cpu         = ui.number('max_cpu_time_seconds', value=sec_res.get('max_cpu_time_seconds', 60),  min=5,   step=5).classes('w-full')
-                    w_sec_procs       = ui.number('max_subprocesses',     value=sec_res.get('max_subprocesses', 10),      min=1,   step=1).classes('w-full')
-                    w_sec_mem_monitor = ui.checkbox('memory_monitoring',  value=bool(sec_res.get('memory_monitoring', True)))
-                with ui.expansion(T['exp_sandbox'], icon='shield').classes('w-full'):
-                    cur_sb = sec_sandbox.get('backend', 'auto')
-                    w_sec_sandbox = ui.select(['auto', 'firejail', 'none'], label='sandbox.backend',
-                        value=cur_sb if cur_sb in ['auto','firejail','none'] else 'auto').classes('w-full')
-                with ui.expansion(T['exp_audit'], icon='fact_check').classes('w-full'):
-                    w_sec_audit_enabled  = ui.checkbox('enabled',     value=bool(sec_audit.get('enabled', True)))
-                    w_sec_audit_log_path = ui.input('log_path',       value=str(sec_audit.get('log_path', 'audit.log'))).classes('w-full')
-                    w_sec_audit_max      = ui.number('max_size_mb',   value=sec_audit.get('max_size_mb', 100), min=1, step=10).classes('w-full')
-                    w_sec_audit_sign     = ui.checkbox('sign_events', value=bool(sec_audit.get('sign_events', False)))
-                with ui.expansion(T['exp_otp'], icon='lock').classes('w-full'):
-                    w_sec_otp_enabled = ui.checkbox('enabled', value=bool(sec_otp.get('enabled', False)))
-                    cur_om = sec_otp.get('method', 'totp')
-                    w_sec_otp_method  = ui.select(['totp', 'pairing', 'cli-prompt'], label='method',
-                        value=cur_om if cur_om in ['totp','pairing','cli-prompt'] else 'totp').classes('w-full')
-                    w_sec_otp_ttl     = ui.number('token_ttl_secs',   value=sec_otp.get('token_ttl_secs', 30),    min=10, step=5).classes('w-full')
-                    w_sec_otp_cache   = ui.number('cache_valid_secs', value=sec_otp.get('cache_valid_secs', 300), min=30, step=30).classes('w-full')
-                    ui.label(T['lbl_otp_actions']).classes('text-caption text-grey-6')
-                    w_sec_otp_actions = ui.textarea(value='\n'.join(sec_otp.get('gated_actions',
-                        ['shell', 'file_write', 'browser_open', 'browser', 'memory_forget']))).classes('w-full').props('outlined rows=4')
-                    ui.label(T['lbl_otp_domains']).classes('text-caption text-grey-6')
-                    w_sec_otp_domains = ui.textarea(value='\n'.join(sec_otp.get('gated_domains', []))).classes('w-full').props('outlined rows=3')
-                with ui.expansion(T['exp_estop'], icon='emergency').classes('w-full'):
-                    w_sec_estop_enabled = ui.checkbox('enabled',               value=bool(sec_estop.get('enabled', False)))
-                    w_sec_estop_file    = ui.input('state_file',               value=str(sec_estop.get('state_file', '~/.zeroclaw/estop-state.json'))).classes('w-full')
-                    w_sec_estop_otp     = ui.checkbox('require_otp_to_resume', value=bool(sec_estop.get('require_otp_to_resume', True)))
-                with ui.expansion(T['exp_reliability'], icon='sync').classes('w-full'):
-                    w_rel_retries    = ui.number('provider_retries',             value=reliability.get('provider_retries', 2),            min=0, step=1).classes('w-full')
-                    w_rel_backoff    = ui.number('provider_backoff_ms',          value=reliability.get('provider_backoff_ms', 500),        min=0, step=100).classes('w-full')
-                    w_rel_ch_backoff = ui.number('channel_initial_backoff_secs', value=reliability.get('channel_initial_backoff_secs', 2), min=1, step=1).classes('w-full')
-                    w_rel_ch_max     = ui.number('channel_max_backoff_secs',     value=reliability.get('channel_max_backoff_secs', 60),    min=5, step=5).classes('w-full')
-                with ui.expansion(T['exp_scheduler'], icon='schedule').classes('w-full'):
-                    w_sched_enabled    = ui.checkbox('enabled', value=scheduler.get('enabled', True))
-                    w_sched_tasks      = ui.number('max_tasks',      value=scheduler.get('max_tasks', 64),     min=1, step=8).classes('w-full')
-                    w_sched_concurrent = ui.number('max_concurrent', value=scheduler.get('max_concurrent', 4), min=1, step=1).classes('w-full')
 
-            # ══ Features ════════════════════════════════════════════════════
-            with ui.tab_panel(t_feat):
-                with ui.expansion(T['exp_webfetch'], icon='download').classes('w-full'):
-                    w_wf_enabled  = ui.checkbox('enabled', value=web_fetch.get('enabled', False))
-                    ui.label(T['lbl_wf_allowed']).classes('text-caption text-grey-6')
-                    w_wf_domains  = ui.textarea(value='\n'.join(web_fetch.get('allowed_domains', ['*']))).classes('w-full').props('outlined rows=3')
-                    ui.label(T['lbl_wf_blocked']).classes('text-caption text-grey-6')
-                    w_wf_blocked  = ui.textarea(value='\n'.join(web_fetch.get('blocked_domains', []))).classes('w-full').props('outlined rows=3')
-                    w_wf_max_size = ui.number('max_response_size (bytes)', value=web_fetch.get('max_response_size', 500000), min=1000, step=100000).classes('w-full')
-                    w_wf_timeout  = ui.number('timeout_secs',              value=web_fetch.get('timeout_secs', 30),         min=5,    step=5).classes('w-full')
-                with ui.expansion(T['exp_websearch'], icon='search').classes('w-full'):
-                    w_ws_enabled  = ui.checkbox('enabled', value=web_search.get('enabled', False))
-                    cur_wsp = web_search.get('provider', 'duckduckgo')
-                    w_ws_provider = ui.select(['duckduckgo', 'google', 'bing'], label='provider',
-                        value=cur_wsp if cur_wsp in ['duckduckgo','google','bing'] else 'duckduckgo').classes('w-full')
-                    w_ws_max      = ui.number('max_results',  value=web_search.get('max_results', 5),   min=1, step=1).classes('w-full')
-                    w_ws_timeout  = ui.number('timeout_secs', value=web_search.get('timeout_secs', 15), min=5, step=5).classes('w-full')
-                with ui.expansion(T['exp_httpreq'], icon='http').classes('w-full'):
-                    w_http_enabled  = ui.checkbox('enabled', value=http_request.get('enabled', False))
-                    ui.label(T['lbl_http_allowed']).classes('text-caption text-grey-6')
-                    w_http_domains  = ui.textarea(value='\n'.join(http_request.get('allowed_domains', []))).classes('w-full').props('outlined rows=3')
-                    w_http_max_size = ui.number('max_response_size (bytes)', value=http_request.get('max_response_size', 1000000), min=1000, step=100000).classes('w-full')
-                    w_http_timeout  = ui.number('timeout_secs',              value=http_request.get('timeout_secs', 30),           min=5,    step=5).classes('w-full')
-                with ui.expansion(T['exp_browser'], icon='open_in_browser').classes('w-full'):
-                    w_br_enabled   = ui.checkbox('enabled', value=browser.get('enabled', False))
-                    ui.label(T['lbl_br_allowed']).classes('text-caption text-grey-6')
-                    w_br_domains   = ui.textarea(value='\n'.join(browser.get('allowed_domains', []))).classes('w-full').props('outlined rows=3')
-                    cur_bb = browser.get('backend', 'agent_browser')
-                    w_br_backend   = ui.select(['agent_browser', 'rust_native', 'computer_use', 'auto'], label='backend',
-                        value=cur_bb if cur_bb in ['agent_browser','rust_native','computer_use','auto'] else 'agent_browser').classes('w-full')
-                    w_br_headless  = ui.checkbox('native_headless',      value=bool(browser.get('native_headless', True)))
-                    w_br_webdriver = ui.input('native_webdriver_url',    value=str(browser.get('native_webdriver_url', 'http://127.0.0.1:9515'))).classes('w-full')
-                with ui.expansion(T['exp_multimodal'], icon='image').classes('w-full'):
-                    w_mm_images     = ui.number('max_images',        value=multimodal.get('max_images', 4),        min=1, step=1).classes('w-full')
-                    w_mm_image_size = ui.number('max_image_size_mb', value=multimodal.get('max_image_size_mb', 5), min=1, step=1).classes('w-full')
-                    w_mm_remote     = ui.checkbox('allow_remote_fetch', value=bool(multimodal.get('allow_remote_fetch', False)))
-                with ui.expansion(T['exp_cost'], icon='attach_money').classes('w-full'):
-                    w_cost_enabled  = ui.checkbox('enabled',         value=cost.get('enabled', False))
-                    w_cost_override = ui.checkbox('allow_override',  value=bool(cost.get('allow_override', False)))
-                    w_cost_daily    = ui.number('daily_limit_usd',   value=cost.get('daily_limit_usd', 10.0),    min=0, step=1.0).classes('w-full')
-                    w_cost_monthly  = ui.number('monthly_limit_usd', value=cost.get('monthly_limit_usd', 100.0), min=0, step=5.0).classes('w-full')
-                    w_cost_warn     = ui.number('warn_at_percent',   value=cost.get('warn_at_percent', 80),      min=10, max=100, step=5).classes('w-full')
-                with ui.expansion(T['exp_composio'], icon='hub').classes('w-full'):
-                    w_comp_enabled = ui.checkbox('enabled', value=bool(composio_c.get('enabled', False)))
-                    w_comp_entity  = ui.input('entity_id', value=str(composio_c.get('entity_id', 'default'))).classes('w-full')
-                with ui.expansion(T['exp_hooks'], icon='webhook').classes('w-full'):
-                    w_hooks_enabled = ui.checkbox('hooks.enabled', value=bool(hooks.get('enabled', True)))
-                with ui.expansion(T['exp_hardware'], icon='developer_board').classes('w-full'):
-                    w_hw_enabled    = ui.checkbox('enabled', value=bool(hardware.get('enabled', False)))
-                    cur_ht = hardware.get('transport', 'none')
-                    w_hw_transport  = ui.select(['None', 'native', 'serial', 'probe'], label='transport',
-                        value=cur_ht if cur_ht in ['None','native','serial','probe'] else 'None').classes('w-full')
-                    w_hw_baud       = ui.number('baud_rate',           value=hardware.get('baud_rate', 115200), min=1200, step=9600).classes('w-full')
-                    w_hw_datasheets = ui.checkbox('workspace_datasheets', value=bool(hardware.get('workspace_datasheets', False)))
+    # ══ PicoClaw Dashboard ════════════════════════════════════════════════════
+    pc_content = ui.column().classes('w-full q-px-sm q-pt-sm')
+    pc_content.set_visibility(False)
+    with pc_content:
+        ui.label('🐾 PicoClaw Dashboard').classes('text-h6 text-purple-8 q-mb-xs')
+        with ui.tabs().classes('w-full bg-purple-1') as pc_sub_tabs:
+            t_pc_cfg  = ui.tab('Configuration', icon='settings')
+            t_pc_pair = ui.tab('Pair Device',   icon='devices')
 
-            # ══ System ══════════════════════════════════════════════════════
-            with ui.tab_panel(t_sys):
-                ui.label(T['section_transcription']).classes('text-subtitle2 text-grey-7 q-mt-sm')
-                w_tr_enabled      = ui.checkbox('enabled', value=transcription.get('enabled', False))
-                w_tr_url          = ui.input('api_url', value=str(transcription.get('api_url', 'https://api.groq.com/openai/v1/audio/transcriptions'))).classes('w-full')
-                w_tr_model        = ui.input('model',   value=str(transcription.get('model', 'whisper-large-v3-turbo'))).classes('w-full')
-                w_tr_max_duration = ui.number('max_duration_secs', value=transcription.get('max_duration_secs', 120), min=10, step=10).classes('w-full')
-                ui.separator().classes('q-my-sm')
-                ui.label(T['section_heartbeat']).classes('text-subtitle2 text-grey-7')
-                w_hb_enabled  = ui.checkbox('enabled', value=heartbeat.get('enabled', False))
-                w_hb_interval = ui.number('interval_minutes', value=heartbeat.get('interval_minutes', 30), min=1, step=5).classes('w-full')
-                ui.separator().classes('q-my-sm')
-                ui.label(T['section_cron']).classes('text-subtitle2 text-grey-7')
-                w_cron_enabled     = ui.checkbox('enabled', value=cron.get('enabled', True))
-                w_cron_max_history = ui.number('max_run_history', value=cron.get('max_run_history', 50), min=1, step=10).classes('w-full')
-                ui.separator().classes('q-my-sm')
-                ui.label(T['section_logs']).classes('text-subtitle2 text-grey-7')
-                with ui.row().classes('w-full gap-2'):
-                    ui.button(T['btn_view_logs'], icon='article', on_click=lambda: ui.notify(
-                        subprocess.getoutput('journalctl -u zeroclaw.service -n 30 --no-pager'),
-                        multi_line=True, timeout=15000)).props('outline').classes('flex-1')
-                    ui.button(T['btn_service_status'], icon='info', on_click=do_status).props('outline').classes('flex-1')
+        with ui.tab_panels(pc_sub_tabs, value=t_pc_cfg).classes('w-full'):
+            with ui.tab_panel(t_pc_cfg):
+                with ui.card().classes('w-full q-pa-md'):
+                    ui.label('🐾 PicoClaw Configuration').classes('text-h6 text-purple-8')
+                    ui.label('PicoClaw configuration parameters will appear here.').classes('text-caption text-grey-6 q-mt-xs')
+            with ui.tab_panel(t_pc_pair):
+                with ui.card().classes('w-full q-pa-md'):
+                    ui.label('📱 PicoClaw Pair Device').classes('text-h6 text-purple-8')
+                    ui.label('PicoClaw device pairing will appear here.').classes('text-caption text-grey-6 q-mt-xs')
 
-        ui.separator()
-        with ui.row().classes('w-full gap-2 q-pa-sm'):
-            ui.button(T['btn_save'],         on_click=do_save).props('elevated').classes('flex-1 bg-blue text-white')
-            ui.button(T['btn_save_restart'], on_click=do_save_restart).props('elevated').classes('flex-1 bg-green text-white')
+    # ── Sidebar navigation wiring ──────────────────────────────────────────────
+    def _switch_dash(name):
+        zc_content.set_visibility(name == 'zeroclaw')
+        pc_content.set_visibility(name == 'picoclaw')
+
+    btn_zc.on('click', lambda: _switch_dash('zeroclaw'))
+    btn_pc.on('click', lambda: _switch_dash('picoclaw'))
 
 
 ui.run(title='ClawBoard', port=8080, reload=False, host='0.0.0.0',
