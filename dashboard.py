@@ -1083,7 +1083,7 @@ def index(request: Request):
                         """Push pair code to 2.13" e-ink via clawberry_paircode.py."""
                         try:
                             disp_r = subprocess.run(
-                                [sys.executable, _PAIRCODE_SCRIPT, code],
+                                ['python3', _PAIRCODE_SCRIPT, code],
                                 capture_output=True, text=True, timeout=15
                             )
                             if disp_r.returncode == 0:
