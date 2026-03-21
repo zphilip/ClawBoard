@@ -1080,20 +1080,14 @@ def index(request: Request):
                         return raw  # fallback: full output
 
                     def _push_to_display(code: str):
-                        """Push pair code to 2.13" e-ink via clawberry_paircode.py."""
+                        """Queue pair code for the clawberry-display service via handoff file."""
                         try:
-                            disp_r = subprocess.run(
-                                ['python3', _PAIRCODE_SCRIPT, code],
-                                capture_output=True, text=True, timeout=15
-                            )
-                            if disp_r.returncode == 0:
-                                paircode_status.set_text('✅ Shown on 2.13″ display')
-                            else:
-                                err = disp_r.stderr.strip() or disp_r.stdout.strip()
-                                paircode_status.set_text(f'⚠️ Display error: {err[:60]}')
-                                ui.notify(f'Display error: {err}', type='warning')
+                            from clawberry_paircode import request_paircode_display
+                            request_paircode_display(code)
+                            paircode_status.set_text('✅ Queued — display service will show for 2 min')
                         except Exception as exc:
-                            paircode_status.set_text(f'⚠️ Display error: {exc}')
+                            paircode_status.set_text(f'⚠️ Could not queue display: {exc}')
+                            ui.notify(f'Display queue error: {exc}', type='warning')
 
                     def _fetch_paircode(new: bool = False):
                         """Fetch current (or generate new) pair code, update UI & display."""
