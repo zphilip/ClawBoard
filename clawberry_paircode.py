@@ -116,9 +116,13 @@ def show_paircode(code: str) -> None:
         logging.info("Pair code '%s' shown on e-ink display.", code)
 
     finally:
-        # ── Release: restart the display service unconditionally ──────────────
+        # ── Release: wait so the code stays visible, then restart service ────
         if service_was_stopped:
+            import time as _t2
+            logging.info('Pair code displayed — waiting 2 min before resuming clawberry-display...')
+            _t2.sleep(120)
             _svc('start')
+if __name__ == '__main__':
     if len(sys.argv) < 2:
         print(f"Usage: {os.path.basename(__file__)} <pair-code>")
         sys.exit(1)
