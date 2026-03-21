@@ -59,6 +59,26 @@ def _svc(action: str) -> bool:
     return False
 
 
+def _wait_inactive(timeout: float = 10.0) -> bool:
+    """Poll until clawberry-display is fully inactive (process dead, bus free)."""
+    import time as _t
+    deadline = _t.monotonic() + timeout
+    while _t.monotonic() < deadline:
+        try:
+            r = subprocess.run(
+                ['systemctl', 'is-active', _DISPLAY_SERVICE],
+                capture_output=True, text=True, timeout=5
+            )
+            if r.stdout.strip() in ('inactive', 'failed', 'dead'):
+                _t.sleep(1.5)   # extra margin for kernel to release SPI/GPIO fds
+                return True
+        except Exception:
+            pass
+        _t.sleep(0.5)
+    logging.warning('Timed out waiting for %s to stop', _DISPLAY_SERVICE)
+    return False
+
+
 def show_paircode(code: str) -> None:
     """Render *code* prominently on the 2.13″ e-ink display, then sleep it.
 
@@ -74,8 +94,7 @@ def show_paircode(code: str) -> None:
     # ── Grab exclusive access ──────────────────────────────────────────────
     service_was_stopped = _svc('stop')
     if service_was_stopped:
-        import time as _t
-        _t.sleep(1)          # let the kernel release the SPI/GPIO handles
+        _wait_inactive(timeout=15.0)   # block until bus is truly free
 
     try:
         epd = epd2in13_V4.EPD()
