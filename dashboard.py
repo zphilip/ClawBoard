@@ -9,6 +9,20 @@ SCRIPT_DIR        = os.path.dirname(os.path.abspath(__file__))
 PATHS             = [os.path.join(SCRIPT_DIR, 'config/config.toml'), 'config.toml']
 CONFIG_PATH       = next((p for p in PATHS if os.path.exists(p)), PATHS[0])
 DEPLOY_CONFIG_PATH = '/var/lib/zeroclaw/.zeroclaw/config.toml'  # real zeroclaw config
+PICOCLAW_CONFIG_PATH = os.path.join(SCRIPT_DIR, 'config', 'config.json')      # picoclaw JSON config
+
+def load_picoclaw_config():
+    """Load picoclaw config.json; return empty dict on failure."""
+    try:
+        with open(PICOCLAW_CONFIG_PATH, 'r') as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+def save_picoclaw_config(data):
+    os.makedirs(os.path.dirname(PICOCLAW_CONFIG_PATH), exist_ok=True)
+    with open(PICOCLAW_CONFIG_PATH, 'w') as f:
+        json.dump(data, f, indent=2)
 
 # ── Auth ─────────────────────────────────────────────────────────────────────
 AUTH_FILE      = os.path.join(SCRIPT_DIR, 'config', 'auth.json')
@@ -1058,7 +1072,7 @@ def index(request: Request):
                         paircode_status.set_text('Generating…')
                         try:
                             r = subprocess.run(
-                                ['zeroclaw', 'gateway', 'get-paircode', '-new'],
+                                ['zeroclaw', 'gateway', 'get-paircode', '--new'],
                                 capture_output=True, text=True, timeout=15
                             )
                             code = (r.stdout.strip() or r.stderr.strip())
@@ -1145,14 +1159,415 @@ def index(request: Request):
             t_pc_pair = ui.tab('Pair Device',   icon='devices')
 
         with ui.tab_panels(pc_sub_tabs, value=t_pc_cfg).classes('w-full'):
+
+            # ── PicoClaw › Configuration ───────────────────────────────────
             with ui.tab_panel(t_pc_cfg):
-                with ui.card().classes('w-full q-pa-md'):
-                    ui.label('🐾 PicoClaw Configuration').classes('text-h6 text-purple-8')
-                    ui.label('PicoClaw configuration parameters will appear here.').classes('text-caption text-grey-6 q-mt-xs')
+                pc_conf = load_picoclaw_config()
+
+                # shortcuts
+                pc_session   = pc_conf.get('session',   {})
+                pc_agents    = pc_conf.get('agents',    {}).get('defaults', {})
+                pc_channels  = pc_conf.get('channels',  {})
+                pc_model_list= pc_conf.get('model_list', [])
+                pc_gateway   = pc_conf.get('gateway',   {})
+                pc_tools     = pc_conf.get('tools',     {})
+                pc_web_tools = pc_tools.get('web',      {})
+                pc_heartbeat = pc_conf.get('heartbeat', {})
+                pc_devices   = pc_conf.get('devices',   {})
+                pc_voice     = pc_conf.get('voice',     {})
+                pc_build     = pc_conf.get('build_info',{})
+
+                pc_model_panels = {}  # alias → widget map
+
+                def pc_build_model_card(container, idx, entry):
+                    with container:
+                        with ui.card().classes('w-full q-mb-sm') as card:
+                            with ui.row().classes('w-full items-center justify-between'):
+                                ui.label(f'model [{idx}]').classes('text-caption text-purple-7 text-bold')
+                                def _rm(i=idx, c=card):
+                                    pc_model_panels.pop(i, None); c.delete()
+                                ui.button(icon='delete', on_click=_rm).props('flat round dense color=negative')
+                            widgets = {}
+                            widgets['model_name'] = ui.input('model_name', value=str(entry.get('model_name',''))).classes('w-full')
+                            widgets['model']      = ui.input('model',      value=str(entry.get('model',''))).classes('w-full')
+                            widgets['api_base']   = ui.input('api_base',   value=str(entry.get('api_base',''))).classes('w-full')
+                            widgets['api_key']    = ui.input('api_key',    value=str(entry.get('api_key','')),
+                                password=True, password_toggle_button=True).classes('w-full')
+                            cur_auth = str(entry.get('auth_method','apikey'))
+                            auth_opts = ['apikey','oauth']
+                            widgets['auth_method'] = ui.select(auth_opts, label='auth_method',
+                                value=cur_auth if cur_auth in auth_opts else 'apikey').classes('w-full')
+                            pc_model_panels[idx] = widgets
+
+                def pc_collect_and_save():
+                    data = load_picoclaw_config()
+
+                    # session
+                    data.setdefault('session', {})['dm_scope'] = pc_w_dm_scope.value
+
+                    # agents.defaults
+                    ad = data.setdefault('agents', {}).setdefault('defaults', {})
+                    ad['workspace']                  = pc_w_workspace.value
+                    ad['restrict_to_workspace']      = pc_w_restrict.value
+                    ad['allow_read_outside_workspace']= pc_w_allow_read_outside.value
+                    ad['provider']                   = pc_w_provider.value
+                    ad['model_name']                 = pc_w_model_name.value
+                    ad['model']                      = pc_w_model.value
+                    ad['max_tokens']                 = to_int(pc_w_max_tokens.value, 8192)
+                    ad['max_tool_iterations']        = to_int(pc_w_max_iter.value, 50)
+                    ad['summarize_message_threshold']= to_int(pc_w_sum_threshold.value, 20)
+                    ad['summarize_token_percent']    = to_int(pc_w_sum_percent.value, 75)
+
+                    # model_list
+                    data['model_list'] = [
+                        {
+                            'model_name':  w['model_name'].value,
+                            'model':       w['model'].value,
+                            'api_base':    w['api_base'].value,
+                            'api_key':     w['api_key'].value,
+                            'auth_method': w['auth_method'].value,
+                        }
+                        for w in pc_model_panels.values()
+                    ]
+
+                    # gateway
+                    data.setdefault('gateway', {})['host'] = pc_w_gw_host.value
+                    data['gateway']['port']                 = to_int(pc_w_gw_port.value, 18790)
+
+                    # channels – boolean enable flags + per-channel key fields
+                    ch = data.setdefault('channels', {})
+                    def _ch_set(name, **kw):
+                        ch.setdefault(name, {}).update(kw)
+
+                    _ch_set('pico',      enabled=pc_w_ch_pico_en.value,     token=pc_w_ch_pico_token.value,
+                            ping_interval=to_int(pc_w_ch_pico_ping.value,30),
+                            max_connections=to_int(pc_w_ch_pico_maxconn.value,100))
+                    _ch_set('qq',        enabled=pc_w_ch_qq_en.value,       app_id=pc_w_ch_qq_appid.value,
+                            app_secret=pc_w_ch_qq_secret.value)
+                    _ch_set('telegram',  enabled=pc_w_ch_tg_en.value,       token=pc_w_ch_tg_token.value,
+                            base_url=pc_w_ch_tg_base.value, proxy=pc_w_ch_tg_proxy.value)
+                    _ch_set('discord',   enabled=pc_w_ch_dc_en.value,       token=pc_w_ch_dc_token.value,
+                            mention_only=pc_w_ch_dc_mention.value)
+                    _ch_set('whatsapp',  enabled=pc_w_ch_wa_en.value,       bridge_url=pc_w_ch_wa_url.value,
+                            use_native=pc_w_ch_wa_native.value)
+                    _ch_set('feishu',    enabled=pc_w_ch_fs_en.value,       app_id=pc_w_ch_fs_appid.value,
+                            app_secret=pc_w_ch_fs_secret.value,
+                            encrypt_key=pc_w_ch_fs_encrypt.value,
+                            verification_token=pc_w_ch_fs_verify.value)
+                    _ch_set('slack',     enabled=pc_w_ch_sl_en.value,       bot_token=pc_w_ch_sl_bot.value,
+                            app_token=pc_w_ch_sl_app.value)
+                    _ch_set('matrix',    enabled=pc_w_ch_mx_en.value,       homeserver=pc_w_ch_mx_home.value,
+                            user_id=pc_w_ch_mx_user.value, access_token=pc_w_ch_mx_token.value)
+                    _ch_set('dingtalk',  enabled=pc_w_ch_dt_en.value,       client_id=pc_w_ch_dt_id.value,
+                            client_secret=pc_w_ch_dt_secret.value)
+                    _ch_set('maixcam',   enabled=pc_w_ch_mc_en.value,       host=pc_w_ch_mc_host.value,
+                            port=to_int(pc_w_ch_mc_port.value,18790))
+                    _ch_set('irc',       enabled=pc_w_ch_irc_en.value,      server=pc_w_ch_irc_server.value,
+                            nick=pc_w_ch_irc_nick.value, tls=pc_w_ch_irc_tls.value)
+                    _ch_set('onebot',    enabled=pc_w_ch_ob_en.value,       ws_url=pc_w_ch_ob_ws.value,
+                            access_token=pc_w_ch_ob_token.value)
+                    _ch_set('line',      enabled=pc_w_ch_line_en.value,
+                            channel_secret=pc_w_ch_line_secret.value,
+                            channel_access_token=pc_w_ch_line_cat.value)
+                    _ch_set('wecom',     enabled=pc_w_ch_wc_en.value,       token=pc_w_ch_wc_token.value,
+                            encoding_aes_key=pc_w_ch_wc_aes.value)
+
+                    # tools
+                    t = data.setdefault('tools', {})
+                    t['allow_read_paths']  = lines_to_list(pc_w_t_read_paths.value) or None
+                    t['allow_write_paths'] = lines_to_list(pc_w_t_write_paths.value) or None
+
+                    web = t.setdefault('web', {})
+                    web['enabled']           = pc_w_t_web_en.value
+                    web['fetch_limit_bytes'] = to_int(pc_w_t_fetch_limit.value, 10485760)
+                    web.setdefault('duckduckgo', {})['enabled']   = pc_w_t_ddg.value
+                    web.setdefault('brave',      {})['enabled']   = pc_w_t_brave.value
+                    web['brave']['api_key']                        = pc_w_t_brave_key.value
+                    web.setdefault('tavily',     {})['enabled']   = pc_w_t_tavily.value
+                    web['tavily']['api_key']                       = pc_w_t_tavily_key.value
+                    web.setdefault('perplexity', {})['enabled']   = pc_w_t_perp.value
+                    web['perplexity']['api_key']                   = pc_w_t_perp_key.value
+                    web.setdefault('searxng',    {})['enabled']   = pc_w_t_searxng.value
+                    web['searxng']['base_url']                     = pc_w_t_searxng_url.value
+
+                    t.setdefault('exec',  {})['enabled']          = pc_w_t_exec.value
+                    t['exec']['timeout_seconds']                   = to_int(pc_w_t_exec_timeout.value, 60)
+                    t['exec']['allow_remote']                      = pc_w_t_exec_remote.value
+                    t.setdefault('cron',  {})['enabled']          = pc_w_t_cron.value
+                    t['cron']['allow_command']                     = pc_w_t_cron_cmd.value
+                    t.setdefault('skills',{}).setdefault('registries',{}).setdefault('clawhub',{})['enabled'] = pc_w_t_skills.value
+                    t.setdefault('mcp',   {})['enabled']          = pc_w_t_mcp.value
+                    t.setdefault('spawn', {})['enabled']          = pc_w_t_spawn.value
+                    t.setdefault('subagent',{})['enabled']        = pc_w_t_subagent.value
+                    t.setdefault('web_fetch',{})['enabled']       = pc_w_t_web_fetch.value
+                    t.setdefault('send_file',{})['enabled']       = pc_w_t_send_file.value
+                    t.setdefault('read_file',{})['enabled']       = pc_w_t_read_file.value
+                    t['read_file']['max_read_file_size']           = to_int(pc_w_t_read_max.value, 65536)
+                    t.setdefault('write_file',{})['enabled']      = pc_w_t_write_file.value
+                    t.setdefault('edit_file', {})['enabled']      = pc_w_t_edit_file.value
+                    t.setdefault('append_file',{})['enabled']     = pc_w_t_append_file.value
+                    t.setdefault('list_dir',  {})['enabled']      = pc_w_t_list_dir.value
+                    t.setdefault('message',   {})['enabled']      = pc_w_t_message.value
+                    t.setdefault('i2c',       {})['enabled']      = pc_w_t_i2c.value
+                    t.setdefault('spi',       {})['enabled']      = pc_w_t_spi.value
+                    mc_cfg = t.setdefault('media_cleanup', {})
+                    mc_cfg['enabled']          = pc_w_t_mc_en.value
+                    mc_cfg['max_age_minutes']  = to_int(pc_w_t_mc_age.value, 30)
+                    mc_cfg['interval_minutes'] = to_int(pc_w_t_mc_interval.value, 5)
+
+                    # heartbeat
+                    data.setdefault('heartbeat', {})['enabled']  = pc_w_hb_en.value
+                    data['heartbeat']['interval']                  = to_int(pc_w_hb_interval.value, 30)
+
+                    # devices
+                    data.setdefault('devices', {})['enabled']     = pc_w_dev_en.value
+                    data['devices']['monitor_usb']                 = pc_w_dev_usb.value
+
+                    # voice
+                    data.setdefault('voice', {})['echo_transcription'] = pc_w_voice_echo.value
+
+                    try:
+                        save_picoclaw_config(data)
+                        ui.notify('✅ PicoClaw config saved', type='positive')
+                    except Exception as e:
+                        ui.notify(f'❌ Save failed: {e}', type='negative')
+
+                with ui.tabs().classes('w-full bg-purple-1') as pc_cfg_tabs:
+                    t_pc_gen   = ui.tab(T['pc_tab_general'],  icon='tune')
+                    t_pc_models= ui.tab(T['pc_tab_models'],   icon='cloud')
+                    t_pc_ch    = ui.tab(T['pc_tab_channels'], icon='forum')
+                    t_pc_tools = ui.tab(T['pc_tab_tools'],    icon='construction')
+                    t_pc_sys   = ui.tab(T['pc_tab_system'],   icon='computer')
+
+                with ui.tab_panels(pc_cfg_tabs, value=t_pc_gen).classes('w-full'):
+
+                    # ── General ──────────────────────────────────────────────
+                    with ui.tab_panel(t_pc_gen):
+                        ui.label(T['pc_section_session']).classes('text-subtitle2 text-grey-7 q-mt-sm')
+                        dm_opts = ['per-channel-peer', 'global', 'per-channel']
+                        cur_dm  = pc_session.get('dm_scope', 'per-channel-peer')
+                        pc_w_dm_scope = ui.select(dm_opts, label='session.dm_scope',
+                            value=cur_dm if cur_dm in dm_opts else dm_opts[0]).classes('w-full')
+
+                        ui.separator().classes('q-my-sm')
+                        ui.label(T['pc_section_agent_def']).classes('text-subtitle2 text-grey-7')
+                        pc_w_workspace          = ui.input('workspace', value=str(pc_agents.get('workspace','/var/lib/picoclaw/.picoclaw/workspace'))).classes('w-full')
+                        pc_w_restrict           = ui.checkbox('restrict_to_workspace',       value=bool(pc_agents.get('restrict_to_workspace', False)))
+                        pc_w_allow_read_outside = ui.checkbox('allow_read_outside_workspace', value=bool(pc_agents.get('allow_read_outside_workspace', False)))
+                        pc_w_provider           = ui.input('provider',   value=str(pc_agents.get('provider','qwen'))).classes('w-full')
+                        pc_w_model_name         = ui.input('model_name', value=str(pc_agents.get('model_name','qwen3.5-plus'))).classes('w-full')
+                        pc_w_model              = ui.input('model',      value=str(pc_agents.get('model','qwen3.5-plus'))).classes('w-full')
+                        pc_w_max_tokens         = ui.number('max_tokens',                 value=pc_agents.get('max_tokens', 8192),  min=256,  step=512).classes('w-full')
+                        pc_w_max_iter           = ui.number('max_tool_iterations',         value=pc_agents.get('max_tool_iterations', 50), min=1, step=5).classes('w-full')
+                        pc_w_sum_threshold      = ui.number('summarize_message_threshold', value=pc_agents.get('summarize_message_threshold', 20), min=1, step=1).classes('w-full')
+                        pc_w_sum_percent        = ui.number('summarize_token_percent',     value=pc_agents.get('summarize_token_percent', 75), min=1, max=100, step=5).classes('w-full')
+
+                        ui.separator().classes('q-my-sm')
+                        ui.label(T['pc_section_gateway']).classes('text-subtitle2 text-grey-7')
+                        pc_w_gw_host = ui.input('host', value=str(pc_gateway.get('host','0.0.0.0'))).classes('w-full')
+                        pc_w_gw_port = ui.number('port', value=pc_gateway.get('port', 18790), min=1024, max=65535, step=1).classes('w-full')
+
+                    # ── Models ───────────────────────────────────────────────
+                    with ui.tab_panel(t_pc_models):
+                        ui.label(T['pc_section_models']).classes('text-subtitle2 text-grey-7 q-mt-sm')
+                        ui.label(T['pc_hint_models']).classes('text-caption text-grey-5')
+                        pc_model_container = ui.column().classes('w-full')
+                        for i, entry in enumerate(pc_model_list):
+                            pc_build_model_card(pc_model_container, i, entry)
+                        ui.separator().classes('q-my-sm')
+                        def _pc_add_model():
+                            new_idx = max(pc_model_panels.keys(), default=-1) + 1
+                            pc_build_model_card(pc_model_container, new_idx, {})
+                        ui.button(T['pc_btn_add_model'], on_click=_pc_add_model).props('outline color=purple')
+
+                    # ── Channels ─────────────────────────────────────────────
+                    with ui.tab_panel(t_pc_ch):
+                        ui.label(T['pc_section_channels']).classes('text-subtitle2 text-grey-7 q-mt-sm')
+
+                        def _pico_ch(name): return pc_channels.get(name, {})
+
+                        with ui.expansion('🔵 Pico (native)', icon='wifi').classes('w-full'):
+                            pc_w_ch_pico_en      = ui.checkbox('enabled',         value=bool(_pico_ch('pico').get('enabled', True)))
+                            pc_w_ch_pico_token   = ui.input('token',              value=str(_pico_ch('pico').get('token',''))).classes('w-full')
+                            pc_w_ch_pico_ping    = ui.number('ping_interval',     value=_pico_ch('pico').get('ping_interval', 30),   min=5,  step=5).classes('w-full')
+                            pc_w_ch_pico_maxconn = ui.number('max_connections',   value=_pico_ch('pico').get('max_connections', 100), min=1, step=10).classes('w-full')
+
+                        with ui.expansion('📱 QQ', icon='chat').classes('w-full'):
+                            pc_w_ch_qq_en     = ui.checkbox('enabled',    value=bool(_pico_ch('qq').get('enabled', False)))
+                            pc_w_ch_qq_appid  = ui.input('app_id',        value=str(_pico_ch('qq').get('app_id',''))).classes('w-full')
+                            pc_w_ch_qq_secret = ui.input('app_secret',    value=str(_pico_ch('qq').get('app_secret','')),
+                                password=True, password_toggle_button=True).classes('w-full')
+
+                        with ui.expansion('✈️ Telegram', icon='send').classes('w-full'):
+                            pc_w_ch_tg_en    = ui.checkbox('enabled', value=bool(_pico_ch('telegram').get('enabled', False)))
+                            pc_w_ch_tg_token = ui.input('token',      value=str(_pico_ch('telegram').get('token','')),
+                                password=True, password_toggle_button=True).classes('w-full')
+                            pc_w_ch_tg_base  = ui.input('base_url',   value=str(_pico_ch('telegram').get('base_url',''))).classes('w-full')
+                            pc_w_ch_tg_proxy = ui.input('proxy',      value=str(_pico_ch('telegram').get('proxy',''))).classes('w-full')
+
+                        with ui.expansion('🎮 Discord', icon='discord').classes('w-full'):
+                            pc_w_ch_dc_en      = ui.checkbox('enabled',      value=bool(_pico_ch('discord').get('enabled', False)))
+                            pc_w_ch_dc_token   = ui.input('token',           value=str(_pico_ch('discord').get('token','')),
+                                password=True, password_toggle_button=True).classes('w-full')
+                            pc_w_ch_dc_mention = ui.checkbox('mention_only', value=bool(_pico_ch('discord').get('mention_only', False)))
+
+                        with ui.expansion('💬 WhatsApp', icon='smartphone').classes('w-full'):
+                            pc_w_ch_wa_en     = ui.checkbox('enabled',    value=bool(_pico_ch('whatsapp').get('enabled', False)))
+                            pc_w_ch_wa_url    = ui.input('bridge_url',    value=str(_pico_ch('whatsapp').get('bridge_url','ws://localhost:3001'))).classes('w-full')
+                            pc_w_ch_wa_native = ui.checkbox('use_native', value=bool(_pico_ch('whatsapp').get('use_native', False)))
+
+                        with ui.expansion('🪶 Feishu / Lark', icon='language').classes('w-full'):
+                            pc_w_ch_fs_en      = ui.checkbox('enabled',              value=bool(_pico_ch('feishu').get('enabled', False)))
+                            pc_w_ch_fs_appid   = ui.input('app_id',                  value=str(_pico_ch('feishu').get('app_id',''))).classes('w-full')
+                            pc_w_ch_fs_secret  = ui.input('app_secret',              value=str(_pico_ch('feishu').get('app_secret','')),
+                                password=True, password_toggle_button=True).classes('w-full')
+                            pc_w_ch_fs_encrypt = ui.input('encrypt_key',             value=str(_pico_ch('feishu').get('encrypt_key','')),
+                                password=True, password_toggle_button=True).classes('w-full')
+                            pc_w_ch_fs_verify  = ui.input('verification_token',      value=str(_pico_ch('feishu').get('verification_token',''))).classes('w-full')
+
+                        with ui.expansion('💼 Slack', icon='workspaces').classes('w-full'):
+                            pc_w_ch_sl_en  = ui.checkbox('enabled',    value=bool(_pico_ch('slack').get('enabled', False)))
+                            pc_w_ch_sl_bot = ui.input('bot_token',     value=str(_pico_ch('slack').get('bot_token','')),
+                                password=True, password_toggle_button=True).classes('w-full')
+                            pc_w_ch_sl_app = ui.input('app_token',     value=str(_pico_ch('slack').get('app_token','')),
+                                password=True, password_toggle_button=True).classes('w-full')
+
+                        with ui.expansion('🔷 Matrix', icon='grid_on').classes('w-full'):
+                            pc_w_ch_mx_en    = ui.checkbox('enabled',      value=bool(_pico_ch('matrix').get('enabled', False)))
+                            pc_w_ch_mx_home  = ui.input('homeserver',      value=str(_pico_ch('matrix').get('homeserver','https://matrix.org'))).classes('w-full')
+                            pc_w_ch_mx_user  = ui.input('user_id',         value=str(_pico_ch('matrix').get('user_id',''))).classes('w-full')
+                            pc_w_ch_mx_token = ui.input('access_token',    value=str(_pico_ch('matrix').get('access_token','')),
+                                password=True, password_toggle_button=True).classes('w-full')
+
+                        with ui.expansion('🔔 DingTalk', icon='notifications').classes('w-full'):
+                            pc_w_ch_dt_en     = ui.checkbox('enabled',       value=bool(_pico_ch('dingtalk').get('enabled', False)))
+                            pc_w_ch_dt_id     = ui.input('client_id',        value=str(_pico_ch('dingtalk').get('client_id',''))).classes('w-full')
+                            pc_w_ch_dt_secret = ui.input('client_secret',    value=str(_pico_ch('dingtalk').get('client_secret','')),
+                                password=True, password_toggle_button=True).classes('w-full')
+
+                        with ui.expansion('📷 MaixCam', icon='videocam').classes('w-full'):
+                            pc_w_ch_mc_en   = ui.checkbox('enabled', value=bool(_pico_ch('maixcam').get('enabled', False)))
+                            pc_w_ch_mc_host = ui.input('host',        value=str(_pico_ch('maixcam').get('host','0.0.0.0'))).classes('w-full')
+                            pc_w_ch_mc_port = ui.number('port',       value=_pico_ch('maixcam').get('port', 18790), min=1024, max=65535, step=1).classes('w-full')
+
+                        with ui.expansion('💬 IRC', icon='terminal').classes('w-full'):
+                            pc_w_ch_irc_en     = ui.checkbox('enabled', value=bool(_pico_ch('irc').get('enabled', False)))
+                            pc_w_ch_irc_server = ui.input('server',     value=str(_pico_ch('irc').get('server',''))).classes('w-full')
+                            pc_w_ch_irc_nick   = ui.input('nick',       value=str(_pico_ch('irc').get('nick',''))).classes('w-full')
+                            pc_w_ch_irc_tls    = ui.checkbox('tls',     value=bool(_pico_ch('irc').get('tls', False)))
+
+                        with ui.expansion('🤖 OneBot', icon='smart_toy').classes('w-full'):
+                            pc_w_ch_ob_en    = ui.checkbox('enabled',      value=bool(_pico_ch('onebot').get('enabled', False)))
+                            pc_w_ch_ob_ws    = ui.input('ws_url',          value=str(_pico_ch('onebot').get('ws_url','ws://127.0.0.1:3001'))).classes('w-full')
+                            pc_w_ch_ob_token = ui.input('access_token',    value=str(_pico_ch('onebot').get('access_token','')),
+                                password=True, password_toggle_button=True).classes('w-full')
+
+                        with ui.expansion('🟢 LINE', icon='message').classes('w-full'):
+                            pc_w_ch_line_en     = ui.checkbox('enabled',               value=bool(_pico_ch('line').get('enabled', False)))
+                            pc_w_ch_line_secret = ui.input('channel_secret',           value=str(_pico_ch('line').get('channel_secret','')),
+                                password=True, password_toggle_button=True).classes('w-full')
+                            pc_w_ch_line_cat    = ui.input('channel_access_token',     value=str(_pico_ch('line').get('channel_access_token','')),
+                                password=True, password_toggle_button=True).classes('w-full')
+
+                        with ui.expansion('🏢 WeCom', icon='business').classes('w-full'):
+                            pc_w_ch_wc_en    = ui.checkbox('enabled',          value=bool(_pico_ch('wecom').get('enabled', False)))
+                            pc_w_ch_wc_token = ui.input('token',               value=str(_pico_ch('wecom').get('token',''))).classes('w-full')
+                            pc_w_ch_wc_aes   = ui.input('encoding_aes_key',   value=str(_pico_ch('wecom').get('encoding_aes_key','')),
+                                password=True, password_toggle_button=True).classes('w-full')
+
+                    # ── Tools ────────────────────────────────────────────────
+                    with ui.tab_panel(t_pc_tools):
+                        ui.label(T['pc_section_tools']).classes('text-subtitle2 text-grey-7 q-mt-sm')
+                        ui.label(T['pc_lbl_read_paths']).classes('text-caption text-grey-6')
+                        _rp = pc_tools.get('allow_read_paths') or []
+                        pc_w_t_read_paths  = ui.textarea(value='\n'.join(_rp)).classes('w-full').props('outlined rows=3')
+                        ui.label(T['pc_lbl_write_paths']).classes('text-caption text-grey-6')
+                        _wp = pc_tools.get('allow_write_paths') or []
+                        pc_w_t_write_paths = ui.textarea(value='\n'.join(_wp)).classes('w-full').props('outlined rows=3')
+
+                        ui.separator().classes('q-my-sm')
+                        with ui.expansion(T['pc_exp_web_search'], icon='search').classes('w-full'):
+                            pc_w_t_web_en      = ui.checkbox('web.enabled',        value=bool(pc_web_tools.get('enabled', True)))
+                            pc_w_t_fetch_limit = ui.number('fetch_limit_bytes',    value=pc_web_tools.get('fetch_limit_bytes', 10485760), min=1024, step=1048576).classes('w-full')
+                            pc_w_t_ddg         = ui.checkbox('duckduckgo.enabled', value=bool(pc_web_tools.get('duckduckgo',{}).get('enabled', True)))
+                            pc_w_t_brave       = ui.checkbox('brave.enabled',      value=bool(pc_web_tools.get('brave',{}).get('enabled', False)))
+                            pc_w_t_brave_key   = ui.input('brave.api_key',         value=str(pc_web_tools.get('brave',{}).get('api_key','')),
+                                password=True, password_toggle_button=True).classes('w-full')
+                            pc_w_t_tavily      = ui.checkbox('tavily.enabled',     value=bool(pc_web_tools.get('tavily',{}).get('enabled', False)))
+                            pc_w_t_tavily_key  = ui.input('tavily.api_key',        value=str(pc_web_tools.get('tavily',{}).get('api_key','')),
+                                password=True, password_toggle_button=True).classes('w-full')
+                            pc_w_t_perp        = ui.checkbox('perplexity.enabled', value=bool(pc_web_tools.get('perplexity',{}).get('enabled', False)))
+                            pc_w_t_perp_key    = ui.input('perplexity.api_key',    value=str(pc_web_tools.get('perplexity',{}).get('api_key','')),
+                                password=True, password_toggle_button=True).classes('w-full')
+                            pc_w_t_searxng     = ui.checkbox('searxng.enabled',    value=bool(pc_web_tools.get('searxng',{}).get('enabled', False)))
+                            pc_w_t_searxng_url = ui.input('searxng.base_url',      value=str(pc_web_tools.get('searxng',{}).get('base_url',''))).classes('w-full')
+
+                        with ui.expansion(T['pc_exp_exec'], icon='terminal').classes('w-full'):
+                            pc_t_exec = pc_tools.get('exec', {})
+                            pc_w_t_exec         = ui.checkbox('exec.enabled',       value=bool(pc_t_exec.get('enabled', True)))
+                            pc_w_t_exec_remote  = ui.checkbox('allow_remote',       value=bool(pc_t_exec.get('allow_remote', True)))
+                            pc_w_t_exec_timeout = ui.number('timeout_seconds',      value=pc_t_exec.get('timeout_seconds', 60), min=5, step=5).classes('w-full')
+
+                        with ui.expansion(T['pc_exp_cron'], icon='schedule').classes('w-full'):
+                            pc_t_cron = pc_tools.get('cron', {})
+                            pc_w_t_cron     = ui.checkbox('cron.enabled',     value=bool(pc_t_cron.get('enabled', True)))
+                            pc_w_t_cron_cmd = ui.checkbox('allow_command',    value=bool(pc_t_cron.get('allow_command', True)))
+
+                        with ui.expansion(T['pc_exp_skills_mcp'], icon='hub').classes('w-full'):
+                            pc_w_t_skills  = ui.checkbox('skills.clawhub.enabled',  value=bool(pc_tools.get('skills',{}).get('registries',{}).get('clawhub',{}).get('enabled', True)))
+                            pc_w_t_mcp     = ui.checkbox('mcp.enabled',             value=bool(pc_tools.get('mcp',{}).get('enabled', False)))
+
+                        with ui.expansion(T['pc_exp_file_tools'], icon='folder').classes('w-full'):
+                            pc_w_t_read_file   = ui.checkbox('read_file.enabled',   value=bool(pc_tools.get('read_file',{}).get('enabled', True)))
+                            pc_w_t_read_max    = ui.number('read_file.max_read_file_size', value=pc_tools.get('read_file',{}).get('max_read_file_size', 65536), min=1024, step=4096).classes('w-full')
+                            pc_w_t_write_file  = ui.checkbox('write_file.enabled',  value=bool(pc_tools.get('write_file',{}).get('enabled', True)))
+                            pc_w_t_edit_file   = ui.checkbox('edit_file.enabled',   value=bool(pc_tools.get('edit_file',{}).get('enabled', True)))
+                            pc_w_t_append_file = ui.checkbox('append_file.enabled', value=bool(pc_tools.get('append_file',{}).get('enabled', True)))
+                            pc_w_t_list_dir    = ui.checkbox('list_dir.enabled',    value=bool(pc_tools.get('list_dir',{}).get('enabled', True)))
+                            pc_w_t_send_file   = ui.checkbox('send_file.enabled',   value=bool(pc_tools.get('send_file',{}).get('enabled', True)))
+                            pc_w_t_message     = ui.checkbox('message.enabled',     value=bool(pc_tools.get('message',{}).get('enabled', True)))
+                            pc_w_t_web_fetch   = ui.checkbox('web_fetch.enabled',   value=bool(pc_tools.get('web_fetch',{}).get('enabled', True)))
+                            pc_w_t_spawn       = ui.checkbox('spawn.enabled',       value=bool(pc_tools.get('spawn',{}).get('enabled', True)))
+                            pc_w_t_subagent    = ui.checkbox('subagent.enabled',    value=bool(pc_tools.get('subagent',{}).get('enabled', True)))
+                            pc_w_t_i2c         = ui.checkbox('i2c.enabled',         value=bool(pc_tools.get('i2c',{}).get('enabled', False)))
+                            pc_w_t_spi         = ui.checkbox('spi.enabled',         value=bool(pc_tools.get('spi',{}).get('enabled', False)))
+
+                        with ui.expansion(T['pc_exp_media_cleanup'], icon='cleaning_services').classes('w-full'):
+                            pc_t_mc = pc_tools.get('media_cleanup', {})
+                            pc_w_t_mc_en       = ui.checkbox('enabled',          value=bool(pc_t_mc.get('enabled', True)))
+                            pc_w_t_mc_age      = ui.number('max_age_minutes',    value=pc_t_mc.get('max_age_minutes', 30),   min=1, step=5).classes('w-full')
+                            pc_w_t_mc_interval = ui.number('interval_minutes',   value=pc_t_mc.get('interval_minutes', 5),   min=1, step=1).classes('w-full')
+
+                    # ── System ───────────────────────────────────────────────
+                    with ui.tab_panel(t_pc_sys):
+                        ui.label(T['pc_section_heartbeat']).classes('text-subtitle2 text-grey-7 q-mt-sm')
+                        pc_w_hb_en       = ui.checkbox('heartbeat.enabled',  value=bool(pc_heartbeat.get('enabled', True)))
+                        pc_w_hb_interval = ui.number('interval (secs)',       value=pc_heartbeat.get('interval', 30), min=5, step=5).classes('w-full')
+
+                        ui.separator().classes('q-my-sm')
+                        ui.label(T['pc_section_devices']).classes('text-subtitle2 text-grey-7')
+                        pc_w_dev_en  = ui.checkbox('devices.enabled',     value=bool(pc_devices.get('enabled', False)))
+                        pc_w_dev_usb = ui.checkbox('monitor_usb',         value=bool(pc_devices.get('monitor_usb', True)))
+
+                        ui.separator().classes('q-my-sm')
+                        ui.label(T['pc_section_voice']).classes('text-subtitle2 text-grey-7')
+                        pc_w_voice_echo = ui.checkbox('echo_transcription', value=bool(pc_voice.get('echo_transcription', False)))
+
+                        ui.separator().classes('q-my-sm')
+                        ui.label(T['pc_section_build']).classes('text-subtitle2 text-grey-7')
+                        with ui.card().classes('w-full bg-grey-2 q-pa-sm'):
+                            for k, v in pc_build.items():
+                                ui.label(f'{k}: {v}').classes('text-caption text-mono')
+
+                ui.separator()
+                with ui.row().classes('w-full gap-2 q-pa-sm'):
+                    ui.button(T['pc_btn_save'], on_click=pc_collect_and_save).props('elevated').classes('flex-1 bg-purple-8 text-white')
+
+            # ── PicoClaw › Pair Device ─────────────────────────────────────
             with ui.tab_panel(t_pc_pair):
                 with ui.card().classes('w-full q-pa-md'):
-                    ui.label('📱 PicoClaw Pair Device').classes('text-h6 text-purple-8')
-                    ui.label('PicoClaw device pairing will appear here.').classes('text-caption text-grey-6 q-mt-xs')
+                    ui.label(T['pc_pair_title']).classes('text-h6 text-purple-8')
+                    ui.label(T['pc_pair_hint']).classes('text-caption text-grey-6 q-mt-xs')
 
     # ── Sidebar navigation wiring ──────────────────────────────────────────────
     def _switch_dash(name):
