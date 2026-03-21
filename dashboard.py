@@ -1,6 +1,6 @@
 from nicegui import ui, app
 from fastapi import Request
-import toml, os, subprocess, hashlib, hmac, secrets, json, time as _time
+import toml, os, sys, subprocess, hashlib, hmac, secrets, json, time as _time
 from datetime import datetime
 import locales.zh as zh_strings
 import locales.en as en_strings
@@ -1060,55 +1060,65 @@ def index(request: Request):
                         'Generate a new pair code for the ZeroClaw gateway. '
                         'The code will also be sent to the 2.13″ e-ink display.'
                     ).classes('text-caption text-grey-6 q-mb-sm')
-                    paircode_box = ui.card().classes('w-full bg-grey-2 q-pa-md items-center').style('display:none')
+                    paircode_box = ui.card().classes('w-full bg-grey-2 q-pa-md items-center')
                     with paircode_box:
-                        paircode_lbl = ui.label('').classes(
+                        paircode_lbl = ui.label('…').classes(
                             'text-h4 text-bold text-blue-9 text-center letter-spacing-wide'
                         )
-                        paircode_status = ui.label('').classes('text-caption text-grey-6 text-center q-mt-xs')
-                    def _gen_paircode():
-                        paircode_box.style('display:block')
-                        paircode_lbl.set_text('…')
-                        paircode_status.set_text('Generating…')
+                        paircode_status = ui.label('Loading…').classes('text-caption text-grey-6 text-center q-mt-xs')
+
+                    _PAIRCODE_SCRIPT = os.path.join(SCRIPT_DIR, 'clawberry_paircode.py')
+
+                    def _parse_paircode(raw: str) -> str:
+                        """Extract the numeric code from box-drawing output."""
+                        for _line in raw.splitlines():
+                            _s = _line.strip()
+                            if _s.startswith('│') and _s.endswith('│'):
+                                _inner = _s[1:-1].strip()
+                                if _inner:
+                                    return _inner
+                        return raw  # fallback: full output
+
+                    def _push_to_display(code: str):
+                        """Push pair code to 2.13" e-ink via clawberry_paircode.py."""
                         try:
-                            r = subprocess.run(
-                                ['zeroclaw', 'gateway', 'get-paircode', '--new'],
-                                capture_output=True, text=True, timeout=15
-                            )
-                            raw = (r.stdout.strip() or r.stderr.strip())
-                            if r.returncode != 0:
-                                paircode_lbl.set_text('Error')
-                                paircode_status.set_text(f'Command failed: {raw}')
-                                ui.notify(f'❌ {raw}', type='negative')
-                                return
-                            # Extract just the code from the box:
-                            #   │  752167  │
-                            code = raw  # fallback: full output
-                            for _line in raw.splitlines():
-                                _s = _line.strip()
-                                if _s.startswith('│') and _s.endswith('│'):
-                                    _inner = _s[1:-1].strip()
-                                    if _inner:
-                                        code = _inner
-                                        break
-                            paircode_lbl.set_text(code)
-                            # push to 2in13 display
                             disp_r = subprocess.run(
-                                ['zeroclaw', 'display', 'show', '--text', code],
-                                capture_output=True, text=True, timeout=10
+                                [sys.executable, _PAIRCODE_SCRIPT, code],
+                                capture_output=True, text=True, timeout=15
                             )
                             if disp_r.returncode == 0:
                                 paircode_status.set_text('✅ Shown on 2.13″ display')
-                                ui.notify('✅ Pair code generated & shown on display', type='positive')
                             else:
-                                paircode_status.set_text('⚠️ Display update failed — see notify')
-                                ui.notify(
-                                    f'Pair code generated but display error: {disp_r.stderr.strip() or disp_r.stdout.strip()}',
-                                    type='warning'
-                                )
+                                err = disp_r.stderr.strip() or disp_r.stdout.strip()
+                                paircode_status.set_text(f'⚠️ Display error: {err[:60]}')
+                                ui.notify(f'Display error: {err}', type='warning')
+                        except Exception as exc:
+                            paircode_status.set_text(f'⚠️ Display error: {exc}')
+
+                    def _fetch_paircode(new: bool = False):
+                        """Fetch current (or generate new) pair code, update UI & display."""
+                        paircode_lbl.set_text('…')
+                        paircode_status.set_text('Generating new code…' if new else 'Fetching current code…')
+                        try:
+                            cmd = ['zeroclaw', 'gateway', 'get-paircode']
+                            if new:
+                                cmd.append('--new')
+                            r = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+                            raw = r.stdout.strip() or r.stderr.strip()
+                            if r.returncode != 0:
+                                paircode_lbl.set_text('Error')
+                                paircode_status.set_text(f'Command failed: {raw[:80]}')
+                                ui.notify(f'❌ {raw}', type='negative')
+                                return
+                            code = _parse_paircode(raw)
+                            paircode_lbl.set_text(code)
+                            paircode_status.set_text('Pushing to display…')
+                            _push_to_display(code)
+                            if new:
+                                ui.notify(f'✅ New pair code: {code}', type='positive')
                         except FileNotFoundError:
                             paircode_lbl.set_text('N/A')
-                            paircode_status.set_text('zeroclaw command not found')
+                            paircode_status.set_text('zeroclaw not found in PATH')
                             ui.notify('❌ zeroclaw not found in PATH', type='negative')
                         except subprocess.TimeoutExpired:
                             paircode_lbl.set_text('Timeout')
@@ -1118,9 +1128,17 @@ def index(request: Request):
                             paircode_lbl.set_text('Error')
                             paircode_status.set_text(str(exc))
                             ui.notify(f'❌ {exc}', type='negative')
-                    ui.button('🔑 Generate New Pair Code', on_click=_gen_paircode).props(
-                        'elevated color=blue-8'
-                    ).classes('w-full q-mb-xs')
+
+                    # Auto-load current pair code when the page renders
+                    ui.timer(0.1, lambda: _fetch_paircode(new=False), once=True)
+
+                    with ui.row().classes('w-full gap-2 q-mt-sm'):
+                        ui.button('🔄 Refresh Code', on_click=lambda: _fetch_paircode(new=False)).props(
+                            'outline color=blue-8'
+                        ).classes('flex-1')
+                        ui.button('🔑 Generate New Code', on_click=lambda: _fetch_paircode(new=True)).props(
+                            'elevated color=blue-8'
+                        ).classes('flex-1')
 
                 # ── Paired Devices ─────────────────────────────────────────
                 with ui.card().classes('w-full q-mb-sm'):
