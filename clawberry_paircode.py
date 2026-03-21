@@ -95,7 +95,9 @@ def show_paircode(code: str) -> None:
     service_was_stopped = _svc('stop')
     if service_was_stopped:
         _wait_inactive(timeout=15.0)   # block until bus is truly free
-
+    import time as _t2
+    logging.info('Waiting 10s before show real code...')
+    _t2.sleep(10)
     try:
         epd = epd2in13_V4.EPD()
         epd.init()
