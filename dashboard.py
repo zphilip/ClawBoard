@@ -1070,15 +1070,15 @@ def index(request: Request):
 
                     _PAIRCODE_SCRIPT = os.path.join(SCRIPT_DIR, 'clawberry_paircode.py')
 
-                    def _parse_paircode(raw: str) -> str:
-                        """Extract the numeric code from box-drawing output."""
+                    def _parse_paircode(raw: str):
+                        """Extract the numeric code from box-drawing output. Returns None if not found."""
                         for _line in raw.splitlines():
                             _s = _line.strip()
                             if _s.startswith('│') and _s.endswith('│'):
                                 _inner = _s[1:-1].strip()
                                 if _inner:
                                     return _inner
-                        return raw  # fallback: full output
+                        return None  # no code in output
 
                     def _push_to_display(code: str):
                         """Queue pair code for the clawberry-display service via handoff file."""
@@ -1090,8 +1090,9 @@ def index(request: Request):
                             paircode_status.set_text(f'⚠️ Could not queue display: {exc}')
                             ui.notify(f'Display queue error: {exc}', type='warning')
 
-                    def _fetch_paircode(new: bool = False):
-                        """Fetch current (or generate new) pair code, update UI & display."""
+                    def _fetch_paircode(new: bool = False, push_display: bool = True):
+                        """Fetch current (or generate new) pair code and update UI.
+                        Only pushes to e-ink display when push_display=True."""
                         paircode_lbl.set_text('…')
                         paircode_status.set_text('Generating new code…' if new else 'Fetching current code…')
                         try:
@@ -1106,11 +1107,17 @@ def index(request: Request):
                                 ui.notify(f'❌ {raw}', type='negative')
                                 return
                             code = _parse_paircode(raw)
+                            if code is None:
+                                paircode_lbl.set_text('—')
+                                paircode_status.set_text('No available pair code')
+                                return
                             paircode_lbl.set_text(code)
-                            paircode_status.set_text('Pushing to display…')
-                            _push_to_display(code)
-                            if new:
-                                ui.notify(f'✅ New pair code: {code}', type='positive')
+                            if push_display:
+                                _push_to_display(code)
+                                if new:
+                                    ui.notify(f'✅ New pair code: {code}', type='positive')
+                            else:
+                                paircode_status.set_text('Code fetched (not pushed to display)')
                         except FileNotFoundError:
                             paircode_lbl.set_text('N/A')
                             paircode_status.set_text('zeroclaw not found in PATH')
@@ -1124,14 +1131,15 @@ def index(request: Request):
                             paircode_status.set_text(str(exc))
                             ui.notify(f'❌ {exc}', type='negative')
 
-                    # Auto-load current pair code when the page renders
-                    ui.timer(0.1, lambda: _fetch_paircode(new=False), once=True)
+                    # Idle state — user presses a button to load/generate
+                    paircode_lbl.set_text('—')
+                    paircode_status.set_text('Press a button below to load or generate a pair code')
 
                     with ui.row().classes('w-full gap-2 q-mt-sm'):
-                        ui.button('🔄 Refresh Code', on_click=lambda: _fetch_paircode(new=False)).props(
+                        ui.button('🔄 Refresh Code + Show on Display', on_click=lambda: _fetch_paircode(new=False, push_display=True)).props(
                             'outline color=blue-8'
                         ).classes('flex-1')
-                        ui.button('🔑 Generate New Code', on_click=lambda: _fetch_paircode(new=True)).props(
+                        ui.button('🔑 Generate New Code + Show on Display', on_click=lambda: _fetch_paircode(new=True, push_display=True)).props(
                             'elevated color=blue-8'
                         ).classes('flex-1')
 
