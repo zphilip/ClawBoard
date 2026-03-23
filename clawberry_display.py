@@ -74,11 +74,28 @@ def _epd_render(epd, image, force_full=False):
 def _shutdown(signum=None, frame=None):
     logging.info("Shutdown signal %s — releasing display hardware...", signum)
     if epd is not None:
-        try:
-            epd.Dev_exit()
-        except Exception:
+        # Try known exit methods in order; each is optional depending on driver version
+        released = False
+        for _attr in ('Dev_exit',):
+            fn = getattr(epd, _attr, None)
+            if fn:
+                try:
+                    fn(); released = True; break
+                except Exception:
+                    pass
+        if not released:
+            # Waveshare V3/V4: cleanup lives on the epdconfig sub-module
+            cfg = getattr(epd2in13_V4, 'epdconfig', None) or getattr(epd, 'epdconfig', None)
+            fn  = getattr(cfg, 'module_exit', None) if cfg else None
+            if fn:
+                try:
+                    fn(); released = True
+                except Exception as e:
+                    logging.warning("epdconfig.module_exit failed: %s", e)
+        if not released:
+            # Last resort: at least put the panel to sleep to avoid burn-in
             try:
-                epd.module_exit()
+                epd.sleep()
             except Exception as e:
                 logging.warning("Could not release hardware: %s", e)
     sys.exit(0)
@@ -104,12 +121,19 @@ def get_ip_address(ifname):
 
 def get_service_status(service_name):
     try:
-        status = subprocess.check_output(
-            f"systemctl is-active {service_name}", shell=True
-        ).decode().strip()
-        return "Running" if status == "active" else "Stopped"
-    except:
-        return "Unknown"
+        result = subprocess.run(
+            ['systemctl', 'is-active', service_name],
+            capture_output=True, text=True
+        )
+        status = result.stdout.strip()
+        if status == 'active':
+            return 'Running'
+        elif status in ('inactive', 'failed', 'deactivating', 'activating'):
+            return 'Stopped'
+        else:
+            return status.capitalize() if status else 'Unknown'
+    except Exception:
+        return 'Unknown'
 
 
 def _read_display_request():
@@ -178,10 +202,10 @@ def draw_monitor(epd):
     image = Image.new('1', (W, H), 255)
     draw  = ImageDraw.Draw(image)
 
-    f_title = _load_font(_FONT_BOLD, 12)
-    f_label = _load_font(_FONT_BOLD, 10)
-    f_ip    = _load_font(_FONT_REG,  10)
-    f_tiny  = _load_font(_FONT_REG,   9)
+    f_title = _load_font(_FONT_BOLD, 14)
+    f_label = _load_font(_FONT_BOLD, 12)
+    f_ip    = _load_font(_FONT_REG,  12)
+    f_tiny  = _load_font(_FONT_REG,  11)
 
     # ── Gather IPs — None means interface is absent / has no address ─────
     # Priority for QR: WiFi → Ethernet → Bluetooth PAN → USB gadget
@@ -217,7 +241,7 @@ def draw_monitor(epd):
     y  = 2
 
     draw.text((tx, y), "ClawBerry", font=f_title, fill=0)
-    y += 14
+    y += 17
     draw.line((tx, y, W - 2, y), fill=0)
     y += 4
 
@@ -226,12 +250,12 @@ def draw_monitor(epd):
     for iface_label, ip in (('WiFi', w_ip), ('ETH', e_ip), ('USB', u_ip), ('BT', b_ip)):
         if ip:   # ip is None when not connected — skip
             draw.text((tx,      y), f"{iface_label}:", font=f_label, fill=0)
-            draw.text((tx + 28, y), ip,                font=f_ip,    fill=0)
-            y += 12
+            draw.text((tx + 32, y), ip,                font=f_ip,    fill=0)
+            y += 14
             any_ip = True
     if not any_ip:
         draw.text((tx, y), "No network", font=f_ip, fill=0)
-        y += 12
+        y += 14
 
     y += 3
     draw.line((tx, y, W - 2, y), fill=0)
@@ -239,7 +263,7 @@ def draw_monitor(epd):
 
     s_zc = get_service_status("zeroclaw")
     s_pc = get_service_status("picoclaw")
-    draw.text((tx, y), f"ZC: {s_zc}", font=f_tiny, fill=0); y += 12
+    draw.text((tx, y), f"ZC: {s_zc}", font=f_tiny, fill=0); y += 13
     draw.text((tx, y), f"PC: {s_pc}", font=f_tiny, fill=0)
 
     _epd_render(epd, image)
