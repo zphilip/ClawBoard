@@ -94,8 +94,9 @@ def _load_font(path, size):
 def get_ip_address(ifname):
     try:
         cmd = f"ip -4 addr show {ifname} | grep -oP '(?<=inet\\s)\\d+(\\.\\d+){{3}}'"
-        return subprocess.check_output(cmd, shell=True).decode().strip()
-    except:
+        out = subprocess.check_output(cmd, shell=True, stderr=subprocess.DEVNULL).decode().strip()
+        return out if out else None
+    except Exception:
         return None
 
 def get_service_status(service_name):
