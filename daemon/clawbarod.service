@@ -1,0 +1,24 @@
+[Unit]
+Description=ZeroClaw Configuration Dashboard (NiceGUI)
+# 确保在网络连接后再启动
+After=network.target bluetooth.service
+
+[Service]
+# 指向你项目文件夹下的虚拟环境 python 解释器
+ExecStart=/opt/clawboard/venv/bin/python3 /opt/clawboard/dashboard.py
+# 设置工作目录，方便脚本读取 config.toml
+WorkingDirectory=/opt/clawboard
+# 以 zero 用户运行
+User=zeroclaw
+Group=zeroclaw
+# 如果崩溃，10秒后自动重启
+Restart=always
+RestartSec=10
+# 环境变量：确保 NiceGUI 不尝试打开本地浏览器
+Environment=PYTHONUNBUFFERED=1
+Environment=NICEGUI_STORAGE_PATH=/opt/clawboard/.nicegui
+StandardOutput=append:/var/log/clawboard.log
+StandardError=append:/var/log/clawboard.error.log
+
+[Install]
+WantedBy=multi-user.target

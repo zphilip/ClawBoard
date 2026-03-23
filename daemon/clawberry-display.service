@@ -1,0 +1,14 @@
+[Unit]
+Description=ClawBerry e-Paper Boot Display
+After=network.target
+
+[Service]
+Type=simple
+User=zeroclaw
+# 指向新位置
+WorkingDirectory=/opt/clawboard
+ExecStart=/usr/bin/python3 /opt/clawboard/clawberry_display.py
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

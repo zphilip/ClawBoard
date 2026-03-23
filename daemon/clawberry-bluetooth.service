@@ -1,0 +1,15 @@
+[Unit]
+Description=ClawBerry Bluetooth PAN internet sharing
+After=bluetooth.target network.target
+Wants=bluetooth.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /opt/clawboard/clawberry_bluetooth.py
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
