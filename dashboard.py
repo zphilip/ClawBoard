@@ -1108,7 +1108,7 @@ def index(request: Request):
                                 return
                             code = _parse_paircode(raw)
                             if code is None:
-                                paircode_lbl.set_text('—')
+                                paircode_lbl.set_text('NA')
                                 paircode_status.set_text('No available pair code')
                                 return
                             paircode_lbl.set_text(code)
