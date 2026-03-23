@@ -234,6 +234,9 @@ def draw_monitor(epd):
     draw.text((tx, y), f"PC: {s_pc}", font=f_tiny, fill=0)
 
     _epd_render(epd, image)
+
+
+def draw_paircode(epd, code):
     """Render the pair code screen."""
     W, H = epd.height, epd.width
     image = Image.new('1', (W, H), 255)
