@@ -179,12 +179,14 @@ def draw_monitor(epd):
     f_ip    = _load_font(_FONT_REG,  10)
     f_tiny  = _load_font(_FONT_REG,   9)
 
-    # ── Gather IPs (None when interface is absent/down) ───────────────────
-    w_ip = get_ip_address('wlan0') or "Disconnected"
-    e_ip = get_ip_address('eth0')  or "Disconnected"
-    u_ip = get_ip_address('usb0')  or "Not detected"   # USB gadget (when enabled in config.txt)
-    b_ip = get_ip_address('bnep0') or "Not detected"   # Bluetooth PAN (phone tethering)
-    # QR priority: WiFi → Ethernet → BT-tethering → USB
+    # ── Gather IPs — None means interface is absent / has no address ─────
+    # Priority for QR: WiFi → Ethernet → Bluetooth PAN → USB gadget
+    w_ip = get_ip_address('wlan0')  # None when not connected
+    e_ip = get_ip_address('eth0')   # None when not connected
+    b_ip = get_ip_address('bnep0')  # None when BT tethering is off
+    u_ip = get_ip_address('usb0')   # None when USB gadget not active
+
+    # First non-None IP wins — this is what the QR points to
     primary_ip = w_ip or e_ip or b_ip or u_ip
 
     # ── QR code — left side, vertically centred ───────────────────────────
@@ -203,7 +205,7 @@ def draw_monitor(epd):
             draw.text((QR_X + 14, QR_Y + 44), "QR err", font=f_ip, fill=0)
     else:
         draw.rectangle((QR_X, QR_Y, QR_X + QR_SIZE, QR_Y + QR_SIZE), outline=0, width=1)
-        draw.text((QR_X + 20, QR_Y + 44), "No IP", font=f_ip, fill=0)
+        draw.text((QR_X + 18, QR_Y + 44), "No IP", font=f_ip, fill=0)
 
     # ── Right panel ───────────────────────────────────────────────────────
     tx = QR_X + QR_SIZE + 5
@@ -214,10 +216,10 @@ def draw_monitor(epd):
     draw.line((tx, y, W - 2, y), fill=0)
     y += 4
 
-    # One row per active interface (only shown when IP is present)
+    # Only show rows for interfaces that actually have an IP
     any_ip = False
     for iface_label, ip in (('WiFi', w_ip), ('ETH', e_ip), ('BT', b_ip), ('USB', u_ip)):
-        if ip:
+        if ip:   # ip is None when not connected — skip
             draw.text((tx,      y), f"{iface_label}:", font=f_label, fill=0)
             draw.text((tx + 28, y), ip,                font=f_ip,    fill=0)
             y += 12
