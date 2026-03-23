@@ -177,9 +177,9 @@ def draw_monitor(epd):
     f_tiny  = _load_font(_FONT_REG,   9)
 
     # ── Gather IPs ────────────────────────────────────────────────────────
-    w_ip = get_ip_address('wlan0') or None
-    e_ip = get_ip_address('eth0')  or None
-    u_ip = get_ip_address('usb0')  or None
+    w_ip = get_ip_address('wlan0') or "Disconnected"
+    e_ip = get_ip_address('eth0')  or "Disconnected"
+    u_ip = get_ip_address('usb0')  or "Not detected"
     primary_ip = w_ip or e_ip or u_ip   # prefer wlan0 → eth0 → usb0
 
     # ── QR code — left side, vertically centred ───────────────────────────
