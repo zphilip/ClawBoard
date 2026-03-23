@@ -188,7 +188,8 @@ def draw_monitor(epd):
     u_ip = get_ip_address('usb0')   # None when USB gadget not active
 
     # First non-None IP wins — this is what the QR points to
-    primary_ip = w_ip or e_ip or b_ip or u_ip
+    # Priority: WiFi → ETH → USB → BT (bnep0)
+    primary_ip = w_ip or e_ip or u_ip or b_ip
 
     # ── QR code — left side, vertically centred ───────────────────────────
     QR_SIZE = 110
@@ -219,7 +220,7 @@ def draw_monitor(epd):
 
     # Only show rows for interfaces that actually have an IP
     any_ip = False
-    for iface_label, ip in (('WiFi', w_ip), ('ETH', e_ip), ('BT', b_ip), ('USB', u_ip)):
+    for iface_label, ip in (('WiFi', w_ip), ('ETH', e_ip), ('USB', u_ip), ('BT', b_ip)):
         if ip:   # ip is None when not connected — skip
             draw.text((tx,      y), f"{iface_label}:", font=f_label, fill=0)
             draw.text((tx + 28, y), ip,                font=f_ip,    fill=0)
