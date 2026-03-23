@@ -32,7 +32,7 @@ def request_paircode_display(code: str) -> None:
     payload = {
         'kind': 'paircode',
         'code': code.strip(),
-        'seconds': 120,
+        'seconds': 20,
     }
     try:
         _write_request(payload)
@@ -48,7 +48,7 @@ def request_picoclaw_qr_display(url: str, token: str = '') -> None:
         'kind': 'pico_qr',
         'url': url.strip(),
         'token': token.strip(),
-        'seconds': 120,
+        'seconds': 20,
     }
     try:
         _write_request(payload)

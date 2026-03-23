@@ -26,7 +26,7 @@ logging.basicConfig(level=logging.INFO)
 _HERE            = os.path.dirname(os.path.realpath(__file__))
 DISPLAY_REQUEST_FILE = os.path.join(_HERE, 'config', 'clawberry_paircode.txt')
 DISPLAY_SECONDS  = 120          # how long to show temporary content before resuming
-MONITOR_REFRESH_SECONDS = 10
+MONITOR_FORCE_REFRESH_SECONDS = 3600  # force a full monitor redraw after this many idle seconds (ghost-busting)
 POLL_SECONDS = 1
 
 _FONT_BOLD = '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf'
@@ -303,45 +303,91 @@ def draw_picoclaw_qr(epd, url, token=''):
     _epd_render(epd, image, force_full=True)
 
 
-def _handle_display_request(epd, payload):
-    kind = payload.get('kind', 'paircode')
-    seconds = int(payload.get('seconds', DISPLAY_SECONDS) or DISPLAY_SECONDS)
+# ── State helpers ────────────────────────────────────────────────────────
+def _get_current_state():
+    """Snapshot all display-relevant system state for change detection."""
+    return {
+        'wlan0':    get_ip_address('wlan0'),
+        'eth0':     get_ip_address('eth0'),
+        'bnep0':    get_ip_address('bnep0'),
+        'usb0':     get_ip_address('usb0'),
+        'zeroclaw': get_service_status('zeroclaw'),
+        'picoclaw': get_service_status('picoclaw'),
+    }
 
+
+def _file_mtime():
+    """Return mtime of DISPLAY_REQUEST_FILE, or None if the file is absent."""
+    try:
+        return os.path.getmtime(DISPLAY_REQUEST_FILE)
+    except OSError:
+        return None
+
+
+def _draw_request_screen(epd, payload):
+    """Render the temporary screen for *payload* — does NOT block/sleep."""
+    kind = payload.get('kind', 'paircode')
     if kind == 'pico_qr':
-        url = str(payload.get('url', '')).strip()
+        url   = str(payload.get('url',   '')).strip()
         token = str(payload.get('token', '')).strip()
         if url:
-            logging.info("PicoClaw QR request — showing for %ss", seconds)
             draw_picoclaw_qr(epd, url, token)
-            time.sleep(seconds)
-        return
-
-    code = str(payload.get('code', '')).strip()
-    if code:
-        logging.info("Pair code request: '%s' — showing for %ss", code, seconds)
-        draw_paircode(epd, code)
-        time.sleep(seconds)
+    else:
+        code = str(payload.get('code', '')).strip()
+        if code:
+            draw_paircode(epd, code)
 
 
 # ── Main loop ─────────────────────────────────────────────────────────────
+# Rendering is change-driven:
+#   • clawberry_paircode.txt created/updated → immediate temporary screen
+#   • IP address or service status change    → immediate monitor refresh
+#   • MONITOR_FORCE_REFRESH_SECONDS elapsed  → periodic ghost-busting refresh
 epd = epd2in13_V4.EPD()
-logging.info("ClawBerry display service starting...")
+logging.info("ClawBerry display service starting — change-driven rendering active.")
+
+last_state        = _get_current_state()
+draw_monitor(epd)
+last_monitor_draw = time.monotonic()
+last_file_mtime   = _file_mtime()   # capture mtime of any pre-existing request file
+hold_until        = 0.0             # monotonic time until temp screen must not be overwritten
 
 while True:
-    payload = _read_display_request()
-    if payload:
-        _handle_display_request(epd, payload)
+    time.sleep(POLL_SECONDS)
+    now = time.monotonic()
+
+    # ── 1. Check for new / updated pair-code or pico-QR request file ─────
+    cur_mtime = _file_mtime()
+    if cur_mtime is not None and cur_mtime != last_file_mtime:
+        # File appeared or was rewritten — process it immediately
+        payload = _read_display_request()   # reads + deletes the file
+        last_file_mtime = None              # file is now gone
+        if payload:
+            seconds    = int(payload.get('seconds', DISPLAY_SECONDS) or DISPLAY_SECONDS)
+            hold_until = now + seconds
+            kind       = payload.get('kind', 'paircode')
+            logging.info("Display request (%s) — holding for %d s", kind, seconds)
+            _draw_request_screen(epd, payload)
+            continue                        # skip state check this cycle
+    else:
+        last_file_mtime = cur_mtime         # keep in sync (tracks None when absent)
+
+    # ── 2. While inside the hold window, don't overwrite the temp screen ──
+    if now < hold_until:
         continue
 
-    # ── Normal status screen ──────────────────────────────────────────────
-    logging.info("Refreshing monitor screen...")
-    draw_monitor(epd)
-    logging.info("Waiting for next update...")
-    waited = 0
-    while waited < MONITOR_REFRESH_SECONDS:
-        time.sleep(POLL_SECONDS)
-        waited += POLL_SECONDS
-        payload = _read_display_request()
-        if payload:
-            _handle_display_request(epd, payload)
-            break
+    # ── 3. Check for network / service state changes ──────────────────────
+    current_state = _get_current_state()
+    age           = now - last_monitor_draw
+    state_changed = current_state != last_state
+    force_refresh = age >= MONITOR_FORCE_REFRESH_SECONDS
+
+    if state_changed or force_refresh:
+        if state_changed:
+            changed = [k for k in current_state if current_state[k] != last_state.get(k)]
+            logging.info("State change detected (%s) — updating display", ', '.join(changed))
+        else:
+            logging.info("Periodic forced refresh (%.0f s since last draw)", age)
+        draw_monitor(epd)
+        last_state        = current_state
+        last_monitor_draw = now
