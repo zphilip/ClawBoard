@@ -66,6 +66,9 @@ def _epd_render(epd, image, force_full=False):
             epd.display(buf)
 
     epd.sleep()
+
+
+def _shutdown(signum=None, frame=None):
     logging.info("Shutdown signal %s — releasing display hardware...", signum)
     if epd is not None:
         try:
