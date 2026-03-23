@@ -62,6 +62,14 @@ DISCOVERABLE_TIMEOUT = 0     # 0 = stay discoverable indefinitely
 REDISCOVER_INTERVAL  = 300   # re-assert discoverable every 5 min (seconds)
 PAN_CONNECT_DELAY    = 4.0   # seconds to wait after pairing before PAN connect
 
+# Bluetooth PAN / NAP service UUID — when the phone offers this, it is
+# sharing internet via Bluetooth tethering
+PAN_NAP_UUID  = '00001116-0000-1000-8000-00805f9b34fb'
+PANU_UUID     = '00001115-0000-1000-8000-00805f9b34fb'
+
+# Track MACs currently being connected to avoid duplicate threads
+_pan_connecting: set = set()
+
 # ── DBus adapter helpers ───────────────────────────────────────────────────
 
 def _adapter_props():
@@ -123,6 +131,15 @@ class AutoPairAgent(dbus.service.Object):
     @dbus.service.method(AGENT_IFACE, in_signature='os', out_signature='')
     def AuthorizeService(self, device, uuid):
         log.info("Agent: AuthorizeService device=%s uuid=%s — approved", device, uuid)
+        uuid_lower = str(uuid).lower()
+        if uuid_lower in (PAN_NAP_UUID, PANU_UUID):
+            try:
+                dev_part = str(device).split('/')[-1]
+                mac = dev_part[4:].replace('_', ':')
+                log.info("PAN service UUID detected for %s — scheduling PAN connect", mac)
+                threading.Thread(target=_handle_connected, args=[mac], daemon=True).start()
+            except Exception as exc:
+                log.warning("AuthorizeService PAN dispatch error: %s", exc)
 
     @dbus.service.method(AGENT_IFACE, in_signature='o', out_signature='s')
     def RequestPinCode(self, device):
@@ -251,7 +268,27 @@ def _handle_paired(mac: str):
     log.info("Waiting %.1fs before PAN connect (phone may need to enable tethering) ...",
              PAN_CONNECT_DELAY)
     time.sleep(PAN_CONNECT_DELAY)
-    connect_pan(mac)
+    _handle_connected(mac)
+
+
+def _handle_connected(mac: str):
+    """Attempt PAN connect, deduplicating concurrent calls for the same MAC."""
+    if mac in _pan_connecting:
+        log.debug("PAN connect already in progress for %s — skipping", mac)
+        return
+    _pan_connecting.add(mac)
+    try:
+        # Retry up to 3 times with 5 s gap — phone tethering may need a moment
+        for attempt in range(1, 4):
+            if connect_pan(mac):
+                return
+            if attempt < 3:
+                log.info("PAN attempt %d failed for %s — retrying in 5 s ...", attempt, mac)
+                time.sleep(5)
+        log.warning("⚠️ PAN connect gave up after 3 attempts for %s", mac)
+        log.warning("    → Make sure Bluetooth Tethering is ON in your phone's hotspot settings.")
+    finally:
+        _pan_connecting.discard(mac)
 
 
 # ── DBus signal listener ───────────────────────────────────────────────────
@@ -275,7 +312,11 @@ def _on_properties_changed(interface, changed, invalidated, path=None):
         log.info("📱 Device paired: %s  %s", mac, name)
         threading.Thread(target=_handle_paired, args=[mac], daemon=True).start()
     elif connected:
-        log.info("🔗 Device connected: %s  %s", mac, name)
+        log.info("🔗 Device connected: %s  %s — attempting PAN", mac, name)
+        threading.Thread(target=_handle_connected, args=[mac], daemon=True).start()
+    elif connected == dbus.Boolean(False):
+        log.info("🔌 Device disconnected: %s  %s", mac, name)
+        _pan_connecting.discard(mac)
 
 
 # ── Main ───────────────────────────────────────────────────────────────────
