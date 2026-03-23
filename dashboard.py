@@ -1083,9 +1083,11 @@ def index(request: Request):
                     def _push_to_display(code: str):
                         """Queue pair code for the clawberry-display service via handoff file."""
                         try:
-                            from clawberry_paircode import request_paircode_display
-                            request_paircode_display(code)
-                            paircode_status.set_text('✅ Queued — display service will show for 2 min')
+                            import importlib
+                            import clawberry_paircode as _cp
+                            importlib.reload(_cp)
+                            _cp.request_paircode_display(code)
+                            paircode_status.set_text('✅ Queued — sending to e-ink display')
                         except Exception as exc:
                             paircode_status.set_text(f'⚠️ Could not queue display: {exc}')
                             ui.notify(f'Display queue error: {exc}', type='warning')
@@ -1623,8 +1625,10 @@ def index(request: Request):
 
                                 def _show_pico_qr(url=pico_url, token=pico_token):
                                     try:
-                                        from clawberry_paircode import request_picoclaw_qr_display
-                                        request_picoclaw_qr_display(url, token)
+                                        import importlib
+                                        import clawberry_paircode as _cp
+                                        importlib.reload(_cp)
+                                        _cp.request_picoclaw_qr_display(url, token)
                                         ui.notify(T['pc_pair_queue_ok'], type='positive')
                                     except Exception as exc:
                                         ui.notify(f'❌ {exc}', type='negative')
