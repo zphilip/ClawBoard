@@ -179,11 +179,13 @@ def draw_monitor(epd):
     f_ip    = _load_font(_FONT_REG,  10)
     f_tiny  = _load_font(_FONT_REG,   9)
 
-    # ── Gather IPs ────────────────────────────────────────────────────────
+    # ── Gather IPs (None when interface is absent/down) ───────────────────
     w_ip = get_ip_address('wlan0') or "Disconnected"
     e_ip = get_ip_address('eth0')  or "Disconnected"
-    u_ip = get_ip_address('usb0')  or "Not detected"
-    primary_ip = w_ip or e_ip or u_ip   # prefer wlan0 → eth0 → usb0
+    u_ip = get_ip_address('usb0')  or "Not detected"   # USB gadget (when enabled in config.txt)
+    b_ip = get_ip_address('bnep0') or "Not detected"   # Bluetooth PAN (phone tethering)
+    # QR priority: WiFi → Ethernet → BT-tethering → USB
+    primary_ip = w_ip or e_ip or b_ip or u_ip
 
     # ── QR code — left side, vertically centred ───────────────────────────
     QR_SIZE = 110
@@ -212,17 +214,17 @@ def draw_monitor(epd):
     draw.line((tx, y, W - 2, y), fill=0)
     y += 4
 
-    # One row per active interface
+    # One row per active interface (only shown when IP is present)
     any_ip = False
-    for iface_label, ip in (('WiFi', w_ip), ('ETH', e_ip), ('USB', u_ip)):
+    for iface_label, ip in (('WiFi', w_ip), ('ETH', e_ip), ('BT', b_ip), ('USB', u_ip)):
         if ip:
             draw.text((tx,      y), f"{iface_label}:", font=f_label, fill=0)
-            draw.text((tx + 30, y), ip,                font=f_ip,    fill=0)
-            y += 13
+            draw.text((tx + 28, y), ip,                font=f_ip,    fill=0)
+            y += 12
             any_ip = True
     if not any_ip:
         draw.text((tx, y), "No network", font=f_ip, fill=0)
-        y += 13
+        y += 12
 
     y += 3
     draw.line((tx, y, W - 2, y), fill=0)
