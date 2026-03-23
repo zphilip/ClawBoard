@@ -26,7 +26,7 @@ logging.basicConfig(level=logging.INFO)
 _HERE            = os.path.dirname(os.path.realpath(__file__))
 DISPLAY_REQUEST_FILE = os.path.join(_HERE, 'config', 'clawberry_paircode.txt')
 DISPLAY_SECONDS  = 120          # how long to show temporary content before resuming
-MONITOR_REFRESH_SECONDS = 60
+MONITOR_REFRESH_SECONDS = 10
 POLL_SECONDS = 1
 
 _FONT_BOLD = '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf'
@@ -34,8 +34,38 @@ _FONT_REG  = '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf'
 
 # ── Global EPD handle for clean shutdown ─────────────────────────────────
 epd = None
+_full_refresh_counter = 0
+_FULL_REFRESH_EVERY   = 10   # force a full refresh every N renders to clear ghosting
 
-def _shutdown(signum=None, frame=None):
+
+def _epd_render(epd, image, force_full=False):
+    """Push *image* to the display with minimal flicker.
+
+    Uses ``init_Fast`` / ``displayFast`` (no black→white wipe) by default.
+    Every ``_FULL_REFRESH_EVERY`` calls — or when ``force_full=True`` — a
+    full refresh is done to clear accumulated ghosting.
+    """
+    global _full_refresh_counter
+    _full_refresh_counter += 1
+    do_full = force_full or (_full_refresh_counter % _FULL_REFRESH_EVERY == 0)
+
+    buf = epd.getbuffer(image)
+
+    if do_full:
+        logging.debug("Full refresh (counter=%d)", _full_refresh_counter)
+        epd.init()
+        epd.display(buf)
+    else:
+        try:
+            epd.init_Fast()
+            epd.displayFast(buf)
+        except AttributeError:
+            # Driver version doesn’t expose init_Fast / displayFast — fall back
+            logging.debug("Fast mode unavailable, using full refresh")
+            epd.init()
+            epd.display(buf)
+
+    epd.sleep()
     logging.info("Shutdown signal %s — releasing display hardware...", signum)
     if epd is not None:
         try:
@@ -200,12 +230,7 @@ def draw_monitor(epd):
     draw.text((tx, y), f"ZC: {s_zc}", font=f_tiny, fill=0); y += 12
     draw.text((tx, y), f"PC: {s_pc}", font=f_tiny, fill=0)
 
-    epd.init()
-    epd.display(epd.getbuffer(image))
-    epd.sleep()
-
-
-def draw_paircode(epd, code):
+    _epd_render(epd, image)
     """Render the pair code screen."""
     W, H = epd.height, epd.width
     image = Image.new('1', (W, H), 255)
@@ -231,9 +256,7 @@ def draw_paircode(epd, code):
     hbbox = draw.textbbox((0, 0), hint, font=f_hint)
     draw.text(((W - (hbbox[2] - hbbox[0])) // 2, H - 16), hint, font=f_hint, fill=0)
 
-    epd.init()
-    epd.display(epd.getbuffer(image))
-    epd.sleep()
+    _epd_render(epd, image)
 
 
 def draw_picoclaw_qr(epd, url, token=''):
@@ -265,9 +288,7 @@ def draw_picoclaw_qr(epd, url, token=''):
     token_line = f"token: {token[:12]}..." if len(token) > 12 else f"token: {token}"
     draw.text((text_x, H - 20), token_line, font=f_tiny, fill=0)
 
-    epd.init()
-    epd.display(epd.getbuffer(image))
-    epd.sleep()
+    _epd_render(epd, image, force_full=True)
 
 
 def _handle_display_request(epd, payload):
