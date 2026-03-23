@@ -1132,7 +1132,7 @@ def index(request: Request):
                             ui.notify(f'❌ {exc}', type='negative')
 
                     # Idle state — user presses a button to load/generate
-                    paircode_lbl.set_text('—')
+                    paircode_lbl.set_text('NA')
                     paircode_status.set_text('Press a button below to load or generate a pair code')
 
                     with ui.row().classes('w-full gap-2 q-mt-sm'):

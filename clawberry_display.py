@@ -107,29 +107,98 @@ def _fetch_qr_image(text, size=220):
         return Image.open(BytesIO(r.read())).convert('1')
 
 
+def _generate_qr_image(text, size=110):
+    """Generate a QR image for *text*.
+    Tries the local ``qrcode`` library first (no internet required),
+    then falls back to the QuickChart cloud API."""
+    try:
+        import qrcode as _qrcode
+        qr = _qrcode.QRCode(
+            version=None,
+            error_correction=_qrcode.constants.ERROR_CORRECT_L,
+            box_size=3,
+            border=2,
+        )
+        qr.add_data(text)
+        qr.make(fit=True)
+        img = qr.make_image(fill_color='black', back_color='white').convert('1')
+        return img.resize((size, size), Image.NEAREST)
+    except ImportError:
+        pass
+    # Remote fallback
+    return _fetch_qr_image(text, size)
+
+
 # ── Screens ───────────────────────────────────────────────────────────────
 def draw_monitor(epd):
-    """Render the normal status screen."""
-    W, H = epd.height, epd.width
+    """Render the normal status screen.
+
+    Left column: QR code for http://<primary_ip>:8080 (110×110 px).
+    Right column: title, IP addresses for every active interface
+                  (wlan0 / eth0 / usb0), service statuses.
+    """
+    W, H = epd.height, epd.width   # 250 × 122 in landscape
     image = Image.new('1', (W, H), 255)
     draw  = ImageDraw.Draw(image)
 
-    f_title = _load_font(_FONT_BOLD, 28)
-    f_small = _load_font(_FONT_REG,  16)
+    f_title = _load_font(_FONT_BOLD, 12)
+    f_label = _load_font(_FONT_BOLD, 10)
+    f_ip    = _load_font(_FONT_REG,  10)
+    f_tiny  = _load_font(_FONT_REG,   9)
 
-    draw.text((10, 2), "ClawBerry Monitor", font=f_title, fill=0)
-    draw.line((10, 32, W - 10, 32), fill=0)
+    # ── Gather IPs ────────────────────────────────────────────────────────
+    w_ip = get_ip_address('wlan0') or None
+    e_ip = get_ip_address('eth0')  or None
+    u_ip = get_ip_address('usb0')  or None
+    primary_ip = w_ip or e_ip or u_ip   # prefer wlan0 → eth0 → usb0
 
-    w_ip = get_ip_address('wlan0') or "Disconnected"
-    u_ip = get_ip_address('usb0')  or "Not detected"
-    draw.text((10, 38), f"WiFi: {w_ip}", font=f_small, fill=0)
-    draw.text((10, 56), f"USB:  {u_ip}", font=f_small, fill=0)
-    draw.line((10, 76, W - 10, 76), fill=0)
+    # ── QR code — left side, vertically centred ───────────────────────────
+    QR_SIZE = 110
+    QR_X    = 2
+    QR_Y    = (H - QR_SIZE) // 2
 
-    s1 = get_service_status("zeroclaw")
-    s2 = get_service_status("picoclaw")
-    draw.text((10, 82),  f"zeroclaw: {s1}", font=f_small, fill=0)
-    draw.text((10, 100), f"picoclaw: {s2}", font=f_small, fill=0)
+    if primary_ip:
+        qr_url = f'http://{primary_ip}:8080'
+        try:
+            qr_img = _generate_qr_image(qr_url, size=QR_SIZE)
+            image.paste(qr_img, (QR_X, QR_Y))
+        except Exception as exc:
+            logging.warning("QR generation failed: %s", exc)
+            draw.rectangle((QR_X, QR_Y, QR_X + QR_SIZE, QR_Y + QR_SIZE), outline=0, width=1)
+            draw.text((QR_X + 14, QR_Y + 44), "QR err", font=f_ip, fill=0)
+    else:
+        draw.rectangle((QR_X, QR_Y, QR_X + QR_SIZE, QR_Y + QR_SIZE), outline=0, width=1)
+        draw.text((QR_X + 20, QR_Y + 44), "No IP", font=f_ip, fill=0)
+
+    # ── Right panel ───────────────────────────────────────────────────────
+    tx = QR_X + QR_SIZE + 5
+    y  = 2
+
+    draw.text((tx, y), "ClawBerry", font=f_title, fill=0)
+    y += 14
+    draw.line((tx, y, W - 2, y), fill=0)
+    y += 4
+
+    # One row per active interface
+    any_ip = False
+    for iface_label, ip in (('WiFi', w_ip), ('ETH', e_ip), ('USB', u_ip)):
+        if ip:
+            draw.text((tx,      y), f"{iface_label}:", font=f_label, fill=0)
+            draw.text((tx + 30, y), ip,                font=f_ip,    fill=0)
+            y += 13
+            any_ip = True
+    if not any_ip:
+        draw.text((tx, y), "No network", font=f_ip, fill=0)
+        y += 13
+
+    y += 3
+    draw.line((tx, y, W - 2, y), fill=0)
+    y += 4
+
+    s_zc = get_service_status("zeroclaw")
+    s_pc = get_service_status("picoclaw")
+    draw.text((tx, y), f"ZC: {s_zc}", font=f_tiny, fill=0); y += 12
+    draw.text((tx, y), f"PC: {s_pc}", font=f_tiny, fill=0)
 
     epd.init()
     epd.display(epd.getbuffer(image))
