@@ -25,7 +25,10 @@ logging.basicConfig(level=logging.INFO)
 # ── Handoff file written by clawberry_paircode.py ─────────────────────────
 _HERE            = os.path.dirname(os.path.realpath(__file__))
 DISPLAY_REQUEST_FILE = os.path.join(_HERE, 'config', 'clawberry_paircode.txt')
-DISPLAY_SECONDS  = 120          # how long to show temporary content before resuming
+# Fallback hold duration used ONLY when the payload written by clawberry_paircode.py
+# has no 'seconds' field. The primary source of truth is always the 'seconds' value
+# inside clawberry_paircode.txt — change it there, not here.
+_FALLBACK_HOLD_SECONDS        = 30
 MONITOR_FORCE_REFRESH_SECONDS = 3600  # force a full monitor redraw after this many idle seconds (ghost-busting)
 POLL_SECONDS = 1
 
@@ -124,7 +127,7 @@ def _read_display_request():
             if isinstance(payload, dict):
                 return payload
         except json.JSONDecodeError:
-            return {'kind': 'paircode', 'code': raw, 'seconds': DISPLAY_SECONDS}
+            return {'kind': 'paircode', 'code': raw, 'seconds': _FALLBACK_HOLD_SECONDS}
     except Exception as e:
         logging.warning("Error handling display request file: %s", e)
         try:
@@ -351,6 +354,7 @@ draw_monitor(epd)
 last_monitor_draw = time.monotonic()
 last_file_mtime   = _file_mtime()   # capture mtime of any pre-existing request file
 hold_until        = 0.0             # monotonic time until temp screen must not be overwritten
+was_holding       = False           # True while a temporary screen is being shown
 
 while True:
     time.sleep(POLL_SECONDS)
@@ -363,7 +367,8 @@ while True:
         payload = _read_display_request()   # reads + deletes the file
         last_file_mtime = None              # file is now gone
         if payload:
-            seconds    = int(payload.get('seconds', DISPLAY_SECONDS) or DISPLAY_SECONDS)
+            raw_sec    = payload.get('seconds')
+            seconds    = int(raw_sec) if raw_sec else _FALLBACK_HOLD_SECONDS
             hold_until = now + seconds
             kind       = payload.get('kind', 'paircode')
             logging.info("Display request (%s) — holding for %d s", kind, seconds)
@@ -373,7 +378,11 @@ while True:
         last_file_mtime = cur_mtime         # keep in sync (tracks None when absent)
 
     # ── 2. While inside the hold window, don't overwrite the temp screen ──
-    if now < hold_until:
+    currently_holding = now < hold_until
+    just_released     = was_holding and not currently_holding  # hold just expired this tick
+    was_holding       = currently_holding
+
+    if currently_holding:
         continue
 
     # ── 3. Check for network / service state changes ──────────────────────
@@ -382,8 +391,10 @@ while True:
     state_changed = current_state != last_state
     force_refresh = age >= MONITOR_FORCE_REFRESH_SECONDS
 
-    if state_changed or force_refresh:
-        if state_changed:
+    if just_released or state_changed or force_refresh:
+        if just_released:
+            logging.info("Temporary screen hold expired — restoring monitor display")
+        elif state_changed:
             changed = [k for k in current_state if current_state[k] != last_state.get(k)]
             logging.info("State change detected (%s) — updating display", ', '.join(changed))
         else:
