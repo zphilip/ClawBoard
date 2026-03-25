@@ -720,8 +720,9 @@ def index(request: Request):
     with ui.left_drawer(value=True, bordered=True).classes('bg-grey-1') as drawer:
         ui.label('ClawBoard').classes('text-subtitle1 text-bold text-blue-9 q-pa-sm q-pb-xs')
         ui.separator()
-        btn_zc = ui.button('🦾 ZeroClaw', icon='terminal').props('flat align=left color=blue-8').classes('w-full q-mt-xs')
-        btn_pc = ui.button('🐾 PicoClaw',  icon='memory'  ).props('flat align=left color=grey-7').classes('w-full')
+        btn_zc   = ui.button('🦾 ZeroClaw',    icon='terminal').props('flat align=left color=blue-8').classes('w-full q-mt-xs')
+        btn_pc   = ui.button('🐾 PicoClaw',     icon='memory'  ).props('flat align=left color=grey-7').classes('w-full')
+        btn_wifi = ui.button('📶 WiFi Setup',   icon='wifi'    ).props('flat align=left color=grey-7').classes('w-full')
 
     # ══ ZeroClaw Dashboard ════════════════════════════════════════════════════
     zc_content = ui.column().classes('w-full q-px-sm q-pt-sm')
@@ -1639,16 +1640,92 @@ def index(request: Request):
                         ui.label(T['pc_pair_missing_token']).classes('text-negative q-mt-sm')
 
     # ── Sidebar navigation wiring ──────────────────────────────────────────────
+    # ══ WiFi Setup ════════════════════════════════════════════════════════════
+    wifi_content = ui.column().classes('w-full q-px-sm q-pt-sm')
+    wifi_content.set_visibility(False)
+    with wifi_content:
+        ui.label('📶 WiFi Setup').classes('text-h6 text-teal-8 q-mb-xs')
+        with ui.card().classes('w-full q-pa-md'):
+            ui.label('Wireless Network Configuration').classes('text-subtitle1 text-bold q-mb-xs')
+            ui.label(
+                'Launch the wifi-connect captive portal. The device will broadcast a '
+                '"ClawBerry WiFi Setup" access point. Connect to it with any device, '
+                'then choose your network and enter the password.'
+            ).classes('text-caption text-grey-6 q-mb-md')
+
+            wifi_status_lbl = ui.label('').classes('text-caption text-grey-7 q-mb-sm')
+            wifi_log_area   = ui.textarea().classes('w-full').props('outlined rows=8 readonly label="Output"')
+            wifi_log_area.set_visibility(False)
+
+            _wifi_proc = {'proc': None}
+
+            def _start_wifi_setup():
+                wifi_log_area.set_visibility(True)
+                wifi_log_area.set_value('')
+                wifi_status_lbl.set_text('⏳ Starting wifi-connect…')
+                btn_wifi_start.props('disabled loading')
+                btn_wifi_stop.props(remove='disabled')
+                import threading, subprocess as _sp
+
+                def _run():
+                    try:
+                        proc = _sp.Popen(
+                            ['sudo', '/opt/bin/wifi-connect',
+                             '-u', '/opt/wifi-connect/web',
+                             '-s', 'ClawBerry WiFi Setup'],
+                            stdout=_sp.PIPE, stderr=_sp.STDOUT, text=True
+                        )
+                        _wifi_proc['proc'] = proc
+                        wifi_status_lbl.set_text('🟢 Running — connect to "ClawBerry WiFi Setup" AP')
+                        for line in proc.stdout:
+                            wifi_log_area.set_value(wifi_log_area.value + line)
+                        proc.wait()
+                        rc = proc.returncode
+                        wifi_status_lbl.set_text(
+                            f'✅ Finished (exit {rc})' if rc == 0 else f'⚠️ Exited with code {rc}'
+                        )
+                    except Exception as exc:
+                        wifi_status_lbl.set_text(f'❌ Error: {exc}')
+                    finally:
+                        _wifi_proc['proc'] = None
+                        btn_wifi_start.props(remove='disabled loading')
+                        btn_wifi_stop.props('disabled')
+
+                threading.Thread(target=_run, daemon=True).start()
+
+            def _stop_wifi_setup():
+                proc = _wifi_proc.get('proc')
+                if proc:
+                    try:
+                        proc.terminate()
+                        wifi_status_lbl.set_text('🛑 Stopped')
+                    except Exception as exc:
+                        wifi_status_lbl.set_text(f'Stop failed: {exc}')
+                btn_wifi_stop.props('disabled')
+
+            with ui.row().classes('gap-2 q-mt-sm'):
+                btn_wifi_start = ui.button(
+                    '▶ Start WiFi Setup', on_click=_start_wifi_setup
+                ).props('elevated color=teal-8')
+                btn_wifi_stop = ui.button(
+                    '■ Stop', on_click=_stop_wifi_setup
+                ).props('outline color=negative disabled')
+
+    # ── Sidebar navigation wiring ──────────────────────────────────────────────
     def _switch_dash(name):
         zc_content.set_visibility(name == 'zeroclaw')
         pc_content.set_visibility(name == 'picoclaw')
-        btn_zc._props['color'] = 'blue-8'   if name == 'zeroclaw' else 'grey-7'
-        btn_pc._props['color'] = 'purple-8' if name == 'picoclaw' else 'grey-7'
+        wifi_content.set_visibility(name == 'wifi')
+        btn_zc._props['color']   = 'blue-8'  if name == 'zeroclaw' else 'grey-7'
+        btn_pc._props['color']   = 'purple-8' if name == 'picoclaw' else 'grey-7'
+        btn_wifi._props['color'] = 'teal-8'  if name == 'wifi'     else 'grey-7'
         btn_zc.update()
         btn_pc.update()
+        btn_wifi.update()
 
-    btn_zc.on('click', lambda: _switch_dash('zeroclaw'))
-    btn_pc.on('click', lambda: _switch_dash('picoclaw'))
+    btn_zc.on('click',   lambda: _switch_dash('zeroclaw'))
+    btn_pc.on('click',   lambda: _switch_dash('picoclaw'))
+    btn_wifi.on('click', lambda: _switch_dash('wifi'))
 
 
 ui.run(title='ClawBoard', port=8080, reload=False, host='0.0.0.0',
