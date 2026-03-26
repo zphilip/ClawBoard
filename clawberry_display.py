@@ -18,9 +18,19 @@ libdir = os.path.join(current_dir, 'lib')
 if os.path.exists(libdir):
     sys.path.append(libdir)
 
-from waveshare_epd import epd2in13_V4
+# Display drivers are imported lazily inside _detect_display().
+# Module-level references are set once detection succeeds.
+_eink_mod = None   # waveshare_epd.epd2in13_V4 when e-ink is active
+_lcd_mod  = None   # LCD_1inch69 module when LCD is active
 
 logging.basicConfig(level=logging.INFO)
+
+# ── 1.69" LCD hardware pin defaults (Waveshare HAT) ──────────────────────
+_LCD_RST    = 27
+_LCD_DC     = 25
+_LCD_BL     = 18
+_LCD_TP_INT = 4
+_LCD_TP_RST = 17
 
 # ── Handoff file written by clawberry_paircode.py ─────────────────────────
 _HERE            = os.path.dirname(os.path.realpath(__file__))
@@ -35,10 +45,11 @@ POLL_SECONDS = 1
 _FONT_BOLD = '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf'
 _FONT_REG  = '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf'
 
-# ── Global EPD handle for clean shutdown ─────────────────────────────────
-epd = None
+# ── Global display handle & type ────────────────────────────────────────
+_disp         = None   # active display object (EPD or LCD_1inch69)
+_display_type = None   # 'eink' | 'lcd'
 _full_refresh_counter = 0
-_FULL_REFRESH_EVERY   = 10   # force a full refresh every N renders to clear ghosting
+_FULL_REFRESH_EVERY   = 10   # force a full e-ink refresh every N renders to clear ghosting
 
 
 def _epd_render(epd, image, force_full=False):
@@ -73,38 +84,91 @@ def _epd_render(epd, image, force_full=False):
 
 def _shutdown(signum=None, frame=None):
     logging.info("Shutdown signal %s — releasing display hardware...", signum)
-    if epd is not None:
-        # Try known exit methods in order; each is optional depending on driver version
-        released = False
-        for _attr in ('Dev_exit',):
-            fn = getattr(epd, _attr, None)
-            if fn:
-                try:
-                    fn(); released = True; break
-                except Exception:
-                    pass
-        if not released:
-            # Waveshare V3/V4: cleanup lives on the epdconfig sub-module
-            cfg = getattr(epd2in13_V4, 'epdconfig', None) or getattr(epd, 'epdconfig', None)
-            fn  = getattr(cfg, 'module_exit', None) if cfg else None
-            if fn:
-                try:
-                    fn(); released = True
-                except Exception as e:
-                    logging.warning("epdconfig.module_exit failed: %s", e)
-        if not released:
-            # Last resort: at least put the panel to sleep to avoid burn-in
+    if _disp is not None:
+        if _display_type == 'lcd':
             try:
-                epd.sleep()
+                _disp.module_exit()
             except Exception as e:
-                logging.warning("Could not release hardware: %s", e)
+                logging.warning("LCD module_exit failed: %s", e)
+        else:  # eink
+            released = False
+            for _attr in ('Dev_exit',):
+                fn = getattr(_disp, _attr, None)
+                if fn:
+                    try:
+                        fn(); released = True; break
+                    except Exception:
+                        pass
+            if not released:
+                cfg = getattr(_eink_mod, 'epdconfig', None) or getattr(_disp, 'epdconfig', None)
+                fn  = getattr(cfg, 'module_exit', None) if cfg else None
+                if fn:
+                    try:
+                        fn(); released = True
+                    except Exception as e:
+                        logging.warning("epdconfig.module_exit failed: %s", e)
+            if not released:
+                try:
+                    _disp.sleep()
+                except Exception as e:
+                    logging.warning("Could not release hardware: %s", e)
     sys.exit(0)
 
 signal.signal(signal.SIGTERM, _shutdown)
 signal.signal(signal.SIGINT,  _shutdown)
 
 
-# ── Helpers ───────────────────────────────────────────────────────────────
+def _detect_display():
+    """Probe hardware and initialise the first supported display found.
+
+    Detection order:
+      1. E-ink 2.13\" (epd2in13_V4)  — SPI, black/white
+      2. LCD  1.69\"  (LCD_1inch69)  — SPI + touch, RGB colour
+
+    Sets the module globals ``_disp``, ``_display_type``, ``_eink_mod`` /
+    ``_lcd_mod`` and returns the active display object.
+    """
+    global _disp, _display_type, _eink_mod, _lcd_mod
+
+    # ── 1. Try e-ink 2.13\" ──────────────────────────────────────────────
+    try:
+        from waveshare_epd import epd2in13_V4 as _em
+        _obj = _em.EPD()
+        _obj.init()
+        _obj.sleep()
+        _eink_mod     = _em
+        _disp         = _obj
+        _display_type = 'eink'
+        logging.info('Display detected: e-ink 2.13\" (epd2in13_V4)')
+        return _obj
+    except Exception as e:
+        logging.info('E-ink 2.13\" not available: %s', e)
+
+    # ── 2. Try LCD 1.69\" ────────────────────────────────────────────────
+    try:
+        from lib import LCD_1inch69 as _lm
+        _obj = _lm.LCD_1inch69(
+            rst=_LCD_RST, dc=_LCD_DC, bl=_LCD_BL,
+            tp_int=_LCD_TP_INT, tp_rst=_LCD_TP_RST, bl_freq=100
+        )
+        _obj.Init()
+        _obj.clear()
+        _obj.bl_DutyCycle(80)
+        _lcd_mod      = _lm
+        _disp         = _obj
+        _display_type = 'lcd'
+        logging.info('Display detected: LCD 1.69\" (LCD_1inch69)')
+        return _obj
+    except Exception as e:
+        logging.info('LCD 1.69\" not available: %s', e)
+
+    raise RuntimeError(
+        'No supported display detected '
+        '(tried e-ink 2.13\" and LCD 1.69\")'
+    )
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
 def _load_font(path, size):
     try:
         return ImageFont.truetype(path, size)
@@ -330,6 +394,183 @@ def draw_picoclaw_qr(epd, url, token=''):
     _epd_render(epd, image, force_full=True)
 
 
+# ── LCD 1.69" Screens (240×280, portrait, RGB colour) ──────────────────────
+_C_BG      = (245, 246, 250)   # off-white page background
+_C_HDR_ZC  = ( 30, 100, 200)   # ZeroClaw blue header
+_C_HDR_PC  = (120,   0, 180)   # PicoClaw purple header
+_C_WHITE   = (255, 255, 255)
+_C_GREEN   = ( 30, 160,  60)
+_C_RED     = (210,  30,  30)
+_C_GREY    = (130, 130, 130)
+_C_DARK    = ( 30,  30,  30)
+_IFACE_COL = {
+    'WiFi': (  0, 150,  80),
+    'ETH':  (  0, 100, 200),
+    'USB':  (160,  80,   0),
+    'BT':   (120,   0, 180),
+}
+
+
+def draw_monitor_lcd(disp):
+    """Render the normal status screen for the 1.69\" LCD (240×280 portrait)."""
+    W, H  = disp.width, disp.height   # 240 × 280
+    image = Image.new('RGB', (W, H), _C_BG)
+    draw  = ImageDraw.Draw(image)
+
+    f_hdr   = _load_font(_FONT_BOLD, 18)
+    f_label = _load_font(_FONT_BOLD, 13)
+    f_body  = _load_font(_FONT_REG,  13)
+    f_small = _load_font(_FONT_REG,  12)
+
+    # Header bar
+    draw.rectangle((0, 0, W, 40), fill=_C_HDR_ZC)
+    draw.text((10, 9), 'ClawBerry', font=f_hdr, fill=_C_WHITE)
+
+    # Gather IPs
+    w_ip = get_ip_address('wlan0')
+    e_ip = get_ip_address('eth0')
+    b_ip = get_ip_address('bnep0')
+    u_ip = get_ip_address('usb0')
+    primary_ip = w_ip or e_ip or u_ip or b_ip
+
+    # QR code centred below header
+    QR_SIZE = 130
+    QR_X    = (W - QR_SIZE) // 2
+    QR_Y    = 48
+    if primary_ip:
+        qr_url = f'http://{primary_ip}:8080'
+        try:
+            qr_img = _generate_qr_image(qr_url, size=QR_SIZE).convert('RGB')
+            image.paste(qr_img, (QR_X, QR_Y))
+        except Exception as exc:
+            logging.warning('QR generation failed: %s', exc)
+            draw.rectangle((QR_X, QR_Y, QR_X + QR_SIZE, QR_Y + QR_SIZE),
+                           outline=_C_GREY, width=1)
+            draw.text((QR_X + 22, QR_Y + 55), 'QR err', font=f_body, fill=_C_RED)
+    else:
+        draw.rectangle((QR_X, QR_Y, QR_X + QR_SIZE, QR_Y + QR_SIZE),
+                       outline=_C_GREY, width=1)
+        draw.text((QR_X + 30, QR_Y + 55), 'No IP', font=f_body, fill=_C_GREY)
+
+    # Interface rows
+    y = QR_Y + QR_SIZE + 10
+    any_ip = False
+    for iface_label, ip in (('WiFi', w_ip), ('ETH', e_ip), ('USB', u_ip), ('BT', b_ip)):
+        if ip:
+            col = _IFACE_COL.get(iface_label, (80, 80, 80))
+            draw.rectangle((6, y, 46, y + 18), fill=col)
+            draw.text((8,  y + 2), iface_label, font=f_small, fill=_C_WHITE)
+            draw.text((52, y + 2), ip,          font=f_small, fill=_C_DARK)
+            y += 22
+            any_ip = True
+    if not any_ip:
+        draw.text((10, y), 'No network', font=f_body, fill=_C_RED)
+        y += 22
+
+    # Divider
+    y += 4
+    draw.line((6, y, W - 6, y), fill=(200, 200, 200), width=1)
+    y += 7
+
+    # Service status rows
+    for svc, status in (('ZeroClaw', get_service_status('zeroclaw')),
+                        ('PicoClaw', get_service_status('picoclaw'))):
+        col = _C_GREEN if status == 'Running' else _C_RED
+        draw.ellipse((8, y + 3, 19, y + 14), fill=col)
+        draw.text((25, y + 1), f'{svc}: {status}', font=f_small, fill=_C_DARK)
+        y += 20
+
+    disp.ShowImage(image)
+
+
+def draw_paircode_lcd(disp, code):
+    """Render the ZeroClaw pair-code screen on the 1.69\" LCD."""
+    W, H  = disp.width, disp.height
+    image = Image.new('RGB', (W, H), _C_BG)
+    draw  = ImageDraw.Draw(image)
+
+    f_hdr  = _load_font(_FONT_BOLD, 18)
+    f_hint = _load_font(_FONT_REG,  14)
+
+    draw.rectangle((0, 0, W, 40), fill=_C_HDR_ZC)
+    draw.text((10, 9), 'ZeroClaw Pair Code', font=f_hdr, fill=_C_WHITE)
+
+    # Auto-size code to fit width
+    for fsize in (80, 66, 52, 40):
+        f_code = _load_font(_FONT_BOLD, fsize)
+        bbox   = draw.textbbox((0, 0), code, font=f_code)
+        tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+        if tw <= W * 0.92:
+            break
+
+    cy = 44 + (H - 44 - 30 - th) // 2
+    draw.text(((W - tw) // 2, cy), code, font=f_code, fill=_C_DARK)
+
+    hint = 'scan / type in app'
+    hbbox = draw.textbbox((0, 0), hint, font=f_hint)
+    draw.text(((W - (hbbox[2] - hbbox[0])) // 2, H - 28),
+              hint, font=f_hint, fill=_C_GREY)
+
+    disp.ShowImage(image)
+
+
+def draw_picoclaw_qr_lcd(disp, url, token=''):
+    """Render the PicoClaw pairing QR on the 1.69\" LCD."""
+    W, H  = disp.width, disp.height
+    image = Image.new('RGB', (W, H), _C_BG)
+    draw  = ImageDraw.Draw(image)
+
+    f_hdr   = _load_font(_FONT_BOLD, 18)
+    f_small = _load_font(_FONT_REG,  12)
+
+    draw.rectangle((0, 0, W, 40), fill=_C_HDR_PC)
+    draw.text((10, 9), 'PicoClaw Pair QR', font=f_hdr, fill=_C_WHITE)
+
+    QR_SIZE = min(H - 90, 170)
+    QR_X    = (W - QR_SIZE) // 2
+    QR_Y    = 48
+    try:
+        qr_img = _fetch_qr_image(url, size=QR_SIZE).convert('RGB')
+        image.paste(qr_img, (QR_X, QR_Y))
+    except Exception as e:
+        logging.warning('Could not fetch QR image: %s', e)
+        draw.rectangle((QR_X, QR_Y, QR_X + QR_SIZE, QR_Y + QR_SIZE),
+                       outline=_C_GREY, width=2)
+        draw.text((QR_X + 55, QR_Y + 75), 'QR', font=f_hdr, fill=_C_GREY)
+
+    y = QR_Y + QR_SIZE + 8
+    for line in textwrap.wrap(url, width=34)[:2]:
+        draw.text((6, y), line, font=f_small, fill=(60, 60, 60))
+        y += 16
+    if token:
+        tok_str = f'token: {token[:18]}...' if len(token) > 18 else f'token: {token}'
+        draw.text((6, y), tok_str, font=f_small, fill=_C_GREY)
+
+    disp.ShowImage(image)
+
+
+# ── Dispatch wrappers (route to eink or LCD based on _display_type) ──────────
+def _render_monitor():
+    if _display_type == 'lcd':
+        draw_monitor_lcd(_disp)
+    else:
+        draw_monitor(_disp)
+
+
+def _render_paircode(code):
+    if _display_type == 'lcd':
+        draw_paircode_lcd(_disp, code)
+    else:
+        draw_paircode(_disp, code)
+
+
+def _render_picoclaw_qr(url, token=''):
+    if _display_type == 'lcd':
+        draw_picoclaw_qr_lcd(_disp, url, token)
+    else:
+        draw_picoclaw_qr(_disp, url, token)
+
+
 # ── State helpers ────────────────────────────────────────────────────────
 def _get_current_state():
     """Snapshot all display-relevant system state for change detection."""
@@ -351,18 +592,18 @@ def _file_mtime():
         return None
 
 
-def _draw_request_screen(epd, payload):
-    """Render the temporary screen for *payload* — does NOT block/sleep."""
+def _draw_request_screen(payload):
+    """Render the temporary screen for *payload* using the active display."""
     kind = payload.get('kind', 'paircode')
     if kind == 'pico_qr':
         url   = str(payload.get('url',   '')).strip()
         token = str(payload.get('token', '')).strip()
         if url:
-            draw_picoclaw_qr(epd, url, token)
+            _render_picoclaw_qr(url, token)
     else:
         code = str(payload.get('code', '')).strip()
         if code:
-            draw_paircode(epd, code)
+            _render_paircode(code)
 
 
 # ── Main loop ─────────────────────────────────────────────────────────────
@@ -370,11 +611,11 @@ def _draw_request_screen(epd, payload):
 #   • clawberry_paircode.txt created/updated → immediate temporary screen
 #   • IP address or service status change    → immediate monitor refresh
 #   • MONITOR_FORCE_REFRESH_SECONDS elapsed  → periodic ghost-busting refresh
-epd = epd2in13_V4.EPD()
-logging.info("ClawBerry display service starting — change-driven rendering active.")
+_detect_display()
+logging.info('ClawBerry display service starting — display type: %s', _display_type)
 
 last_state        = _get_current_state()
-draw_monitor(epd)
+_render_monitor()
 last_monitor_draw = time.monotonic()
 last_file_mtime   = _file_mtime()   # capture mtime of any pre-existing request file
 hold_until        = 0.0             # monotonic time until temp screen must not be overwritten
@@ -396,7 +637,7 @@ while True:
             hold_until = now + seconds
             kind       = payload.get('kind', 'paircode')
             logging.info("Display request (%s) — holding for %d s", kind, seconds)
-            _draw_request_screen(epd, payload)
+            _draw_request_screen(payload)
             continue                        # skip state check this cycle
     else:
         last_file_mtime = cur_mtime         # keep in sync (tracks None when absent)
@@ -423,6 +664,6 @@ while True:
             logging.info("State change detected (%s) — updating display", ', '.join(changed))
         else:
             logging.info("Periodic forced refresh (%.0f s since last draw)", age)
-        draw_monitor(epd)
+        _render_monitor()
         last_state        = current_state
         last_monitor_draw = now
