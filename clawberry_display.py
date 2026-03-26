@@ -51,6 +51,7 @@ _FONT_REG  = '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf'
 # ── Global display handle & type ────────────────────────────────────────
 _disp         = None   # active display object (EPD or LCD_1inch69)
 _display_type = None   # 'eink' | 'lcd'
+_qr_cache     = {}     # {(url, size): PIL.Image} — avoid regenerating unchanged QR codes
 _full_refresh_counter = 0
 _FULL_REFRESH_EVERY   = 10   # force a full e-ink refresh every N renders to clear ghosting
 
@@ -182,7 +183,7 @@ def _detect_display():
             try:
                 _obj = _lm.LCD_1inch69(
                     rst=_LCD_RST, dc=_LCD_DC, bl=_LCD_BL,
-                    tp_int=_LCD_TP_INT, tp_rst=_LCD_TP_RST, bl_freq=100
+                    tp_int=_LCD_TP_INT, tp_rst=_LCD_TP_RST, bl_freq=1000
                 )
                 _obj.Init()
                 _obj.clear()
@@ -282,9 +283,12 @@ def _fetch_qr_image(text, size=220):
 
 
 def _generate_qr_image(text, size=110):
-    """Generate a QR image for *text*.
+    """Generate a QR image for *text*, with caching to avoid redundant work.
     Tries the local ``qrcode`` library first (no internet required),
     then falls back to the QuickChart cloud API."""
+    key = (text, size)
+    if key in _qr_cache:
+        return _qr_cache[key]
     try:
         import qrcode as _qrcode
         qr = _qrcode.QRCode(
@@ -296,11 +300,12 @@ def _generate_qr_image(text, size=110):
         qr.add_data(text)
         qr.make(fit=True)
         img = qr.make_image(fill_color='black', back_color='white').convert('1')
-        return img.resize((size, size), Image.NEAREST)
+        img = img.resize((size, size), Image.NEAREST)
     except ImportError:
-        pass
-    # Remote fallback
-    return _fetch_qr_image(text, size)
+        # Remote fallback
+        img = _fetch_qr_image(text, size)
+    _qr_cache[key] = img
+    return img
 
 
 # ── Screens ───────────────────────────────────────────────────────────────
