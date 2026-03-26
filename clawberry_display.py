@@ -149,8 +149,24 @@ def _detect_display():
 
     # ── 1. Try LCD 1.69\" ────────────────────────────────────────────────
     if _forced != 'eink':
+        # The Waveshare 1.69" LCD lib lives in a separate repo that may not
+        # be inside /opt/clawboard/lib/.  Add its directory to sys.path first.
+        import glob as _glob
+        _lcd_lib_candidates = [
+            # Preferred: copied into the clawboard lib tree
+            '/opt/clawboard/lib/waveshare_1in69',
+            # Fallback: Waveshare example repo installed under any user's home dir
+            *_glob.glob('/home/*/1.69inch_Touch_LCD_RPI/python/lib'),
+            *_glob.glob('/root/1.69inch_Touch_LCD_RPI/python/lib'),
+            '/opt/1.69inch_Touch_LCD_RPI/python/lib',
+        ]
+        for _lcd_lib_path in _lcd_lib_candidates:
+            if os.path.isdir(_lcd_lib_path) and _lcd_lib_path not in sys.path:
+                sys.path.insert(0, _lcd_lib_path)
+                logging.info('Added LCD lib path: %s', _lcd_lib_path)
+                break
         try:
-            from lib import LCD_1inch69 as _lm
+            import LCD_1inch69 as _lm
             _obj = _lm.LCD_1inch69(
                 rst=_LCD_RST, dc=_LCD_DC, bl=_LCD_BL,
                 tp_int=_LCD_TP_INT, tp_rst=_LCD_TP_RST, bl_freq=100
