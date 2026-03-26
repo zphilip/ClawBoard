@@ -4,7 +4,7 @@ After=network.target
 
 [Service]
 Type=simple
-User=zeroclaw
+User=root
 # 指向新位置
 WorkingDirectory=/opt/clawboard
 ExecStart=/usr/bin/python3 /opt/clawboard/clawberry_display.py
