@@ -149,38 +149,51 @@ def _detect_display():
 
     # ── 1. Try LCD 1.69\" ────────────────────────────────────────────────
     if _forced != 'eink':
-        # The Waveshare 1.69" LCD lib lives in a separate repo that may not
-        # be inside /opt/clawboard/lib/.  Add its directory to sys.path first.
-        import glob as _glob
-        _lcd_lib_candidates = [
-            # Preferred: copied into the clawboard lib tree
-            '/opt/clawboard/lib/waveshare_1in69',
-            # Fallback: Waveshare example repo installed under any user's home dir
-            *_glob.glob('/home/*/1.69inch_Touch_LCD_RPI/python/lib'),
-            *_glob.glob('/root/1.69inch_Touch_LCD_RPI/python/lib'),
-            '/opt/1.69inch_Touch_LCD_RPI/python/lib',
+        import importlib as _il
+        # LCD_1inch69.py uses relative imports (from . import ...) so it MUST
+        # be loaded as part of a package.  We add the *parent* of the package
+        # directory to sys.path, then import via importlib.import_module().
+        # Each tuple: (parent_dir_for_sys_path, package_dir_name)
+        _lcd_candidates = [
+            ('/opt/clawboard/lib', 'waveshare_1in69'),
         ]
-        for _lcd_lib_path in _lcd_lib_candidates:
-            if os.path.isdir(_lcd_lib_path) and _lcd_lib_path not in sys.path:
-                sys.path.insert(0, _lcd_lib_path)
-                logging.info('Added LCD lib path: %s', _lcd_lib_path)
+        _lm = None
+        for _parent, _pkg in _lcd_candidates:
+            _pkg_dir = os.path.join(_parent, _pkg)
+            if not os.path.isdir(_pkg_dir):
+                continue
+            # Auto-create __init__.py so Python treats the dir as a package
+            _init_py = os.path.join(_pkg_dir, '__init__.py')
+            if not os.path.exists(_init_py):
+                try:
+                    open(_init_py, 'w').close()
+                    logging.info('Created %s', _init_py)
+                except Exception as _ie:
+                    logging.warning('Could not create __init__.py: %s', _ie)
+            if _parent not in sys.path:
+                sys.path.insert(0, _parent)
+            try:
+                _lm = _il.import_module(f'{_pkg}.LCD_1inch69')
+                logging.info('Loaded LCD module from %s/%s', _parent, _pkg)
                 break
-        try:
-            import LCD_1inch69 as _lm
-            _obj = _lm.LCD_1inch69(
-                rst=_LCD_RST, dc=_LCD_DC, bl=_LCD_BL,
-                tp_int=_LCD_TP_INT, tp_rst=_LCD_TP_RST, bl_freq=100
-            )
-            _obj.Init()
-            _obj.clear()
-            _obj.bl_DutyCycle(80)
-            _lcd_mod      = _lm
-            _disp         = _obj
-            _display_type = 'lcd'
-            logging.info('Display detected: LCD 1.69\" (LCD_1inch69)')
-            return _obj
-        except Exception as e:
-            logging.info('LCD 1.69\" not available: %s', e)
+            except Exception as _ie:
+                logging.info('Could not load %s.LCD_1inch69: %s', _pkg, _ie)
+        if _lm is not None:
+            try:
+                _obj = _lm.LCD_1inch69(
+                    rst=_LCD_RST, dc=_LCD_DC, bl=_LCD_BL,
+                    tp_int=_LCD_TP_INT, tp_rst=_LCD_TP_RST, bl_freq=100
+                )
+                _obj.Init()
+                _obj.clear()
+                _obj.bl_DutyCycle(80)
+                _lcd_mod      = _lm
+                _disp         = _obj
+                _display_type = 'lcd'
+                logging.info('Display detected: LCD 1.69\" (LCD_1inch69)')
+                return _obj
+            except Exception as e:
+                logging.info('LCD 1.69\" not available: %s', e)
 
     # ── 2. Try e-ink 2.13\" ──────────────────────────────────────────────
     if _forced != 'lcd':
