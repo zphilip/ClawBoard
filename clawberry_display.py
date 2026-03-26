@@ -34,7 +34,10 @@ _LCD_TP_RST = 17
 
 # ── Handoff file written by clawberry_paircode.py ─────────────────────────
 _HERE            = os.path.dirname(os.path.realpath(__file__))
-DISPLAY_REQUEST_FILE = os.path.join(_HERE, 'config', 'clawberry_paircode.txt')
+DISPLAY_REQUEST_FILE      = os.path.join(_HERE, 'config', 'clawberry_paircode.txt')
+DISPLAY_TYPE_OVERRIDE_FILE = os.path.join(_HERE, 'config', 'display_type.txt')
+# Override file: create config/display_type.txt containing 'eink' or 'lcd'
+# to skip auto-detection and force a specific driver.
 # Fallback hold duration used ONLY when the payload written by clawberry_paircode.py
 # has no 'seconds' field. The primary source of truth is always the 'seconds' value
 # inside clawberry_paircode.txt — change it there, not here.
@@ -121,50 +124,67 @@ signal.signal(signal.SIGINT,  _shutdown)
 def _detect_display():
     """Probe hardware and initialise the first supported display found.
 
-    Detection order:
-      1. E-ink 2.13\" (epd2in13_V4)  — SPI, black/white
-      2. LCD  1.69\"  (LCD_1inch69)  — SPI + touch, RGB colour
+    Detection order (can be overridden by config/display_type.txt):
+      1. LCD  1.69\"  (LCD_1inch69)  — tried first; touch controller init
+                                        fails reliably when hardware absent
+      2. E-ink 2.13\" (epd2in13_V4)  — SPI-only, always succeeds on a Pi
+                                        even without display connected
 
+    To force a type, create config/display_type.txt with content 'lcd' or 'eink'.
     Sets the module globals ``_disp``, ``_display_type``, ``_eink_mod`` /
     ``_lcd_mod`` and returns the active display object.
     """
     global _disp, _display_type, _eink_mod, _lcd_mod
 
-    # ── 1. Try e-ink 2.13\" ──────────────────────────────────────────────
+    # ── 0. Check for a manual override file ───────────────────────────────
+    _forced = None
     try:
-        from waveshare_epd import epd2in13_V4 as _em
-        _obj = _em.EPD()
-        _obj.init()
-        _obj.sleep()
-        _eink_mod     = _em
-        _disp         = _obj
-        _display_type = 'eink'
-        logging.info('Display detected: e-ink 2.13\" (epd2in13_V4)')
-        return _obj
-    except Exception as e:
-        logging.info('E-ink 2.13\" not available: %s', e)
+        with open(DISPLAY_TYPE_OVERRIDE_FILE) as _f:
+            _forced = _f.read().strip().lower()
+        logging.info('Display type override: %r (from %s)', _forced, DISPLAY_TYPE_OVERRIDE_FILE)
+    except FileNotFoundError:
+        pass
+    except Exception as _e:
+        logging.warning('Could not read display_type.txt: %s', _e)
 
-    # ── 2. Try LCD 1.69\" ────────────────────────────────────────────────
-    try:
-        from lib import LCD_1inch69 as _lm
-        _obj = _lm.LCD_1inch69(
-            rst=_LCD_RST, dc=_LCD_DC, bl=_LCD_BL,
-            tp_int=_LCD_TP_INT, tp_rst=_LCD_TP_RST, bl_freq=100
-        )
-        _obj.Init()
-        _obj.clear()
-        _obj.bl_DutyCycle(80)
-        _lcd_mod      = _lm
-        _disp         = _obj
-        _display_type = 'lcd'
-        logging.info('Display detected: LCD 1.69\" (LCD_1inch69)')
-        return _obj
-    except Exception as e:
-        logging.info('LCD 1.69\" not available: %s', e)
+    # ── 1. Try LCD 1.69\" ────────────────────────────────────────────────
+    if _forced != 'eink':
+        try:
+            from lib import LCD_1inch69 as _lm
+            _obj = _lm.LCD_1inch69(
+                rst=_LCD_RST, dc=_LCD_DC, bl=_LCD_BL,
+                tp_int=_LCD_TP_INT, tp_rst=_LCD_TP_RST, bl_freq=100
+            )
+            _obj.Init()
+            _obj.clear()
+            _obj.bl_DutyCycle(80)
+            _lcd_mod      = _lm
+            _disp         = _obj
+            _display_type = 'lcd'
+            logging.info('Display detected: LCD 1.69\" (LCD_1inch69)')
+            return _obj
+        except Exception as e:
+            logging.info('LCD 1.69\" not available: %s', e)
+
+    # ── 2. Try e-ink 2.13\" ──────────────────────────────────────────────
+    if _forced != 'lcd':
+        try:
+            from waveshare_epd import epd2in13_V4 as _em
+            _obj = _em.EPD()
+            _obj.init()
+            _obj.sleep()
+            _eink_mod     = _em
+            _disp         = _obj
+            _display_type = 'eink'
+            logging.info('Display detected: e-ink 2.13\" (epd2in13_V4)')
+            return _obj
+        except Exception as e:
+            logging.info('E-ink 2.13\" not available: %s', e)
 
     raise RuntimeError(
         'No supported display detected '
-        '(tried e-ink 2.13\" and LCD 1.69\")'
+        '(tried LCD 1.69\" and e-ink 2.13\"). '
+        f'Override file: {DISPLAY_TYPE_OVERRIDE_FILE}'
     )
 
 
