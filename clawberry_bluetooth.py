@@ -69,6 +69,19 @@ PANU_UUID     = '00001115-0000-1000-8000-00805f9b34fb'
 
 # Track MACs currently being connected to avoid duplicate threads
 _pan_connecting: set = set()
+_pan_lock = threading.Lock()   # guards _pan_connecting against race conditions
+_pan_success:  set = set()     # MACs that have successfully PAN-connected at least once
+_pan_cooldown: dict = {}       # {mac: monotonic deadline} — ignore Connected signals after success
+PAN_COOLDOWN_SECONDS = 90      # seconds to suppress re-connect after a successful PAN
+_last_bt_event: float = 0.0   # monotonic time of last Paired/Connected/Disconnected signal
+
+WATCHDOG_INTERVAL  = 120   # seconds between adapter health checks
+WATCHDOG_IDLE_SECS = 180   # reset adapter if no BT signals for this long
+
+# Pairing agent references — kept globally so _bt_adapter_reset can re-register
+# after a bluetoothd restart (new process loses all agent registrations).
+_agent_obj     = None   # AutoPairAgent instance
+_agent_mgr_obj = None   # org.bluez.AgentManager1 proxy
 
 # ── DBus adapter helpers ───────────────────────────────────────────────────
 
@@ -114,6 +127,30 @@ def bt_trust_device(mac: str):
         log.warning("Could not trust %s: %s", mac, exc)
 
 
+def bt_remove_device(mac: str):
+    """Remove (forget) a paired device so the phone can re-pair cleanly.
+
+    Called automatically when PAN connect fails after all retries, so the
+    stale bonding key is cleared.  Next time the phone tries to pair, BlueZ
+    will treat it as a brand-new device — no "wrong passkey" error.
+    """
+    try:
+        bus      = dbus.SystemBus()
+        adapter  = dbus.Interface(
+            bus.get_object(BT_SERVICE, BT_ADAPTER_PATH),
+            'org.bluez.Adapter1',
+        )
+        dev_path = BT_ADAPTER_PATH + '/dev_' + mac.replace(':', '_')
+        adapter.RemoveDevice(dbus.ObjectPath(dev_path))   # must be ObjectPath, not str
+        log.info("🗑️  Removed stale bonding for %s — phone can pair fresh", mac)
+    except dbus.DBusException as exc:
+        err = str(exc)
+        if 'DoesNotExist' in err or 'UnknownObject' in err:
+            log.debug("Device %s already removed (DoesNotExist — harmless)", mac)
+        else:
+            log.warning("Could not remove device %s: %s", mac, exc)
+
+
 # ── NoInputNoOutput pairing agent ─────────────────────────────────────────
 # With this agent registered, phones will pair with zero interaction on the
 # Pi — no PIN prompt, no passkey confirmation.
@@ -131,6 +168,13 @@ class AutoPairAgent(dbus.service.Object):
     @dbus.service.method(AGENT_IFACE, in_signature='os', out_signature='')
     def AuthorizeService(self, device, uuid):
         log.info("Agent: AuthorizeService device=%s uuid=%s — approved", device, uuid)
+        # Trust the device immediately so it can reconnect without re-pairing
+        try:
+            dev_part = str(device).split('/')[-1]
+            mac = dev_part[4:].replace('_', ':')
+            bt_trust_device(mac)
+        except Exception as exc:
+            log.warning("AuthorizeService trust error: %s", exc)
         uuid_lower = str(uuid).lower()
         if uuid_lower in (PAN_NAP_UUID, PANU_UUID):
             try:
@@ -183,7 +227,7 @@ def _nmcli(*args):
         if r.stdout.strip():
             log.debug("nmcli stdout: %s", r.stdout.strip())
         if r.returncode != 0 and r.stderr.strip():
-            log.debug("nmcli stderr: %s", r.stderr.strip())
+            log.info("nmcli stderr: %s", r.stderr.strip())
         return r
     except Exception as exc:
         log.warning("nmcli exception: %s", exc)
@@ -201,54 +245,344 @@ def _check_internet():
         return False
 
 
-def connect_pan(mac: str):
-    """Try to establish a Bluetooth PAN (NAP) connection via nmcli.
+def _request_dhcp(iface: str):
+    """Request a DHCP lease on *iface*.
 
-    Attempts (in order):
-      1. nmcli device connect <mac>          – works if NM already knows type
-      2. Create a 'panu' connection profile  – explicit Bluetooth PAN profile
-      3. Create a 'dun'  connection profile  – Dial-Up Networking fallback
+    BlueZ Network1.Connect() creates the bnep0 interface but does not
+    request a DHCP lease.  We must do it explicitly.
+    Tries dhclient first (Debian/Ubuntu), then dhcpcd (Raspberry Pi OS).
+    """
+    for cmd in (['dhclient', '-v', iface], ['dhcpcd', iface]):
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+            if r.returncode == 0:
+                log.info('DHCP lease obtained on %s via %s', iface, cmd[0])
+                return
+            log.debug('%s %s: %s', cmd[0], iface,
+                      r.stderr.strip().splitlines()[-1] if r.stderr.strip() else 'failed')
+        except FileNotFoundError:
+            continue   # binary not installed, try next
+        except Exception as exc:
+            log.debug('_request_dhcp %s error: %s', iface, exc)
+    # Last resort: ask NetworkManager to manage the bare interface —
+    # but only if it still exists (dhcpcd removes it on carrier loss).
+    if os.path.exists(f'/sys/class/net/{iface}'):
+        try:
+            subprocess.run(
+                ['nmcli', 'device', 'connect', iface],
+                capture_output=True, text=True, timeout=20
+            )
+            log.info('Asked NM to connect interface %s', iface)
+        except Exception as exc:
+            log.debug('nmcli device connect %s error: %s', iface, exc)
+    else:
+        log.debug('Interface %s already gone — skipping NM fallback', iface)
+
+
+def _cleanup_bnep():
+    """Force-delete any stale bnep* kernel interfaces.
+
+    After rapid BNEP connect/disconnect cycles the kernel module can leave
+    bnep0 in a zombie state that causes BlueZ Network1.Connect() to return
+    'Input/output error' indefinitely.  Nuking it at the kernel level before
+    each connect attempt gives BlueZ a clean slate.
+    """
+    try:
+        for entry in os.scandir('/sys/class/net'):
+            if entry.name.startswith('bnep'):
+                subprocess.run(['ip', 'link', 'delete', entry.name],
+                               capture_output=True, timeout=5)
+                log.info('Cleaned up stale %s interface', entry.name)
+                time.sleep(0.1)
+    except FileNotFoundError:
+        pass   # /sys/class/net vanished — harmless
+    except Exception as exc:
+        log.debug('_cleanup_bnep: %s', exc)
+
+
+def _bt_adapter_reset():
+    """Power-cycle the BT adapter to clear stuck BNEP/HCI state.
+
+    After many rapid BNEP cycles the kernel HCI layer can stop surfacing
+    Paired/Connected signals entirely.  A D-Bus power-off→on cycle resets
+    the internal state in ~3 s without restarting bluetoothd.
+    Falls back to 'systemctl restart bluetooth' if D-Bus is unresponsive.
+    """
+    global _last_bt_event
+    log.warning('🔄 BT adapter stuck — power-cycling to recover ...')
+    _pan_cooldown.clear()
+    _cleanup_bnep()
+    try:
+        for _attempt in range(6):
+            try:
+                _adapter_props().Set('org.bluez.Adapter1', 'Powered', dbus.Boolean(False))
+                log.debug('Adapter powered off for reset (attempt %d)', _attempt + 1)
+                break
+            except dbus.DBusException as _exc:
+                log.debug('Reset power-off attempt %d: %s', _attempt + 1, _exc)
+                time.sleep(1)
+        time.sleep(2)
+        _set_adapter('Powered', dbus.Boolean(True))
+        time.sleep(1)
+        bt_discoverable(True)
+        _last_bt_event = time.monotonic()   # prevent immediate watchdog re-trigger
+        log.info('🔄 BT adapter reset complete — discoverable again')
+    except Exception as exc:
+        log.warning('D-Bus adapter reset failed (%s) — restarting bluetoothd', exc)
+        try:
+            subprocess.run(['systemctl', 'restart', 'bluetooth'],
+                           capture_output=True, timeout=15)
+            time.sleep(5)
+            bt_power_on()
+            bt_discoverable(True)
+            _reregister_agent()   # critical: new bluetoothd has no agent registered
+            _last_bt_event = time.monotonic()
+            log.info('🔄 bluetoothd restarted — discoverable again')
+        except Exception as exc2:
+            log.error('Could not restart bluetooth: %s', exc2)
+
+
+def _bt_watchdog():
+    """GLib timer callback: health-check the BT adapter and reset if stuck.
+
+    Two failure modes are detected:
+      1. BlueZ D-Bus stops responding entirely (adapter truly dead).
+      2. D-Bus responds but no Paired/Connected/Disconnected signals have
+         been received for WATCHDOG_IDLE_SECS — HCI layer zombie state.
+
+    Returns True so GLib keeps calling this at WATCHDOG_INTERVAL.
+    """
+    # Liveness probe — a frozen bluetoothd will not respond to this
+    try:
+        powered = _adapter_props().Get('org.bluez.Adapter1', 'Powered')
+        if not bool(powered):
+            log.warning('⚠️ BT adapter is powered off — powering on')
+            bt_power_on()
+            bt_discoverable(True)
+    except Exception as exc:
+        log.warning('⚠️ BlueZ not responding (%s) — resetting adapter', exc)
+        threading.Thread(target=_bt_adapter_reset, daemon=True).start()
+        return True
+
+    # Idle probe — D-Bus works but signals have dried up (HCI zombie)
+    if _last_bt_event > 0:
+        idle = time.monotonic() - _last_bt_event
+        if idle > WATCHDOG_IDLE_SECS:
+            log.warning('⚠️ No BT events for %.0f s — resetting adapter', idle)
+            threading.Thread(target=_bt_adapter_reset, daemon=True).start()
+
+    return True   # keep GLib timer repeating
+
+
+def _nm_purge_bt_profiles(mac: str = None):
+    """Delete all NetworkManager Bluetooth connection profiles.
+
+    Called on startup (mac=None) to clear any profiles left from previous runs,
+    and on every disconnect (mac=<addr>) to remove profiles for that device.
+    This prevents NM from auto-reconnecting via a saved profile.
+    """
+    try:
+        r = subprocess.run(
+            ['nmcli', '-t', '-f', 'NAME,TYPE,DEVICE', 'connection', 'show'],
+            capture_output=True, text=True, timeout=10
+        )
+        for line in r.stdout.splitlines():
+            parts = line.split(':')
+            if len(parts) < 2:
+                continue
+            name, conn_type = parts[0].strip(), parts[1].strip()
+            device = parts[2].strip() if len(parts) > 2 else ''
+            if conn_type != 'bluetooth':
+                continue
+            if mac and device.lower() != mac.lower() and mac.lower() not in name.lower():
+                continue
+            result = subprocess.run(
+                ['nmcli', 'connection', 'delete', name],
+                capture_output=True, text=True, timeout=10
+            )
+            if result.returncode == 0:
+                log.info('Deleted NM BT profile: %s', name)
+            else:
+                log.debug('Could not delete NM profile %s: %s', name,
+                          result.stderr.strip().splitlines()[0] if result.stderr else '')
+    except Exception as exc:
+        log.debug('_nm_purge_bt_profiles error: %s', exc)
+
+
+def _nm_device_disconnect(mac: str):
+    """Tell NetworkManager to disconnect *mac* so it does not auto-reconnect.
+
+    Called whenever BlueZ reports a disconnect.  Without this, NM sees the
+    BT device go away and immediately tries to re-establish its saved profile.
+    """
+    try:
+        subprocess.run(
+            ['nmcli', 'device', 'disconnect', mac],
+            capture_output=True, text=True, timeout=10
+        )
+        log.debug('NM device %s disconnected', mac)
+    except Exception as exc:
+        log.debug('nmcli device disconnect %s: %s', mac, exc)
+
+
+def _reregister_agent():
+    """Re-register the pairing agent with bluetoothd.
+
+    Must be called after 'systemctl restart bluetooth' because the new
+    bluetoothd process has no knowledge of our AutoPairAgent — every
+    pair request would silently receive no response until re-registered.
+    """
+    if _agent_obj is None:
+        return
+    try:
+        bus = dbus.SystemBus()
+        mgr = dbus.Interface(
+            bus.get_object(BT_SERVICE, '/org/bluez'),
+            'org.bluez.AgentManager1',
+        )
+        mgr.RegisterAgent(BT_AGENT_PATH, 'NoInputNoOutput')
+        mgr.RequestDefaultAgent(BT_AGENT_PATH)
+        log.info('Pairing agent re-registered with bluetoothd')
+    except Exception as exc:
+        log.warning('Could not re-register pairing agent: %s', exc)
+
+
+def _connect_pan_bttool(mac: str):
+    """Connect PAN via bt-network (bluez-tools) subprocess.
+
+    'bt-network -c <MAC> nap' is a battle-tested C implementation that handles
+    BNEP at the socket level, avoiding the Python D-Bus fragility of Network1.
+    Install with: sudo apt install bluez-tools
+
+    Returns the bnep interface name on success, None if bt-network is not
+    installed, or False on connection failure.
+    """
+    try:
+        _cleanup_bnep()
+        # bt-network -c is a foreground process that blocks for the lifetime of
+        # the connection.  We use Popen and poll for the bnep interface to appear.
+        proc = subprocess.Popen(
+            ['bt-network', '-c', mac, 'nap'],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        # Wait up to 10 s for kernel to expose the bnep* interface
+        for _ in range(20):
+            time.sleep(0.5)
+            if proc.poll() is not None:
+                log.debug('bt-network exited early (returncode=%d)', proc.returncode)
+                return False
+            try:
+                for entry in os.scandir('/sys/class/net'):
+                    if entry.name.startswith('bnep'):
+                        log.info('bt-network created interface %s for %s', entry.name, mac)
+                        # Store proc so we can terminate it on explicit disconnect
+                        _bt_network_procs[mac] = proc
+                        return entry.name
+            except OSError:
+                pass
+        # Timeout — interface never appeared
+        proc.terminate()
+        return False
+    except FileNotFoundError:
+        return None   # bt-network not installed — fall back to D-Bus
+    except Exception as exc:
+        log.debug('_connect_pan_bttool error: %s', exc)
+        return False
+
+
+# Running bt-network processes keyed by MAC — terminated on disconnect
+_bt_network_procs: dict = {}
+
+
+def _connect_pan_network1(mac: str):
+    """Strategy 0: connect via org.bluez.Network1 D-Bus interface directly.
+
+    Returns:
+      True   — connected successfully
+      False  — NAP/PANU not available yet (phone not tethering), worth retrying
+      None   — device object itself no longer exists, stop retrying
+    """
+    bus      = dbus.SystemBus()
+    dev_path = BT_ADAPTER_PATH + '/dev_' + mac.replace(':', '_')
+
+    # First probe: is the device object still present?
+    try:
+        dbus.Interface(
+            bus.get_object(BT_SERVICE, dev_path),
+            'org.freedesktop.DBus.Properties',
+        ).Get('org.bluez.Device1', 'Connected')
+    except dbus.DBusException as exc:
+        err = str(exc)
+        if 'UnknownObject' in err or 'DoesNotExist' in err:
+            log.info('Network1: device %s no longer exists — aborting', mac)
+            return None   # device was removed; stop all retries
+        # Other probe error — device still exists, continue
+
+    # Nuke any zombie bnep* interfaces in the kernel before attempting connect.
+    # Leftover interfaces from previous rapid cycles are the primary cause of
+    # 'Input/output error' on Network1.Connect().
+    _cleanup_bnep()
+
+    for profile in ('nap', 'panu'):
+        try:
+            net   = dbus.Interface(
+                bus.get_object(BT_SERVICE, dev_path),
+                'org.bluez.Network1',
+            )
+            # Disconnect any stale Network1 state from a previous bnep0 link.
+            # Without this, BlueZ returns "Input/output error" on Connect() when
+            # the phone's BT tethering stack cycles disconnect/reconnect rapidly.
+            try:
+                net.Disconnect()
+                time.sleep(0.3)
+            except dbus.DBusException:
+                pass  # Not connected — that is fine
+            iface = net.Connect(profile)
+            log.info('✅ PAN connected via bluez Network1/%s (%s) for %s', profile, iface, mac)
+            # BlueZ created the interface but did not request a DHCP lease — do it now
+            threading.Thread(target=_request_dhcp, args=[str(iface)], daemon=True).start()
+            return True
+        except dbus.DBusException as exc:
+            err = str(exc)
+            if 'UnknownObject' in err or 'DoesNotExist' in err:
+                # Device was removed between the probe and the Connect call
+                log.info('Network1 %s: device gone mid-attempt for %s', profile, mac)
+                return None
+            # InProgress / Failed / etc. — phone not tethering yet, worth retrying
+            log.info('Network1 %s failed for %s: %s', profile, mac, exc)
+    return False
+
+
+def connect_pan(mac: str):
+    """Try to establish a Bluetooth PAN (NAP) connection.
+
+    Strategy 0: bt-network (bluez-tools) — C implementation, most robust.
+                Install with: sudo apt install bluez-tools
+    Strategy 1: org.bluez.Network1 D-Bus — pure Python fallback.
+
+    Returns True on success, False on failure, None if device is gone.
     """
     log.info("PAN: attempting connection to %s ...", mac)
-    safe_mac = mac.replace(':', '')
 
-    # ── Strategy 1: direct device connect ──────────────────────────────────
-    r = _nmcli('device', 'connect', mac)
-    if r and r.returncode == 0:
-        log.info("✅ PAN connected to %s (strategy 1)", mac)
+    # ── Strategy 0: bt-network subprocess (bluez-tools) ────────────────────
+    result = _connect_pan_bttool(mac)
+    if isinstance(result, str):   # returns interface name on success
+        threading.Thread(target=_request_dhcp, args=[result], daemon=True).start()
         _announce_internet(mac)
         return True
+    if result is False:
+        log.debug('bt-network failed for %s — trying D-Bus fallback', mac)
+    # result is None — bt-network not installed, proceed to D-Bus
 
-    # ── Strategy 2: explicit panu profile ──────────────────────────────────
-    profile_panu = f'bt-panu-{safe_mac}'
-    # Remove stale profile if it exists
-    _nmcli('connection', 'delete', profile_panu)
-    _nmcli('connection', 'add',
-           'type',              'bluetooth',
-           'con-name',          profile_panu,
-           'bluetooth.bdaddr',  mac,
-           'bluetooth.type',    'panu')
-    r2 = _nmcli('connection', 'up', profile_panu)
-    if r2 and r2.returncode == 0:
-        log.info("✅ PAN connected to %s (strategy 2 / panu)", mac)
+    # ── Strategy 1: native BlueZ Network1 D-Bus ────────────────────────────
+    dbus_result = _connect_pan_network1(mac)
+    if dbus_result is True:
         _announce_internet(mac)
         return True
+    if dbus_result is None:
+        return None   # device gone — abort retry loop
 
-    # ── Strategy 3: dun profile (some iOS / older Android) ─────────────────
-    profile_dun = f'bt-dun-{safe_mac}'
-    _nmcli('connection', 'delete', profile_dun)
-    _nmcli('connection', 'add',
-           'type',              'bluetooth',
-           'con-name',          profile_dun,
-           'bluetooth.bdaddr',  mac,
-           'bluetooth.type',    'dun')
-    r3 = _nmcli('connection', 'up', profile_dun)
-    if r3 and r3.returncode == 0:
-        log.info("✅ PAN connected to %s (strategy 3 / dun)", mac)
-        _announce_internet(mac)
-        return True
-
-    log.warning("⚠️ All PAN strategies failed for %s", mac)
+    log.warning("\u26a0\ufe0f PAN not ready for %s (phone tethering enabled?)", mac)
     return False
 
 
@@ -256,6 +590,11 @@ def _announce_internet(mac: str):
     """Log whether internet is actually reachable after PAN connect."""
     # Give the interface a moment to get a DHCP lease
     time.sleep(3)
+    _pan_success.add(mac)   # mark as ever-successfully-connected
+    # Suppress auto-reconnect attempts for a while
+    _pan_cooldown[mac] = time.monotonic() + PAN_COOLDOWN_SECONDS
+    # Remove any NM BT profiles so NM can't auto-reconnect on next disconnect
+    _nm_purge_bt_profiles(mac)
     if _check_internet():
         log.info("🌐 Internet reachable via Bluetooth tethering from %s", mac)
     else:
@@ -273,22 +612,37 @@ def _handle_paired(mac: str):
 
 def _handle_connected(mac: str):
     """Attempt PAN connect, deduplicating concurrent calls for the same MAC."""
-    if mac in _pan_connecting:
-        log.debug("PAN connect already in progress for %s — skipping", mac)
-        return
-    _pan_connecting.add(mac)
+    with _pan_lock:
+        if time.monotonic() < _pan_cooldown.get(mac, 0):
+            log.debug('PAN cooldown active for %s — ignoring reconnect signal', mac)
+            return
+        if mac in _pan_connecting:
+            log.debug("PAN connect already in progress for %s — skipping", mac)
+            return
+        _pan_connecting.add(mac)
     try:
         # Retry up to 3 times with 5 s gap — phone tethering may need a moment
         for attempt in range(1, 4):
-            if connect_pan(mac):
+            result = connect_pan(mac)
+            if result is True:
+                return
+            if result is None:
+                log.info("Device %s no longer present — aborting PAN retries", mac)
                 return
             if attempt < 3:
                 log.info("PAN attempt %d failed for %s — retrying in 5 s ...", attempt, mac)
                 time.sleep(5)
         log.warning("⚠️ PAN connect gave up after 3 attempts for %s", mac)
         log.warning("    → Make sure Bluetooth Tethering is ON in your phone's hotspot settings.")
+        # Always remove bonding so the phone can re-pair cleanly.
+        # With the NoInputNoOutput agent, re-pairing is automatic — the phone
+        # will re-pair and re-establish tethering without user interaction.
+        # NOT removing bonding leaves previously-connected devices permanently
+        # stuck when the phone's BNEP stack enters an I/O error state.
+        bt_remove_device(mac)
     finally:
-        _pan_connecting.discard(mac)
+        with _pan_lock:
+            _pan_connecting.discard(mac)
 
 
 # ── DBus signal listener ───────────────────────────────────────────────────
@@ -308,6 +662,11 @@ def _on_properties_changed(interface, changed, invalidated, path=None):
     connected = changed.get('Connected')
     name      = changed.get('Alias') or changed.get('Name') or ''
 
+    # Any real BT signal proves the adapter is alive — reset the idle watchdog
+    if paired or connected is not None:
+        global _last_bt_event
+        _last_bt_event = time.monotonic()
+
     if paired:
         log.info("📱 Device paired: %s  %s", mac, name)
         threading.Thread(target=_handle_paired, args=[mac], daemon=True).start()
@@ -316,7 +675,20 @@ def _on_properties_changed(interface, changed, invalidated, path=None):
         threading.Thread(target=_handle_connected, args=[mac], daemon=True).start()
     elif connected == dbus.Boolean(False):
         log.info("🔌 Device disconnected: %s  %s", mac, name)
-        _pan_connecting.discard(mac)
+        with _pan_lock:
+            still_connecting = mac in _pan_connecting
+        # Clear PAN cooldown so the next Connected signal immediately re-establishes PAN.
+        # The phone's BT tethering stack cycles disconnect/reconnect every ~50–60 s,
+        # which is shorter than the 90 s cooldown window — without this the Pi would
+        # sit with no internet until the cooldown expires.
+        _pan_cooldown.pop(mac, None)
+        # Purge NM BT profiles for this MAC so NM can't auto-reconnect
+        threading.Thread(target=_nm_purge_bt_profiles, args=[mac], daemon=True).start()
+        # If no PAN attempt is in flight and device never connected successfully,
+        # the bonding key may be stale — remove it so the phone can re-pair cleanly.
+        if mac not in _pan_success and not still_connecting:
+            log.info("Device %s disconnected without successful PAN — removing stale bonding", mac)
+            threading.Thread(target=bt_remove_device, args=[mac], daemon=True).start()
 
 
 # ── Main ───────────────────────────────────────────────────────────────────
@@ -325,31 +697,66 @@ def main():
     dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
     bus = dbus.SystemBus()
 
+    # Clean up any stale kernel state left by the previous run before touching
+    # the adapter.  Zombie bnep interfaces and stuck HCI state cause every
+    # subsequent Network1.Connect() to fail with Input/output error.
+    _cleanup_bnep()
+    log.info("Cleaned up stale bnep interfaces")
+
+    # Hard-reset the adapter so the HCI layer starts clean regardless of what
+    # the previous service run left behind. Power-off flushes internal BNEP/ACL
+    # state that a Python process restart alone cannot clear.
+    # BlueZ briefly rejects Set('Powered', False) with AuthenticationFailed while
+    # still cleaning up the previous session — retry until it sticks.
+    log.info("Power-cycling BT adapter for clean startup ...")
+    for _attempt in range(6):
+        try:
+            _adapter_props().Set('org.bluez.Adapter1', 'Powered', dbus.Boolean(False))
+            log.debug('Adapter powered off (attempt %d)', _attempt + 1)
+            break
+        except dbus.DBusException as _exc:
+            log.debug('Power-off attempt %d: %s — retrying in 1 s', _attempt + 1, _exc)
+            time.sleep(1)
+    time.sleep(1)  # let the HCI layer settle after power-off
+
     # Power on + make discoverable
     bt_power_on()
     bt_discoverable(True)
 
     # Register the auto-accept pairing agent
-    agent = AutoPairAgent(bus, BT_AGENT_PATH)
-    agent_mgr = dbus.Interface(
+    global _agent_obj, _agent_mgr_obj
+    _agent_obj = AutoPairAgent(bus, BT_AGENT_PATH)
+    _agent_mgr_obj = dbus.Interface(
         bus.get_object(BT_SERVICE, '/org/bluez'),
         'org.bluez.AgentManager1',
     )
-    agent_mgr.RegisterAgent(BT_AGENT_PATH, 'NoInputNoOutput')
-    agent_mgr.RequestDefaultAgent(BT_AGENT_PATH)
+    _agent_mgr_obj.RegisterAgent(BT_AGENT_PATH, 'NoInputNoOutput')
+    _agent_mgr_obj.RequestDefaultAgent(BT_AGENT_PATH)
     log.info("Auto-pair agent registered (NoInputNoOutput)")
 
-    # Subscribe to device property changes (Paired / Connected)
+    # Purge any BT profiles left from previous runs — prevents NM auto-reconnect
+    _nm_purge_bt_profiles()
+    log.info("Cleared stale NM Bluetooth profiles")
+
+    # Subscribe to device property changes (Paired / Connected).
+    # Do NOT filter by bus_name=BT_SERVICE: if bluetoothd restarts (watchdog
+    # fallback), it acquires a new unique D-Bus name and the old bus_name filter
+    # would silently drop all Paired/Connected signals forever.
+    # The handler already ignores anything that isn't org.bluez.Device1.
     bus.add_signal_receiver(
         _on_properties_changed,
         dbus_interface='org.freedesktop.DBus.Properties',
         signal_name='PropertiesChanged',
         path_keyword='path',
-        bus_name=BT_SERVICE,
     )
 
     log.info("📲  Bluetooth ready — scan for this device from your phone and pair.")
     log.info("    On Android: enable Bluetooth Tethering in hotspot settings.")
+
+    # Seed idle watchdog with current time so it fires even if no device
+    # has ever paired in this session (catches stuck adapter from startup)
+    global _last_bt_event
+    _last_bt_event = time.monotonic()
 
     loop = GLib.MainLoop()
 
@@ -359,12 +766,13 @@ def main():
         return True   # returning True keeps the GLib timer repeating
 
     GLib.timeout_add_seconds(REDISCOVER_INTERVAL, _keep_discoverable)
+    GLib.timeout_add_seconds(WATCHDOG_INTERVAL,   _bt_watchdog)
 
     def _shutdown(signum, frame):
         log.info("Signal %s received — shutting down", signum)
         bt_discoverable(False)
         try:
-            agent_mgr.UnregisterAgent(BT_AGENT_PATH)
+            _agent_mgr_obj.UnregisterAgent(BT_AGENT_PATH)
         except Exception:
             pass
         loop.quit()
