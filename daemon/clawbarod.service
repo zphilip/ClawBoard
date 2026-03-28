@@ -9,8 +9,8 @@ ExecStart=/opt/clawboard/venv/bin/python3 /opt/clawboard/dashboard.py
 # 设置工作目录，方便脚本读取 config.toml
 WorkingDirectory=/opt/clawboard
 # 以 zero 用户运行
-User=zeroclaw
-Group=zeroclaw
+User=zero
+Group=zero
 # 如果崩溃，10秒后自动重启
 Restart=always
 RestartSec=10
