@@ -1,0 +1,34 @@
+[Unit]
+Description=PicoClaw Service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=picoclaw
+Group=picoclaw
+
+ExecStartPre=/usr/bin/test -x /usr/local/bin/picoclaw
+
+ExecStart=/usr/local/bin/picoclaw gateway
+
+WorkingDirectory=/var/lib/picoclaw
+
+Restart=on-failure
+RestartSec=5
+
+StandardOutput=journal
+StandardError=journal
+
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/picoclaw
+RestrictNamespaces=true
+RestrictRealtime=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target

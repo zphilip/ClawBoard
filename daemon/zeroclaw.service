@@ -1,0 +1,34 @@
+[Unit]
+Description=ZeroClaw Service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=zeroclaw
+Group=zeroclaw
+
+ExecStartPre=/usr/bin/test -x /usr/local/bin/zeroclaw
+
+ExecStart=/usr/local/bin/zeroclaw daemon
+
+WorkingDirectory=/var/lib/zeroclaw
+
+Restart=on-failure
+RestartSec=5
+
+StandardOutput=journal
+StandardError=journal
+
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/zeroclaw
+RestrictNamespaces=true
+RestrictRealtime=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target
