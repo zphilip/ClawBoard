@@ -1,0 +1,28 @@
+[Unit]
+Description=ClawBerry Onboarding & Workspace Sync
+After=network-online.target
+Wants=network-online.target
+Before=picoclaw.service zeroclaw.service
+
+[Service]
+Type=oneshot
+# Must run as root so the workspace sync script can chown files for
+# both the picoclaw and zeroclaw service users.
+User=root
+Group=root
+
+# 1. Sync workspace content from GitHub into both runtime homes
+ExecStart=/usr/local/bin/clawberry-workspace-sync.sh
+
+# 2. Run picoclaw first-boot onboarding (creates ~/.picoclaw dirs etc.)
+ExecStartPost=/bin/su -s /bin/sh picoclaw -c '/usr/local/bin/picoclaw onboard'
+
+# 3. Mark onboarding done
+ExecStartPost=/bin/touch /var/lib/picoclaw/.picoclaw_onboarded
+
+RemainAfterExit=yes
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
