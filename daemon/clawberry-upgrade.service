@@ -17,9 +17,6 @@ ExecStart=/usr/local/bin/clawberry-workspace-sync.sh
 # 2. Run picoclaw first-boot onboarding (creates ~/.picoclaw dirs etc.)
 ExecStartPost=/bin/su -s /bin/sh picoclaw -c '/usr/local/bin/picoclaw onboard'
 
-# 3. Mark onboarding done
-ExecStartPost=/bin/touch /var/lib/picoclaw/.picoclaw_onboarded
-
 RemainAfterExit=yes
 StandardOutput=journal
 StandardError=journal
