@@ -52,33 +52,27 @@ _FONT_REG  = '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf'
 _disp         = None   # active display object (EPD or LCD_1inch69)
 _display_type = None   # 'eink' | 'lcd'
 _qr_cache     = {}     # {(url, size): PIL.Image} — avoid regenerating unchanged QR codes
-_full_refresh_counter = 0
-_FULL_REFRESH_EVERY   = 10   # force a full e-ink refresh every N renders to clear ghosting
 
 
 def _epd_render(epd, image, force_full=False):
     """Push *image* to the display with minimal flicker.
 
-    Uses ``init_Fast`` / ``displayFast`` (no black→white wipe) by default.
-    Every ``_FULL_REFRESH_EVERY`` calls — or when ``force_full=True`` — a
-    full refresh is done to clear accumulated ghosting.
+    Uses ``init_fast`` / ``display_fast`` (no black→white wipe) by default.
+    Pass ``force_full=True`` to do a full black→white refresh (ghost-busting);
+    this is only done on the hourly periodic render or explicit QR screens.
     """
-    global _full_refresh_counter
-    _full_refresh_counter += 1
-    do_full = force_full or (_full_refresh_counter % _FULL_REFRESH_EVERY == 0)
-
     buf = epd.getbuffer(image)
 
-    if do_full:
-        logging.debug("Full refresh (counter=%d)", _full_refresh_counter)
+    if force_full:
+        logging.debug("Full e-ink refresh (ghost-busting)")
         epd.init()
         epd.display(buf)
     else:
         try:
-            epd.init_Fast()
-            epd.displayFast(buf)
+            epd.init_fast()
+            epd.display_fast(buf)
         except AttributeError:
-            # Driver version doesn’t expose init_Fast / displayFast — fall back
+            # Driver version doesn't expose init_fast / display_fast — fall back
             logging.debug("Fast mode unavailable, using full refresh")
             epd.init()
             epd.display(buf)
@@ -309,7 +303,7 @@ def _generate_qr_image(text, size=110):
 
 
 # ── Screens ───────────────────────────────────────────────────────────────
-def draw_monitor(epd):
+def draw_monitor(epd, force_full=False):
     """Render the normal status screen.
 
     Left column: QR code for http://<primary_ip>:8080 (110×110 px).
@@ -384,7 +378,7 @@ def draw_monitor(epd):
     draw.text((tx, y), f"ZC: {s_zc}", font=f_tiny, fill=0); y += 13
     draw.text((tx, y), f"PC: {s_pc}", font=f_tiny, fill=0)
 
-    _epd_render(epd, image)
+    _epd_render(epd, image, force_full=force_full)
 
 
 def draw_paircode(epd, code):
@@ -604,11 +598,11 @@ def draw_picoclaw_qr_lcd(disp, url, token=''):
 
 
 # ── Dispatch wrappers (route to eink or LCD based on _display_type) ──────────
-def _render_monitor():
+def _render_monitor(force_full=False):
     if _display_type == 'lcd':
         draw_monitor_lcd(_disp)
     else:
-        draw_monitor(_disp)
+        draw_monitor(_disp, force_full=force_full)
 
 
 def _render_paircode(code):
@@ -718,6 +712,6 @@ while True:
             logging.info("State change detected (%s) — updating display", ', '.join(changed))
         else:
             logging.info("Periodic forced refresh (%.0f s since last draw)", age)
-        _render_monitor()
+        _render_monitor(force_full=force_refresh)
         last_state        = current_state
         last_monitor_draw = now
