@@ -17,7 +17,7 @@
 
 set -euo pipefail
 
-REPO_URL="https://github.com/zphilip/ClawBoard.git"
+REPO_URL="https://gitee.com/tiandazhu/ClawBoard.git"
 
 PICOCLAW_WORKSPACE_SRC="picoclaw/workspace"
 ZEROCLAW_WORKSPACE_SRC="zeroclaw/workspace"
