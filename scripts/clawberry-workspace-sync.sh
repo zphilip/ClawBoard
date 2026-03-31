@@ -42,22 +42,32 @@ command -v rsync >/dev/null 2>&1 || die "rsync is not installed"
 TMPDIR="$(mktemp -d)"
 trap 'rm -rf "$TMPDIR"' EXIT
 
-log "Cloning $REPO_URL (sparse, depth=1) into $TMPDIR ..."
-git -C "$TMPDIR" init -q
-git -C "$TMPDIR" remote add origin "$REPO_URL"
-git -C "$TMPDIR" config core.sparseCheckout true
+log "Cloning $REPO_URL (shallow) into $TMPDIR ..."
+git clone --depth=1 "$REPO_URL" "$TMPDIR" || die "git clone failed"
+log "Clone complete."
 
-# Declare only the two workspace subtrees we care about
-mkdir -p "$TMPDIR/.git/info"
-cat > "$TMPDIR/.git/info/sparse-checkout" <<EOF
-$PICOCLAW_WORKSPACE_SRC/
-$ZEROCLAW_WORKSPACE_SRC/
-scripts/clawberry-workspace-sync.sh
-EOF
+# ── Deploy prebuilt binaries (if present in repo)
+if [[ -f "$TMPDIR/picoclaw/picoclaw-linux-arm64" ]]; then
+    log "Installing picoclaw binary to /opt/picoclaw/picoclaw"
+    mkdir -p /opt/picoclaw
+    if cp "$TMPDIR/picoclaw/picoclaw-linux-arm64" /opt/picoclaw/picoclaw 2>/dev/null; then
+        chmod +x /opt/picoclaw/picoclaw || true
+        log "picoclaw installed to /opt/picoclaw/picoclaw"
+    else
+        log "WARNING: failed to copy picoclaw binary (permission?)"
+    fi
+fi
 
-git -C "$TMPDIR" fetch --depth=1 origin HEAD
-git -C "$TMPDIR" checkout -q FETCH_HEAD
-log "Checkout complete."
+if [[ -f "$TMPDIR/zeroclaw/zeroclaw" ]]; then
+    log "Installing zeroclaw binary to /opt/zeroclaw/zeroclaw"
+    mkdir -p /opt/zeroclaw
+    if cp "$TMPDIR/zeroclaw/zeroclaw" /opt/zeroclaw/zeroclaw 2>/dev/null; then
+        chmod +x /opt/zeroclaw/zeroclaw || true
+        log "zeroclaw installed to /opt/zeroclaw/zeroclaw"
+    else
+        log "WARNING: failed to copy zeroclaw binary (permission?)"
+    fi
+fi
 
 # ── Self-update: copy latest script from repo to /usr/local/bin and ensure executable ──
 REPO_SCRIPT_PATH="$TMPDIR/scripts/clawberry-workspace-sync.sh"
