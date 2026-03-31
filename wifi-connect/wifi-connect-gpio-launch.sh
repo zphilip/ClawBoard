@@ -17,6 +17,11 @@ def wait_for_long_press():
     GPIO.setup(BUTTON_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
     print(f"Waiting for long press on GPIO {BUTTON_PIN}...")
     try:
+        # Ensure NetworkManager has WiFi radio enabled at runtime
+        try:
+            subprocess.run(["nmcli", "radio", "wifi", "on"], check=False)
+        except Exception:
+            pass
         while True:
             # Wait for button press
             while GPIO.input(BUTTON_PIN):
