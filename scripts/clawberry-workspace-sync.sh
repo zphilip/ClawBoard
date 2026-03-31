@@ -52,6 +52,7 @@ mkdir -p "$TMPDIR/.git/info"
 cat > "$TMPDIR/.git/info/sparse-checkout" <<EOF
 $PICOCLAW_WORKSPACE_SRC/
 $ZEROCLAW_WORKSPACE_SRC/
+scripts/clawberry-workspace-sync.sh
 EOF
 
 git -C "$TMPDIR" fetch --depth=1 origin HEAD
@@ -60,14 +61,13 @@ log "Checkout complete."
 
 # ── Self-update: copy latest script from repo to /usr/local/bin and ensure executable ──
 REPO_SCRIPT_PATH="$TMPDIR/scripts/clawberry-workspace-sync.sh"
-if [[ -f "$REPO_SCRIPT_PATH" ]]; then
-    log "Updating sync script from repo to $SCRIPT_PATH ..."
-    if cp "$REPO_SCRIPT_PATH" "$SCRIPT_PATH" 2>/dev/null; then
-        chmod +x "$SCRIPT_PATH" 2>/dev/null || true
-        log "Sync script updated at $SCRIPT_PATH."
-    else
-        log "WARNING: failed to copy $REPO_SCRIPT_PATH to $SCRIPT_PATH (permission?)"
-    fi
+SCRIPT_PATH="/usr/local/bin/clawberry-workspace-sync.sh"
+log "Updating sync script from repo to $SCRIPT_PATH ..."
+if cp "$REPO_SCRIPT_PATH" "$SCRIPT_PATH" 2>/dev/null; then
+    chmod +x "$SCRIPT_PATH" 2>/dev/null || true
+    log "Sync script updated at $SCRIPT_PATH."
+else
+    log "WARNING: failed to copy $REPO_SCRIPT_PATH to $SCRIPT_PATH (permission?)"
 fi
 
 # ── Helper: sync one workspace ───────────────────────────────────────────────
