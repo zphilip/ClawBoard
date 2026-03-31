@@ -19,6 +19,15 @@ set -euo pipefail
 
 REPO_URL="https://gitee.com/tiandazhu/ClawBoard.git"
 
+# ── Self-update: copy latest script from repo to /usr/local/bin and ensure executable ──
+REPO_SCRIPT_PATH="$TMPDIR/scripts/clawberry-workspace-sync.sh"
+if [[ -f "$REPO_SCRIPT_PATH" ]]; then
+    log "Updating sync script from repo to $SCRIPT_PATH ..."
+    cp "$REPO_SCRIPT_PATH" "$SCRIPT_PATH"
+    chmod +x "$SCRIPT_PATH"
+    log "Sync script updated at $SCRIPT_PATH."
+fi
+
 PICOCLAW_WORKSPACE_SRC="picoclaw/workspace"
 ZEROCLAW_WORKSPACE_SRC="zeroclaw/workspace"
 
