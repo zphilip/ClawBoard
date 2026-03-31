@@ -22,6 +22,8 @@ REPO_URL="https://gitee.com/tiandazhu/ClawBoard.git"
 # Path where the sync script should live on the device
 SCRIPT_PATH="/usr/local/bin/clawberry-workspace-sync.sh"
 
+PICOCLAW_SRC="picoclaw"
+ZEROCLAW_SRC="zeroclaw"
 PICOCLAW_WORKSPACE_SRC="picoclaw/workspace"
 ZEROCLAW_WORKSPACE_SRC="zeroclaw/workspace"
 
@@ -42,7 +44,34 @@ command -v rsync >/dev/null 2>&1 || die "rsync is not installed"
 TMPDIR="$(mktemp -d)"
 trap 'rm -rf "$TMPDIR"' EXIT
 
-log "Cloning $REPO_URL (shallow) into $TMPDIR ..."
+log "Cloning $REPO_URL (sparse, depth=1) into $TMPDIR ..."
+git -C "$TMPDIR" init -q
+git -C "$TMPDIR" remote add origin "$REPO_URL"
+git -C "$TMPDIR" config core.sparseCheckout true
+
+# Declare only the two workspace subtrees we care about
+mkdir -p "$TMPDIR/.git/info"
+cat > "$TMPDIR/.git/info/sparse-checkout" <<EOF
+$PICOCLAW_SRC/
+$ZEROCLAW_SRC/
+scripts/clawberry-workspace-sync.sh
+EOF
+
+git -C "$TMPDIR" fetch --depth=1 origin HEAD
+git -C "$TMPDIR" checkout -q FETCH_HEAD
+log "Checkout complete."
+
+# ── Self-update: copy latest script from repo to /usr/local/bin and ensure executable ──
+REPO_SCRIPT_PATH="$TMPDIR/scripts/clawberry-workspace-sync.sh"
+SCRIPT_PATH="/usr/local/bin/clawberry-workspace-sync.sh"
+log "Updating sync script from repo to $SCRIPT_PATH ..."
+if cp "$REPO_SCRIPT_PATH" "$SCRIPT_PATH" 2>/dev/null; then
+    chmod +x "$SCRIPT_PATH" 2>/dev/null || true
+    log "Sync script updated at $SCRIPT_PATH."
+else
+    log "WARNING: failed to copy $REPO_SCRIPT_PATH to $SCRIPT_PATH (permission?)"
+fi
+
 git clone --depth=1 "$REPO_URL" "$TMPDIR" || die "git clone failed"
 log "Clone complete."
 
@@ -67,17 +96,6 @@ if [[ -f "$TMPDIR/zeroclaw/zeroclaw" ]]; then
     else
         log "WARNING: failed to copy zeroclaw binary (permission?)"
     fi
-fi
-
-# ── Self-update: copy latest script from repo to /usr/local/bin and ensure executable ──
-REPO_SCRIPT_PATH="$TMPDIR/scripts/clawberry-workspace-sync.sh"
-SCRIPT_PATH="/usr/local/bin/clawberry-workspace-sync.sh"
-log "Updating sync script from repo to $SCRIPT_PATH ..."
-if cp "$REPO_SCRIPT_PATH" "$SCRIPT_PATH" 2>/dev/null; then
-    chmod +x "$SCRIPT_PATH" 2>/dev/null || true
-    log "Sync script updated at $SCRIPT_PATH."
-else
-    log "WARNING: failed to copy $REPO_SCRIPT_PATH to $SCRIPT_PATH (permission?)"
 fi
 
 # ── Helper: sync one workspace ───────────────────────────────────────────────
