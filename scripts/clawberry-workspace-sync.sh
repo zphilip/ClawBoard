@@ -72,9 +72,6 @@ else
     log "WARNING: failed to copy $REPO_SCRIPT_PATH to $SCRIPT_PATH (permission?)"
 fi
 
-git clone --depth=1 "$REPO_URL" "$TMPDIR" || die "git clone failed"
-log "Clone complete."
-
 # ── Deploy prebuilt binaries (if present in repo)
 if [[ -f "$TMPDIR/picoclaw/picoclaw-linux-arm64" ]]; then
     log "Installing picoclaw binary to /opt/picoclaw/picoclaw"
