@@ -72,6 +72,19 @@ else
     log "WARNING: failed to copy $REPO_SCRIPT_PATH to $SCRIPT_PATH (permission?)"
 fi
 
+# Record service states and stop services to allow binary replacement
+PIC_ACTIVE=no
+ZC_ACTIVE=no
+if command -v systemctl >/dev/null 2>&1; then
+    if systemctl is-active --quiet picoclaw; then PIC_ACTIVE=yes; fi
+    if systemctl is-active --quiet zeroclaw; then ZC_ACTIVE=yes; fi
+    if [[ "$PIC_ACTIVE" == "yes" || "$ZC_ACTIVE" == "yes" ]]; then
+        log "Stopping services before file operations: picoclaw=$PIC_ACTIVE zeroclaw=$ZC_ACTIVE"
+        systemctl stop picoclaw 2>/dev/null || true
+        systemctl stop zeroclaw 2>/dev/null || true
+    fi
+fi
+
 # ── Deploy prebuilt binaries (if present in repo)
 if [[ -f "$TMPDIR/picoclaw/picoclaw-linux-arm64" ]]; then
     log "Installing picoclaw binary to /opt/picoclaw/picoclaw"
@@ -144,3 +157,15 @@ else
 fi
 
 log "Workspace sync complete."
+
+# Restart services that were running before the sync
+if command -v systemctl >/dev/null 2>&1; then
+    if [[ "$PIC_ACTIVE" == "yes" ]]; then
+        log "Restarting picoclaw"
+        systemctl restart picoclaw 2>/dev/null || true
+    fi
+    if [[ "$ZC_ACTIVE" == "yes" ]]; then
+        log "Restarting zeroclaw"
+        systemctl restart zeroclaw 2>/dev/null || true
+    fi
+fi
