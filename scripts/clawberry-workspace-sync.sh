@@ -19,14 +19,8 @@ set -euo pipefail
 
 REPO_URL="https://gitee.com/tiandazhu/ClawBoard.git"
 
-# ── Self-update: copy latest script from repo to /usr/local/bin and ensure executable ──
-REPO_SCRIPT_PATH="$TMPDIR/scripts/clawberry-workspace-sync.sh"
-if [[ -f "$REPO_SCRIPT_PATH" ]]; then
-    log "Updating sync script from repo to $SCRIPT_PATH ..."
-    cp "$REPO_SCRIPT_PATH" "$SCRIPT_PATH"
-    chmod +x "$SCRIPT_PATH"
-    log "Sync script updated at $SCRIPT_PATH."
-fi
+# Path where the sync script should live on the device
+SCRIPT_PATH="/usr/local/bin/clawberry-workspace-sync.sh"
 
 PICOCLAW_WORKSPACE_SRC="picoclaw/workspace"
 ZEROCLAW_WORKSPACE_SRC="zeroclaw/workspace"
@@ -64,6 +58,18 @@ git -C "$TMPDIR" fetch --depth=1 origin HEAD
 git -C "$TMPDIR" checkout -q FETCH_HEAD
 log "Checkout complete."
 
+# ── Self-update: copy latest script from repo to /usr/local/bin and ensure executable ──
+REPO_SCRIPT_PATH="$TMPDIR/scripts/clawberry-workspace-sync.sh"
+if [[ -f "$REPO_SCRIPT_PATH" ]]; then
+    log "Updating sync script from repo to $SCRIPT_PATH ..."
+    if cp "$REPO_SCRIPT_PATH" "$SCRIPT_PATH" 2>/dev/null; then
+        chmod +x "$SCRIPT_PATH" 2>/dev/null || true
+        log "Sync script updated at $SCRIPT_PATH."
+    else
+        log "WARNING: failed to copy $REPO_SCRIPT_PATH to $SCRIPT_PATH (permission?)"
+    fi
+fi
+
 # ── Helper: sync one workspace ───────────────────────────────────────────────
 sync_workspace() {
     local src="$TMPDIR/$1"    # local path inside the clone
@@ -100,11 +106,15 @@ if [[ ! -d "/var/lib/picoclaw/.picoclaw" ]]; then
     log "Creating /var/lib/picoclaw/.picoclaw"
     mkdir -p /var/lib/picoclaw/.picoclaw
     chown -R picoclaw:picoclaw /var/lib/picoclaw/.picoclaw
+else
+    chown -R picoclaw:picoclaw /var/lib/picoclaw/.picoclaw
 fi
 # Ensure /var/lib/zeroclaw/.zeroclaw exists and is owned by zeroclaw
 if [[ ! -d "/var/lib/zeroclaw/.zeroclaw" ]]; then
     log "Creating /var/lib/zeroclaw/.zeroclaw"
     mkdir -p /var/lib/zeroclaw/.zeroclaw
+    chown -R zeroclaw:zeroclaw /var/lib/zeroclaw/.zeroclaw
+else
     chown -R zeroclaw:zeroclaw /var/lib/zeroclaw/.zeroclaw
 fi
 
