@@ -86,4 +86,17 @@ sync_workspace() {
 sync_workspace "$PICOCLAW_WORKSPACE_SRC" "$PICOCLAW_WORKSPACE_DST" "$PICOCLAW_USER"
 sync_workspace "$ZEROCLAW_WORKSPACE_SRC" "$ZEROCLAW_WORKSPACE_DST" "$ZEROCLAW_USER"
 
+# Ensure /var/lib/picoclaw/.picoclaw exists and is owned by picoclaw
+if [[ ! -d "/var/lib/picoclaw/.picoclaw" ]]; then
+    log "Creating /var/lib/picoclaw/.picoclaw"
+    mkdir -p /var/lib/picoclaw/.picoclaw
+    chown -R picoclaw:picoclaw /var/lib/picoclaw/.picoclaw
+fi
+# Ensure /var/lib/zeroclaw/.zeroclaw exists and is owned by zeroclaw
+if [[ ! -d "/var/lib/zeroclaw/.zeroclaw" ]]; then
+    log "Creating /var/lib/zeroclaw/.zeroclaw"
+    mkdir -p /var/lib/zeroclaw/.zeroclaw
+    chown -R zeroclaw:zeroclaw /var/lib/zeroclaw/.zeroclaw
+fi
+
 log "Workspace sync complete."
