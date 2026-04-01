@@ -11,6 +11,54 @@ PATHS             = [os.path.join(SCRIPT_DIR, 'config/config.toml'), 'config.tom
 CONFIG_PATH       = next((p for p in PATHS if os.path.exists(p)), PATHS[0])
 DEPLOY_CONFIG_PATH = '/var/lib/zeroclaw/.zeroclaw/config.toml'  # real zeroclaw config
 PICOCLAW_CONFIG_PATH = os.path.join(SCRIPT_DIR, 'config', 'config.json')      # picoclaw JSON config
+PICOCLAW_PID_FILE      = '/var/lib/picoclaw/.picoclaw/.picoclaw.pid'             # runtime PID+token file
+PICOCLAW_SECURITY_YML  = '/var/lib/picoclaw/.picoclaw/.security.yml'            # channels tokens
+
+def _read_security_yml_token(section: str = 'pico_client') -> tuple[str, str]:
+    """Read channels.<section>.token from .security.yml.
+    Returns (token, error_message).  error_message is '' on success."""
+    try:
+        with open(PICOCLAW_SECURITY_YML) as _f:
+            raw = _f.read()
+        try:
+            import yaml as _yaml
+            data = _yaml.safe_load(raw)
+            tok = (data or {}).get('channels', {}).get(section, {}).get('token', '')
+            return str(tok).strip(), ''
+        except ImportError:
+            pass
+        # Fallback: simple line-by-line parser for the known structure
+        in_channels = False
+        in_section  = False
+        indent_ch   = None   # indent of channel keys (e.g. 2)
+        indent_sec  = None   # indent of section sub-keys
+        for line in raw.splitlines():
+            stripped = line.lstrip()
+            indent   = len(line) - len(stripped)
+            if stripped.startswith('channels:'):
+                in_channels = True
+                indent_ch   = None
+                continue
+            if not in_channels:
+                continue
+            if indent_ch is None and stripped and not stripped.startswith('#'):
+                indent_ch = indent
+            if indent_ch is not None and indent == indent_ch:
+                in_section = stripped.startswith(f'{section}:')
+                indent_sec = None
+                continue
+            if in_section:
+                if indent_sec is None and stripped and not stripped.startswith('#'):
+                    indent_sec = indent
+                if indent_sec is not None and indent == indent_sec:
+                    if stripped.startswith('token:'):
+                        tok = stripped[len('token:'):].strip().strip('"\'')
+                        return tok, ''
+        return '', f'channels.{section}.token not found in {PICOCLAW_SECURITY_YML}'
+    except FileNotFoundError:
+        return '', f'Security file not found: {PICOCLAW_SECURITY_YML}'
+    except Exception as _e:
+        return '', f'Security file read error: {_e}'
 
 def load_picoclaw_config():
     """Load picoclaw config.json; return empty dict on failure."""
@@ -1602,16 +1650,38 @@ def index(request: Request):
                 with ui.card().classes('w-full q-pa-md'):
                     ui.label(T['pc_pair_title']).classes('text-h6 text-purple-8')
                     ui.label(T['pc_pair_hint']).classes('text-caption text-grey-6 q-mt-xs')
-                    pico_channel = pc_channels.get('pico', {})
-                    pico_token = str(pico_channel.get('token', '')).strip()
+                    # Compose runtime token: "pico-" + pid.Token + security.yml pico_client.token
+                    _pid_tok  = ''
+                    _pid_err  = ''
+                    _sec_tok  = ''
+                    _sec_err  = ''
+                    try:
+                        with open(PICOCLAW_PID_FILE) as _pf:
+                            _pid_data = json.load(_pf)
+                        _pid_tok = str(_pid_data.get('token', '')).strip()
+                    except FileNotFoundError:
+                        _pid_err = f'PID file not found: {PICOCLAW_PID_FILE} (is picoclaw running?)'
+                    except Exception as _e:
+                        _pid_err = f'PID file read error: {_e}'
+                    _sec_tok, _sec_err = _read_security_yml_token('pico_client')
+                    if _pid_tok and _sec_tok:
+                        pico_token = f'pico-{_pid_tok}{_sec_tok}'
+                    elif _pid_tok:
+                        pico_token = f'pico-{_pid_tok}'  # fallback: no config token
+                    else:
+                        pico_token = _sec_tok             # fallback: no pid file
                     pico_port = int(pc_gateway.get('port', 18790) or 18790)
                     pico_host = request.url.hostname or 'localhost'
                     pico_scheme = request.url.scheme or 'http'
                     pico_url = f'{pico_scheme}://{pico_host}:{pico_port}?token={pico_token}' if pico_token else ''
                     pico_qr_url = f'https://quickchart.io/qr?size=260&margin=1&text={quote(pico_url, safe="")}' if pico_url else ''
 
+                    if _pid_err:
+                        ui.label(f'⚠️ {_pid_err}').classes('text-warning text-caption q-mt-xs')
+                    if _sec_err:
+                        ui.label(f'⚠️ {_sec_err}').classes('text-warning text-caption q-mt-xs')
                     if pico_token:
-                        ui.input(T['pc_pair_token'], value=pico_token).props('readonly').classes('w-full q-mt-sm')
+                        ui.input('Runtime token  (pico- + pid.Token + pico_client.token)', value=pico_token).props('readonly').classes('w-full q-mt-sm')
                         ui.input(T['pc_pair_url'], value=pico_url).props('readonly').classes('w-full')
 
                         with ui.row().classes('w-full items-start gap-4 q-mt-sm'):

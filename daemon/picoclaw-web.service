@@ -8,23 +8,21 @@ Wants=network-online.target
 Type=simple
 User=picoclaw
 Group=picoclaw
+# Pin the dashboard login token so it doesn't change on every restart.
+# Create this file with: echo "PICOCLAW_LAUNCHER_TOKEN=<your-token>" | sudo tee /etc/clawberry/picoclaw-web.env
+# Then use: python3 chat_picoclaw.py --launcher-token <your-token>
 EnvironmentFile=-/etc/clawberry/picoclaw-web.env
 
-# 假设你的 web 二进制文件路径如下，请根据实际修改
-ExecStart=/usr/local/bin/picoclaw-launcher -public /var/lib/picoclaw/.picoclaw/config.json
-# 如果需要指定后端地址，通常在这里加环境变量或参数
-# Environment=GATEWAY_URL=http://127.0.0.1:18789
+ExecStart=/opt/picoclaw/picoclaw-web -public /var/lib/picoclaw/.picoclaw/config.json
 
 WorkingDirectory=/var/lib/picoclaw
 
 Restart=on-failure
 RestartSec=5
 
-# 日志配置
 StandardOutput=journal
 StandardError=journal
 
-# 安全加固 (参考你原有的配置)
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
