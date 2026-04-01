@@ -47,7 +47,7 @@ echo "正在启动 ClawBerry 专属服务发现..."
 avahi-publish -s "ClawBerry Dashboard" _clawberry._tcp $DASHBOARD_PORT "type=web_ui" "path=/" &
 
 # 服务 2: ZeroClaw Gateway (含动态 Pair Code)
-avahi-publish -s "ZeroClaw Gateway" _clawberry._tcp $ZEROCLAW_PORT "type=gateway" "$PAIR_ATTR" &
+avahi-publish -s "ZeroClaw Gateway" _clawberry._tcp $ZEROCLAW_PORT "type=zeroclaw" "$PAIR_ATTR" &
 
 # 服务 3: Picoclaw Gateway (含动态 Token)
 avahi-publish -s "Picoclaw Gateway" _clawberry._tcp $PICOCLAW_PORT "type=picoclaw" "$PICO_ATTR" &

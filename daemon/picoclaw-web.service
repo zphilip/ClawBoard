@@ -1,0 +1,34 @@
+[Unit]
+Description=PicoClaw Web Service
+# 确保在网络就绪后启动，且在 Gateway 启动后再启动 Web
+After=network-online.target picoclaw.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=picoclaw
+Group=picoclaw
+
+# 假设你的 web 二进制文件路径如下，请根据实际修改
+ExecStart=/usr/local/bin/picoclaw-web -public /var/lib/picoclaw/.picoclaw/config.json
+# 如果需要指定后端地址，通常在这里加环境变量或参数
+# Environment=GATEWAY_URL=http://127.0.0.1:18789
+
+WorkingDirectory=/var/lib/picoclaw
+
+Restart=on-failure
+RestartSec=5
+
+# 日志配置
+StandardOutput=journal
+StandardError=journal
+
+# 安全加固 (参考你原有的配置)
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/picoclaw
+
+[Install]
+WantedBy=multi-user.target
