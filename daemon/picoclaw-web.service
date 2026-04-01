@@ -8,6 +8,7 @@ Wants=network-online.target
 Type=simple
 User=picoclaw
 Group=picoclaw
+EnvironmentFile=-/etc/clawberry/picoclaw-web.env
 
 # 假设你的 web 二进制文件路径如下，请根据实际修改
 ExecStart=/usr/local/bin/picoclaw-web -public /var/lib/picoclaw/.picoclaw/config.json

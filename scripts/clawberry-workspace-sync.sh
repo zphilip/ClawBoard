@@ -54,6 +54,7 @@ mkdir -p "$TMPDIR/.git/info"
 cat > "$TMPDIR/.git/info/sparse-checkout" <<EOF
 $PICOCLAW_SRC/
 $ZEROCLAW_SRC/
+daemon/
 scripts/clawberry-workspace-sync.sh
 EOF
 
@@ -75,13 +76,16 @@ fi
 # Record service states and stop services to allow binary replacement
 PIC_ACTIVE=no
 ZC_ACTIVE=no
+PICWEB_ACTIVE=no
 if command -v systemctl >/dev/null 2>&1; then
-    if systemctl is-active --quiet picoclaw; then PIC_ACTIVE=yes; fi
-    if systemctl is-active --quiet zeroclaw; then ZC_ACTIVE=yes; fi
-    if [[ "$PIC_ACTIVE" == "yes" || "$ZC_ACTIVE" == "yes" ]]; then
-        log "Stopping services before file operations: picoclaw=$PIC_ACTIVE zeroclaw=$ZC_ACTIVE"
-        systemctl stop picoclaw 2>/dev/null || true
-        systemctl stop zeroclaw 2>/dev/null || true
+    if systemctl is-active --quiet picoclaw;     then PIC_ACTIVE=yes;    fi
+    if systemctl is-active --quiet zeroclaw;     then ZC_ACTIVE=yes;     fi
+    if systemctl is-active --quiet picoclaw-web; then PICWEB_ACTIVE=yes; fi
+    if [[ "$PIC_ACTIVE" == "yes" || "$ZC_ACTIVE" == "yes" || "$PICWEB_ACTIVE" == "yes" ]]; then
+        log "Stopping services before file operations: picoclaw=$PIC_ACTIVE zeroclaw=$ZC_ACTIVE picoclaw-web=$PICWEB_ACTIVE"
+        systemctl stop picoclaw-web 2>/dev/null || true
+        systemctl stop picoclaw     2>/dev/null || true
+        systemctl stop zeroclaw     2>/dev/null || true
     fi
 fi
 
@@ -97,6 +101,18 @@ if [[ -f "$TMPDIR/picoclaw/picoclaw-linux-arm64" ]]; then
     fi
 fi
 
+if [[ -f "$TMPDIR/picoclaw/picoclaw-web-arm64" ]]; then
+    log "Installing picoclaw-web binary to /opt/picoclaw/picoclaw-web"
+    mkdir -p /opt/picoclaw
+    if cp "$TMPDIR/picoclaw/picoclaw-web-arm64" /opt/picoclaw/picoclaw-web 2>/dev/null; then
+        chmod +x /opt/picoclaw/picoclaw-web || true
+        ln -sf /opt/picoclaw/picoclaw-web /usr/local/bin/picoclaw-web 2>/dev/null || true
+        log "picoclaw-web installed to /opt/picoclaw/picoclaw-web"
+    else
+        log "WARNING: failed to copy picoclaw-web binary (permission?)"
+    fi
+fi
+
 if [[ -f "$TMPDIR/zeroclaw/zeroclaw" ]]; then
     log "Installing zeroclaw binary to /opt/zeroclaw/zeroclaw"
     mkdir -p /opt/zeroclaw
@@ -106,6 +122,48 @@ if [[ -f "$TMPDIR/zeroclaw/zeroclaw" ]]; then
     else
         log "WARNING: failed to copy zeroclaw binary (permission?)"
     fi
+fi
+
+# ── Deploy daemon service files ─────────────────────────────────────────────
+SVC_CHANGED=no
+if [[ -d "$TMPDIR/daemon" ]]; then
+    log "Installing systemd service files from daemon/ ..."
+    for svc_file in "$TMPDIR/daemon/"*.service; do
+        [[ -f "$svc_file" ]] || continue
+        svc_name="$(basename "$svc_file")"
+        dst_svc="/etc/systemd/system/$svc_name"
+        if cp "$svc_file" "$dst_svc" 2>/dev/null; then
+            chmod 644 "$dst_svc" || true
+            log "Installed $svc_name → $dst_svc"
+            SVC_CHANGED=yes
+        else
+            log "WARNING: failed to install $svc_name (permission?)"
+        fi
+    done
+else
+    log "WARNING: daemon/ not found in repo — service files not updated"
+fi
+
+# ── Deploy picoclaw-web environment file ─────────────────────────────────────
+PICWEB_ENV_SRC="$TMPDIR/daemon/picoclaw-web.env"
+PICWEB_ENV_DST="/etc/clawberry/picoclaw-web.env"
+if [[ -f "$PICWEB_ENV_SRC" ]]; then
+    log "Installing picoclaw-web.env to $PICWEB_ENV_DST"
+    mkdir -p "$(dirname "$PICWEB_ENV_DST")"
+    if cp "$PICWEB_ENV_SRC" "$PICWEB_ENV_DST" 2>/dev/null; then
+        chmod 640 "$PICWEB_ENV_DST" || true
+        log "picoclaw-web.env installed to $PICWEB_ENV_DST"
+    else
+        log "WARNING: failed to install picoclaw-web.env (permission?)"
+    fi
+else
+    log "WARNING: daemon/picoclaw-web.env not found in repo — env file not updated"
+fi
+
+# Reload systemd if any unit files changed
+if [[ "$SVC_CHANGED" == "yes" ]] && command -v systemctl >/dev/null 2>&1; then
+    log "Running systemctl daemon-reload ..."
+    systemctl daemon-reload 2>/dev/null || true
 fi
 
 # ── Helper: sync one workspace ───────────────────────────────────────────────
@@ -160,12 +218,16 @@ log "Workspace sync complete."
 
 # Restart services that were running before the sync
 if command -v systemctl >/dev/null 2>&1; then
+    if [[ "$ZC_ACTIVE" == "yes" ]]; then
+        log "Restarting zeroclaw"
+        systemctl restart zeroclaw 2>/dev/null || true
+    fi
     if [[ "$PIC_ACTIVE" == "yes" ]]; then
         log "Restarting picoclaw"
         systemctl restart picoclaw 2>/dev/null || true
     fi
-    if [[ "$ZC_ACTIVE" == "yes" ]]; then
-        log "Restarting zeroclaw"
-        systemctl restart zeroclaw 2>/dev/null || true
+    if [[ "$PICWEB_ACTIVE" == "yes" ]]; then
+        log "Restarting picoclaw-web"
+        systemctl restart picoclaw-web 2>/dev/null || true
     fi
 fi
