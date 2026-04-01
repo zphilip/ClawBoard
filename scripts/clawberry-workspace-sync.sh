@@ -36,6 +36,8 @@ ZEROCLAW_USER="zeroclaw"
 log() { echo "[workspace-sync] $*"; }
 die() { echo "[workspace-sync] ERROR: $*" >&2; exit 1; }
 
+main() {
+
 # ── Require git ──────────────────────────────────────────────────────────────
 command -v git  >/dev/null 2>&1 || die "git is not installed"
 command -v rsync >/dev/null 2>&1 || die "rsync is not installed"
@@ -101,13 +103,13 @@ if [[ -f "$TMPDIR/picoclaw/picoclaw-linux-arm64" ]]; then
     fi
 fi
 
-if [[ -f "$TMPDIR/picoclaw/picoclaw-web-arm64" ]]; then
-    log "Installing picoclaw-web binary to /opt/picoclaw/picoclaw-web"
+if [[ -f "$TMPDIR/picoclaw/picoclaw-launcher-linux-arm64" ]]; then
+    log "Installing picoclaw-web binary to /opt/picoclaw/picoclaw-launcher"
     mkdir -p /opt/picoclaw
-    if cp "$TMPDIR/picoclaw/picoclaw-web-arm64" /opt/picoclaw/picoclaw-web 2>/dev/null; then
-        chmod +x /opt/picoclaw/picoclaw-web || true
-        ln -sf /opt/picoclaw/picoclaw-web /usr/local/bin/picoclaw-web 2>/dev/null || true
-        log "picoclaw-web installed to /opt/picoclaw/picoclaw-web"
+    if cp "$TMPDIR/picoclaw/picoclaw-launcher-linux-arm64" /opt/picoclaw/picoclaw-launcher 2>/dev/null; then
+        chmod +x /opt/picoclaw/picoclaw-launcher || true
+        ln -sf /opt/picoclaw/picoclaw-launcher /usr/local/bin/picoclaw-launcher 2>/dev/null || true
+        log "picoclaw-web installed to /opt/picoclaw/picoclaw-launcher"
     else
         log "WARNING: failed to copy picoclaw-web binary (permission?)"
     fi
@@ -231,3 +233,7 @@ if command -v systemctl >/dev/null 2>&1; then
         systemctl restart picoclaw-web 2>/dev/null || true
     fi
 fi
+
+} # end main()
+
+main "$@"
