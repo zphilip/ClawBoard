@@ -121,6 +121,28 @@ def save_picoclaw_security(sec):
     except Exception:
         pass
 
+def load_provider_hints():
+    """Load provider hints from config/provider_hints.json.
+    Falls back to the picoclaw model_list if the file is missing.
+    Each entry: {model_name, model, provider_id, api_base, auth_method?}
+    """
+    hints_path = os.path.join(SCRIPT_DIR, 'config', 'provider_hints.json')
+    try:
+        with open(hints_path, 'r') as f:
+            hints = json.load(f)
+            if isinstance(hints, list):
+                return hints
+    except Exception:
+        pass
+    # Fallback: derive from picoclaw model_list
+    return [
+        {'model_name': e.get('model_name', ''), 'model': e.get('model', ''),
+         'api_base': e.get('api_base', ''), 'auth_method': e.get('auth_method', 'apikey'),
+         'provider_id': e.get('model', '').split('/')[0]}
+        for e in load_picoclaw_config().get('model_list', [])
+        if e.get('model_name')
+    ]
+
 # ── Auth ─────────────────────────────────────────────────────────────────────
 AUTH_FILE      = os.path.join(SCRIPT_DIR, 'config', 'auth.json')
 _invite_tokens = {}  # one-time tokens → expiry_unix
@@ -860,6 +882,19 @@ def index(request: Request):
                     # ── Step 1: Provider ────────────────────────────────────
                     with ui.step('wiz_provider', title='1  Provider', icon='cloud'):
                         ui.label('Choose an AI provider and supply its API key.').classes('text-caption text-grey-6 q-mb-sm')
+
+                        # ── Quick pick from provider_hints.json ────────────
+                        _ph      = load_provider_hints()
+                        _ph_map  = {h['model_name']: h for h in _ph if h.get('model_name')}
+                        _ph_opts = [''] + list(_ph_map.keys())
+                        ui.label('⚡ Quick pick — fills fields automatically').classes('text-caption text-blue-7')
+                        wiz_quick = ui.select(
+                            options=_ph_opts,
+                            label='Known model / provider',
+                            value='',
+                        ).classes('w-full q-mb-xs').props('clearable emit-value')
+                        ui.separator().classes('q-my-xs')
+
                         wiz_prov_id    = ui.select(PROVIDER_IDS, label='Provider ID',
                                              value='openrouter').classes('w-full q-mb-sm')
                         wiz_prov_alias = ui.input('Alias  (used as config key, e.g. "openrouter")',
@@ -871,6 +906,24 @@ def index(request: Request):
                         wiz_def_model  = ui.input(
                                              'default_model  (e.g. anthropic/claude-sonnet-4-6)',
                                              value=str(top.get('default_model', ''))).classes('w-full')
+
+                        def _on_wiz_quick(e, _map=_ph_map):
+                            h = _map.get(wiz_quick.value)
+                            if not h:
+                                return
+                            if h.get('api_base') is not None:
+                                wiz_prov_base.set_value(h['api_base'])
+                            if h.get('model'):
+                                wiz_def_model.set_value(h['model'])
+                            pid = h.get('provider_id', '') or h.get('model', '').split('/')[0]
+                            if pid in PROVIDER_IDS:
+                                wiz_prov_id.set_value(pid)
+                            slug = (h.get('model_name') or '').lower().replace(' ', '_').replace('-', '_').replace('.', '_').split('(')[0].rstrip('_')
+                            if slug:
+                                wiz_prov_alias.set_value(slug)
+
+                        wiz_quick.on('update:model-value', _on_wiz_quick)
+
                         with ui.stepper_navigation():
                             ui.button('Next →', on_click=_wiz.next).props('color=blue-8')
 
