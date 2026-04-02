@@ -11,6 +11,10 @@ zero ALL=(root) NOPASSWD: /usr/bin/systemctl restart zeroclaw.service
 zero ALL=(root) NOPASSWD: /usr/bin/systemctl stop zeroclaw.service
 zero ALL=(root) NOPASSWD: /usr/bin/systemctl start zeroclaw.service
 
+# ── ZeroClaw config deploy (dashboard writes config.toml as zeroclaw user) ───
+zero ALL=(root) NOPASSWD: /usr/bin/tee /var/lib/zeroclaw/.zeroclaw/config.toml
+zero ALL=(root) NOPASSWD: /usr/bin/mkdir -p /var/lib/zeroclaw/.zeroclaw
+
 # ── PicoClaw runtime files (owned by picoclaw, read-only by dashboard) ───────
 # Used to compose the runtime WebSocket token shown in the Pair Device panel.
 zero ALL=(root) NOPASSWD: /usr/bin/cat /var/lib/picoclaw/.picoclaw/.picoclaw.pid

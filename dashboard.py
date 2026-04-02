@@ -467,8 +467,9 @@ def save_config(conf):
         f.write(tomlkit.dumps(conf))
 
 def deploy_config():
-    """Backup CONFIG_PATH → .bak, then copy directly to DEPLOY_CONFIG_PATH.
-    No sudo needed: zeroclaw owns /var/lib/zeroclaw/.
+    """Backup CONFIG_PATH → .bak, then deploy to DEPLOY_CONFIG_PATH via sudo tee.
+    Uses: sudo /usr/bin/tee /var/lib/zeroclaw/.zeroclaw/config.toml
+    Requires the matching sudoers rule in daemon/sudoers.d-clawboard.
     Returns (ok: bool, message: str)."""
     import shutil
     # Step 1: backup local copy
@@ -477,17 +478,25 @@ def deploy_config():
         shutil.copy2(CONFIG_PATH, bak)
     except Exception as e:
         return False, f'Backup failed: {e}'
-    # Step 2: ensure target directory exists, copy directly (no sudo)
+    # Step 2: read local config content
     try:
-        os.makedirs(os.path.dirname(DEPLOY_CONFIG_PATH), exist_ok=True)
-        shutil.copy2(CONFIG_PATH, DEPLOY_CONFIG_PATH)
-    except PermissionError:
-        return False, (
-            f'Permission denied writing to {DEPLOY_CONFIG_PATH}. '
-            f'Fix with: sudo chown zeroclaw "{os.path.dirname(DEPLOY_CONFIG_PATH)}"'
-        )
+        with open(CONFIG_PATH, 'r') as f:
+            content = f.read()
     except Exception as e:
-        return False, str(e)
+        return False, f'Read failed: {e}'
+    # Step 3: ensure target directory exists (best-effort, may already exist)
+    subprocess.run(
+        ['sudo', '/usr/bin/mkdir', '-p', os.path.dirname(DEPLOY_CONFIG_PATH)],
+        capture_output=True
+    )
+    # Step 4: write via sudo tee (stdin pipe, no shell glob needed)
+    r = subprocess.run(
+        ['sudo', '/usr/bin/tee', DEPLOY_CONFIG_PATH],
+        input=content, capture_output=True, text=True
+    )
+    if r.returncode != 0:
+        err = r.stderr.strip() or f'sudo tee failed (exit {r.returncode})'
+        return False, err
     return True, ''
 
 def restart_service():
