@@ -3,6 +3,7 @@ STRINGS = {
     'app_title':       '⚙️ ClawBoard',
     'lbl_lang_switch': '🌐 中文',
     # ── Tabs ───────────────────────────────────────────────────────────────────
+    'tab_wizard':        'Wizard',
     'tab_configuration': 'Configuration',
     'tab_pair_device':   'Pair Device',
     'tab_general':   'General',

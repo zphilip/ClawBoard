@@ -13,6 +13,7 @@ DEPLOY_CONFIG_PATH = '/var/lib/zeroclaw/.zeroclaw/config.toml'  # real zeroclaw 
 PICOCLAW_CONFIG_PATH = os.path.join(SCRIPT_DIR, 'config', 'config.json')      # picoclaw JSON config
 PICOCLAW_PID_FILE      = '/var/lib/picoclaw/.picoclaw/.picoclaw.pid'             # runtime PID+token file
 PICOCLAW_SECURITY_YML  = '/var/lib/picoclaw/.picoclaw/.security.yml'            # channels tokens
+PICOCLAW_SECURITY_YML_LOCAL = os.path.join(SCRIPT_DIR, 'config', 'security.yml') # local workspace copy
 
 def _sudo_read_file(path: str) -> tuple[str, str]:
     """Read a file that requires elevated privileges via `sudo cat`.
@@ -99,6 +100,26 @@ def save_picoclaw_config(data):
     os.makedirs(os.path.dirname(PICOCLAW_CONFIG_PATH), exist_ok=True)
     with open(PICOCLAW_CONFIG_PATH, 'w') as f:
         json.dump(data, f, indent=2)
+
+def load_picoclaw_security():
+    """Load picoclaw security.yml from local workspace copy; return {} on failure."""
+    try:
+        import yaml
+        with open(PICOCLAW_SECURITY_YML_LOCAL, 'r') as f:
+            return yaml.safe_load(f) or {}
+    except Exception:
+        return {}
+
+def save_picoclaw_security(sec):
+    """Save picoclaw security.yml to local workspace copy (chmod 600)."""
+    import yaml
+    os.makedirs(os.path.dirname(PICOCLAW_SECURITY_YML_LOCAL), exist_ok=True)
+    with open(PICOCLAW_SECURITY_YML_LOCAL, 'w') as f:
+        yaml.dump(sec, f, allow_unicode=True, default_flow_style=False)
+    try:
+        os.chmod(PICOCLAW_SECURITY_YML_LOCAL, 0o600)
+    except Exception:
+        pass
 
 # ── Auth ─────────────────────────────────────────────────────────────────────
 AUTH_FILE      = os.path.join(SCRIPT_DIR, 'config', 'auth.json')
@@ -820,10 +841,144 @@ def index(request: Request):
     with zc_content:
         ui.label('🦾 ZeroClaw Dashboard').classes('text-h6 text-blue-9 q-mb-xs')
         with ui.tabs().classes('w-full bg-blue-1') as zc_sub_tabs:
+            t_zc_wiz  = ui.tab(T['tab_wizard'],        icon='auto_fix_high')
             t_zc_cfg  = ui.tab(T['tab_configuration'], icon='settings')
             t_zc_pair = ui.tab(T['tab_pair_device'],   icon='devices')
 
         with ui.tab_panels(zc_sub_tabs, value=t_zc_cfg).classes('w-full'):
+
+            # ── ZeroClaw › Wizard ──────────────────────────────────────────
+            with ui.tab_panel(t_zc_wiz):
+                ui.label('🧙 Quick Setup Wizard').classes('text-h6 text-blue-9 q-mb-xs')
+                ui.label(
+                    'Configure an AI provider and a messaging channel in 3 steps. '
+                    'Click Apply at the end — then restart ZeroClaw to activate.'
+                ).classes('text-caption text-grey-6 q-mb-md')
+
+                with ui.stepper(value='wiz_provider').props('vertical animated').classes('w-full') as _wiz:
+
+                    # ── Step 1: Provider ────────────────────────────────────
+                    with ui.step('wiz_provider', title='1  Provider', icon='cloud'):
+                        ui.label('Choose an AI provider and supply its API key.').classes('text-caption text-grey-6 q-mb-sm')
+                        wiz_prov_id    = ui.select(PROVIDER_IDS, label='Provider ID',
+                                             value='openrouter').classes('w-full q-mb-sm')
+                        wiz_prov_alias = ui.input('Alias  (used as config key, e.g. "openrouter")',
+                                             value='default').classes('w-full q-mb-sm')
+                        wiz_prov_key   = ui.input('API Key',
+                                             password=True, password_toggle_button=True).classes('w-full q-mb-sm')
+                        wiz_prov_base  = ui.input('base_url  (leave blank to use provider default)',
+                                             value='').classes('w-full q-mb-sm')
+                        wiz_def_model  = ui.input(
+                                             'default_model  (e.g. anthropic/claude-sonnet-4-6)',
+                                             value=str(top.get('default_model', ''))).classes('w-full')
+                        with ui.stepper_navigation():
+                            ui.button('Next →', on_click=_wiz.next).props('color=blue-8')
+
+                    # ── Step 2: Channel ─────────────────────────────────────
+                    with ui.step('wiz_channel', title='2  Channel', icon='forum'):
+                        ui.label('Pick a messaging channel to enable.').classes('text-caption text-grey-6 q-mb-sm')
+                        wiz_ch_sel = ui.select(
+                            {k: v['label'] for k, v in CHANNEL_SCHEMAS.items()},
+                            label='Channel type',
+                        ).classes('w-full q-mb-sm')
+                        wiz_ch_container = ui.column().classes('w-full')
+                        _wiz_ch_widgets: dict = {}
+
+                        def _wiz_build_ch(e=None):
+                            wiz_ch_container.clear()
+                            _wiz_ch_widgets.clear()
+                            key = wiz_ch_sel.value
+                            schema = CHANNEL_SCHEMAS.get(key)
+                            if not schema:
+                                return
+                            with wiz_ch_container:
+                                for (fkey, flabel, ftype, fdefault) in schema['fields']:
+                                    if ftype == 'text':
+                                        _wiz_ch_widgets[fkey] = ui.input(flabel, value=str(fdefault)).classes('w-full')
+                                    elif ftype == 'password':
+                                        _wiz_ch_widgets[fkey] = ui.input(
+                                            flabel, value='',
+                                            password=True, password_toggle_button=True,
+                                        ).classes('w-full')
+                                    elif ftype == 'bool':
+                                        _wiz_ch_widgets[fkey] = ui.checkbox(flabel, value=bool(fdefault))
+                                    elif ftype == 'int':
+                                        _wiz_ch_widgets[fkey] = ui.number(flabel, value=to_int(fdefault, 0), step=1).classes('w-full')
+                                    elif ftype == 'textarea':
+                                        ui.label(flabel).classes('text-caption text-grey-6')
+                                        _wiz_ch_widgets[fkey] = ui.textarea(
+                                            value='\n'.join(fdefault) if isinstance(fdefault, list) else str(fdefault)
+                                        ).classes('w-full').props('outlined rows=3')
+                                    elif ftype.startswith('select:'):
+                                        opts = ftype.split(':', 1)[1].split(',')
+                                        _wiz_ch_widgets[fkey] = ui.select(opts, label=flabel, value=opts[0]).classes('w-full')
+
+                        wiz_ch_sel.on('update:model-value', _wiz_build_ch)
+
+                        def _wiz_refresh_summary():
+                            key = str(wiz_prov_key.value)
+                            masked = ('*' * 6 + key[-4:]) if len(key) >= 6 else ('*' * len(key))
+                            ch_label = CHANNEL_SCHEMAS.get(wiz_ch_sel.value or '', {}).get('label', '(none selected)')
+                            lines = [
+                                f'Provider:      {wiz_prov_id.value}',
+                                f'Alias:         {wiz_prov_alias.value or "default"}',
+                                f'API Key:       {masked if key else "(not set)"}',
+                                f'base_url:      {wiz_prov_base.value or "(provider default)"}',
+                                f'default_model: {wiz_def_model.value or "(unchanged)"}',
+                                f'Channel:       {ch_label}',
+                            ]
+                            wiz_summary.set_text('\n'.join(lines))
+
+                        with ui.stepper_navigation():
+                            ui.button('← Back', on_click=_wiz.previous).props('flat color=grey-7')
+                            ui.button('Next →',
+                                on_click=lambda: (_wiz_refresh_summary(), _wiz.next())
+                            ).props('color=blue-8')
+
+                    # ── Step 3: Apply ───────────────────────────────────────
+                    with ui.step('wiz_apply', title='3  Apply', icon='check_circle'):
+                        ui.label(
+                            'Review the summary below, then click Apply & Save.'
+                        ).classes('text-caption text-grey-6 q-mb-sm')
+                        wiz_summary = ui.label('…').classes(
+                            'text-caption text-mono bg-grey-2 q-pa-sm w-full q-mb-sm'
+                        ).style('white-space: pre; border-radius: 4px;')
+
+                        def _wiz_apply():
+                            _wiz_refresh_summary()
+                            alias = (wiz_prov_alias.value or 'default').strip()
+                            # ── provider
+                            prov_entry: dict = {
+                                'name': wiz_prov_id.value,
+                                'requires_openai_auth': False,
+                            }
+                            if wiz_prov_key.value:  prov_entry['api_key']  = wiz_prov_key.value
+                            if wiz_prov_base.value: prov_entry['base_url'] = wiz_prov_base.value
+                            conf.setdefault('model_providers', {})[alias] = prov_entry
+                            conf['default_provider'] = wiz_prov_id.value
+                            if wiz_def_model.value.strip():
+                                conf['default_model'] = wiz_def_model.value.strip()
+                            # ── channel
+                            ch_key = wiz_ch_sel.value
+                            if ch_key and ch_key in CHANNEL_SCHEMAS:
+                                ch_entry: dict = {'enabled': True}
+                                for (fkey, _fl, ftype, _fd) in CHANNEL_SCHEMAS[ch_key]['fields']:
+                                    w = _wiz_ch_widgets.get(fkey)
+                                    if w is None: continue
+                                    if ftype == 'textarea': ch_entry[fkey] = lines_to_list(w.value)
+                                    elif ftype == 'bool':   ch_entry[fkey] = w.value
+                                    elif ftype == 'int':    ch_entry[fkey] = to_int(w.value)
+                                    else:                   ch_entry[fkey] = w.value
+                                conf.setdefault('channels_config', {})[ch_key] = ch_entry
+                            try:
+                                save_config(conf)
+                                ui.notify('✅ Wizard applied — restart ZeroClaw to activate', type='positive')
+                            except Exception as _e:
+                                ui.notify(f'❌ Save failed: {_e}', type='negative')
+
+                        with ui.stepper_navigation():
+                            ui.button('← Back', on_click=_wiz.previous).props('flat color=grey-7')
+                            ui.button('✅ Apply & Save', on_click=_wiz_apply).props('color=green-8')
 
             # ── ZeroClaw › Configuration ───────────────────────────────────
             with ui.tab_panel(t_zc_cfg):
@@ -1301,6 +1456,7 @@ def index(request: Request):
             # ── PicoClaw › Configuration ───────────────────────────────────
             with ui.tab_panel(t_pc_cfg):
                 pc_conf = load_picoclaw_config()
+                pc_sec  = load_picoclaw_security()
 
                 # shortcuts
                 pc_session   = pc_conf.get('session',   {})
@@ -1315,9 +1471,18 @@ def index(request: Request):
                 pc_voice     = pc_conf.get('voice',     {})
                 pc_build     = pc_conf.get('build_info',{})
 
+                # security.yml shortcuts
+                pc_sec_models   = pc_sec.get('model_list', {})
+                pc_sec_channels = pc_sec.get('channels',   {})
+                pc_sec_web      = pc_sec.get('web',        {})
+                pc_sec_skills   = pc_sec.get('skills',     {})
+
                 pc_model_panels = {}  # alias → widget map
 
                 def pc_build_model_card(container, idx, entry):
+                    _mname    = str(entry.get('model_name', ''))
+                    _sec_keys = pc_sec_models.get(_mname, {}).get('api_keys', []) or []
+                    _keys_txt = '\n'.join(str(k) for k in _sec_keys)
                     with container:
                         with ui.card().classes('w-full q-mb-sm') as card:
                             with ui.row().classes('w-full items-center justify-between'):
@@ -1326,11 +1491,11 @@ def index(request: Request):
                                     pc_model_panels.pop(i, None); c.delete()
                                 ui.button(icon='delete', on_click=_rm).props('flat round dense color=negative')
                             widgets = {}
-                            widgets['model_name'] = ui.input('model_name', value=str(entry.get('model_name',''))).classes('w-full')
+                            widgets['model_name'] = ui.input('model_name', value=_mname).classes('w-full')
                             widgets['model']      = ui.input('model',      value=str(entry.get('model',''))).classes('w-full')
                             widgets['api_base']   = ui.input('api_base',   value=str(entry.get('api_base',''))).classes('w-full')
-                            widgets['api_key']    = ui.input('api_key',    value=str(entry.get('api_key','')),
-                                password=True, password_toggle_button=True).classes('w-full')
+                            ui.label('api_keys  (one per line → security.yml)').classes('text-caption text-grey-6 q-mt-xs')
+                            widgets['api_keys']   = ui.textarea(value=_keys_txt).classes('w-full').props('outlined rows=3 label=api_keys')
                             cur_auth = str(entry.get('auth_method','apikey'))
                             auth_opts = ['apikey','oauth']
                             widgets['auth_method'] = ui.select(auth_opts, label='auth_method',
@@ -1339,6 +1504,7 @@ def index(request: Request):
 
                 def pc_collect_and_save():
                     data = load_picoclaw_config()
+                    sec  = load_picoclaw_security()
 
                     # session
                     data.setdefault('session', {})['dm_scope'] = pc_w_dm_scope.value
@@ -1356,58 +1522,80 @@ def index(request: Request):
                     ad['summarize_message_threshold']= to_int(pc_w_sum_threshold.value, 20)
                     ad['summarize_token_percent']    = to_int(pc_w_sum_percent.value, 75)
 
-                    # model_list
-                    data['model_list'] = [
-                        {
-                            'model_name':  w['model_name'].value,
+                    # model_list → config.json (no api_keys); api_keys array → security.yml
+                    data['model_list'] = []
+                    sec_ml = sec.setdefault('model_list', {})
+                    for w in pc_model_panels.values():
+                        mname = w['model_name'].value
+                        data['model_list'].append({
+                            'model_name':  mname,
                             'model':       w['model'].value,
                             'api_base':    w['api_base'].value,
-                            'api_key':     w['api_key'].value,
                             'auth_method': w['auth_method'].value,
-                        }
-                        for w in pc_model_panels.values()
-                    ]
+                        })
+                        keys = [k.strip() for k in w['api_keys'].value.splitlines() if k.strip()]
+                        sec_ml.setdefault(mname, {})['api_keys'] = keys
 
                     # gateway
                     data.setdefault('gateway', {})['host'] = pc_w_gw_host.value
                     data['gateway']['port']                 = to_int(pc_w_gw_port.value, 18790)
 
-                    # channels – boolean enable flags + per-channel key fields
-                    ch = data.setdefault('channels', {})
-                    def _ch_set(name, **kw):
+                    # channels – enable flags + non-secret fields → config.json; secrets → security.yml
+                    ch     = data.setdefault('channels', {})
+                    sec_ch = sec.setdefault('channels', {})
+                    def _ch_cfg(name, **kw):
                         ch.setdefault(name, {}).update(kw)
+                    def _ch_sec(name, **kw):
+                        if kw: sec_ch.setdefault(name, {}).update(kw)
 
-                    _ch_set('pico',      enabled=pc_w_ch_pico_en.value,     token=pc_w_ch_pico_token.value,
-                            ping_interval=to_int(pc_w_ch_pico_ping.value,30),
-                            max_connections=to_int(pc_w_ch_pico_maxconn.value,100))
-                    _ch_set('qq',        enabled=pc_w_ch_qq_en.value,       app_id=pc_w_ch_qq_appid.value,
-                            app_secret=pc_w_ch_qq_secret.value)
-                    _ch_set('telegram',  enabled=pc_w_ch_tg_en.value,       token=pc_w_ch_tg_token.value,
+                    _ch_cfg('pico',     enabled=pc_w_ch_pico_en.value,
+                            ping_interval=to_int(pc_w_ch_pico_ping.value, 30),
+                            max_connections=to_int(pc_w_ch_pico_maxconn.value, 100))
+                    _ch_sec('pico',     token=pc_w_ch_pico_token.value)
+
+                    _ch_cfg('qq',       enabled=pc_w_ch_qq_en.value, app_id=pc_w_ch_qq_appid.value)
+                    _ch_sec('qq',       app_secret=pc_w_ch_qq_secret.value)
+
+                    _ch_cfg('telegram', enabled=pc_w_ch_tg_en.value,
                             base_url=pc_w_ch_tg_base.value, proxy=pc_w_ch_tg_proxy.value)
-                    _ch_set('discord',   enabled=pc_w_ch_dc_en.value,       token=pc_w_ch_dc_token.value,
-                            mention_only=pc_w_ch_dc_mention.value)
-                    _ch_set('whatsapp',  enabled=pc_w_ch_wa_en.value,       bridge_url=pc_w_ch_wa_url.value,
-                            use_native=pc_w_ch_wa_native.value)
-                    _ch_set('feishu',    enabled=pc_w_ch_fs_en.value,       app_id=pc_w_ch_fs_appid.value,
-                            app_secret=pc_w_ch_fs_secret.value,
+                    _ch_sec('telegram', token=pc_w_ch_tg_token.value)
+
+                    _ch_cfg('discord',  enabled=pc_w_ch_dc_en.value, mention_only=pc_w_ch_dc_mention.value)
+                    _ch_sec('discord',  token=pc_w_ch_dc_token.value)
+
+                    _ch_cfg('whatsapp', enabled=pc_w_ch_wa_en.value,
+                            bridge_url=pc_w_ch_wa_url.value, use_native=pc_w_ch_wa_native.value)
+
+                    _ch_cfg('feishu',   enabled=pc_w_ch_fs_en.value, app_id=pc_w_ch_fs_appid.value)
+                    _ch_sec('feishu',   app_secret=pc_w_ch_fs_secret.value,
                             encrypt_key=pc_w_ch_fs_encrypt.value,
                             verification_token=pc_w_ch_fs_verify.value)
-                    _ch_set('slack',     enabled=pc_w_ch_sl_en.value,       bot_token=pc_w_ch_sl_bot.value,
-                            app_token=pc_w_ch_sl_app.value)
-                    _ch_set('matrix',    enabled=pc_w_ch_mx_en.value,       homeserver=pc_w_ch_mx_home.value,
-                            user_id=pc_w_ch_mx_user.value, access_token=pc_w_ch_mx_token.value)
-                    _ch_set('dingtalk',  enabled=pc_w_ch_dt_en.value,       client_id=pc_w_ch_dt_id.value,
-                            client_secret=pc_w_ch_dt_secret.value)
-                    _ch_set('maixcam',   enabled=pc_w_ch_mc_en.value,       host=pc_w_ch_mc_host.value,
-                            port=to_int(pc_w_ch_mc_port.value,18790))
-                    _ch_set('irc',       enabled=pc_w_ch_irc_en.value,      server=pc_w_ch_irc_server.value,
-                            nick=pc_w_ch_irc_nick.value, tls=pc_w_ch_irc_tls.value)
-                    _ch_set('onebot',    enabled=pc_w_ch_ob_en.value,       ws_url=pc_w_ch_ob_ws.value,
-                            access_token=pc_w_ch_ob_token.value)
-                    _ch_set('line',      enabled=pc_w_ch_line_en.value,
-                            channel_secret=pc_w_ch_line_secret.value,
+
+                    _ch_cfg('slack',    enabled=pc_w_ch_sl_en.value)
+                    _ch_sec('slack',    bot_token=pc_w_ch_sl_bot.value, app_token=pc_w_ch_sl_app.value)
+
+                    _ch_cfg('matrix',   enabled=pc_w_ch_mx_en.value,
+                            homeserver=pc_w_ch_mx_home.value, user_id=pc_w_ch_mx_user.value)
+                    _ch_sec('matrix',   access_token=pc_w_ch_mx_token.value)
+
+                    _ch_cfg('dingtalk',  enabled=pc_w_ch_dt_en.value, client_id=pc_w_ch_dt_id.value)
+                    _ch_sec('dingtalk',  client_secret=pc_w_ch_dt_secret.value)
+
+                    _ch_cfg('maixcam',  enabled=pc_w_ch_mc_en.value,
+                            host=pc_w_ch_mc_host.value, port=to_int(pc_w_ch_mc_port.value, 18790))
+
+                    _ch_cfg('irc',      enabled=pc_w_ch_irc_en.value,
+                            server=pc_w_ch_irc_server.value, nick=pc_w_ch_irc_nick.value, tls=pc_w_ch_irc_tls.value)
+
+                    _ch_cfg('onebot',   enabled=pc_w_ch_ob_en.value, ws_url=pc_w_ch_ob_ws.value)
+                    _ch_sec('onebot',   access_token=pc_w_ch_ob_token.value)
+
+                    _ch_cfg('line',     enabled=pc_w_ch_line_en.value)
+                    _ch_sec('line',     channel_secret=pc_w_ch_line_secret.value,
                             channel_access_token=pc_w_ch_line_cat.value)
-                    _ch_set('wecom',     enabled=pc_w_ch_wc_en.value,       token=pc_w_ch_wc_token.value,
+
+                    _ch_cfg('wecom',    enabled=pc_w_ch_wc_en.value)
+                    _ch_sec('wecom',    token=pc_w_ch_wc_token.value,
                             encoding_aes_key=pc_w_ch_wc_aes.value)
 
                     # tools
@@ -1420,13 +1608,24 @@ def index(request: Request):
                     web['fetch_limit_bytes'] = to_int(pc_w_t_fetch_limit.value, 10485760)
                     web.setdefault('duckduckgo', {})['enabled']   = pc_w_t_ddg.value
                     web.setdefault('brave',      {})['enabled']   = pc_w_t_brave.value
-                    web['brave']['api_key']                        = pc_w_t_brave_key.value
                     web.setdefault('tavily',     {})['enabled']   = pc_w_t_tavily.value
-                    web['tavily']['api_key']                       = pc_w_t_tavily_key.value
                     web.setdefault('perplexity', {})['enabled']   = pc_w_t_perp.value
-                    web['perplexity']['api_key']                   = pc_w_t_perp_key.value
                     web.setdefault('searxng',    {})['enabled']   = pc_w_t_searxng.value
                     web['searxng']['base_url']                     = pc_w_t_searxng_url.value
+
+                    # web search api_keys → security.yml (plural array per spec)
+                    sec_web = sec.setdefault('web', {})
+                    def _web_sec(name, widget):
+                        keys = [k.strip() for k in widget.value.splitlines() if k.strip()]
+                        sec_web.setdefault(name, {})['api_keys'] = keys
+                    _web_sec('brave',      pc_w_t_brave_key)
+                    _web_sec('tavily',     pc_w_t_tavily_key)
+                    _web_sec('perplexity', pc_w_t_perp_key)
+
+                    # skills auth tokens → security.yml
+                    sec_sk = sec.setdefault('skills', {})
+                    sec_sk.setdefault('clawhub', {})['auth_token'] = pc_w_t_clawhub_auth.value
+                    sec_sk.setdefault('github',  {})['token']       = pc_w_t_github_token.value
 
                     t.setdefault('exec',  {})['enabled']          = pc_w_t_exec.value
                     t['exec']['timeout_seconds']                   = to_int(pc_w_t_exec_timeout.value, 60)
@@ -1466,6 +1665,7 @@ def index(request: Request):
 
                     try:
                         save_picoclaw_config(data)
+                        save_picoclaw_security(sec)
                         ui.notify('✅ PicoClaw config saved', type='positive')
                     except Exception as e:
                         ui.notify(f'❌ Save failed: {e}', type='negative')
@@ -1526,26 +1726,26 @@ def index(request: Request):
 
                         with ui.expansion('🔵 Pico (native)', icon='wifi').classes('w-full'):
                             pc_w_ch_pico_en      = ui.checkbox('enabled',         value=bool(_pico_ch('pico').get('enabled', True)))
-                            pc_w_ch_pico_token   = ui.input('token',              value=str(_pico_ch('pico').get('token',''))).classes('w-full')
+                            pc_w_ch_pico_token   = ui.input('token (→ security.yml)', value=str(pc_sec_channels.get('pico',{}).get('token',''))).classes('w-full')
                             pc_w_ch_pico_ping    = ui.number('ping_interval',     value=_pico_ch('pico').get('ping_interval', 30),   min=5,  step=5).classes('w-full')
                             pc_w_ch_pico_maxconn = ui.number('max_connections',   value=_pico_ch('pico').get('max_connections', 100), min=1, step=10).classes('w-full')
 
                         with ui.expansion('📱 QQ', icon='chat').classes('w-full'):
                             pc_w_ch_qq_en     = ui.checkbox('enabled',    value=bool(_pico_ch('qq').get('enabled', False)))
                             pc_w_ch_qq_appid  = ui.input('app_id',        value=str(_pico_ch('qq').get('app_id',''))).classes('w-full')
-                            pc_w_ch_qq_secret = ui.input('app_secret',    value=str(_pico_ch('qq').get('app_secret','')),
+                            pc_w_ch_qq_secret = ui.input('app_secret (→ security.yml)', value=str(pc_sec_channels.get('qq',{}).get('app_secret','')),
                                 password=True, password_toggle_button=True).classes('w-full')
 
                         with ui.expansion('✈️ Telegram', icon='send').classes('w-full'):
                             pc_w_ch_tg_en    = ui.checkbox('enabled', value=bool(_pico_ch('telegram').get('enabled', False)))
-                            pc_w_ch_tg_token = ui.input('token',      value=str(_pico_ch('telegram').get('token','')),
+                            pc_w_ch_tg_token = ui.input('token (→ security.yml)', value=str(pc_sec_channels.get('telegram',{}).get('token','')),
                                 password=True, password_toggle_button=True).classes('w-full')
                             pc_w_ch_tg_base  = ui.input('base_url',   value=str(_pico_ch('telegram').get('base_url',''))).classes('w-full')
                             pc_w_ch_tg_proxy = ui.input('proxy',      value=str(_pico_ch('telegram').get('proxy',''))).classes('w-full')
 
                         with ui.expansion('🎮 Discord', icon='discord').classes('w-full'):
                             pc_w_ch_dc_en      = ui.checkbox('enabled',      value=bool(_pico_ch('discord').get('enabled', False)))
-                            pc_w_ch_dc_token   = ui.input('token',           value=str(_pico_ch('discord').get('token','')),
+                            pc_w_ch_dc_token   = ui.input('token (→ security.yml)', value=str(pc_sec_channels.get('discord',{}).get('token','')),
                                 password=True, password_toggle_button=True).classes('w-full')
                             pc_w_ch_dc_mention = ui.checkbox('mention_only', value=bool(_pico_ch('discord').get('mention_only', False)))
 
@@ -1557,30 +1757,30 @@ def index(request: Request):
                         with ui.expansion('🪶 Feishu / Lark', icon='language').classes('w-full'):
                             pc_w_ch_fs_en      = ui.checkbox('enabled',              value=bool(_pico_ch('feishu').get('enabled', False)))
                             pc_w_ch_fs_appid   = ui.input('app_id',                  value=str(_pico_ch('feishu').get('app_id',''))).classes('w-full')
-                            pc_w_ch_fs_secret  = ui.input('app_secret',              value=str(_pico_ch('feishu').get('app_secret','')),
+                            pc_w_ch_fs_secret  = ui.input('app_secret (→ security.yml)', value=str(pc_sec_channels.get('feishu',{}).get('app_secret','')),
                                 password=True, password_toggle_button=True).classes('w-full')
-                            pc_w_ch_fs_encrypt = ui.input('encrypt_key',             value=str(_pico_ch('feishu').get('encrypt_key','')),
+                            pc_w_ch_fs_encrypt = ui.input('encrypt_key (→ security.yml)', value=str(pc_sec_channels.get('feishu',{}).get('encrypt_key','')),
                                 password=True, password_toggle_button=True).classes('w-full')
-                            pc_w_ch_fs_verify  = ui.input('verification_token',      value=str(_pico_ch('feishu').get('verification_token',''))).classes('w-full')
+                            pc_w_ch_fs_verify  = ui.input('verification_token (→ security.yml)', value=str(pc_sec_channels.get('feishu',{}).get('verification_token',''))).classes('w-full')
 
                         with ui.expansion('💼 Slack', icon='workspaces').classes('w-full'):
                             pc_w_ch_sl_en  = ui.checkbox('enabled',    value=bool(_pico_ch('slack').get('enabled', False)))
-                            pc_w_ch_sl_bot = ui.input('bot_token',     value=str(_pico_ch('slack').get('bot_token','')),
+                            pc_w_ch_sl_bot = ui.input('bot_token (→ security.yml)', value=str(pc_sec_channels.get('slack',{}).get('bot_token','')),
                                 password=True, password_toggle_button=True).classes('w-full')
-                            pc_w_ch_sl_app = ui.input('app_token',     value=str(_pico_ch('slack').get('app_token','')),
+                            pc_w_ch_sl_app = ui.input('app_token (→ security.yml)', value=str(pc_sec_channels.get('slack',{}).get('app_token','')),
                                 password=True, password_toggle_button=True).classes('w-full')
 
                         with ui.expansion('🔷 Matrix', icon='grid_on').classes('w-full'):
                             pc_w_ch_mx_en    = ui.checkbox('enabled',      value=bool(_pico_ch('matrix').get('enabled', False)))
                             pc_w_ch_mx_home  = ui.input('homeserver',      value=str(_pico_ch('matrix').get('homeserver','https://matrix.org'))).classes('w-full')
                             pc_w_ch_mx_user  = ui.input('user_id',         value=str(_pico_ch('matrix').get('user_id',''))).classes('w-full')
-                            pc_w_ch_mx_token = ui.input('access_token',    value=str(_pico_ch('matrix').get('access_token','')),
+                            pc_w_ch_mx_token = ui.input('access_token (→ security.yml)', value=str(pc_sec_channels.get('matrix',{}).get('access_token','')),
                                 password=True, password_toggle_button=True).classes('w-full')
 
                         with ui.expansion('🔔 DingTalk', icon='notifications').classes('w-full'):
                             pc_w_ch_dt_en     = ui.checkbox('enabled',       value=bool(_pico_ch('dingtalk').get('enabled', False)))
                             pc_w_ch_dt_id     = ui.input('client_id',        value=str(_pico_ch('dingtalk').get('client_id',''))).classes('w-full')
-                            pc_w_ch_dt_secret = ui.input('client_secret',    value=str(_pico_ch('dingtalk').get('client_secret','')),
+                            pc_w_ch_dt_secret = ui.input('client_secret (→ security.yml)', value=str(pc_sec_channels.get('dingtalk',{}).get('client_secret','')),
                                 password=True, password_toggle_button=True).classes('w-full')
 
                         with ui.expansion('📷 MaixCam', icon='videocam').classes('w-full'):
@@ -1597,20 +1797,21 @@ def index(request: Request):
                         with ui.expansion('🤖 OneBot', icon='smart_toy').classes('w-full'):
                             pc_w_ch_ob_en    = ui.checkbox('enabled',      value=bool(_pico_ch('onebot').get('enabled', False)))
                             pc_w_ch_ob_ws    = ui.input('ws_url',          value=str(_pico_ch('onebot').get('ws_url','ws://127.0.0.1:3001'))).classes('w-full')
-                            pc_w_ch_ob_token = ui.input('access_token',    value=str(_pico_ch('onebot').get('access_token','')),
+                            pc_w_ch_ob_token = ui.input('access_token (→ security.yml)', value=str(pc_sec_channels.get('onebot',{}).get('access_token','')),
                                 password=True, password_toggle_button=True).classes('w-full')
 
                         with ui.expansion('🟢 LINE', icon='message').classes('w-full'):
                             pc_w_ch_line_en     = ui.checkbox('enabled',               value=bool(_pico_ch('line').get('enabled', False)))
-                            pc_w_ch_line_secret = ui.input('channel_secret',           value=str(_pico_ch('line').get('channel_secret','')),
+                            pc_w_ch_line_secret = ui.input('channel_secret (→ security.yml)', value=str(pc_sec_channels.get('line',{}).get('channel_secret','')),
                                 password=True, password_toggle_button=True).classes('w-full')
-                            pc_w_ch_line_cat    = ui.input('channel_access_token',     value=str(_pico_ch('line').get('channel_access_token','')),
+                            pc_w_ch_line_cat    = ui.input('channel_access_token (→ security.yml)', value=str(pc_sec_channels.get('line',{}).get('channel_access_token','')),
                                 password=True, password_toggle_button=True).classes('w-full')
 
                         with ui.expansion('🏢 WeCom', icon='business').classes('w-full'):
                             pc_w_ch_wc_en    = ui.checkbox('enabled',          value=bool(_pico_ch('wecom').get('enabled', False)))
-                            pc_w_ch_wc_token = ui.input('token',               value=str(_pico_ch('wecom').get('token',''))).classes('w-full')
-                            pc_w_ch_wc_aes   = ui.input('encoding_aes_key',   value=str(_pico_ch('wecom').get('encoding_aes_key','')),
+                            pc_w_ch_wc_token = ui.input('token (→ security.yml)', value=str(pc_sec_channels.get('wecom',{}).get('token','')),
+                                password=True, password_toggle_button=True).classes('w-full')
+                            pc_w_ch_wc_aes   = ui.input('encoding_aes_key (→ security.yml)', value=str(pc_sec_channels.get('wecom',{}).get('encoding_aes_key','')),
                                 password=True, password_toggle_button=True).classes('w-full')
 
                     # ── Tools ────────────────────────────────────────────────
@@ -1629,13 +1830,16 @@ def index(request: Request):
                             pc_w_t_fetch_limit = ui.number('fetch_limit_bytes',    value=pc_web_tools.get('fetch_limit_bytes', 10485760), min=1024, step=1048576).classes('w-full')
                             pc_w_t_ddg         = ui.checkbox('duckduckgo.enabled', value=bool(pc_web_tools.get('duckduckgo',{}).get('enabled', True)))
                             pc_w_t_brave       = ui.checkbox('brave.enabled',      value=bool(pc_web_tools.get('brave',{}).get('enabled', False)))
-                            pc_w_t_brave_key   = ui.input('brave.api_key',         value=str(pc_web_tools.get('brave',{}).get('api_key','')),
+                            pc_w_t_brave_key   = ui.input('brave api_keys[0] (-> security.yml)',
+                                value=str((pc_sec_web.get('brave',{}).get('api_keys',[]) or [''])[0]),
                                 password=True, password_toggle_button=True).classes('w-full')
                             pc_w_t_tavily      = ui.checkbox('tavily.enabled',     value=bool(pc_web_tools.get('tavily',{}).get('enabled', False)))
-                            pc_w_t_tavily_key  = ui.input('tavily.api_key',        value=str(pc_web_tools.get('tavily',{}).get('api_key','')),
+                            pc_w_t_tavily_key  = ui.input('tavily api_keys[0] (-> security.yml)',
+                                value=str((pc_sec_web.get('tavily',{}).get('api_keys',[]) or [''])[0]),
                                 password=True, password_toggle_button=True).classes('w-full')
                             pc_w_t_perp        = ui.checkbox('perplexity.enabled', value=bool(pc_web_tools.get('perplexity',{}).get('enabled', False)))
-                            pc_w_t_perp_key    = ui.input('perplexity.api_key',    value=str(pc_web_tools.get('perplexity',{}).get('api_key','')),
+                            pc_w_t_perp_key    = ui.input('perplexity api_keys[0] (-> security.yml)',
+                                value=str((pc_sec_web.get('perplexity',{}).get('api_keys',[]) or [''])[0]),
                                 password=True, password_toggle_button=True).classes('w-full')
                             pc_w_t_searxng     = ui.checkbox('searxng.enabled',    value=bool(pc_web_tools.get('searxng',{}).get('enabled', False)))
                             pc_w_t_searxng_url = ui.input('searxng.base_url',      value=str(pc_web_tools.get('searxng',{}).get('base_url',''))).classes('w-full')
@@ -1654,6 +1858,16 @@ def index(request: Request):
                         with ui.expansion(T['pc_exp_skills_mcp'], icon='hub').classes('w-full'):
                             pc_w_t_skills  = ui.checkbox('skills.clawhub.enabled',  value=bool(pc_tools.get('skills',{}).get('registries',{}).get('clawhub',{}).get('enabled', True)))
                             pc_w_t_mcp     = ui.checkbox('mcp.enabled',             value=bool(pc_tools.get('mcp',{}).get('enabled', False)))
+
+                        with ui.expansion('🔑 Skills Auth Tokens (-> security.yml)', icon='key').classes('w-full'):
+                            ui.label('clawhub.auth_token').classes('text-caption text-grey-6')
+                            pc_w_t_clawhub_auth = ui.input('clawhub auth_token',
+                                value=str(pc_sec_skills.get('clawhub',{}).get('auth_token','')),
+                                password=True, password_toggle_button=True).classes('w-full')
+                            ui.label('github.token').classes('text-caption text-grey-6')
+                            pc_w_t_github_token = ui.input('github token',
+                                value=str(pc_sec_skills.get('github',{}).get('token','')),
+                                password=True, password_toggle_button=True).classes('w-full')
 
                         with ui.expansion(T['pc_exp_file_tools'], icon='folder').classes('w-full'):
                             pc_w_t_read_file   = ui.checkbox('read_file.enabled',   value=bool(pc_tools.get('read_file',{}).get('enabled', True)))
