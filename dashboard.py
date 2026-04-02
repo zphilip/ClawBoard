@@ -10,10 +10,12 @@ SCRIPT_DIR        = os.path.dirname(os.path.abspath(__file__))
 PATHS             = [os.path.join(SCRIPT_DIR, 'config/config.toml'), 'config.toml']
 CONFIG_PATH       = next((p for p in PATHS if os.path.exists(p)), PATHS[0])
 DEPLOY_CONFIG_PATH = '/var/lib/zeroclaw/.zeroclaw/config.toml'  # real zeroclaw config
-PICOCLAW_CONFIG_PATH = os.path.join(SCRIPT_DIR, 'config', 'config.json')      # picoclaw JSON config
-PICOCLAW_PID_FILE      = '/var/lib/picoclaw/.picoclaw/.picoclaw.pid'             # runtime PID+token file
-PICOCLAW_SECURITY_YML  = '/var/lib/picoclaw/.picoclaw/.security.yml'            # channels tokens
-PICOCLAW_SECURITY_YML_LOCAL = os.path.join(SCRIPT_DIR, 'config', 'security.yml') # local workspace copy
+PICOCLAW_CONFIG_PATH         = os.path.join(SCRIPT_DIR, 'config', 'config.json')      # picoclaw JSON config (local workspace copy)
+PICOCLAW_PID_FILE            = '/var/lib/picoclaw/.picoclaw/.picoclaw.pid'             # runtime PID+token file
+PICOCLAW_SECURITY_YML        = '/var/lib/picoclaw/.picoclaw/.security.yml'            # live security.yml (picoclaw runtime)
+PICOCLAW_SECURITY_YML_LOCAL  = os.path.join(SCRIPT_DIR, 'config', 'security.yml')    # local workspace copy
+PICOCLAW_DEPLOY_CONFIG_PATH  = '/var/lib/picoclaw/.picoclaw/config.json'              # picoclaw live config path
+PICOCLAW_DEPLOY_SECURITY_PATH= '/var/lib/picoclaw/.picoclaw/.security.yml'            # same as PICOCLAW_SECURITY_YML
 
 def _sudo_read_file(path: str) -> tuple[str, str]:
     """Read a file that requires elevated privileges via `sudo cat`.
@@ -497,6 +499,60 @@ def deploy_config():
     if r.returncode != 0:
         err = r.stderr.strip() or f'sudo tee failed (exit {r.returncode})'
         return False, err
+    return True, ''
+
+def deploy_picoclaw_config():
+    """Deploy picoclaw config.json from local workspace copy to PicoClaw's live path via sudo tee.
+    Requires sudoers rules:
+      zero ALL=(root) NOPASSWD: /usr/bin/tee /var/lib/picoclaw/.picoclaw/config.json
+      zero ALL=(root) NOPASSWD: /usr/bin/mkdir -p /var/lib/picoclaw/.picoclaw
+    Returns (ok: bool, message: str)."""
+    try:
+        with open(PICOCLAW_CONFIG_PATH, 'r') as f:
+            content = f.read()
+    except Exception as e:
+        return False, f'Read failed: {e}'
+    subprocess.run(
+        ['sudo', '/usr/bin/mkdir', '-p', os.path.dirname(PICOCLAW_DEPLOY_CONFIG_PATH)],
+        capture_output=True
+    )
+    r = subprocess.run(
+        ['sudo', '/usr/bin/tee', PICOCLAW_DEPLOY_CONFIG_PATH],
+        input=content, capture_output=True, text=True
+    )
+    if r.returncode != 0:
+        err = r.stderr.strip() or f'sudo tee failed (exit {r.returncode})'
+        return False, err
+    return True, ''
+
+def deploy_picoclaw_security():
+    """Deploy picoclaw security.yml from local workspace copy to PicoClaw's live path via sudo tee.
+    Also sets chmod 600 on the deployed file (api_keys must not be world-readable).
+    Requires sudoers rules:
+      zero ALL=(root) NOPASSWD: /usr/bin/tee /var/lib/picoclaw/.picoclaw/.security.yml
+      zero ALL=(root) NOPASSWD: /usr/bin/chmod 600 /var/lib/picoclaw/.picoclaw/.security.yml
+    Returns (ok: bool, message: str)."""
+    try:
+        with open(PICOCLAW_SECURITY_YML_LOCAL, 'r') as f:
+            content = f.read()
+    except Exception as e:
+        return False, f'Read failed: {e}'
+    subprocess.run(
+        ['sudo', '/usr/bin/mkdir', '-p', os.path.dirname(PICOCLAW_DEPLOY_SECURITY_PATH)],
+        capture_output=True
+    )
+    r = subprocess.run(
+        ['sudo', '/usr/bin/tee', PICOCLAW_DEPLOY_SECURITY_PATH],
+        input=content, capture_output=True, text=True
+    )
+    if r.returncode != 0:
+        err = r.stderr.strip() or f'sudo tee failed (exit {r.returncode})'
+        return False, err
+    # Ensure api_keys are not readable by other users
+    subprocess.run(
+        ['sudo', '/usr/bin/chmod', '600', PICOCLAW_DEPLOY_SECURITY_PATH],
+        capture_output=True
+    )
     return True, ''
 
 def restart_service():
@@ -1755,7 +1811,13 @@ def index(request: Request):
                             try:
                                 save_picoclaw_config(data)
                                 save_picoclaw_security(sec)
-                                ui.notify('✅ PicoClaw config saved — restart PicoClaw to activate', type='positive')
+                                ok_cfg, err_cfg = deploy_picoclaw_config()
+                                ok_sec, err_sec = deploy_picoclaw_security()
+                                deploy_errs = [e for e in [err_cfg, err_sec] if e]
+                                if deploy_errs:
+                                    ui.notify(f'⚠️ Saved locally but deploy failed: {"; ".join(deploy_errs)}', type='warning')
+                                else:
+                                    ui.notify('✅ PicoClaw config saved & deployed — restart PicoClaw to activate', type='positive')
                             except Exception as ex:
                                 ui.notify(f'❌ Save failed: {ex}', type='negative')
 
@@ -2009,7 +2071,13 @@ def index(request: Request):
                     try:
                         save_picoclaw_config(data)
                         save_picoclaw_security(sec)
-                        ui.notify('✅ PicoClaw config saved', type='positive')
+                        ok_cfg, err_cfg = deploy_picoclaw_config()
+                        ok_sec, err_sec = deploy_picoclaw_security()
+                        deploy_errs = [e for e in [err_cfg, err_sec] if e]
+                        if deploy_errs:
+                            ui.notify(f'⚠️ Saved locally but deploy failed: {"; ".join(deploy_errs)}', type='warning')
+                        else:
+                            ui.notify('✅ PicoClaw config saved & deployed', type='positive')
                     except Exception as e:
                         ui.notify(f'❌ Save failed: {e}', type='negative')
 
