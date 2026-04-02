@@ -1,0 +1,23 @@
+# /etc/sudoers.d/clawboard
+#
+# Narrow sudo rules for the ClawBoard dashboard (runs as user: zero).
+# Install:
+#   sudo cp daemon/sudoers.d-clawboard /etc/sudoers.d/clawboard
+#   sudo chmod 440 /etc/sudoers.d/clawboard
+#   sudo visudo -c   # validate before relying on it
+#
+# Defaults for this file
+Defaults!sudoers.d-clawboard !requiretty
+
+# ── ZeroClaw service management ──────────────────────────────────────────────
+zero ALL=(root) NOPASSWD: /usr/bin/systemctl restart zeroclaw.service
+zero ALL=(root) NOPASSWD: /usr/bin/systemctl stop zeroclaw.service
+zero ALL=(root) NOPASSWD: /usr/bin/systemctl start zeroclaw.service
+
+# ── PicoClaw runtime files (owned by picoclaw, read-only by dashboard) ───────
+# Used to compose the runtime WebSocket token shown in the Pair Device panel.
+zero ALL=(root) NOPASSWD: /usr/bin/cat /var/lib/picoclaw/.picoclaw/.picoclaw.pid
+zero ALL=(root) NOPASSWD: /usr/bin/cat /var/lib/picoclaw/.picoclaw/.security.yml
+
+# ── WiFi-connect captive portal ───────────────────────────────────────────────
+zero ALL=(root) NOPASSWD: /opt/bin/wifi-connect
