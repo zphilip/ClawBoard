@@ -573,6 +573,21 @@ def service_status():
     r = subprocess.run(['systemctl', 'is-active', 'zeroclaw.service'], capture_output=True, text=True)
     return r.stdout.strip()
 
+def restart_picoclaw_service():
+    """Restart picoclaw.service via sudo systemctl.
+    Requires sudoers rule:
+      zero ALL=(root) NOPASSWD: /usr/bin/systemctl restart picoclaw.service
+    Returns (ok: bool, stderr: str)."""
+    r = subprocess.run(
+        ['sudo', '/usr/bin/systemctl', 'restart', 'picoclaw.service'],
+        capture_output=True, text=True
+    )
+    return r.returncode == 0, r.stderr.strip()
+
+def picoclaw_service_status():
+    r = subprocess.run(['systemctl', 'is-active', 'picoclaw.service'], capture_output=True, text=True)
+    return r.stdout.strip()
+
 def to_int(v, default=0):
     try:   return int(float(v))
     except: return default
@@ -1927,19 +1942,29 @@ def index(request: Request):
                     ad['summarize_message_threshold']= to_int(pc_w_sum_threshold.value, 20)
                     ad['summarize_token_percent']    = to_int(pc_w_sum_percent.value, 75)
 
-                    # model_list → config.json (no api_keys); api_keys array → security.yml
+                    # model_list → config.json (no api_keys); api_keys → security.yml
+                    # Deduplicate by model_name: first panel wins for config; real keys always
+                    # win over empty (never overwrite a valid api_key with an empty list).
                     data['model_list'] = []
                     sec_ml = sec.setdefault('model_list', {})
+                    _seen_mnames: set = set()
                     for w in pc_model_panels.values():
                         mname = w['model_name'].value
-                        data['model_list'].append({
-                            'model_name':  mname,
-                            'model':       w['model'].value,
-                            'api_base':    w['api_base'].value,
-                            'auth_method': w['auth_method'].value,
-                        })
                         keys = [k.strip() for k in w['api_keys'].value.splitlines() if k.strip()]
-                        sec_ml.setdefault(mname, {})['api_keys'] = keys
+                        if mname not in _seen_mnames:
+                            _seen_mnames.add(mname)
+                            data['model_list'].append({
+                                'model_name':  mname,
+                                'model':       w['model'].value,
+                                'api_base':    w['api_base'].value,
+                                'auth_method': w['auth_method'].value,
+                            })
+                        # Only write api_keys if non-empty; never overwrite existing keys with []
+                        entry = sec_ml.setdefault(mname, {})
+                        if keys:
+                            entry['api_keys'] = keys
+                        elif 'api_keys' not in entry:
+                            entry['api_keys'] = []
 
                     # gateway
                     data.setdefault('gateway', {})['host'] = pc_w_gw_host.value
@@ -2071,15 +2096,27 @@ def index(request: Request):
                     try:
                         save_picoclaw_config(data)
                         save_picoclaw_security(sec)
-                        ok_cfg, err_cfg = deploy_picoclaw_config()
-                        ok_sec, err_sec = deploy_picoclaw_security()
-                        deploy_errs = [e for e in [err_cfg, err_sec] if e]
-                        if deploy_errs:
-                            ui.notify(f'⚠️ Saved locally but deploy failed: {"; ".join(deploy_errs)}', type='warning')
-                        else:
-                            ui.notify('✅ PicoClaw config saved & deployed', type='positive')
+                        ui.notify(T['notify_saved'], type='positive')
+                        return True
                     except Exception as e:
-                        ui.notify(f'❌ Save failed: {e}', type='negative')
+                        ui.notify(T['notify_save_fail'].format(e), type='negative')
+                        return False
+
+                def pc_do_save_restart():
+                    """Save locally, deploy to /var/lib/picoclaw, then restart picoclaw.service."""
+                    if not pc_collect_and_save():
+                        return
+                    ok_cfg, err_cfg = deploy_picoclaw_config()
+                    ok_sec, err_sec = deploy_picoclaw_security()
+                    deploy_errs = [e for e in [err_cfg, err_sec] if e]
+                    if deploy_errs:
+                        ui.notify(f'⚠️ Deploy failed: {"; ".join(deploy_errs)}', type='warning')
+                        return
+                    ok_svc, svc_err = restart_picoclaw_service()
+                    if ok_svc:
+                        ui.notify('✅ PicoClaw deployed & restarted', type='positive')
+                    else:
+                        ui.notify(f'⚠️ Restart failed: {svc_err or T["notify_sudo_required"]}', type='warning')
 
                 with ui.tabs().classes('w-full bg-purple-1') as pc_cfg_tabs:
                     t_pc_gen   = ui.tab(T['pc_tab_general'],  icon='tune')
@@ -2366,7 +2403,8 @@ def index(request: Request):
 
                 ui.separator()
                 with ui.row().classes('w-full gap-2 q-pa-sm'):
-                    ui.button(T['pc_btn_save'], on_click=pc_collect_and_save).props('elevated').classes('flex-1 bg-purple-8 text-white')
+                    ui.button(T['pc_btn_save'],         on_click=pc_collect_and_save).props('elevated').classes('flex-1 bg-purple-8 text-white')
+                    ui.button(T['pc_btn_save_restart'],  on_click=pc_do_save_restart).props('elevated').classes('flex-1 bg-deep-purple-8 text-white')
 
             # ── PicoClaw › Pair Device ─────────────────────────────────────
             with ui.tab_panel(t_pc_pair):
