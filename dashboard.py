@@ -1,6 +1,6 @@
 from nicegui import ui, app
 from fastapi import Request
-import toml, os, sys, subprocess, hashlib, hmac, secrets, json, time as _time
+import tomlkit, os, sys, subprocess, hashlib, hmac, secrets, json, time as _time
 from datetime import datetime
 from urllib.parse import quote
 import locales.zh as zh_strings
@@ -14,51 +14,78 @@ PICOCLAW_CONFIG_PATH = os.path.join(SCRIPT_DIR, 'config', 'config.json')      # 
 PICOCLAW_PID_FILE      = '/var/lib/picoclaw/.picoclaw/.picoclaw.pid'             # runtime PID+token file
 PICOCLAW_SECURITY_YML  = '/var/lib/picoclaw/.picoclaw/.security.yml'            # channels tokens
 
-def _read_security_yml_token(section: str = 'pico_client') -> tuple[str, str]:
-    """Read channels.<section>.token from .security.yml.
-    Returns (token, error_message).  error_message is '' on success."""
+def _sudo_read_file(path: str) -> tuple[str, str]:
+    """Read a file that requires elevated privileges via `sudo cat`.
+    Returns (content, error_message).  error_message is '' on success.
+    Requires a sudoers rule:
+      zeroclaw ALL=(root) NOPASSWD: /usr/bin/cat /var/lib/picoclaw/.picoclaw/.picoclaw.pid
+      zeroclaw ALL=(root) NOPASSWD: /usr/bin/cat /var/lib/picoclaw/.picoclaw/.security.yml
+    """
+    r = subprocess.run(
+        ['sudo', '/usr/bin/cat', path],
+        capture_output=True, text=True
+    )
+    if r.returncode != 0:
+        err = r.stderr.strip() or f'sudo cat {path} failed (exit {r.returncode})'
+        return '', err
+    return r.stdout, ''
+
+def _read_picoclaw_pid_token() -> tuple[str, str]:
+    """Read the runtime token from the picoclaw PID file using sudo.
+    Returns (pid_token, error_message)."""
+    raw, err = _sudo_read_file(PICOCLAW_PID_FILE)
+    if err:
+        return '', err
     try:
-        with open(PICOCLAW_SECURITY_YML) as _f:
-            raw = _f.read()
-        try:
-            import yaml as _yaml
-            data = _yaml.safe_load(raw)
-            tok = (data or {}).get('channels', {}).get(section, {}).get('token', '')
-            return str(tok).strip(), ''
-        except ImportError:
-            pass
-        # Fallback: simple line-by-line parser for the known structure
-        in_channels = False
-        in_section  = False
-        indent_ch   = None   # indent of channel keys (e.g. 2)
-        indent_sec  = None   # indent of section sub-keys
-        for line in raw.splitlines():
-            stripped = line.lstrip()
-            indent   = len(line) - len(stripped)
-            if stripped.startswith('channels:'):
-                in_channels = True
-                indent_ch   = None
-                continue
-            if not in_channels:
-                continue
-            if indent_ch is None and stripped and not stripped.startswith('#'):
-                indent_ch = indent
-            if indent_ch is not None and indent == indent_ch:
-                in_section = stripped.startswith(f'{section}:')
-                indent_sec = None
-                continue
-            if in_section:
-                if indent_sec is None and stripped and not stripped.startswith('#'):
-                    indent_sec = indent
-                if indent_sec is not None and indent == indent_sec:
-                    if stripped.startswith('token:'):
-                        tok = stripped[len('token:'):].strip().strip('"\'')
-                        return tok, ''
-        return '', f'channels.{section}.token not found in {PICOCLAW_SECURITY_YML}'
-    except FileNotFoundError:
-        return '', f'Security file not found: {PICOCLAW_SECURITY_YML}'
+        data = json.loads(raw)
+        tok = str(data.get('token', '')).strip()
+        if not tok:
+            return '', f'token field empty in {PICOCLAW_PID_FILE}'
+        return tok, ''
     except Exception as _e:
-        return '', f'Security file read error: {_e}'
+        return '', f'PID file parse error: {_e}'
+
+def _read_security_yml_token(section: str = 'pico_client') -> tuple[str, str]:
+    """Read channels.<section>.token from .security.yml using sudo.
+    Returns (token, error_message).  error_message is '' on success."""
+    raw, err = _sudo_read_file(PICOCLAW_SECURITY_YML)
+    if err:
+        return '', err
+    try:
+        import yaml as _yaml
+        data = _yaml.safe_load(raw)
+        tok = (data or {}).get('channels', {}).get(section, {}).get('token', '')
+        return str(tok).strip(), ''
+    except ImportError:
+        pass
+    # Fallback: simple line-by-line parser for the known structure
+    in_channels = False
+    in_section  = False
+    indent_ch   = None   # indent of channel keys (e.g. 2)
+    indent_sec  = None   # indent of section sub-keys
+    for line in raw.splitlines():
+        stripped = line.lstrip()
+        indent   = len(line) - len(stripped)
+        if stripped.startswith('channels:'):
+            in_channels = True
+            indent_ch   = None
+            continue
+        if not in_channels:
+            continue
+        if indent_ch is None and stripped and not stripped.startswith('#'):
+            indent_ch = indent
+        if indent_ch is not None and indent == indent_ch:
+            in_section = stripped.startswith(f'{section}:')
+            indent_sec = None
+            continue
+        if in_section:
+            if indent_sec is None and stripped and not stripped.startswith('#'):
+                indent_sec = indent
+            if indent_sec is not None and indent == indent_sec:
+                if stripped.startswith('token:'):
+                    tok = stripped[len('token:'):].strip().strip('"\'')
+                    return tok, ''
+    return '', f'channels.{section}.token not found in {PICOCLAW_SECURITY_YML}'
 
 def load_picoclaw_config():
     """Load picoclaw config.json; return empty dict on failure."""
@@ -368,18 +395,19 @@ CHANNEL_KEYS   = list(CHANNEL_SCHEMAS.keys())
 CHANNEL_LABELS = {k: v['label'] for k, v in CHANNEL_SCHEMAS.items()}
 
 def load_config():
-    """Load from the live deploy path first; fall back to local config/config.toml."""
+    """Load from the live deploy path first; fall back to local config/config.toml.
+    Uses tomlkit so that save_config preserves blank lines, comments and key order."""
     for path in [DEPLOY_CONFIG_PATH, CONFIG_PATH]:
         try:
             with open(path, 'r') as f:
-                return toml.load(f)
+                return tomlkit.load(f)
         except Exception:
             continue
-    return {}
+    return tomlkit.document()
 
 def save_config(conf):
     with open(CONFIG_PATH, 'w') as f:
-        toml.dump(conf, f)
+        f.write(tomlkit.dumps(conf))
 
 def deploy_config():
     """Backup CONFIG_PATH → .bak, then copy directly to DEPLOY_CONFIG_PATH.
@@ -406,9 +434,12 @@ def deploy_config():
     return True, ''
 
 def restart_service():
-    """Restart via systemctl. Requires a narrow sudoers rule — no password needed.
-    Add with: sudo visudo -f /etc/sudoers.d/clawboard
-      zeroclaw ALL=(root) NOPASSWD: /usr/bin/systemctl restart zeroclaw.service
+    """Restart via systemctl. Requires narrow sudoers rules — no password needed.
+    Install with: sudo cp daemon/sudoers.d-clawboard /etc/sudoers.d/clawboard
+    Required rules (see daemon/sudoers.d-clawboard):
+      zero ALL=(root) NOPASSWD: /usr/bin/systemctl restart zeroclaw.service
+      zero ALL=(root) NOPASSWD: /usr/bin/cat /var/lib/picoclaw/.picoclaw/.picoclaw.pid
+      zero ALL=(root) NOPASSWD: /usr/bin/cat /var/lib/picoclaw/.picoclaw/.security.yml
     """
     r = subprocess.run(
         ['sudo', '/usr/bin/systemctl', 'restart', 'zeroclaw.service'],
@@ -492,10 +523,11 @@ def index(request: Request):
                 channel_panels[ch_key] = widgets
 
     def collect():
-        conf['api_key']             = w_api_key.value
-        conf['default_provider']    = w_default_provider.value
-        conf['default_model']       = w_default_model.value
-        conf['default_temperature'] = to_float(w_temperature.value, 0.7)
+        conf['api_key']               = w_api_key.value
+        conf['default_provider']      = w_default_provider.value
+        conf['default_model']         = w_default_model.value
+        conf['default_temperature']   = to_float(w_temperature.value, 0.7)
+        conf['provider_timeout_secs'] = to_int(w_prov_timeout.value, 120)
         conf.setdefault('secrets',  {})['encrypt'] = w_secrets_encrypt.value
         conf.setdefault('identity', {})['format']  = w_identity_format.value
 
@@ -541,6 +573,7 @@ def index(request: Request):
 
         m = conf.setdefault('memory', {})
         m['backend']                    = w_mem_backend.value
+        m['search_mode']                = w_mem_search_mode.value
         m['auto_save']                  = w_mem_auto_save.value
         m['hygiene_enabled']            = w_mem_hygiene.value
         m['archive_after_days']         = to_int(w_mem_archive_days.value, 7)
@@ -572,7 +605,17 @@ def index(request: Request):
         ch_conf = conf.setdefault('channels_config', {})
         ch_conf['cli']                  = w_cli_enabled.value
         ch_conf['message_timeout_secs'] = to_int(w_msg_timeout.value, 300)
-        for k in [k for k in list(ch_conf.keys()) if k not in ('cli', 'message_timeout_secs')]:
+        ch_conf['ack_reactions']        = w_ch_ack_reactions.value
+        ch_conf['show_tool_calls']      = w_ch_show_tool_calls.value
+        ch_conf['session_persistence']  = w_ch_session_persist.value
+        ch_conf['session_backend']      = w_ch_session_backend.value
+        ch_conf['session_ttl_hours']    = to_int(w_ch_session_ttl.value, 0)
+        ch_conf['debounce_ms']          = to_int(w_ch_debounce_ms.value, 0)
+        _static_ch_keys = {
+            'cli', 'message_timeout_secs', 'ack_reactions', 'show_tool_calls',
+            'session_persistence', 'session_backend', 'session_ttl_hours', 'debounce_ms',
+        }
+        for k in [k for k in list(ch_conf.keys()) if k not in _static_ch_keys]:
             del ch_conf[k]
         for ch_key, wmap in channel_panels.items():
             schema = CHANNEL_SCHEMAS[ch_key]; entry = {}
@@ -810,6 +853,8 @@ def index(request: Request):
                             value=str(top.get('default_model', 'anthropic/claude-sonnet-4-6'))).classes('w-full')
                         w_temperature = ui.number('default_temperature',
                             value=top.get('default_temperature', 0.7), min=0.0, max=2.0, step=0.1).classes('w-full')
+                        w_prov_timeout = ui.number('provider_timeout_secs',
+                            value=top.get('provider_timeout_secs', 120), min=5, step=5).classes('w-full')
                         ui.separator().classes('q-my-sm')
                         ui.label(T['section_secrets']).classes('text-subtitle2 text-grey-7')
                         w_secrets_encrypt = ui.checkbox('secrets.encrypt', value=bool(secrets_c.get('encrypt', True)))
@@ -895,6 +940,9 @@ def index(request: Request):
                         cur_mb = memory.get('backend', 'sqlite')
                         w_mem_backend = ui.select(['sqlite', 'lucid', 'markdown', 'none'], label='backend',
                             value=cur_mb if cur_mb in ['sqlite','lucid','markdown','none'] else 'sqlite').classes('w-full')
+                        cur_sm = str(memory.get('search_mode', 'hybrid'))
+                        w_mem_search_mode = ui.select(['hybrid', 'fts', 'vector', 'cache'], label='search_mode',
+                            value=cur_sm if cur_sm in ['hybrid','fts','vector','cache'] else 'hybrid').classes('w-full')
                         w_mem_auto_save     = ui.checkbox('auto_save',       value=memory.get('auto_save', True))
                         w_mem_hygiene       = ui.checkbox('hygiene_enabled', value=memory.get('hygiene_enabled', True))
                         w_mem_auto_hydrate  = ui.checkbox('auto_hydrate',    value=memory.get('auto_hydrate', True))
@@ -937,6 +985,14 @@ def index(request: Request):
                         ui.label(T['section_channels_global']).classes('text-subtitle2 text-grey-7')
                         w_cli_enabled = ui.checkbox(T['lbl_cli'], value=ch_conf_top.get('cli', True))
                         w_msg_timeout = ui.number('message_timeout_secs', value=ch_conf_top.get('message_timeout_secs', 300), min=30, step=30).classes('w-full')
+                        w_ch_ack_reactions    = ui.checkbox('ack_reactions',       value=bool(ch_conf_top.get('ack_reactions', True)))
+                        w_ch_show_tool_calls  = ui.checkbox('show_tool_calls',     value=bool(ch_conf_top.get('show_tool_calls', False)))
+                        w_ch_session_persist  = ui.checkbox('session_persistence', value=bool(ch_conf_top.get('session_persistence', True)))
+                        cur_sb = str(ch_conf_top.get('session_backend', 'sqlite'))
+                        w_ch_session_backend  = ui.select(['sqlite', 'memory', 'none'], label='session_backend',
+                            value=cur_sb if cur_sb in ['sqlite','memory','none'] else 'sqlite').classes('w-full')
+                        w_ch_session_ttl      = ui.number('session_ttl_hours',  value=ch_conf_top.get('session_ttl_hours', 0),  min=0, step=1).classes('w-full')
+                        w_ch_debounce_ms      = ui.number('debounce_ms',         value=ch_conf_top.get('debounce_ms', 0),        min=0, step=50).classes('w-full')
 
                     # ══ Channels ═════════════════════════════════════════════
                     with ui.tab_panel(t_ch):
@@ -1650,20 +1706,13 @@ def index(request: Request):
                 with ui.card().classes('w-full q-pa-md'):
                     ui.label(T['pc_pair_title']).classes('text-h6 text-purple-8')
                     ui.label(T['pc_pair_hint']).classes('text-caption text-grey-6 q-mt-xs')
-                    # Compose runtime token: "pico-" + pid.Token + security.yml pico_client.token
+                    # Compose runtime token: "pico-" + pid.Token + security.yml pico.token
                     _pid_tok  = ''
                     _pid_err  = ''
                     _sec_tok  = ''
                     _sec_err  = ''
-                    try:
-                        with open(PICOCLAW_PID_FILE) as _pf:
-                            _pid_data = json.load(_pf)
-                        _pid_tok = str(_pid_data.get('token', '')).strip()
-                    except FileNotFoundError:
-                        _pid_err = f'PID file not found: {PICOCLAW_PID_FILE} (is picoclaw running?)'
-                    except Exception as _e:
-                        _pid_err = f'PID file read error: {_e}'
-                    _sec_tok, _sec_err = _read_security_yml_token('pico_client')
+                    _pid_tok, _pid_err = _read_picoclaw_pid_token()
+                    _sec_tok, _sec_err = _read_security_yml_token('pico')
                     if _pid_tok and _sec_tok:
                         pico_token = f'pico-{_pid_tok}{_sec_tok}'
                     elif _pid_tok:
@@ -1681,7 +1730,7 @@ def index(request: Request):
                     if _sec_err:
                         ui.label(f'⚠️ {_sec_err}').classes('text-warning text-caption q-mt-xs')
                     if pico_token:
-                        ui.input('Runtime token  (pico- + pid.Token + pico_client.token)', value=pico_token).props('readonly').classes('w-full q-mt-sm')
+                        ui.input('Runtime token  (pico- + pid.Token + pico.token)', value=pico_token).props('readonly').classes('w-full q-mt-sm')
                         ui.input(T['pc_pair_url'], value=pico_url).props('readonly').classes('w-full')
 
                         with ui.row().classes('w-full items-start gap-4 q-mt-sm'):
@@ -1740,7 +1789,7 @@ def index(request: Request):
                 def _run():
                     try:
                         proc = _sp.Popen(
-                            ['sudo', '/opt/bin/wifi-connect',
+                            ['sudo', '/opt/wifi-connect/wifi-connect',
                              '-u', '/opt/wifi-connect/web',
                              '-s', 'ClawBerry WiFi Setup'],
                             stdout=_sp.PIPE, stderr=_sp.STDOUT, text=True
