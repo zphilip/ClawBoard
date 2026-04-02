@@ -207,11 +207,13 @@ if [[ -d "$TMPDIR/lib" ]]; then
     log "  synced lib/"
 fi
 
-# config/ — seed missing files only (don't overwrite user edits)
+# config/ — update files that are newer in the repo; preserve files the user
+# has modified more recently than the repo version
 if [[ -d "$TMPDIR/config" ]]; then
-    rsync --archive --ignore-existing "$TMPDIR/config/" "$CLAWBOARD_DST/config/"
-    log "  seeded config/ (skipped existing)"
+    rsync --archive --update "$TMPDIR/config/" "$CLAWBOARD_DST/config/"
+    log "  updated config/ (repo wins if newer)"
 fi
+
 
 # sudoers drop-in
 SUDOERS_SRC="$TMPDIR/daemon/sudoers.d-clawboard"

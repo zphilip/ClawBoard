@@ -884,45 +884,74 @@ def index(request: Request):
                         ui.label('Choose an AI provider and supply its API key.').classes('text-caption text-grey-6 q-mb-sm')
 
                         # ── Quick pick from provider_hints.json ────────────
-                        _ph      = load_provider_hints()
-                        _ph_map  = {h['model_name']: h for h in _ph if h.get('model_name')}
-                        _ph_opts = [''] + list(_ph_map.keys())
+                        _ph     = load_provider_hints()
+                        _ph_map = {h['model_name']: h for h in _ph if h.get('model_name')}
+                        # provider_id → first known base_url
+                        _pid_base: dict[str, str] = {}
+                        for _h in _ph:
+                            _pid = _h.get('provider_id', '')
+                            if _pid and _pid not in _pid_base and _h.get('api_base'):
+                                _pid_base[_pid] = _h['api_base']
+
                         ui.label('⚡ Quick pick — fills fields automatically').classes('text-caption text-blue-7')
+                        # Use a list (not dict) so e.value is the plain string key
                         wiz_quick = ui.select(
-                            options=_ph_opts,
+                            options=list(_ph_map.keys()),
                             label='Known model / provider',
-                            value='',
-                        ).classes('w-full q-mb-xs').props('clearable emit-value')
+                            value=None,
+                            clearable=True,
+                        ).classes('w-full q-mb-xs')
                         ui.separator().classes('q-my-xs')
 
-                        wiz_prov_id    = ui.select(PROVIDER_IDS, label='Provider ID',
-                                             value='openrouter').classes('w-full q-mb-sm')
-                        wiz_prov_alias = ui.input('Alias  (used as config key, e.g. "openrouter")',
-                                             value='default').classes('w-full q-mb-sm')
-                        wiz_prov_key   = ui.input('API Key',
-                                             password=True, password_toggle_button=True).classes('w-full q-mb-sm')
-                        wiz_prov_base  = ui.input('base_url  (leave blank to use provider default)',
-                                             value='').classes('w-full q-mb-sm')
-                        wiz_def_model  = ui.input(
-                                             'default_model  (e.g. anthropic/claude-sonnet-4-6)',
-                                             value=str(top.get('default_model', ''))).classes('w-full')
+                        wiz_prov_id = ui.select(
+                            PROVIDER_IDS, label='Provider ID', value='openrouter',
+                        ).classes('w-full q-mb-sm')
+                        wiz_prov_alias = ui.input(
+                            'Alias  (used as config key, e.g. "openrouter")',
+                            value='default').classes('w-full q-mb-sm')
+                        wiz_prov_key = ui.input(
+                            'API Key',
+                            password=True, password_toggle_button=True).classes('w-full q-mb-sm')
+                        wiz_prov_base = ui.input(
+                            'base_url  (leave blank to use provider default)',
+                            value='').classes('w-full q-mb-sm')
+                        wiz_def_model = ui.input(
+                            'default_model  (e.g. anthropic/claude-sonnet-4-6)',
+                            value=str(top.get('default_model', ''))).classes('w-full')
 
-                        def _on_wiz_quick(e, _map=_ph_map):
-                            h = _map.get(wiz_quick.value)
+                        # ── Callbacks defined AFTER all widgets so closures resolve ──
+                        def _fill_from_hint(e):
+                            """Fill provider fields from a quick-pick hint selection."""
+                            picked = e.value
+                            h = _ph_map.get(picked) if picked else None
                             if not h:
                                 return
-                            if h.get('api_base') is not None:
-                                wiz_prov_base.set_value(h['api_base'])
-                            if h.get('model'):
-                                wiz_def_model.set_value(h['model'])
                             pid = h.get('provider_id', '') or h.get('model', '').split('/')[0]
                             if pid in PROVIDER_IDS:
+                                # set provider_id — may cascade into _fill_from_pid,
+                                # which writes prov_base; we overwrite it again below.
                                 wiz_prov_id.set_value(pid)
-                            slug = (h.get('model_name') or '').lower().replace(' ', '_').replace('-', '_').replace('.', '_').split('(')[0].rstrip('_')
+                            slug = (h.get('model_name') or '').lower() \
+                                .replace(' ', '_').replace('-', '_').replace('.', '_') \
+                                .split('(')[0].rstrip('_')
                             if slug:
                                 wiz_prov_alias.set_value(slug)
+                            if h.get('model'):
+                                wiz_def_model.set_value(h['model'])
+                            # Set base_url LAST so hint value wins over any cascade
+                            wiz_prov_base.set_value(h.get('api_base', ''))
 
-                        wiz_quick.on('update:model-value', _on_wiz_quick)
+                        def _fill_from_pid(e):
+                            """Fill base_url and alias from provider-ID selection."""
+                            pid = e.value
+                            if not pid:
+                                return
+                            wiz_prov_base.set_value(_pid_base.get(pid, ''))
+                            wiz_prov_alias.set_value(pid.split(':')[0])
+
+                        # Register via .on_value_change() — callbacks are fully defined above
+                        wiz_quick.on_value_change(_fill_from_hint)
+                        wiz_prov_id.on_value_change(_fill_from_pid)
 
                         with ui.stepper_navigation():
                             ui.button('Next →', on_click=_wiz.next).props('color=blue-8')
