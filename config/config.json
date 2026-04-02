@@ -2,18 +2,31 @@
   "session": {
     "dm_scope": "per-channel-peer"
   },
+  "version": 2,
   "agents": {
     "defaults": {
       "workspace": "/var/lib/picoclaw/.picoclaw/workspace",
-      "restrict_to_workspace": false,
+      "restrict_to_workspace": true,
       "allow_read_outside_workspace": false,
-      "provider": "qwen",
-      "model_name": "qwen3.5-plus",
-      "model": "qwen3.5-plus",
-      "max_tokens": 8192,
+      "provider": "minimax",
+      "model_name": "MiniMax-M2.5",
+      "max_tokens": 32768,
       "max_tool_iterations": 50,
       "summarize_message_threshold": 20,
-      "summarize_token_percent": 75
+      "summarize_token_percent": 75,
+      "steering_mode": "one-at-a-time",
+      "subturn": {
+        "max_depth": 0,
+        "max_concurrent": 0,
+        "default_timeout_minutes": 0,
+        "default_token_budget": 0,
+        "concurrency_timeout_sec": 0
+      },
+      "tool_feedback": {
+        "enabled": false,
+        "max_args_length": 300
+      },
+      "split_on_marker": false
     }
   },
   "channels": {
@@ -27,7 +40,6 @@
     },
     "telegram": {
       "enabled": false,
-      "token": "",
       "base_url": "",
       "proxy": "",
       "allow_from": [],
@@ -37,31 +49,40 @@
       },
       "placeholder": {
         "enabled": true,
-        "text": "Thinking... 💭"
+        "text": [
+          "Thinking... 💭"
+        ]
       },
-      "reasoning_channel_id": ""
+      "streaming": {
+        "enabled": true,
+        "throttle_seconds": 3,
+        "min_growth_chars": 200
+      },
+      "reasoning_channel_id": "",
+      "use_markdown_v2": false
     },
     "feishu": {
       "enabled": false,
       "app_id": "",
-      "app_secret": "",
-      "encrypt_key": "",
-      "verification_token": "",
       "allow_from": [],
       "group_trigger": {},
-      "placeholder": {},
+      "placeholder": {
+        "enabled": false
+      },
       "reasoning_channel_id": "",
-      "random_reaction_emoji": null
+      "random_reaction_emoji": null,
+      "is_lark": false
     },
     "discord": {
       "enabled": false,
-      "token": "",
       "proxy": "",
       "allow_from": [],
       "mention_only": false,
       "group_trigger": {},
       "typing": {},
-      "placeholder": {},
+      "placeholder": {
+        "enabled": false
+      },
       "reasoning_channel_id": ""
     },
     "maixcam": {
@@ -72,38 +93,36 @@
       "reasoning_channel_id": ""
     },
     "qq": {
-      "enabled": true,
-      "app_id": "1903454211",
-      "app_secret": "DMI1XryrWyCCyWq4",
+      "enabled": false,
+      "app_id": "",
       "allow_from": [],
       "group_trigger": {},
       "max_message_length": 2000,
+      "max_base64_file_size_mib": 0,
       "send_markdown": false,
       "reasoning_channel_id": ""
     },
     "dingtalk": {
       "enabled": false,
       "client_id": "",
-      "client_secret": "",
       "allow_from": [],
       "group_trigger": {},
       "reasoning_channel_id": ""
     },
     "slack": {
       "enabled": false,
-      "bot_token": "",
-      "app_token": "",
       "allow_from": [],
       "group_trigger": {},
       "typing": {},
-      "placeholder": {},
+      "placeholder": {
+        "enabled": false
+      },
       "reasoning_channel_id": ""
     },
     "matrix": {
       "enabled": false,
       "homeserver": "https://matrix.org",
       "user_id": "",
-      "access_token": "",
       "join_on_invite": true,
       "allow_from": [],
       "group_trigger": {
@@ -111,14 +130,14 @@
       },
       "placeholder": {
         "enabled": true,
-        "text": "Thinking... 💭"
+        "text": [
+          "Thinking... 💭"
+        ]
       },
       "reasoning_channel_id": ""
     },
     "line": {
       "enabled": false,
-      "channel_secret": "",
-      "channel_access_token": "",
       "webhook_host": "0.0.0.0",
       "webhook_port": 18791,
       "webhook_path": "/webhook/line",
@@ -127,79 +146,62 @@
         "mention_only": true
       },
       "typing": {},
-      "placeholder": {},
+      "placeholder": {
+        "enabled": false
+      },
       "reasoning_channel_id": ""
     },
     "onebot": {
       "enabled": false,
       "ws_url": "ws://127.0.0.1:3001",
-      "access_token": "",
       "reconnect_interval": 5,
-      "group_trigger_prefix": [],
+      "group_trigger_prefix": null,
       "allow_from": [],
       "group_trigger": {},
       "typing": {},
-      "placeholder": {},
+      "placeholder": {
+        "enabled": false
+      },
       "reasoning_channel_id": ""
     },
     "wecom": {
       "enabled": false,
-      "token": "",
-      "encoding_aes_key": "",
-      "webhook_url": "",
-      "webhook_host": "0.0.0.0",
-      "webhook_port": 18793,
-      "webhook_path": "/webhook/wecom",
+      "bot_id": "",
+      "websocket_url": "wss://openws.work.weixin.qq.com",
+      "send_thinking_message": true,
       "allow_from": [],
-      "reply_timeout": 5,
-      "group_trigger": {},
       "reasoning_channel_id": ""
     },
-    "wecom_app": {
+    "weixin": {
       "enabled": false,
-      "corp_id": "",
-      "corp_secret": "",
-      "agent_id": 0,
-      "token": "",
-      "encoding_aes_key": "",
-      "webhook_host": "0.0.0.0",
-      "webhook_port": 18792,
-      "webhook_path": "/webhook/wecom-app",
+      "base_url": "https://ilinkai.weixin.qq.com/",
+      "cdn_base_url": "https://novac2c.cdn.weixin.qq.com/c2c",
+      "proxy": "",
       "allow_from": [],
-      "reply_timeout": 5,
-      "group_trigger": {},
-      "reasoning_channel_id": ""
-    },
-    "wecom_aibot": {
-      "enabled": false,
-      "token": "",
-      "encoding_aes_key": "",
-      "webhook_path": "/webhook/wecom-aibot",
-      "allow_from": [],
-      "reply_timeout": 5,
-      "max_steps": 10,
-      "welcome_message": "Hello! I'm your AI assistant. How can I help you today?",
       "reasoning_channel_id": ""
     },
     "pico": {
       "enabled": true,
-      "token": "ecc1c072c33986aeebc3d48d940352e2",
       "ping_interval": 30,
       "read_timeout": 60,
       "write_timeout": 10,
       "max_connections": 100,
       "allow_from": [],
-      "placeholder": {}
+      "placeholder": {
+        "enabled": false
+      }
+    },
+    "pico_client": {
+      "enabled": true,
+      "url": "ws://127.0.0.1:18790/pico/ws",
+      "allow_from": null
     },
     "irc": {
       "enabled": false,
       "server": "",
       "tls": false,
       "nick": "",
-      "password": "",
-      "nickserv_password": "",
       "sasl_user": "",
-      "sasl_password": "",
       "channels": null,
       "allow_from": null,
       "group_trigger": {},
@@ -211,168 +213,170 @@
     {
       "model_name": "glm-4.7",
       "model": "zhipu/glm-4.7",
-      "api_base": "https://open.bigmodel.cn/api/paas/v4",
-      "api_key": ""
+      "api_base": "https://open.bigmodel.cn/api/paas/v4"
     },
     {
-      "model_name": "gpt-5.2",
-      "model": "openai/gpt-5.2",
-      "api_base": "https://api.openai.com/v1",
-      "api_key": ""
+      "model_name": "gpt-5.4",
+      "model": "openai/gpt-5.4",
+      "api_base": "https://api.openai.com/v1"
     },
     {
       "model_name": "claude-sonnet-4.6",
       "model": "anthropic/claude-sonnet-4.6",
-      "api_base": "https://api.anthropic.com/v1",
-      "api_key": ""
+      "api_base": "https://api.anthropic.com/v1"
     },
     {
       "model_name": "deepseek-chat",
       "model": "deepseek/deepseek-chat",
-      "api_base": "https://api.deepseek.com/v1",
-      "api_key": ""
+      "api_base": "https://api.deepseek.com/v1"
     },
     {
       "model_name": "gemini-2.0-flash",
       "model": "gemini/gemini-2.0-flash-exp",
-      "api_base": "https://generativelanguage.googleapis.com/v1beta",
-      "api_key": ""
+      "api_base": "https://generativelanguage.googleapis.com/v1beta"
     },
     {
-      "model_name": "qwen3.5-plus",
-      "model": "qwen/qwen3.5-plus",
-      "api_base": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-      "api_key": ""
+      "model_name": "qwen-plus",
+      "model": "qwen/qwen-plus",
+      "api_base": "https://dashscope.aliyuncs.com/compatible-mode/v1"
     },
     {
       "model_name": "moonshot-v1-8k",
       "model": "moonshot/moonshot-v1-8k",
-      "api_base": "https://api.moonshot.cn/v1",
-      "api_key": ""
+      "api_base": "https://api.moonshot.cn/v1"
     },
     {
       "model_name": "llama-3.3-70b",
       "model": "groq/llama-3.3-70b-versatile",
-      "api_base": "https://api.groq.com/openai/v1",
-      "api_key": ""
+      "api_base": "https://api.groq.com/openai/v1"
     },
     {
       "model_name": "openrouter-auto",
       "model": "openrouter/auto",
-      "api_base": "https://openrouter.ai/api/v1",
-      "api_key": ""
+      "api_base": "https://openrouter.ai/api/v1"
     },
     {
-      "model_name": "openrouter-gpt-5.2",
-      "model": "openrouter/openai/gpt-5.2",
-      "api_base": "https://openrouter.ai/api/v1",
-      "api_key": ""
+      "model_name": "openrouter-gpt-5.4",
+      "model": "openrouter/openai/gpt-5.4",
+      "api_base": "https://openrouter.ai/api/v1"
     },
     {
       "model_name": "nemotron-4-340b",
       "model": "nvidia/nemotron-4-340b-instruct",
-      "api_base": "https://integrate.api.nvidia.com/v1",
-      "api_key": ""
+      "api_base": "https://integrate.api.nvidia.com/v1"
     },
     {
       "model_name": "cerebras-llama-3.3-70b",
       "model": "cerebras/llama-3.3-70b",
-      "api_base": "https://api.cerebras.ai/v1",
-      "api_key": ""
+      "api_base": "https://api.cerebras.ai/v1"
     },
     {
       "model_name": "vivgrid-auto",
       "model": "vivgrid/auto",
-      "api_base": "https://api.vivgrid.com/v1",
-      "api_key": ""
+      "api_base": "https://api.vivgrid.com/v1"
+    },
+    {
+      "model_name": "ark-code-latest",
+      "model": "volcengine/ark-code-latest",
+      "api_base": "https://ark.cn-beijing.volces.com/api/v3"
     },
     {
       "model_name": "doubao-pro",
       "model": "volcengine/doubao-pro-32k",
-      "api_base": "https://ark.cn-beijing.volces.com/api/v3",
-      "api_key": ""
+      "api_base": "https://ark.cn-beijing.volces.com/api/v3"
     },
     {
       "model_name": "deepseek-v3",
       "model": "shengsuanyun/deepseek-v3",
-      "api_base": "https://api.shengsuanyun.com/v1",
-      "api_key": ""
+      "api_base": "https://api.shengsuanyun.com/v1"
     },
     {
       "model_name": "gemini-flash",
       "model": "antigravity/gemini-3-flash",
-      "api_key": "",
       "auth_method": "oauth"
     },
     {
-      "model_name": "copilot-gpt-5.2",
-      "model": "github-copilot/gpt-5.2",
+      "model_name": "copilot-gpt-5.4",
+      "model": "github-copilot/gpt-5.4",
       "api_base": "http://localhost:4321",
-      "api_key": "",
       "auth_method": "oauth"
     },
     {
       "model_name": "llama3",
       "model": "ollama/llama3",
-      "api_base": "http://localhost:11434/v1",
-      "api_key": "ollama"
+      "api_base": "http://localhost:11434/v1"
     },
     {
       "model_name": "mistral-small",
       "model": "mistral/mistral-small-latest",
-      "api_base": "https://api.mistral.ai/v1",
-      "api_key": ""
+      "api_base": "https://api.mistral.ai/v1"
     },
     {
       "model_name": "deepseek-v3.2",
       "model": "avian/deepseek/deepseek-v3.2",
-      "api_base": "https://api.avian.io/v1",
-      "api_key": ""
+      "api_base": "https://api.avian.io/v1"
     },
     {
       "model_name": "kimi-k2.5",
       "model": "avian/moonshotai/kimi-k2.5",
-      "api_base": "https://api.avian.io/v1",
-      "api_key": ""
+      "api_base": "https://api.avian.io/v1"
     },
     {
       "model_name": "MiniMax-M2.5",
       "model": "minimax/MiniMax-M2.5",
       "api_base": "https://api.minimaxi.com/v1",
-      "api_key": ""
+      "extra_body": {
+        "reasoning_split": true
+      }
     },
     {
       "model_name": "LongCat-Flash-Thinking",
       "model": "longcat/LongCat-Flash-Thinking",
-      "api_base": "https://api.longcat.chat/openai",
-      "api_key": ""
+      "api_base": "https://api.longcat.chat/openai"
+    },
+    {
+      "model_name": "modelscope-qwen",
+      "model": "modelscope/Qwen/Qwen3-235B-A22B-Instruct-2507",
+      "api_base": "https://api-inference.modelscope.cn/v1"
     },
     {
       "model_name": "local-model",
       "model": "vllm/custom-model",
-      "api_base": "http://localhost:8000/v1",
-      "api_key": ""
+      "api_base": "http://localhost:8000/v1"
+    },
+    {
+      "model_name": "azure-gpt5",
+      "model": "azure/my-gpt5-deployment",
+      "api_base": "https://your-resource.openai.azure.com"
     }
   ],
   "gateway": {
     "host": "0.0.0.0",
-    "port": 18790
+    "port": 18790,
+    "hot_reload": false,
+    "log_level": "warn"
+  },
+  "hooks": {
+    "enabled": true,
+    "defaults": {
+      "observer_timeout_ms": 500,
+      "interceptor_timeout_ms": 5000,
+      "approval_timeout_ms": 60000
+    }
   },
   "tools": {
     "allow_read_paths": null,
     "allow_write_paths": null,
+    "filter_sensitive_data": true,
+    "filter_min_length": 8,
     "web": {
       "enabled": true,
       "brave": {
         "enabled": false,
-        "api_key": "",
-        "api_keys": null,
         "max_results": 5
       },
       "tavily": {
         "enabled": false,
-        "api_key": "",
-        "api_keys": null,
         "base_url": "",
         "max_results": 5
       },
@@ -382,8 +386,6 @@
       },
       "perplexity": {
         "enabled": false,
-        "api_key": "",
-        "api_keys": null,
         "max_results": 5
       },
       "searxng": {
@@ -393,12 +395,18 @@
       },
       "glm_search": {
         "enabled": false,
-        "api_key": "",
         "base_url": "https://open.bigmodel.cn/api/paas/v4/web_search",
         "search_engine": "search_std",
         "max_results": 5
       },
-      "fetch_limit_bytes": 10485760
+      "baidu_search": {
+        "enabled": false,
+        "base_url": "https://qianfan.baidubce.com/v2/ai_search/web_search",
+        "max_results": 10
+      },
+      "prefer_native": true,
+      "fetch_limit_bytes": 10485760,
+      "format": "plaintext"
     },
     "cron": {
       "enabled": true,
@@ -419,7 +427,6 @@
         "clawhub": {
           "enabled": true,
           "base_url": "https://clawhub.ai",
-          "auth_token": "",
           "search_path": "",
           "skills_path": "",
           "download_path": "",
@@ -509,9 +516,9 @@
     "echo_transcription": false
   },
   "build_info": {
-    "version": "0.2.2-nightly.20260312.6612ca09",
-    "git_commit": "6612ca0",
-    "build_time": "2026-03-12T00:32:28Z",
-    "go_version": "1.25.7"
+    "version": "v0.2.4-128-gc36b06a",
+    "git_commit": "c36b06a9",
+    "build_time": "2026-03-31T11:08:07+0000",
+    "go_version": "go1.25.8"
   }
 }
