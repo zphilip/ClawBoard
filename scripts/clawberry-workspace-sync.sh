@@ -27,6 +27,9 @@ ZEROCLAW_SRC="zeroclaw"
 PICOCLAW_WORKSPACE_SRC="picoclaw/workspace"
 ZEROCLAW_WORKSPACE_SRC="zeroclaw/workspace"
 
+CLAWBOARD_DST="/opt/clawboard"
+CLAWBOARD_USER="zero"
+
 PICOCLAW_WORKSPACE_DST="/var/lib/picoclaw/.picoclaw/workspace"
 ZEROCLAW_WORKSPACE_DST="/var/lib/zeroclaw/.zeroclaw/workspace"
 
@@ -167,6 +170,56 @@ if [[ "$SVC_CHANGED" == "yes" ]] && command -v systemctl >/dev/null 2>&1; then
     log "Running systemctl daemon-reload ..."
     systemctl daemon-reload 2>/dev/null || true
 fi
+
+# ── Deploy ClawBoard dashboard to /opt/clawboard ─────────────────────────────
+log "Deploying ClawBoard dashboard to $CLAWBOARD_DST ..."
+mkdir -p "$CLAWBOARD_DST/config" "$CLAWBOARD_DST/locales" "$CLAWBOARD_DST/lib"
+
+# dashboard.py and clawberry_*.py helper modules
+for f in "$TMPDIR/dashboard.py" "$TMPDIR"/clawberry_*.py "$TMPDIR/publish_services.sh"; do
+    [[ -f "$f" ]] || continue
+    fname="$(basename "$f")"
+    if cp "$f" "$CLAWBOARD_DST/$fname" 2>/dev/null; then
+        chmod 755 "$CLAWBOARD_DST/$fname" || true
+        log "  installed $fname"
+    else
+        log "WARNING: failed to install $fname to $CLAWBOARD_DST"
+    fi
+done
+
+# locales/ directory (locale string modules)
+if [[ -d "$TMPDIR/locales" ]]; then
+    rsync --archive --update "$TMPDIR/locales/" "$CLAWBOARD_DST/locales/"
+    log "  synced locales/"
+fi
+
+# lib/ directory
+if [[ -d "$TMPDIR/lib" ]]; then
+    rsync --archive --update "$TMPDIR/lib/" "$CLAWBOARD_DST/lib/"
+    log "  synced lib/"
+fi
+
+# config/ — seed missing files only (don't overwrite user edits)
+if [[ -d "$TMPDIR/config" ]]; then
+    rsync --archive --ignore-existing "$TMPDIR/config/" "$CLAWBOARD_DST/config/"
+    log "  seeded config/ (skipped existing)"
+fi
+
+# sudoers drop-in
+SUDOERS_SRC="$TMPDIR/daemon/sudoers.d-clawboard"
+if [[ -f "$SUDOERS_SRC" ]]; then
+    if cp "$SUDOERS_SRC" /etc/sudoers.d/clawboard 2>/dev/null; then
+        chmod 440 /etc/sudoers.d/clawboard || true
+        log "  installed /etc/sudoers.d/clawboard"
+    else
+        log "WARNING: failed to install sudoers.d/clawboard (run as root?)"
+    fi
+fi
+
+# Fix ownership
+chown -R "$CLAWBOARD_USER:$CLAWBOARD_USER" "$CLAWBOARD_DST" 2>/dev/null || \
+    log "WARNING: chown $CLAWBOARD_USER failed for $CLAWBOARD_DST"
+log "ClawBoard dashboard deploy complete."
 
 # ── Helper: sync one workspace ───────────────────────────────────────────────
 sync_workspace() {
