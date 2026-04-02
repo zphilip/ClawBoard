@@ -60,6 +60,14 @@ cat > "$TMPDIR/.git/info/sparse-checkout" <<EOF
 $PICOCLAW_SRC/
 $ZEROCLAW_SRC/
 daemon/
+locales/
+lib/
+config/
+dashboard.py
+clawberry_bluetooth.py
+clawberry_display.py
+clawberry_paircode.py
+publish_services.sh
 scripts/clawberry-workspace-sync.sh
 EOF
 
