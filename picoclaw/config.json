@@ -8,8 +8,8 @@
       "workspace": "/var/lib/picoclaw/.picoclaw/workspace",
       "restrict_to_workspace": true,
       "allow_read_outside_workspace": false,
-      "provider": "",
-      "model_name": "",
+      "provider": "minimax",
+      "model_name": "MiniMax-M2.5",
       "max_tokens": 32768,
       "max_tool_iterations": 50,
       "summarize_message_threshold": 20,
@@ -193,7 +193,7 @@
     },
     "pico_client": {
       "enabled": true,
-      "url": "",
+      "url": "ws://127.0.0.1:18790/pico/ws",
       "allow_from": null
     },
     "irc": {
