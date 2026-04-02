@@ -1943,10 +1943,12 @@ def index(request: Request):
                     ad['summarize_token_percent']    = to_int(pc_w_sum_percent.value, 75)
 
                     # model_list → config.json (no api_keys); api_keys → security.yml
-                    # Deduplicate by model_name: first panel wins for config; real keys always
-                    # win over empty (never overwrite a valid api_key with an empty list).
+                    # Rebuild sec['model_list'] from scratch so stale names (e.g. MiniMax-M2.5:0)
+                    # that are no longer in the UI are pruned. Existing keys in the file are
+                    # preserved when the widget textarea is empty (user didn't change them).
+                    _old_sec_ml = dict(sec.get('model_list', {}))
+                    _new_sec_ml: dict = {}
                     data['model_list'] = []
-                    sec_ml = sec.setdefault('model_list', {})
                     _seen_mnames: set = set()
                     for w in pc_model_panels.values():
                         mname = w['model_name'].value
@@ -1959,12 +1961,14 @@ def index(request: Request):
                                 'api_base':    w['api_base'].value,
                                 'auth_method': w['auth_method'].value,
                             })
-                        # Only write api_keys if non-empty; never overwrite existing keys with []
-                        entry = sec_ml.setdefault(mname, {})
+                        # Widget has real keys → use them; widget empty → preserve file value
                         if keys:
-                            entry['api_keys'] = keys
-                        elif 'api_keys' not in entry:
-                            entry['api_keys'] = []
+                            _new_sec_ml.setdefault(mname, {})['api_keys'] = keys
+                        else:
+                            old_keys = _old_sec_ml.get(mname, {}).get('api_keys') or []
+                            _new_sec_ml.setdefault(mname, {})['api_keys'] = old_keys
+                    # Replace entire section — removes any stale/duplicate names
+                    sec['model_list'] = _new_sec_ml
 
                     # gateway
                     data.setdefault('gateway', {})['host'] = pc_w_gw_host.value
