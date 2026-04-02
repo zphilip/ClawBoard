@@ -1800,10 +1800,13 @@ def index(request: Request):
                             ).classes('w-full q-mb-xs')
                             ui.separator().classes('q-my-xs')
                             widgets = {}
+                            _card_mname_opts = list(_pc_ph_map.keys())
+                            if _mname and _mname not in _card_mname_opts:
+                                _card_mname_opts = [_mname] + _card_mname_opts
                             widgets['model_name'] = ui.select(
-                                options=list(_pc_ph_map.keys()),
+                                options=_card_mname_opts,
                                 label='model_name',
-                                value=_mname if _mname in _pc_ph_map else (_mname or None),
+                                value=_mname or None,
                                 with_input=True, new_value_mode='add-unique',
                             ).classes('w-full')
                             widgets['model']     = ui.input('model',    value=str(entry.get('model',''))).classes('w-full')
@@ -2025,10 +2028,13 @@ def index(request: Request):
                         pc_w_allow_read_outside = ui.checkbox('allow_read_outside_workspace', value=bool(pc_agents.get('allow_read_outside_workspace', False)))
 
                         _pc_cur_prov  = str(pc_agents.get('provider', 'qwen'))
+                        _pc_prov_opts = list(_pc_ph_provs)
+                        if _pc_cur_prov and _pc_cur_prov not in _pc_prov_opts:
+                            _pc_prov_opts = [_pc_cur_prov] + _pc_prov_opts
                         pc_w_provider = ui.select(
-                            options=_pc_ph_provs if _pc_cur_prov in _pc_ph_provs else ([_pc_cur_prov] + _pc_ph_provs),
+                            options=_pc_prov_opts,
                             label='provider',
-                            value=_pc_cur_prov,
+                            value=_pc_cur_prov or (_pc_prov_opts[0] if _pc_prov_opts else None),
                             with_input=True,
                             new_value_mode='add-unique',
                         ).classes('w-full')
