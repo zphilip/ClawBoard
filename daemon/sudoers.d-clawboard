@@ -6,9 +6,6 @@
 #   sudo chmod 440 /etc/sudoers.d/clawboard
 #   sudo visudo -c   # validate before relying on it
 #
-# Defaults for this file
-Defaults!sudoers.d-clawboard !requiretty
-
 # ── ZeroClaw service management ──────────────────────────────────────────────
 zero ALL=(root) NOPASSWD: /usr/bin/systemctl restart zeroclaw.service
 zero ALL=(root) NOPASSWD: /usr/bin/systemctl stop zeroclaw.service
