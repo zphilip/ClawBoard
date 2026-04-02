@@ -143,6 +143,20 @@ def load_provider_hints():
         if e.get('model_name')
     ]
 
+def load_pc_provider_hints():
+    """Load PicoClaw-specific provider hints from config/pc_provider_hints.json.
+    Schema: {model_name, model, provider, api_base, auth_method?}
+    """
+    hints_path = os.path.join(SCRIPT_DIR, 'config', 'pc_provider_hints.json')
+    try:
+        with open(hints_path, 'r') as f:
+            hints = json.load(f)
+            if isinstance(hints, list):
+                return hints
+    except Exception:
+        pass
+    return []
+
 # ── Auth ─────────────────────────────────────────────────────────────────────
 AUTH_FILE      = os.path.join(SCRIPT_DIR, 'config', 'auth.json')
 _invite_tokens = {}  # one-time tokens → expiry_unix
@@ -516,6 +530,39 @@ def index(request: Request):
     provider_panels = {}
     channel_panels  = {}
 
+    # ── ZeroClaw provider hints ───────────────────────────────────────────
+    _ph_hints  = load_provider_hints()
+
+    # ── PicoClaw provider hints ───────────────────────────────────────────
+    _pc_ph_hints  = load_pc_provider_hints()
+    _pc_ph_map    = {h['model_name']: h for h in _pc_ph_hints if h.get('model_name')}
+    _pc_ph_provs: list[str] = []
+    _pc_ph_pid_base:   dict[str, str]       = {}  # provider → first api_base
+    _pc_ph_pid_models: dict[str, list[str]] = {}  # provider → [model_names...]
+    for _pch in _pc_ph_hints:
+        _pcpid = _pch.get('provider', '')
+        if not _pcpid:
+            continue
+        if _pcpid not in _pc_ph_provs:
+            _pc_ph_provs.append(_pcpid)
+        if _pcpid not in _pc_ph_pid_base and _pch.get('api_base'):
+            _pc_ph_pid_base[_pcpid] = _pch['api_base']
+        if _pch.get('model_name'):
+            _pc_ph_pid_models.setdefault(_pcpid, []).append(_pch['model_name'])
+
+    # (ZeroClaw hints continued)
+    _ph_models = [h['model'] for h in _ph_hints if h.get('model')]
+    _ph_pid_base:   dict[str, str]       = {}  # provider_id → first api_base
+    _ph_pid_models: dict[str, list[str]] = {}  # provider_id → [models...]
+    for _hh in _ph_hints:
+        _hpid   = _hh.get('provider_id', '')
+        _hmodel = _hh.get('model', '')
+        if _hpid:
+            if _hpid not in _ph_pid_base and _hh.get('api_base'):
+                _ph_pid_base[_hpid] = _hh['api_base']
+            if _hmodel:
+                _ph_pid_models.setdefault(_hpid, []).append(_hmodel)
+
     def build_provider_card(container, alias, mp_data):
         with container:
             with ui.card().classes('w-full q-mb-sm') as card:
@@ -533,6 +580,13 @@ def index(request: Request):
                                          password=True, password_toggle_button=True).classes('w-full')
                 provider_panels[alias] = {'name': w_name, 'base_url': w_base_url,
                                           'requires_openai_auth': w_openai_auth, 'api_key': w_api_key_mp}
+
+                # Auto-fill base_url from provider hints when provider name changes
+                def _autofill_base(e, _wb=w_base_url, _pm=_ph_pid_base):
+                    pid = e.value
+                    if pid and pid in _pm:
+                        _wb.set_value(_pm[pid])
+                w_name.on_value_change(_autofill_base)
 
     def build_channel_card(container, ch_key, ch_data):
         schema = CHANNEL_SCHEMAS.get(ch_key)
@@ -884,14 +938,8 @@ def index(request: Request):
                         ui.label('Choose an AI provider and supply its API key.').classes('text-caption text-grey-6 q-mb-sm')
 
                         # ── Quick pick from provider_hints.json ────────────
-                        _ph     = load_provider_hints()
-                        _ph_map = {h['model_name']: h for h in _ph if h.get('model_name')}
-                        # provider_id → first known base_url
-                        _pid_base: dict[str, str] = {}
-                        for _h in _ph:
-                            _pid = _h.get('provider_id', '')
-                            if _pid and _pid not in _pid_base and _h.get('api_base'):
-                                _pid_base[_pid] = _h['api_base']
+                        _ph_map   = {h['model_name']: h for h in _ph_hints if h.get('model_name')}
+                        _pid_base = _ph_pid_base  # reuse page-level dict
 
                         ui.label('⚡ Quick pick — fills fields automatically').classes('text-caption text-blue-7')
                         # Use a list (not dict) so e.value is the plain string key
@@ -1084,10 +1132,30 @@ def index(request: Request):
                         w_api_key = ui.input(T['lbl_api_key'], value=str(top.get('api_key', '')),
                             password=True, password_toggle_button=True).classes('w-full')
                         cur_prov = str(top.get('default_provider', 'dashscope'))
+                        _eff_prov = cur_prov if cur_prov in PROVIDER_IDS else PROVIDER_IDS[0]
                         w_default_provider = ui.select(PROVIDER_IDS, label='default_provider',
-                            value=cur_prov if cur_prov in PROVIDER_IDS else PROVIDER_IDS[0]).classes('w-full')
-                        w_default_model = ui.input('default_model',
-                            value=str(top.get('default_model', 'anthropic/claude-sonnet-4-6'))).classes('w-full')
+                            value=_eff_prov).classes('w-full')
+                        _cur_def_model = str(top.get('default_model', 'anthropic/claude-sonnet-4-6'))
+                        # Seed model list from the currently selected provider
+                        _init_models = _ph_pid_models.get(_eff_prov, _ph_models)
+                        _dm_opts = list(_init_models) if _cur_def_model in _init_models \
+                            else ([_cur_def_model] + list(_init_models))
+                        w_default_model = ui.select(
+                            options=_dm_opts,
+                            label='default_model',
+                            value=_cur_def_model,
+                            with_input=True,
+                            new_value_mode='add-unique',
+                        ).classes('w-full')
+
+                        # Re-populate model list when provider changes
+                        def _on_prov_change(e):
+                            pid    = e.value or ''
+                            models = _ph_pid_models.get(pid, _ph_models)
+                            cur    = w_default_model.value
+                            new_val = cur if cur in models else (models[0] if models else cur)
+                            w_default_model.set_options(list(models), value=new_val)
+                        w_default_provider.on_value_change(_on_prov_change)
                         w_temperature = ui.number('default_temperature',
                             value=top.get('default_temperature', 0.7), min=0.0, max=2.0, step=0.1).classes('w-full')
                         w_prov_timeout = ui.number('provider_timeout_secs',
@@ -1107,14 +1175,48 @@ def index(request: Request):
                         for alias, mp_data in conf.get('model_providers', {}).items():
                             build_provider_card(provider_container, alias, mp_data)
                         ui.separator().classes('q-my-sm')
-                        with ui.row().classes('w-full gap-2 items-end'):
-                            new_alias_input = ui.input(T['lbl_new_alias']).classes('flex-1')
-                            def _add_provider():
-                                alias = new_alias_input.value.strip()
-                                if not alias: ui.notify(T['warn_alias_empty'], type='warning'); return
-                                if alias in provider_panels: ui.notify(T['warn_alias_exists'].format(alias), type='warning'); return
-                                build_provider_card(provider_container, alias, {}); new_alias_input.value = ''
-                            ui.button(T['btn_add_provider'], on_click=_add_provider).props('outline color=blue')
+                        ui.label('➕ Add provider').classes('text-caption text-blue-7')
+                        # unique provider ids from hints, preserving first-seen order
+                        _seen_pids: list[str] = []
+                        for _hh in _ph_hints:
+                            _pid = _hh.get('provider_id', '')
+                            if _pid and _pid not in _seen_pids:
+                                _seen_pids.append(_pid)
+                        new_prov_sel = ui.select(
+                            options=_seen_pids,
+                            label='Provider  (pick to auto-fill)',
+                            value=None,
+                            clearable=True,
+                            with_input=True,
+                        ).classes('w-full q-mb-xs')
+                        with ui.row().classes('w-full gap-2 items-center'):
+                            new_alias_input = ui.input(
+                                'Alias  [model_providers.<alias>]  — auto-filled, edit for duplicates',
+                                value='',
+                            ).classes('flex-1')
+                            ui.button(T['btn_add_provider'], on_click=lambda: _add_provider()).props('outline color=blue')
+
+                        def _on_prov_sel(e):
+                            pid = e.value or ''
+                            # Only auto-fill alias if user hasn't manually changed it away from a known pid
+                            if pid:
+                                new_alias_input.set_value(pid)
+                        new_prov_sel.on_value_change(_on_prov_sel)
+
+                        def _add_provider():
+                            alias = new_alias_input.value.strip()
+                            if not alias:
+                                ui.notify(T['warn_alias_empty'], type='warning'); return
+                            if alias in provider_panels:
+                                ui.notify(T['warn_alias_exists'].format(alias), type='warning'); return
+                            pid = new_prov_sel.value or alias
+                            pre = {
+                                'name':     pid,
+                                'base_url': _ph_pid_base.get(pid, ''),
+                            }
+                            build_provider_card(provider_container, alias, pre)
+                            new_alias_input.set_value('')
+                            new_prov_sel.set_value(None)
 
                     # ══ Autonomy ═════════════════════════════════════════════
                     with ui.tab_panel(t_auto):
@@ -1530,10 +1632,127 @@ def index(request: Request):
     with pc_content:
         ui.label('🐾 PicoClaw Dashboard').classes('text-h6 text-purple-8 q-mb-xs')
         with ui.tabs().classes('w-full bg-purple-1') as pc_sub_tabs:
+            t_pc_wiz  = ui.tab(T['pc_tab_wizard'],     icon='auto_fix_high')
             t_pc_cfg  = ui.tab(T['tab_configuration'], icon='settings')
             t_pc_pair = ui.tab(T['tab_pair_device'],   icon='devices')
 
         with ui.tab_panels(pc_sub_tabs, value=t_pc_cfg).classes('w-full'):
+
+            # ── PicoClaw › Wizard ──────────────────────────────────────────
+            with ui.tab_panel(t_pc_wiz):
+                ui.label('🧙 Quick Setup Wizard').classes('text-h6 text-purple-8 q-mb-xs')
+                ui.label(
+                    'Configure an AI provider in 2 steps. '
+                    'Click Apply — then restart PicoClaw to activate.'
+                ).classes('text-caption text-grey-6 q-mb-md')
+
+                with ui.stepper(value='pc_wiz_prov').props('vertical animated').classes('w-full') as _pc_wiz:
+
+                    # ── Step 1: Provider + Model ────────────────────────────
+                    with ui.step('pc_wiz_prov', title='1  Provider & Model', icon='cloud'):
+                        ui.label('Pick a known model — fields fill automatically.').classes('text-caption text-grey-6 q-mb-sm')
+
+                        ui.label('⚡ Quick pick').classes('text-caption text-purple-7')
+                        pc_wiz_quick = ui.select(
+                            options=list(_pc_ph_map.keys()),
+                            label='Known model',
+                            value=None,
+                            clearable=True,
+                            with_input=True,
+                        ).classes('w-full q-mb-xs')
+                        ui.separator().classes('q-my-xs')
+
+                        pc_wiz_prov      = ui.select(_pc_ph_provs or [''], label='provider',
+                            value=_pc_ph_provs[0] if _pc_ph_provs else '').classes('w-full q-mb-sm')
+                        pc_wiz_model_name= ui.select(
+                            options=list(_pc_ph_map.keys()),
+                            label='model_name',
+                            value=None,
+                            with_input=True,
+                            new_value_mode='add-unique',
+                        ).classes('w-full q-mb-sm')
+                        pc_wiz_model     = ui.input('model  (actual model id sent to provider)', value='').classes('w-full q-mb-sm')
+                        pc_wiz_api_base  = ui.input('api_base', value='').classes('w-full q-mb-sm')
+                        pc_wiz_api_key   = ui.input('api_key', password=True, password_toggle_button=True).classes('w-full')
+
+                        def _pc_wiz_fill_hint(e):
+                            h = _pc_ph_map.get(e.value) if e.value else None
+                            if not h: return
+                            prov = h.get('provider', '')
+                            if prov in _pc_ph_provs: pc_wiz_prov.set_value(prov)
+                            pc_wiz_model_name.set_value(h.get('model_name', ''))
+                            pc_wiz_model.set_value(h.get('model', ''))
+                            pc_wiz_api_base.set_value(h.get('api_base', ''))
+                        pc_wiz_quick.on_value_change(_pc_wiz_fill_hint)
+
+                        def _pc_wiz_fill_prov(e):
+                            prov = e.value or ''
+                            if not prov: return
+                            pc_wiz_api_base.set_value(_pc_ph_pid_base.get(prov, ''))
+                            models = _pc_ph_pid_models.get(prov, [])
+                            if models:
+                                pc_wiz_model_name.set_options(models, value=models[0])
+                                first = _pc_ph_map.get(models[0], {})
+                                pc_wiz_model.set_value(first.get('model', ''))
+                        pc_wiz_prov.on_value_change(_pc_wiz_fill_prov)
+
+                        def _pc_wiz_fill_mname(e):
+                            h = _pc_ph_map.get(e.value) if e.value else None
+                            if not h: return
+                            pc_wiz_model.set_value(h.get('model', ''))
+                            pc_wiz_api_base.set_value(h.get('api_base', ''))
+                        pc_wiz_model_name.on_value_change(_pc_wiz_fill_mname)
+
+                        with ui.stepper_navigation():
+                            ui.button('Next →', on_click=_pc_wiz.next).props('color=purple-8')
+
+                    # ── Step 2: Apply ────────────────────────────────────────
+                    with ui.step('pc_wiz_apply', title='2  Apply', icon='check_circle'):
+                        ui.label('Review and apply the provider settings.').classes('text-caption text-grey-6 q-mb-sm')
+
+                        def _pc_wiz_summary():
+                            return (
+                                f'provider: {pc_wiz_prov.value}\n'
+                                f'model_name: {pc_wiz_model_name.value or "(unchanged)"}\n'
+                                f'model: {pc_wiz_model.value or "(unchanged)"}\n'
+                                f'api_base: {pc_wiz_api_base.value or "(provider default)"}'
+                            )
+                        pc_wiz_summary_lbl = ui.label('').classes('text-caption text-grey-7 q-mb-sm')
+
+                        def _pc_wiz_refresh_summary():
+                            pc_wiz_summary_lbl.set_text(_pc_wiz_summary())
+                        _pc_wiz.on('transition', lambda _: _pc_wiz_refresh_summary())
+
+                        def _pc_wiz_apply():
+                            data = load_picoclaw_config()
+                            sec  = load_picoclaw_security()
+                            ad = data.setdefault('agents', {}).setdefault('defaults', {})
+                            if pc_wiz_prov.value:       ad['provider']    = pc_wiz_prov.value
+                            if pc_wiz_model_name.value: ad['model_name']  = pc_wiz_model_name.value
+                            if pc_wiz_model.value:      ad['model']       = pc_wiz_model.value
+                            # Inject model into model_list if not already present
+                            mname = pc_wiz_model_name.value
+                            if mname:
+                                ml = data.setdefault('model_list', [])
+                                existing = [e for e in ml if e.get('model_name') == mname]
+                                if not existing:
+                                    entry = {'model_name': mname, 'model': pc_wiz_model.value,
+                                             'api_base': pc_wiz_api_base.value}
+                                    ml.append(entry)
+                                else:
+                                    existing[0]['api_base'] = pc_wiz_api_base.value
+                                if pc_wiz_api_key.value:
+                                    sec.setdefault('model_list', {}).setdefault(mname, {})['api_keys'] = [pc_wiz_api_key.value]
+                            try:
+                                save_picoclaw_config(data)
+                                save_picoclaw_security(sec)
+                                ui.notify('✅ PicoClaw config saved — restart PicoClaw to activate', type='positive')
+                            except Exception as ex:
+                                ui.notify(f'❌ Save failed: {ex}', type='negative')
+
+                        with ui.stepper_navigation():
+                            ui.button('← Back', on_click=_pc_wiz.previous).props('flat color=grey-7')
+                            ui.button('✅ Apply & Save', on_click=_pc_wiz_apply).props('color=green-8')
 
             # ── PicoClaw › Configuration ───────────────────────────────────
             with ui.tab_panel(t_pc_cfg):
@@ -1572,17 +1791,47 @@ def index(request: Request):
                                 def _rm(i=idx, c=card):
                                     pc_model_panels.pop(i, None); c.delete()
                                 ui.button(icon='delete', on_click=_rm).props('flat round dense color=negative')
+                            ui.label('⚡ Quick pick').classes('text-caption text-purple-7')
+                            _card_quick = ui.select(
+                                options=list(_pc_ph_map.keys()),
+                                label='Known model (auto-fill)',
+                                value=_mname if _mname in _pc_ph_map else None,
+                                clearable=True, with_input=True,
+                            ).classes('w-full q-mb-xs')
+                            ui.separator().classes('q-my-xs')
                             widgets = {}
-                            widgets['model_name'] = ui.input('model_name', value=_mname).classes('w-full')
-                            widgets['model']      = ui.input('model',      value=str(entry.get('model',''))).classes('w-full')
-                            widgets['api_base']   = ui.input('api_base',   value=str(entry.get('api_base',''))).classes('w-full')
+                            widgets['model_name'] = ui.select(
+                                options=list(_pc_ph_map.keys()),
+                                label='model_name',
+                                value=_mname if _mname in _pc_ph_map else (_mname or None),
+                                with_input=True, new_value_mode='add-unique',
+                            ).classes('w-full')
+                            widgets['model']     = ui.input('model',    value=str(entry.get('model',''))).classes('w-full')
+                            widgets['api_base']  = ui.input('api_base', value=str(entry.get('api_base',''))).classes('w-full')
                             ui.label('api_keys  (one per line → security.yml)').classes('text-caption text-grey-6 q-mt-xs')
-                            widgets['api_keys']   = ui.textarea(value=_keys_txt).classes('w-full').props('outlined rows=3 label=api_keys')
-                            cur_auth = str(entry.get('auth_method','apikey'))
-                            auth_opts = ['apikey','oauth']
+                            widgets['api_keys']  = ui.textarea(value=_keys_txt).classes('w-full').props('outlined rows=3 label=api_keys')
+                            cur_auth  = str(entry.get('auth_method', 'apikey'))
+                            auth_opts = ['apikey', 'oauth']
                             widgets['auth_method'] = ui.select(auth_opts, label='auth_method',
                                 value=cur_auth if cur_auth in auth_opts else 'apikey').classes('w-full')
                             pc_model_panels[idx] = widgets
+
+                            # Quick-pick fills all fields
+                            def _card_fill(e, _w=widgets, _qk=_card_quick):
+                                h = _pc_ph_map.get(e.value) if e.value else None
+                                if not h: return
+                                _w['model_name'].set_value(h.get('model_name', ''))
+                                _w['model'].set_value(h.get('model', ''))
+                                _w['api_base'].set_value(h.get('api_base', ''))
+                                am = h.get('auth_method', 'apikey')
+                                _w['auth_method'].set_value(am if am in auth_opts else 'apikey')
+                            _card_quick.on_value_change(_card_fill)
+
+                            # model_name select → fill model field
+                            def _card_mname(e, _w=widgets):
+                                h = _pc_ph_map.get(e.value) if e.value else None
+                                if h and h.get('model'): _w['model'].set_value(h['model'])
+                            widgets['model_name'].on_value_change(_card_mname)
 
                 def pc_collect_and_save():
                     data = load_picoclaw_config()
@@ -1774,9 +2023,48 @@ def index(request: Request):
                         pc_w_workspace          = ui.input('workspace', value=str(pc_agents.get('workspace','/var/lib/picoclaw/.picoclaw/workspace'))).classes('w-full')
                         pc_w_restrict           = ui.checkbox('restrict_to_workspace',       value=bool(pc_agents.get('restrict_to_workspace', False)))
                         pc_w_allow_read_outside = ui.checkbox('allow_read_outside_workspace', value=bool(pc_agents.get('allow_read_outside_workspace', False)))
-                        pc_w_provider           = ui.input('provider',   value=str(pc_agents.get('provider','qwen'))).classes('w-full')
-                        pc_w_model_name         = ui.input('model_name', value=str(pc_agents.get('model_name','qwen3.5-plus'))).classes('w-full')
-                        pc_w_model              = ui.input('model',      value=str(pc_agents.get('model','qwen3.5-plus'))).classes('w-full')
+
+                        _pc_cur_prov  = str(pc_agents.get('provider', 'qwen'))
+                        pc_w_provider = ui.select(
+                            options=_pc_ph_provs if _pc_cur_prov in _pc_ph_provs else ([_pc_cur_prov] + _pc_ph_provs),
+                            label='provider',
+                            value=_pc_cur_prov,
+                            with_input=True,
+                            new_value_mode='add-unique',
+                        ).classes('w-full')
+
+                        _pc_cur_mname = str(pc_agents.get('model_name', 'qwen3.5-plus'))
+                        _pc_init_mnames = _pc_ph_pid_models.get(_pc_cur_prov, list(_pc_ph_map.keys()))
+                        _pc_mname_opts  = list(_pc_init_mnames) if _pc_cur_mname in _pc_init_mnames \
+                            else ([_pc_cur_mname] + list(_pc_init_mnames))
+                        pc_w_model_name = ui.select(
+                            options=_pc_mname_opts,
+                            label='model_name',
+                            value=_pc_cur_mname,
+                            with_input=True,
+                            new_value_mode='add-unique',
+                        ).classes('w-full')
+
+                        _pc_cur_model = str(pc_agents.get('model', 'qwen3.5-plus'))
+                        pc_w_model = ui.input('model  (actual model id sent to provider)',
+                            value=_pc_cur_model).classes('w-full')
+
+                        # Auto-fill: provider change → update model_name list + api_base hint label
+                        def _pc_gen_prov_change(e):
+                            prov = e.value or ''
+                            mnames = _pc_ph_pid_models.get(prov, list(_pc_ph_map.keys()))
+                            cur = pc_w_model_name.value
+                            new_val = cur if cur in mnames else (mnames[0] if mnames else cur)
+                            pc_w_model_name.set_options(list(mnames), value=new_val)
+                            h = _pc_ph_map.get(new_val, {})
+                            if h.get('model'): pc_w_model.set_value(h['model'])
+                        pc_w_provider.on_value_change(_pc_gen_prov_change)
+
+                        # Auto-fill: model_name change → update model field
+                        def _pc_gen_mname_change(e):
+                            h = _pc_ph_map.get(e.value) if e.value else None
+                            if h and h.get('model'): pc_w_model.set_value(h['model'])
+                        pc_w_model_name.on_value_change(_pc_gen_mname_change)
                         pc_w_max_tokens         = ui.number('max_tokens',                 value=pc_agents.get('max_tokens', 8192),  min=256,  step=512).classes('w-full')
                         pc_w_max_iter           = ui.number('max_tool_iterations',         value=pc_agents.get('max_tool_iterations', 50), min=1, step=5).classes('w-full')
                         pc_w_sum_threshold      = ui.number('summarize_message_threshold', value=pc_agents.get('summarize_message_threshold', 20), min=1, step=1).classes('w-full')

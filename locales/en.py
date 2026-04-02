@@ -101,6 +101,7 @@ STRINGS = {
     'notify_service':         'zeroclaw.service: {}',
     'notify_sudo_required':   'sudo required',
     # ── PicoClaw ───────────────────────────────────────────────────────────────────
+    'pc_tab_wizard':           'Wizard',
     'pc_tab_general':          'General',
     'pc_tab_models':           'Models',
     'pc_tab_channels':         'Channels',

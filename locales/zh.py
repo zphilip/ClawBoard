@@ -101,6 +101,7 @@ STRINGS = {
     'notify_service':         'zeroclaw.service：{}',
     'notify_sudo_required':   '需要 sudo 权限',
     # ── PicoClaw ───────────────────────────────────────────────────────────────────
+    'pc_tab_wizard':           '向导',
     'pc_tab_general':          '通用',
     'pc_tab_models':           '模型',
     'pc_tab_channels':         '频道',
