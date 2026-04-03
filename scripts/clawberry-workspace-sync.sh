@@ -8,6 +8,22 @@
 #     picoclaw/workspace  →  /var/lib/picoclaw/.picoclaw/workspace
 #     zeroclaw/workspace  →  /var/lib/zeroclaw/.zeroclaw/workspace
 #
+# Usage:
+#   clawberry-workspace-sync.sh [OPTIONS]
+#
+#   -config <target>   Also sync the specified config file(s).
+#                      Targets: all | config.json | config.toml | security.yml
+#                      May be repeated: -config config.json -config config.toml
+#
+#   Without -config the three protected files (config.json, config.toml,
+#   .security.yml) are NEVER touched; only workspace/dashboard/binary files
+#   are updated.
+#
+# Examples:
+#   clawberry-workspace-sync.sh
+#   clawberry-workspace-sync.sh -config all
+#   clawberry-workspace-sync.sh -config config.json -config security.yml
+#
 # Strategy:
 #   • Clone repo into a temp dir (sparse, no history, saves bandwidth)
 #   • rsync each workspace subtree into the target, preserving any local
@@ -39,7 +55,32 @@ ZEROCLAW_USER="zeroclaw"
 log() { echo "[workspace-sync] $*"; }
 die() { echo "[workspace-sync] ERROR: $*" >&2; exit 1; }
 
+# ── Argument parsing ───────────────────────────────────────────────────────────────
+SYNC_CONFIG_JSON=no
+SYNC_CONFIG_TOML=no
+SYNC_SECURITY_YML=no
+
+parse_args() {
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -config)
+                [[ $# -ge 2 ]] || die "-config requires an argument (all|config.json|config.toml|security.yml)"
+                case "$2" in
+                    all)           SYNC_CONFIG_JSON=yes; SYNC_CONFIG_TOML=yes; SYNC_SECURITY_YML=yes ;;
+                    config.json)   SYNC_CONFIG_JSON=yes ;;
+                    config.toml)   SYNC_CONFIG_TOML=yes ;;
+                    security.yml)  SYNC_SECURITY_YML=yes ;;
+                    *) die "Unknown -config target: $2 (use all|config.json|config.toml|security.yml)" ;;
+                esac
+                shift 2
+                ;;
+            *) die "Unknown argument: $1" ;;
+        esac
+    done
+}
+
 main() {
+parse_args "$@"
 
 # ── Require git ──────────────────────────────────────────────────────────────
 command -v git  >/dev/null 2>&1 || die "git is not installed"
@@ -78,12 +119,29 @@ log "Checkout complete."
 # ── Self-update: copy latest script from repo to /usr/local/bin and ensure executable ──
 REPO_SCRIPT_PATH="$TMPDIR/scripts/clawberry-workspace-sync.sh"
 SCRIPT_PATH="/usr/local/bin/clawberry-workspace-sync.sh"
-log "Updating sync script from repo to $SCRIPT_PATH ..."
-if cp "$REPO_SCRIPT_PATH" "$SCRIPT_PATH" 2>/dev/null; then
-    chmod +x "$SCRIPT_PATH" 2>/dev/null || true
-    log "Sync script updated at $SCRIPT_PATH."
+if [[ -f "$REPO_SCRIPT_PATH" ]]; then
+    _repo_hash=$(sha256sum "$REPO_SCRIPT_PATH" | cut -d' ' -f1)
+    _cur_hash=$(sha256sum "$SCRIPT_PATH" 2>/dev/null | cut -d' ' -f1 || echo "none")
+    if [[ "$_repo_hash" != "$_cur_hash" ]]; then
+        log "Sync script has been updated in the repo — installing new version to $SCRIPT_PATH ..."
+        if cp "$REPO_SCRIPT_PATH" "$SCRIPT_PATH" 2>/dev/null; then
+            chmod +x "$SCRIPT_PATH" 2>/dev/null || true
+            log "✅ Sync script updated at $SCRIPT_PATH."
+            log ""
+            log "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            log "  The sync script was updated. Please run it again to apply"
+            log "  all remaining changes with the new version:"
+            log "    sudo bash $SCRIPT_PATH $*"
+            log "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            exit 0
+        else
+            log "WARNING: failed to copy $REPO_SCRIPT_PATH to $SCRIPT_PATH (permission?)"
+        fi
+    else
+        log "Sync script is already up to date — continuing."
+    fi
 else
-    log "WARNING: failed to copy $REPO_SCRIPT_PATH to $SCRIPT_PATH (permission?)"
+    log "WARNING: sync script not found in repo at $REPO_SCRIPT_PATH — skipping self-update"
 fi
 
 # Record service states and stop services to allow binary replacement
@@ -207,11 +265,53 @@ if [[ -d "$TMPDIR/lib" ]]; then
     log "  synced lib/"
 fi
 
-# config/ — update files that are newer in the repo; preserve files the user
-# has modified more recently than the repo version
+# config/ — sync non-sensitive files always; the three protected config files
+# are only copied when explicitly requested via -config.
 if [[ -d "$TMPDIR/config" ]]; then
-    rsync --archive --update "$TMPDIR/config/" "$CLAWBOARD_DST/config/"
-    log "  updated config/ (repo wins if newer)"
+    # Non-protected files (examples, templates, etc.) — always sync
+    rsync --archive --update \
+        --exclude='config.json' \
+        --exclude='.security.yml' \
+        --exclude='config.toml' \
+        "$TMPDIR/config/" "$CLAWBOARD_DST/config/"
+    log "  synced config/ (non-protected files)"
+
+    # Protected files — only when -config flag was given
+    if [[ "$SYNC_CONFIG_JSON" == "yes" ]]; then
+        if [[ -f "$TMPDIR/config/config.json" ]]; then
+            cp "$TMPDIR/config/config.json" "$CLAWBOARD_DST/config/config.json" && \
+                log "  config.json: synced from repo" || \
+                log "WARNING: failed to copy config.json"
+        else
+            log "  config.json: not present in repo — skipping"
+        fi
+    else
+        log "  config.json: skipped (use -config config.json or -config all to sync)"
+    fi
+
+    if [[ "$SYNC_CONFIG_TOML" == "yes" ]]; then
+        if [[ -f "$TMPDIR/config/config.toml" ]]; then
+            cp "$TMPDIR/config/config.toml" "$CLAWBOARD_DST/config/config.toml" && \
+                log "  config.toml: synced from repo" || \
+                log "WARNING: failed to copy config.toml"
+        else
+            log "  config.toml: not present in repo — skipping"
+        fi
+    else
+        log "  config.toml: skipped (use -config config.toml or -config all to sync)"
+    fi
+
+    if [[ "$SYNC_SECURITY_YML" == "yes" ]]; then
+        if [[ -f "$TMPDIR/config/.security.yml" ]]; then
+            cp "$TMPDIR/config/.security.yml" "$CLAWBOARD_DST/config/.security.yml" && \
+                log "  .security.yml: synced from repo" || \
+                log "WARNING: failed to copy .security.yml"
+        else
+            log "  .security.yml: not present in repo — skipping"
+        fi
+    else
+        log "  .security.yml: skipped (use -config security.yml or -config all to sync)"
+    fi
 fi
 
 
