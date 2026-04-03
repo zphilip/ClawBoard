@@ -990,7 +990,8 @@ def index(request: Request):
         ui.separator()
         btn_zc   = ui.button('🦾 ZeroClaw',    icon='terminal').props('flat align=left color=blue-8').classes('w-full q-mt-xs')
         btn_pc   = ui.button('🐾 PicoClaw',     icon='memory'  ).props('flat align=left color=grey-7').classes('w-full')
-        btn_wifi = ui.button('📶 WiFi Setup',   icon='wifi'    ).props('flat align=left color=grey-7').classes('w-full')
+        btn_wifi    = ui.button('📶 WiFi Setup',   icon='wifi'    ).props('flat align=left color=grey-7').classes('w-full')
+        btn_upgrade = ui.button('⬆ Upgrade',         icon='system_update_alt').props('flat align=left color=grey-7').classes('w-full')
 
     # ══ ZeroClaw Dashboard ════════════════════════════════════════════════════
     zc_content = ui.column().classes('w-full q-px-sm q-pt-sm')
@@ -2593,21 +2594,78 @@ def index(request: Request):
                     '■ Stop', on_click=_stop_wifi_setup
                 ).props('outline color=negative disabled')
 
+    # ══ Upgrade ═══════════════════════════════════════════════════════════════
+    upgrade_content = ui.column().classes('w-full q-px-sm q-pt-sm')
+    upgrade_content.set_visibility(False)
+    with upgrade_content:
+        ui.label('⬆ Upgrade').classes('text-h6 text-orange-9 q-mb-xs')
+        with ui.card().classes('w-full q-pa-md'):
+            ui.label('System Upgrade').classes('text-subtitle1 text-bold q-mb-xs')
+            ui.label(
+                'Run the ClawBerry workspace-sync upgrade script. '
+                'Output is streamed below in real time.'
+            ).classes('text-caption text-grey-6 q-mb-md')
+
+            upg_status_lbl = ui.label('').classes('text-caption text-grey-7 q-mb-sm')
+            upg_log_area   = ui.textarea().classes('w-full font-mono').props('outlined rows=16 readonly label="Output"')
+            upg_log_area.set_visibility(False)
+
+            _upg_proc = {'proc': None}
+
+            def _start_upgrade():
+                upg_log_area.set_visibility(True)
+                upg_log_area.set_value('')
+                upg_status_lbl.set_text('⏳ Running upgrade script…')
+                btn_upg_run.props('disabled loading')
+                import threading, subprocess as _sp
+
+                def _run_upg():
+                    try:
+                        proc = _sp.Popen(
+                            ['sudo', 'bash', '/usr/local/bin/clawberry-workspace-sync.sh'],
+                            stdout=_sp.PIPE, stderr=_sp.STDOUT, text=True,
+                            bufsize=1,
+                        )
+                        _upg_proc['proc'] = proc
+                        for line in proc.stdout:
+                            upg_log_area.set_value(upg_log_area.value + line)
+                        proc.wait()
+                        rc = proc.returncode
+                        upg_status_lbl.set_text(
+                            f'✅ Upgrade complete (exit {rc})' if rc == 0
+                            else f'⚠️ Script exited with code {rc}'
+                        )
+                    except Exception as exc:
+                        upg_status_lbl.set_text(f'❌ Error: {exc}')
+                    finally:
+                        _upg_proc['proc'] = None
+                        btn_upg_run.props(remove='disabled loading')
+
+                threading.Thread(target=_run_upg, daemon=True).start()
+
+            btn_upg_run = ui.button(
+                '▶ Run Upgrade', on_click=_start_upgrade
+            ).props('elevated color=orange-9')
+
     # ── Sidebar navigation wiring ──────────────────────────────────────────────
     def _switch_dash(name):
         zc_content.set_visibility(name == 'zeroclaw')
         pc_content.set_visibility(name == 'picoclaw')
         wifi_content.set_visibility(name == 'wifi')
-        btn_zc._props['color']   = 'blue-8'  if name == 'zeroclaw' else 'grey-7'
-        btn_pc._props['color']   = 'purple-8' if name == 'picoclaw' else 'grey-7'
-        btn_wifi._props['color'] = 'teal-8'  if name == 'wifi'     else 'grey-7'
+        upgrade_content.set_visibility(name == 'upgrade')
+        btn_zc._props['color']      = 'blue-8'   if name == 'zeroclaw' else 'grey-7'
+        btn_pc._props['color']      = 'purple-8' if name == 'picoclaw' else 'grey-7'
+        btn_wifi._props['color']    = 'teal-8'   if name == 'wifi'     else 'grey-7'
+        btn_upgrade._props['color'] = 'orange-9' if name == 'upgrade'  else 'grey-7'
         btn_zc.update()
         btn_pc.update()
         btn_wifi.update()
+        btn_upgrade.update()
 
-    btn_zc.on('click',   lambda: _switch_dash('zeroclaw'))
-    btn_pc.on('click',   lambda: _switch_dash('picoclaw'))
-    btn_wifi.on('click', lambda: _switch_dash('wifi'))
+    btn_zc.on('click',      lambda: _switch_dash('zeroclaw'))
+    btn_pc.on('click',      lambda: _switch_dash('picoclaw'))
+    btn_wifi.on('click',    lambda: _switch_dash('wifi'))
+    btn_upgrade.on('click', lambda: _switch_dash('upgrade'))
 
 
 ui.run(title='ClawBoard', port=8080, reload=False, host='0.0.0.0',
