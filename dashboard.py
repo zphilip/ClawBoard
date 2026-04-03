@@ -1864,7 +1864,19 @@ def index(request: Request):
                 pc_sec_web      = pc_sec.get('web',        {})
                 pc_sec_skills   = pc_sec.get('skills',     {})
 
-                pc_model_panels = {}  # alias → widget map
+                pc_model_panels = {}  # idx → widget dict
+                pc_model_cards  = {}  # idx → card element (for show/hide)
+                _pc_sel_ref  = [None]  # forward ref → _pc_model_sel (set in Models tab)
+                _pc_show_ref = [None]  # forward ref → _pc_show_model (set in Models tab)
+
+                def _make_pc_sel_opt(i, mname):
+                    return f'[{i}] {mname or "(new)"}'
+
+                def _pc_idx_from_opt(opt_str):
+                    try:
+                        return int(str(opt_str).split(']')[0].lstrip('[').strip())
+                    except (ValueError, AttributeError):
+                        return None
 
                 def pc_build_model_card(container, idx, entry):
                     _mname    = str(entry.get('model_name', ''))
@@ -1875,7 +1887,17 @@ def index(request: Request):
                             with ui.row().classes('w-full items-center justify-between'):
                                 ui.label(f'model [{idx}]').classes('text-caption text-purple-7 text-bold')
                                 def _rm(i=idx, c=card):
-                                    pc_model_panels.pop(i, None); c.delete()
+                                    pc_model_panels.pop(i, None)
+                                    pc_model_cards.pop(i, None)
+                                    c.delete()
+                                    sel = _pc_sel_ref[0]
+                                    if sel:
+                                        new_opts = [o for o in sel.options if _pc_idx_from_opt(o) != i]
+                                        new_val  = new_opts[0] if new_opts else None
+                                        sel.set_options(new_opts, value=new_val)
+                                        if new_val is not None and _pc_show_ref[0]:
+                                            t = _pc_idx_from_opt(new_val)
+                                            if t is not None: _pc_show_ref[0](t)
                                 ui.button(icon='delete', on_click=_rm).props('flat round dense color=negative')
                             ui.label('⚡ Quick pick').classes('text-caption text-purple-7')
                             _card_quick = ui.select(
@@ -1904,6 +1926,8 @@ def index(request: Request):
                             widgets['auth_method'] = ui.select(auth_opts, label='auth_method',
                                 value=cur_auth if cur_auth in auth_opts else 'apikey').classes('w-full')
                             pc_model_panels[idx] = widgets
+                            pc_model_cards[idx]  = card
+                            card.set_visibility(False)
 
                             # Quick-pick fills all fields
                             def _card_fill(e, _w=widgets, _qk=_card_quick):
@@ -1916,10 +1940,17 @@ def index(request: Request):
                                 _w['auth_method'].set_value(am if am in auth_opts else 'apikey')
                             _card_quick.on_value_change(_card_fill)
 
-                            # model_name select → fill model field
-                            def _card_mname(e, _w=widgets):
+                            # model_name select → fill model field + update selector label
+                            def _card_mname(e, _w=widgets, _idx=idx):
                                 h = _pc_ph_map.get(e.value) if e.value else None
                                 if h and h.get('model'): _w['model'].set_value(h['model'])
+                                sel = _pc_sel_ref[0]
+                                if sel:
+                                    new_opts = [
+                                        _make_pc_sel_opt(_idx, e.value) if _pc_idx_from_opt(o) == _idx else o
+                                        for o in sel.options
+                                    ]
+                                    sel.set_options(new_opts, value=sel.value)
                             widgets['model_name'].on_value_change(_card_mname)
 
                 def pc_collect_and_save():
@@ -2203,13 +2234,36 @@ def index(request: Request):
                     with ui.tab_panel(t_pc_models):
                         ui.label(T['pc_section_models']).classes('text-subtitle2 text-grey-7 q-mt-sm')
                         ui.label(T['pc_hint_models']).classes('text-caption text-grey-5')
+                        # ── model selector ───────────────────────────────────
+                        with ui.row().classes('w-full items-center gap-2 q-mb-sm'):
+                            _pc_sel_opts = [_make_pc_sel_opt(i, e.get('model_name', ''))
+                                            for i, e in enumerate(pc_model_list)]
+                            _pc_model_sel = ui.select(
+                                options=_pc_sel_opts,
+                                label='Select model to edit',
+                                value=_pc_sel_opts[0] if _pc_sel_opts else None,
+                            ).classes('flex-1')
+                            _pc_sel_ref[0] = _pc_model_sel
                         pc_model_container = ui.column().classes('w-full')
                         for i, entry in enumerate(pc_model_list):
                             pc_build_model_card(pc_model_container, i, entry)
+                        def _pc_show_model(target_idx):
+                            for _i, _c in pc_model_cards.items():
+                                _c.set_visibility(_i == target_idx)
+                        _pc_show_ref[0] = _pc_show_model
+                        def _on_pc_sel(e):
+                            t = _pc_idx_from_opt(e.value)
+                            if t is not None: _pc_show_model(t)
+                        _pc_model_sel.on_value_change(_on_pc_sel)
+                        if pc_model_list:
+                            _pc_show_model(0)
                         ui.separator().classes('q-my-sm')
                         def _pc_add_model():
                             new_idx = max(pc_model_panels.keys(), default=-1) + 1
                             pc_build_model_card(pc_model_container, new_idx, {})
+                            new_opt = _make_pc_sel_opt(new_idx, '')
+                            _pc_model_sel.set_options(list(_pc_model_sel.options) + [new_opt], value=new_opt)
+                            _pc_show_model(new_idx)
                         ui.button(T['pc_btn_add_model'], on_click=_pc_add_model).props('outline color=purple')
 
                     # ── Channels ─────────────────────────────────────────────
