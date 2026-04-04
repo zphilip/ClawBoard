@@ -1015,7 +1015,10 @@ def index(request: Request):
     # ══ ZeroClaw Dashboard ════════════════════════════════════════════════════
     zc_content = ui.column().classes('w-full q-px-sm q-pt-sm')
     with zc_content:
-        ui.label('🦾 ZeroClaw Dashboard').classes('text-h6 text-blue-9 q-mb-xs')
+        with ui.row().classes('w-full items-center q-mb-xs'):
+            ui.label('🦾 ZeroClaw Dashboard').classes('text-h6 text-blue-9')
+            ui.button(icon='refresh', on_click=lambda: ui.navigate.reload()) \
+                .props('flat round dense color=blue-9').tooltip('重载配置')
         with ui.tabs().classes('w-full bg-blue-1') as zc_sub_tabs:
             t_zc_wiz  = ui.tab(T['tab_wizard'],        icon='auto_fix_high')
             t_zc_cfg  = ui.tab(T['tab_configuration'], icon='settings')
@@ -1739,7 +1742,10 @@ def index(request: Request):
     pc_content = ui.column().classes('w-full q-px-sm q-pt-sm')
     pc_content.set_visibility(False)
     with pc_content:
-        ui.label('🐾 PicoClaw Dashboard').classes('text-h6 text-purple-8 q-mb-xs')
+        with ui.row().classes('w-full items-center q-mb-xs'):
+            ui.label('🐾 PicoClaw Dashboard').classes('text-h6 text-purple-8')
+            ui.button(icon='refresh', on_click=lambda: ui.navigate.reload()) \
+                .props('flat round dense color=purple-8').tooltip('重载配置')
         with ui.tabs().classes('w-full bg-purple-1') as pc_sub_tabs:
             t_pc_wiz  = ui.tab(T['pc_tab_wizard'],     icon='auto_fix_high')
             t_pc_cfg  = ui.tab(T['tab_configuration'], icon='settings')
