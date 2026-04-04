@@ -406,8 +406,8 @@ if command -v systemctl >/dev/null 2>&1; then
         systemctl restart picoclaw-web 2>/dev/null || true
     fi
     if [[ "$DASHBOARD_CHANGED" == "yes" ]]; then
-        log "dashboard.py was updated — restarting clawberry-display.service"
-        systemctl restart clawberry-display 2>/dev/null || true
+        log "dashboard.py was updated — restarting clawboard.service"
+        systemctl restart clawboard 2>/dev/null || true
     fi
 fi
 
