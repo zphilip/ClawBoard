@@ -29,6 +29,8 @@ zero ALL=(root) NOPASSWD: /usr/bin/cat /var/lib/picoclaw/.picoclaw/.security.yml
 zero ALL=(root) NOPASSWD: /usr/bin/tee /var/lib/picoclaw/.picoclaw/config.json
 zero ALL=(root) NOPASSWD: /usr/bin/tee /var/lib/picoclaw/.picoclaw/.security.yml
 zero ALL=(root) NOPASSWD: /usr/bin/chmod 600 /var/lib/picoclaw/.picoclaw/.security.yml
+zero ALL=(root) NOPASSWD: /usr/bin/chown picoclaw:picoclaw /var/lib/picoclaw/.picoclaw/config.json
+zero ALL=(root) NOPASSWD: /usr/bin/chown picoclaw:picoclaw /var/lib/picoclaw/.picoclaw/.security.yml
 zero ALL=(root) NOPASSWD: /usr/bin/mkdir -p /var/lib/picoclaw/.picoclaw
 
 # ── WiFi-connect captive portal ───────────────────────────────────────────────

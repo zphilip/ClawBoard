@@ -523,6 +523,10 @@ def deploy_picoclaw_config():
     if r.returncode != 0:
         err = r.stderr.strip() or f'sudo tee failed (exit {r.returncode})'
         return False, err
+    subprocess.run(
+        ['sudo', '/usr/bin/chown', 'picoclaw:picoclaw', PICOCLAW_DEPLOY_CONFIG_PATH],
+        capture_output=True
+    )
     return True, ''
 
 def deploy_picoclaw_security():
@@ -551,6 +555,10 @@ def deploy_picoclaw_security():
     # Ensure api_keys are not readable by other users
     subprocess.run(
         ['sudo', '/usr/bin/chmod', '600', PICOCLAW_DEPLOY_SECURITY_PATH],
+        capture_output=True
+    )
+    subprocess.run(
+        ['sudo', '/usr/bin/chown', 'picoclaw:picoclaw', PICOCLAW_DEPLOY_SECURITY_PATH],
         capture_output=True
     )
     return True, ''
