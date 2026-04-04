@@ -2536,6 +2536,74 @@ def index(request: Request):
     wifi_content.set_visibility(False)
     with wifi_content:
         ui.label('📶 WiFi Setup').classes('text-h6 text-teal-8 q-mb-xs')
+
+        # ── Current WiFi status card ─────────────────────────────────────────
+        with ui.card().classes('w-full q-pa-md q-mb-sm'):
+            with ui.row().classes('w-full items-center justify-between'):
+                ui.label('Current Status').classes('text-subtitle1 text-bold')
+                def _refresh_wifi_status():
+                    import subprocess as _sp
+                    lines = []
+                    # Interface + SSID + signal via iwgetid / iw
+                    try:
+                        iface_r = _sp.run(['iwgetid', '-r'], capture_output=True, text=True)
+                        ssid = iface_r.stdout.strip()
+                        iface_n = _sp.run(['iwgetid'], capture_output=True, text=True)
+                        iface = iface_n.stdout.split()[0] if iface_n.stdout.strip() else 'wlan0'
+                    except Exception:
+                        ssid, iface = '', 'wlan0'
+
+                    if ssid:
+                        lines.append(f'🟢 Connected  |  SSID: {ssid}  |  Interface: {iface}')
+                    else:
+                        lines.append('🔴 Not connected to any WiFi network')
+
+                    # IP address
+                    try:
+                        ip_r = _sp.run(['ip', '-4', 'addr', 'show', iface],
+                                        capture_output=True, text=True)
+                        for ln in ip_r.stdout.splitlines():
+                            ln = ln.strip()
+                            if ln.startswith('inet '):
+                                ip = ln.split()[1]   # e.g. 192.168.1.5/24
+                                lines.append(f'   IP Address : {ip}')
+                                break
+                        else:
+                            lines.append('   IP Address : (none)')
+                    except Exception as exc:
+                        lines.append(f'   IP Address : error ({exc})')
+
+                    # Gateway
+                    try:
+                        gw_r = _sp.run(['ip', 'route', 'show', 'default'],
+                                        capture_output=True, text=True)
+                        gw_line = gw_r.stdout.strip().splitlines()
+                        if gw_line:
+                            parts = gw_line[0].split()
+                            gw = parts[2] if len(parts) > 2 else '?'
+                            lines.append(f'   Gateway    : {gw}')
+                    except Exception:
+                        pass
+
+                    # Signal quality via iwconfig (best-effort)
+                    try:
+                        iwc = _sp.run(['iwconfig', iface], capture_output=True, text=True)
+                        for ln in iwc.stdout.splitlines():
+                            if 'Signal level' in ln:
+                                sig = ln.strip().split('Signal level=')[-1].split()[0]
+                                lines.append(f'   Signal     : {sig}')
+                                break
+                    except Exception:
+                        pass
+
+                    wifi_cur_lbl.set_text('\n'.join(lines))
+
+                ui.button(icon='refresh', on_click=_refresh_wifi_status).props('flat round dense color=teal-8').tooltip('Refresh')
+            wifi_cur_lbl = ui.label('…').classes('text-caption text-mono q-mt-xs').style('white-space: pre')
+            # Populate immediately when the card is built
+            _refresh_wifi_status()
+
+        # ── Captive portal card ───────────────────────────────────────────────
         with ui.card().classes('w-full q-pa-md'):
             ui.label('Wireless Network Configuration').classes('text-subtitle1 text-bold q-mb-xs')
             ui.label(
@@ -2584,6 +2652,7 @@ def index(request: Request):
                         wifi_status_lbl.set_text(
                             f'✅ Finished (exit {rc})' if rc == 0 else f'⚠️ Exited with code {rc}'
                         )
+                        _refresh_wifi_status()  # update current-status card
                     except Exception as exc:
                         wifi_status_lbl.set_text(f'❌ Error: {exc}')
                     finally:
