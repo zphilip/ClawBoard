@@ -151,6 +151,7 @@ fi
 PIC_ACTIVE=no
 ZC_ACTIVE=no
 PICWEB_ACTIVE=no
+DASHBOARD_CHANGED=no
 if command -v systemctl >/dev/null 2>&1; then
     if systemctl is-active --quiet picoclaw;     then PIC_ACTIVE=yes;    fi
     if systemctl is-active --quiet zeroclaw;     then ZC_ACTIVE=yes;     fi
@@ -248,9 +249,15 @@ mkdir -p "$CLAWBOARD_DST/config" "$CLAWBOARD_DST/locales" "$CLAWBOARD_DST/lib"
 for f in "$TMPDIR/dashboard.py" "$TMPDIR"/clawberry_*.py "$TMPDIR/publish_services.sh"; do
     [[ -f "$f" ]] || continue
     fname="$(basename "$f")"
+    _pre_hash="none"
+    [[ "$fname" == "dashboard.py" ]] && _pre_hash=$(sha256sum "$CLAWBOARD_DST/$fname" 2>/dev/null | cut -d' ' -f1 || echo "none")
     if cp "$f" "$CLAWBOARD_DST/$fname" 2>/dev/null; then
         chmod 755 "$CLAWBOARD_DST/$fname" || true
         log "  installed $fname"
+        if [[ "$fname" == "dashboard.py" ]]; then
+            _post_hash=$(sha256sum "$CLAWBOARD_DST/$fname" | cut -d' ' -f1)
+            [[ "$_pre_hash" != "$_post_hash" ]] && DASHBOARD_CHANGED=yes
+        fi
     else
         log "WARNING: failed to install $fname to $CLAWBOARD_DST"
     fi
@@ -397,6 +404,10 @@ if command -v systemctl >/dev/null 2>&1; then
     if [[ "$PICWEB_ACTIVE" == "yes" ]]; then
         log "Restarting picoclaw-web"
         systemctl restart picoclaw-web 2>/dev/null || true
+    fi
+    if [[ "$DASHBOARD_CHANGED" == "yes" ]]; then
+        log "dashboard.py was updated — restarting clawberry-display.service"
+        systemctl restart clawberry-display 2>/dev/null || true
     fi
 fi
 
