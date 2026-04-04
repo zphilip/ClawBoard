@@ -2559,6 +2559,15 @@ def index(request: Request):
                 import threading, subprocess as _sp
 
                 def _run():
+                    # Stop dnsmasq if it's running so wifi-connect can bind port 53
+                    _dnsmasq_was_active = _sp.run(
+                        ['systemctl', 'is-active', '--quiet', 'dnsmasq'],
+                        capture_output=True
+                    ).returncode == 0
+                    if _dnsmasq_was_active:
+                        wifi_log_area.set_value(wifi_log_area.value + '[setup] Stopping dnsmasq…\n')
+                        _sp.run(['sudo', '/usr/bin/systemctl', 'stop', 'dnsmasq'],
+                                capture_output=True)
                     try:
                         proc = _sp.Popen(
                             ['sudo', '/opt/wifi-connect/wifi-connect',
@@ -2581,6 +2590,11 @@ def index(request: Request):
                         _wifi_proc['proc'] = None
                         btn_wifi_start.props(remove='disabled loading')
                         btn_wifi_stop.props('disabled')
+                        # Restore dnsmasq if it was running before
+                        if _dnsmasq_was_active:
+                            wifi_log_area.set_value(wifi_log_area.value + '[setup] Restoring dnsmasq…\n')
+                            _sp.run(['sudo', '/usr/bin/systemctl', 'start', 'dnsmasq'],
+                                    capture_output=True)
 
                 threading.Thread(target=_run, daemon=True).start()
 
