@@ -64,14 +64,17 @@ parse_args() {
     while [[ $# -gt 0 ]]; do
         case "$1" in
             -config)
-                [[ $# -ge 2 ]] || die "-config requires an argument (all|config.json|config.toml|security.yml)"
-                case "$2" in
-                    all)           SYNC_CONFIG_JSON=yes; SYNC_CONFIG_TOML=yes; SYNC_SECURITY_YML=yes ;;
-                    config.json)   SYNC_CONFIG_JSON=yes ;;
-                    config.toml)   SYNC_CONFIG_TOML=yes ;;
-                    security.yml)  SYNC_SECURITY_YML=yes ;;
-                    *) die "Unknown -config target: $2 (use all|config.json|config.toml|security.yml)" ;;
-                esac
+                [[ $# -ge 2 ]] || die "-config requires an argument (all|config.json|config.toml|security.yml or comma-separated)"
+                IFS=',' read -ra _targets <<< "$2"
+                for _t in "${_targets[@]}"; do
+                    case "$_t" in
+                        all)           SYNC_CONFIG_JSON=yes; SYNC_CONFIG_TOML=yes; SYNC_SECURITY_YML=yes ;;
+                        config.json)   SYNC_CONFIG_JSON=yes ;;
+                        config.toml)   SYNC_CONFIG_TOML=yes ;;
+                        security.yml)  SYNC_SECURITY_YML=yes ;;
+                        *) die "Unknown -config target: '$_t' (use all|config.json|config.toml|security.yml)" ;;
+                    esac
+                done
                 shift 2
                 ;;
             *) die "Unknown argument: $1" ;;

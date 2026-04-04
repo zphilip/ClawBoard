@@ -2715,7 +2715,18 @@ def index(request: Request):
             ui.label(
                 'Run the ClawBerry workspace-sync upgrade script. '
                 'Output is streamed below in real time.'
-            ).classes('text-caption text-grey-6 q-mb-md')
+            ).classes('text-caption text-grey-6 q-mb-sm')
+
+            # ── Config-file sync options ──────────────────────────────────
+            ui.label('Also sync config files from repo (leave unchecked to keep local versions):') \
+                .classes('text-caption text-grey-7 q-mb-xs')
+            with ui.row().classes('gap-4 q-mb-sm'):
+                upg_chk_pc_cfg = ui.checkbox(
+                    'PicoClaw config  (config.json)', value=False)
+                upg_chk_pc_sec = ui.checkbox(
+                    'PicoClaw secrets  (.security.yml)', value=False)
+                upg_chk_zc_cfg = ui.checkbox(
+                    'ZeroClaw config  (config.toml)', value=False)
 
             upg_status_lbl = ui.label('').classes('text-caption text-grey-7 q-mb-sm')
             upg_log_area   = ui.textarea().classes('w-full font-mono').props('outlined rows=16 readonly label="Output"')
@@ -2724,16 +2735,33 @@ def index(request: Request):
             _upg_proc = {'proc': None}
 
             def _start_upgrade():
+                # Build a single -config flag with comma-separated targets
+                _cmd = ['sudo', 'bash', '/usr/local/bin/clawberry-workspace-sync.sh']
+                _checked = [
+                    upg_chk_pc_cfg.value,
+                    upg_chk_pc_sec.value,
+                    upg_chk_zc_cfg.value,
+                ]
+                if all(_checked):
+                    _cmd += ['-config', 'all']
+                elif any(_checked):
+                    _targets = []
+                    if upg_chk_pc_cfg.value: _targets.append('config.json')
+                    if upg_chk_pc_sec.value: _targets.append('security.yml')
+                    if upg_chk_zc_cfg.value: _targets.append('config.toml')
+                    _cmd += ['-config', ','.join(_targets)]
+
                 upg_log_area.set_visibility(True)
                 upg_log_area.set_value('')
-                upg_status_lbl.set_text('⏳ Running upgrade script…')
+                _flags = ' '.join(_cmd[4:]) or '(no config files)'
+                upg_status_lbl.set_text(f'⏳ Running upgrade script… flags: {_flags}')
                 btn_upg_run.props('disabled loading')
                 import threading, subprocess as _sp
 
-                def _run_upg():
+                def _run_upg(_cmd=_cmd):
                     try:
                         proc = _sp.Popen(
-                            ['sudo', 'bash', '/usr/local/bin/clawberry-workspace-sync.sh'],
+                            _cmd,
                             stdout=_sp.PIPE, stderr=_sp.STDOUT, text=True,
                             bufsize=1,
                         )
