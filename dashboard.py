@@ -480,12 +480,23 @@ def deploy_config():
         shutil.copy2(CONFIG_PATH, bak)
     except Exception as e:
         return False, f'Backup failed: {e}'
-    # Step 2: read local config content
+    # Step 2: load local config, then preserve paired_tokens from the live deploy
+    # path. zeroclaw encrypts paired_tokens with its own runtime key; overwriting
+    # them with a stale local copy causes "Decryption failed" on next startup.
     try:
         with open(CONFIG_PATH, 'r') as f:
-            content = f.read()
+            conf_to_deploy = tomlkit.load(f)
     except Exception as e:
         return False, f'Read failed: {e}'
+    try:
+        with open(DEPLOY_CONFIG_PATH, 'r') as lf:
+            _live = tomlkit.load(lf)
+        _live_tokens = _live.get('gateway', {}).get('paired_tokens')
+        if _live_tokens is not None:
+            conf_to_deploy.setdefault('gateway', {})['paired_tokens'] = _live_tokens
+    except Exception:
+        pass  # live file may not exist yet; proceed without
+    content = tomlkit.dumps(conf_to_deploy)
     # Step 3: ensure target directory exists (best-effort, may already exist)
     subprocess.run(
         ['sudo', '/usr/bin/mkdir', '-p', os.path.dirname(DEPLOY_CONFIG_PATH)],
@@ -1191,13 +1202,22 @@ def index(request: Request):
                                 conf.setdefault('channels_config', {})[ch_key] = ch_entry
                             try:
                                 save_config(conf)
-                                ui.notify('✅ Wizard applied — restart ZeroClaw to activate', type='positive')
                             except Exception as _e:
                                 ui.notify(f'❌ Save failed: {_e}', type='negative')
+                                return
+                            ok_deploy, deploy_err = deploy_config()
+                            if not ok_deploy:
+                                ui.notify(f'⚠️ Saved locally but deploy failed: {deploy_err}', type='warning')
+                                return
+                            ok_svc, svc_err = restart_service()
+                            if ok_svc:
+                                ui.notify('✅ Wizard applied, deployed & ZeroClaw restarted', type='positive')
+                            else:
+                                ui.notify(f'⚠️ Deployed but restart failed: {svc_err or T["notify_sudo_required"]}', type='warning')
 
                         with ui.stepper_navigation():
                             ui.button('← Back', on_click=_wiz.previous).props('flat color=grey-7')
-                            ui.button('✅ Apply & Save', on_click=_wiz_apply).props('color=green-8')
+                            ui.button('✅ Apply, Deploy & Restart', on_click=_wiz_apply).props('color=green-8')
 
             # ── ZeroClaw › Configuration ───────────────────────────────────
             with ui.tab_panel(t_zc_cfg):
