@@ -1159,8 +1159,35 @@ def index(request: Request):
                                 f'base_url:      {wiz_prov_base.value or "(provider default)"}',
                                 f'default_model: {wiz_def_model.value or "(unchanged)"}',
                                 f'Channel:       {ch_label}',
+                                f'Web Search:    {"on" if wiz_tool_web_search.value else "off"}',
+                                f'Web Fetch:     {"on" if wiz_tool_web_fetch.value else "off"}',
+                                f'HTTP Request:  {"on" if wiz_tool_http_req.value else "off"}',
+                                f'Browser:       {"on" if wiz_tool_browser.value else "off"}',
+                                f'workspace_only:                  {wiz_sec_workspace_only.value}',
+                                f'req_approval_medium_risk:        {wiz_sec_req_approval.value}',
+                                f'block_high_risk_commands:        {wiz_sec_block_high.value}',
                             ]
                             wiz_summary.set_text('\n'.join(lines))
+
+                        with ui.stepper_navigation():
+                            ui.button('← Back', on_click=_wiz.previous).props('flat color=grey-7')
+                            ui.button('Next →', on_click=_wiz.next).props('color=blue-8')
+
+                    # ── Step 3: Tools & Security ─────────────────────────────
+                    with ui.step('wiz_tools_sec', title='3  Tools & Security', icon='security'):
+                        ui.label('Enable tools and configure security permissions.').classes('text-caption text-grey-6 q-mb-sm')
+
+                        ui.label('🔧 Tools').classes('text-subtitle2 text-blue-8 q-mb-xs')
+                        wiz_tool_web_search = ui.checkbox('Web Search', value=True)
+                        wiz_tool_web_fetch  = ui.checkbox('Web Fetch', value=True)
+                        wiz_tool_http_req   = ui.checkbox('HTTP Request', value=False)
+                        wiz_tool_browser    = ui.checkbox('Browser', value=False)
+
+                        ui.separator().classes('q-my-sm')
+                        ui.label('🔒 Security').classes('text-subtitle2 text-blue-8 q-mb-xs')
+                        wiz_sec_workspace_only = ui.checkbox('workspace_only  — restrict agent to workspace directory', value=True)
+                        wiz_sec_req_approval   = ui.checkbox('require_approval_for_medium_risk', value=True)
+                        wiz_sec_block_high     = ui.checkbox('block_high_risk_commands', value=True)
 
                         with ui.stepper_navigation():
                             ui.button('← Back', on_click=_wiz.previous).props('flat color=grey-7')
@@ -1168,8 +1195,8 @@ def index(request: Request):
                                 on_click=lambda: (_wiz_refresh_summary(), _wiz.next())
                             ).props('color=blue-8')
 
-                    # ── Step 3: Apply ───────────────────────────────────────
-                    with ui.step('wiz_apply', title='3  Apply', icon='check_circle'):
+                    # ── Step 4: Apply ───────────────────────────────────────
+                    with ui.step('wiz_apply', title='4  Apply', icon='check_circle'):
                         ui.label(
                             'Review the summary below, then click Apply & Save.'
                         ).classes('text-caption text-grey-6 q-mb-sm')
@@ -1203,6 +1230,15 @@ def index(request: Request):
                                     elif ftype == 'int':    ch_entry[fkey] = to_int(w.value)
                                     else:                   ch_entry[fkey] = w.value
                                 conf.setdefault('channels_config', {})[ch_key] = ch_entry
+                            # ── tools
+                            conf.setdefault('web_search', {})['enabled'] = wiz_tool_web_search.value
+                            conf.setdefault('web_fetch', {})['enabled'] = wiz_tool_web_fetch.value
+                            conf.setdefault('http_request', {})['enabled'] = wiz_tool_http_req.value
+                            conf.setdefault('browser', {})['enabled'] = wiz_tool_browser.value
+                            # ── security (autonomy)
+                            conf.setdefault('autonomy', {})['workspace_only'] = wiz_sec_workspace_only.value
+                            conf.setdefault('autonomy', {})['require_approval_for_medium_risk'] = wiz_sec_req_approval.value
+                            conf.setdefault('autonomy', {})['block_high_risk_commands'] = wiz_sec_block_high.value
                             try:
                                 save_config(conf)
                             except Exception as _e:
@@ -1821,8 +1857,25 @@ def index(request: Request):
                         with ui.stepper_navigation():
                             ui.button('Next →', on_click=_pc_wiz.next).props('color=purple-8')
 
-                    # ── Step 2: Apply ────────────────────────────────────────
-                    with ui.step('pc_wiz_apply', title='2  Apply', icon='check_circle'):
+                    # ── Step 2: Tools & Security ─────────────────────────────
+                    with ui.step('pc_wiz_tools_sec', title='2  Tools & Security', icon='security'):
+                        ui.label('Enable tools and set workspace security.').classes('text-caption text-grey-6 q-mb-sm')
+
+                        ui.label('🔧 Tools').classes('text-subtitle2 text-purple-8 q-mb-xs')
+                        pc_wiz_tool_web_search = ui.checkbox('Web Search', value=True)
+                        pc_wiz_tool_exec       = ui.checkbox('exec  (shell command execution)', value=True)
+
+                        ui.separator().classes('q-my-sm')
+                        ui.label('🔒 Security').classes('text-subtitle2 text-purple-8 q-mb-xs')
+                        pc_wiz_sec_restrict   = ui.checkbox('restrict_to_workspace', value=True)
+                        pc_wiz_sec_allow_read = ui.checkbox('allow_read_outside_workspace', value=False)
+
+                        with ui.stepper_navigation():
+                            ui.button('← Back', on_click=_pc_wiz.previous).props('flat color=grey-7')
+                            ui.button('Next →', on_click=_pc_wiz.next).props('color=purple-8')
+
+                    # ── Step 3: Apply ────────────────────────────────────────
+                    with ui.step('pc_wiz_apply', title='3  Apply', icon='check_circle'):
                         ui.label('Review and apply the provider settings.').classes('text-caption text-grey-6 q-mb-sm')
 
                         def _pc_wiz_summary():
@@ -1830,7 +1883,11 @@ def index(request: Request):
                                 f'provider: {pc_wiz_prov.value}\n'
                                 f'model_name: {pc_wiz_model_name.value or "(unchanged)"}\n'
                                 f'model: {pc_wiz_model.value or "(unchanged)"}\n'
-                                f'api_base: {pc_wiz_api_base.value or "(provider default)"}'
+                                f'api_base: {pc_wiz_api_base.value or "(provider default)"}\n'
+                                f'Web Search:                  {"on" if pc_wiz_tool_web_search.value else "off"}\n'
+                                f'exec:                        {"on" if pc_wiz_tool_exec.value else "off"}\n'
+                                f'restrict_to_workspace:        {pc_wiz_sec_restrict.value}\n'
+                                f'allow_read_outside_workspace: {pc_wiz_sec_allow_read.value}'
                             )
                         pc_wiz_summary_lbl = ui.label('').classes('text-caption text-grey-7 q-mb-sm')
 
@@ -1845,6 +1902,12 @@ def index(request: Request):
                             if pc_wiz_prov.value:       ad['provider']    = pc_wiz_prov.value
                             if pc_wiz_model_name.value: ad['model_name']  = pc_wiz_model_name.value
                             if pc_wiz_model.value:      ad['model']       = pc_wiz_model.value
+                            # security
+                            ad['restrict_to_workspace']        = pc_wiz_sec_restrict.value
+                            ad['allow_read_outside_workspace'] = pc_wiz_sec_allow_read.value
+                            # tools
+                            data.setdefault('tools', {}).setdefault('web', {})['enabled']  = pc_wiz_tool_web_search.value
+                            data.setdefault('tools', {}).setdefault('exec', {})['enabled'] = pc_wiz_tool_exec.value
                             # Inject model into model_list if not already present
                             mname = pc_wiz_model_name.value
                             if mname:
