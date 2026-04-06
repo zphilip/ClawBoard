@@ -1,6 +1,6 @@
 from nicegui import ui, app
 from fastapi import Request
-import tomlkit, os, sys, subprocess, hashlib, hmac, secrets, json, time as _time
+import tomlkit, os, sys, subprocess, hashlib, hmac, secrets, json, re, time as _time
 from datetime import datetime
 from urllib.parse import quote
 import locales.zh as zh_strings
@@ -1795,9 +1795,36 @@ def index(request: Request):
             with ui.tab_panel(t_pc_wiz):
                 ui.label('🧙 Quick Setup Wizard').classes('text-h6 text-purple-8 q-mb-xs')
                 ui.label(
-                    'Configure an AI provider in 2 steps. '
+                    'Configure provider, tools and security in 3 steps. '
                     'Click Apply — then restart PicoClaw to activate.'
                 ).classes('text-caption text-grey-6 q-mb-md')
+
+                # ── Pre-load current config values to populate wizard ─────
+                _pc_wiz_cur_conf  = load_picoclaw_config()
+                _pc_wiz_cur_ad    = _pc_wiz_cur_conf.get('agents', {}).get('defaults', {})
+                _pc_wiz_cur_ml    = _pc_wiz_cur_conf.get('model_list', [])
+                _pc_wiz_cur_sec   = load_picoclaw_security()
+                _pc_wiz_init_prov  = _pc_wiz_cur_ad.get('provider', _pc_ph_provs[0] if _pc_ph_provs else '')
+                _pc_wiz_init_mname = _pc_wiz_cur_ad.get('model_name', None)
+                _pc_wiz_init_model = _pc_wiz_cur_ad.get('model', '')
+                _pc_wiz_cur_mle    = next(
+                    (e for e in _pc_wiz_cur_ml if e.get('model_name') == _pc_wiz_init_mname), {})
+                _pc_wiz_init_api_base = (
+                    _pc_wiz_cur_mle.get('api_base', '') or
+                    _pc_ph_pid_base.get(_pc_wiz_init_prov, ''))
+                _pc_wiz_init_auth  = _pc_wiz_cur_mle.get('auth_method', 'apikey')
+                _pc_wiz_sec_ml     = _pc_wiz_cur_sec.get('model_list', {})
+                _pc_wiz_init_keys  = (
+                    _pc_wiz_sec_ml.get(_pc_wiz_init_mname or '', {}).get('api_keys') or
+                    _pc_wiz_sec_ml.get(f'{_pc_wiz_init_mname}:0', {}).get('api_keys') or [])
+                _pc_wiz_init_api_key = _pc_wiz_init_keys[0] if _pc_wiz_init_keys else ''
+                # Ensure current provider/model_name appear in option lists
+                _pc_wiz_prov_opts  = list(_pc_ph_provs)
+                if _pc_wiz_init_prov and _pc_wiz_init_prov not in _pc_wiz_prov_opts:
+                    _pc_wiz_prov_opts = [_pc_wiz_init_prov] + _pc_wiz_prov_opts
+                _pc_wiz_mname_opts = list(_pc_ph_map.keys())
+                if _pc_wiz_init_mname and _pc_wiz_init_mname not in _pc_wiz_mname_opts:
+                    _pc_wiz_mname_opts = [_pc_wiz_init_mname] + _pc_wiz_mname_opts
 
                 with ui.stepper(value='pc_wiz_prov').props('vertical animated').classes('w-full') as _pc_wiz:
 
@@ -1815,27 +1842,34 @@ def index(request: Request):
                         ).classes('w-full q-mb-xs')
                         ui.separator().classes('q-my-xs')
 
-                        pc_wiz_prov      = ui.select(_pc_ph_provs or [''], label='provider',
-                            value=_pc_ph_provs[0] if _pc_ph_provs else '').classes('w-full q-mb-sm')
+                        pc_wiz_prov      = ui.select(_pc_wiz_prov_opts or [''], label='provider',
+                            value=_pc_wiz_init_prov).classes('w-full q-mb-sm')
                         pc_wiz_model_name= ui.select(
-                            options=list(_pc_ph_map.keys()),
+                            options=_pc_wiz_mname_opts,
                             label='model_name',
-                            value=None,
+                            value=_pc_wiz_init_mname,
                             with_input=True,
                             new_value_mode='add-unique',
                         ).classes('w-full q-mb-sm')
-                        pc_wiz_model     = ui.input('model  (actual model id sent to provider)', value='').classes('w-full q-mb-sm')
-                        pc_wiz_api_base  = ui.input('api_base', value='').classes('w-full q-mb-sm')
-                        pc_wiz_api_key   = ui.input('api_key', password=True, password_toggle_button=True).classes('w-full')
+                        pc_wiz_model     = ui.input('model  (actual model id sent to provider)', value=_pc_wiz_init_model).classes('w-full q-mb-sm')
+                        pc_wiz_api_base  = ui.input('api_base', value=_pc_wiz_init_api_base).classes('w-full q-mb-sm')
+                        _pc_wiz_auth_opts  = ['apikey', 'oauth']
+                        pc_wiz_auth_method = ui.select(_pc_wiz_auth_opts, label='auth_method',
+                            value=_pc_wiz_init_auth if _pc_wiz_init_auth in _pc_wiz_auth_opts else 'apikey',
+                        ).classes('w-full q-mb-sm')
+                        pc_wiz_api_key   = ui.input('api_key', value=_pc_wiz_init_api_key,
+                            password=True, password_toggle_button=True).classes('w-full')
 
                         def _pc_wiz_fill_hint(e):
                             h = _pc_ph_map.get(e.value) if e.value else None
                             if not h: return
                             prov = h.get('provider', '')
-                            if prov in _pc_ph_provs: pc_wiz_prov.set_value(prov)
+                            if prov in _pc_wiz_prov_opts: pc_wiz_prov.set_value(prov)
                             pc_wiz_model_name.set_value(h.get('model_name', ''))
                             pc_wiz_model.set_value(h.get('model', ''))
                             pc_wiz_api_base.set_value(h.get('api_base', ''))
+                            _am = h.get('auth_method', 'apikey')
+                            pc_wiz_auth_method.set_value(_am if _am in _pc_wiz_auth_opts else 'apikey')
                         pc_wiz_quick.on_value_change(_pc_wiz_fill_hint)
 
                         def _pc_wiz_fill_prov(e):
@@ -1883,6 +1917,7 @@ def index(request: Request):
                         def _pc_wiz_summary():
                             return (
                                 f'provider: {pc_wiz_prov.value}\n'
+                                f'auth_method: {pc_wiz_auth_method.value}\n'
                                 f'model_name: {pc_wiz_model_name.value or "(unchanged)"}\n'
                                 f'model: {pc_wiz_model.value or "(unchanged)"}\n'
                                 f'api_base: {pc_wiz_api_base.value or "(provider default)"}\n'
@@ -1900,6 +1935,15 @@ def index(request: Request):
                         def _pc_wiz_apply():
                             data = load_picoclaw_config()
                             sec  = load_picoclaw_security()
+                            # Normalize :N-suffixed stale keys (e.g. "MiniMax-M2.5:0" → "MiniMax-M2.5")
+                            _sec_ml_raw = sec.get('model_list', {})
+                            _sec_ml_norm: dict = {}
+                            for _k, _v in _sec_ml_raw.items():
+                                _ck = _k.rsplit(':', 1)[0] if _k.rsplit(':', 1)[-1].isdigit() else _k
+                                if _ck not in _sec_ml_norm or (
+                                        _v.get('api_keys') and not _sec_ml_norm[_ck].get('api_keys')):
+                                    _sec_ml_norm[_ck] = _v
+                            sec['model_list'] = _sec_ml_norm
                             ad = data.setdefault('agents', {}).setdefault('defaults', {})
                             if pc_wiz_prov.value:       ad['provider']    = pc_wiz_prov.value
                             if pc_wiz_model_name.value: ad['model_name']  = pc_wiz_model_name.value
@@ -1917,10 +1961,12 @@ def index(request: Request):
                                 existing = [e for e in ml if e.get('model_name') == mname]
                                 if not existing:
                                     entry = {'model_name': mname, 'model': pc_wiz_model.value,
-                                             'api_base': pc_wiz_api_base.value}
+                                             'api_base': pc_wiz_api_base.value,
+                                             'auth_method': pc_wiz_auth_method.value}
                                     ml.append(entry)
                                 else:
                                     existing[0]['api_base'] = pc_wiz_api_base.value
+                                    existing[0]['auth_method'] = pc_wiz_auth_method.value
                                 if pc_wiz_api_key.value:
                                     sec.setdefault('model_list', {}).setdefault(mname, {})['api_keys'] = [pc_wiz_api_key.value]
                             try:
@@ -2077,7 +2123,13 @@ def index(request: Request):
                     # Rebuild sec['model_list'] from scratch so stale names (e.g. MiniMax-M2.5:0)
                     # that are no longer in the UI are pruned. Existing keys in the file are
                     # preserved when the widget textarea is empty (user didn't change them).
-                    _old_sec_ml = dict(sec.get('model_list', {}))
+                    # Normalize :N-suffixed stale keys before lookup
+                    _old_sec_ml: dict = {}
+                    for _k, _v in sec.get('model_list', {}).items():
+                        _ck = _k.rsplit(':', 1)[0] if _k.rsplit(':', 1)[-1].isdigit() else _k
+                        if _ck not in _old_sec_ml or (
+                                _v.get('api_keys') and not _old_sec_ml[_ck].get('api_keys')):
+                            _old_sec_ml[_ck] = _v
                     _new_sec_ml: dict = {}
                     data['model_list'] = []
                     _seen_mnames: set = set()

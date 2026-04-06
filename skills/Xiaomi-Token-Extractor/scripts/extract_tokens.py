@@ -1,0 +1,512 @@
+#!/usr/bin/env python3
+"""
+extract_tokens.py — Agent-friendly Xiaomi Cloud token extractor.
+
+Authenticates via QR code (no password input required), fetches all device
+tokens from Xiaomi Cloud, and saves results to:
+  references/devices.json   — full structured data
+  references/devices.md     — Markdown table (compatible with xiaomi-home)
+
+Machine-readable stdout lines (for the agent to parse):
+  QR_SERVER=http://<ip>:<port>         — local URL serving the QR image
+  QR_URL=https://account.xiaomi.com/…  — direct Mi Account login URL
+  STATUS=waiting_for_scan               — QR presented, waiting
+  STATUS=login_success                  — user scanned successfully
+  STATUS=login_timeout                  — no scan within --timeout seconds
+  STATUS=login_failed                   — auth error
+  DEVICE=<json>                         — one device object (see schema below)
+  DEVICES_SAVED=<path>                  — JSON file written
+  DONE count=<n> json=<path> md=<path> — all finished
+
+Device JSON schema:
+  {"server":"cn","home_id":"…","name":"…","did":"…","ip":"…","token":"…",
+   "mac":"…","model":"…","ble_key":null}
+
+Usage:
+  python3 extract_tokens.py [--server SERVER] [--filter TEXT]
+                            [--host IP] [--port PORT] [--timeout SECS]
+                            [--output-dir DIR]
+"""
+from __future__ import annotations
+
+import argparse
+import base64
+import hashlib
+import hmac
+import json
+import os
+import random
+import socket
+import sys
+import threading
+import time
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
+
+import requests
+
+try:
+    from Crypto.Cipher import ARC4
+except ModuleNotFoundError:
+    try:
+        from Cryptodome.Cipher import ARC4
+    except ModuleNotFoundError:
+        print("ERROR: pycryptodome not installed. Run: pip3 install pycryptodome", flush=True)
+        sys.exit(1)
+
+# ── Globals ────────────────────────────────────────────────────────────────────
+SERVERS = ["cn", "de", "us", "ru", "tw", "sg", "in", "i2"]
+
+# ── Argument parsing ───────────────────────────────────────────────────────────
+_ap = argparse.ArgumentParser(
+    description="Extract Xiaomi device tokens via QR-code cloud login."
+)
+_ap.add_argument("--server",     "-s", default=None,  choices=SERVERS,
+                 help="Cloud server (default: scan all)")
+_ap.add_argument("--filter",     "-f", default=None,
+                 help="Only include devices whose name contains this string (case-insensitive)")
+_ap.add_argument("--host",              default=None,
+                 help="Override host IP/hostname for QR server URL (auto-detected by default)")
+_ap.add_argument("--port",       "-p", default=31415, type=int,
+                 help="Port for QR image HTTP server (default: 31415)")
+_ap.add_argument("--timeout",    "-t", default=120,   type=int,
+                 help="Seconds to wait for QR scan (default: 120)")
+_ap.add_argument("--output-dir", "-o", default=None,
+                 help="Directory for devices.json and devices.md "
+                      "(default: ../references/ relative to this script)")
+ARGS = _ap.parse_args()
+
+# Output directory: default is ../references/ relative to this script
+if ARGS.output_dir:
+    OUTPUT_DIR = Path(ARGS.output_dir)
+else:
+    OUTPUT_DIR = Path(__file__).parent.parent / "references"
+OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+# ── Helpers ────────────────────────────────────────────────────────────────────
+
+def _emit(line: str) -> None:
+    """Write a machine-readable status line to stdout immediately."""
+    print(line, flush=True)
+
+
+def _get_local_ip() -> str:
+    """Best-effort detection of the outbound local IP address."""
+    if ARGS.host:
+        return ARGS.host
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        return "127.0.0.1"
+
+
+# ── QR image HTTP server ───────────────────────────────────────────────────────
+
+_qr_image_data: bytes = b""
+
+
+class _QrHandler(BaseHTTPRequestHandler):
+    def do_GET(self) -> None:  # noqa: N802
+        self.send_response(200)
+        self.send_header("Content-Type", "image/png")
+        self.end_headers()
+        self.wfile.write(_qr_image_data)
+
+    def log_message(self, fmt, *args) -> None:  # suppress access log
+        pass
+
+
+def _start_qr_server() -> None:
+    httpd = HTTPServer(("", ARGS.port), _QrHandler)
+    t = threading.Thread(target=httpd.serve_forever, daemon=True)
+    t.start()
+
+
+# ── Xiaomi Cloud connector ─────────────────────────────────────────────────────
+
+class XiaomiCloudConnector:
+    """Crypto + API layer, shared between all login methods."""
+
+    def __init__(self) -> None:
+        self._agent      = self._generate_agent()
+        self._device_id  = self._generate_device_id()
+        self._session    = requests.Session()
+        self._ssecurity: str | None  = None
+        self.userId:     str | None  = None
+        self._serviceToken: str | None = None
+
+    # ── API calls ─────────────────────────────────────────────────────────────
+
+    def get_homes(self, country: str) -> dict | None:
+        url = self._api_url(country) + "/v2/homeroom/gethome"
+        params = {"data": '{"fg":true,"fetch_share":true,"fetch_share_dev":true,"limit":300,"app_ver":7}'}
+        return self._api_call(url, params)
+
+    def get_devices(self, country: str, home_id, owner_id) -> dict | None:
+        url = self._api_url(country) + "/v2/home/home_device_list"
+        params = {
+            "data": (
+                f'{{"home_owner":{owner_id},"home_id":{home_id},'
+                '"limit":200,"get_split_device":true,"support_smart_home":true}'
+            )
+        }
+        return self._api_call(url, params)
+
+    def get_dev_cnt(self, country: str) -> dict | None:
+        url = self._api_url(country) + "/v2/user/get_device_cnt"
+        params = {"data": '{"fetch_own":true,"fetch_share":true}'}
+        return self._api_call(url, params)
+
+    def get_beaconkey(self, country: str, did: str) -> dict | None:
+        url = self._api_url(country) + "/v2/device/blt_get_beaconkey"
+        params = {"data": f'{{"did":"{did}","pdid":1}}'}
+        return self._api_call(url, params)
+
+    def _api_call(self, url: str, params: dict) -> dict | None:
+        headers = {
+            "Accept-Encoding": "identity",
+            "User-Agent": self._agent,
+            "Content-Type": "application/x-www-form-urlencoded",
+            "x-xiaomi-protocal-flag-cli": "PROTOCAL-HTTP2",
+            "MIOT-ENCRYPT-ALGORITHM": "ENCRYPT-RC4",
+        }
+        cookies = {
+            "userId": str(self.userId),
+            "yetAnotherServiceToken": str(self._serviceToken),
+            "serviceToken": str(self._serviceToken),
+            "locale": "en_GB",
+            "timezone": "GMT+02:00",
+            "is_daylight": "1",
+            "dst_offset": "3600000",
+            "channel": "MI_APP_STORE",
+        }
+        millis      = round(time.time() * 1000)
+        nonce       = self._nonce(millis)
+        signed      = self._signed_nonce(nonce)
+        fields      = self._enc_params(url, "POST", signed, nonce, params, self._ssecurity)
+        response    = self._session.post(url, headers=headers, cookies=cookies, params=fields)
+        if response.status_code == 200:
+            decoded = self._decrypt_rc4(self._signed_nonce(fields["_nonce"]), response.text)
+            return json.loads(decoded)
+        return None
+
+    # ── Crypto helpers ─────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _api_url(country: str) -> str:
+        prefix = "" if country == "cn" else (country + ".")
+        return f"https://{prefix}api.io.mi.com/app"
+
+    def _signed_nonce(self, nonce: str) -> str:
+        h = hashlib.sha256(base64.b64decode(self._ssecurity) + base64.b64decode(nonce))
+        return base64.b64encode(h.digest()).decode()
+
+    @staticmethod
+    def _nonce(millis: int) -> str:
+        return base64.b64encode(os.urandom(8) + (millis // 60000).to_bytes(4, "big")).decode()
+
+    @staticmethod
+    def _enc_signature(url: str, method: str, signed_nonce: str, params: dict) -> str:
+        parts = [method.upper(), url.split("com")[1].replace("/app/", "/")]
+        parts += [f"{k}={v}" for k, v in params.items()]
+        parts.append(signed_nonce)
+        return base64.b64encode(hashlib.sha1("&".join(parts).encode()).digest()).decode()
+
+    @classmethod
+    def _enc_params(cls, url, method, signed_nonce, nonce, params, ssecurity) -> dict:
+        params["rc4_hash__"] = cls._enc_signature(url, method, signed_nonce, params)
+        for k, v in params.items():
+            params[k] = cls._encrypt_rc4(signed_nonce, v)
+        params.update({
+            "signature": cls._enc_signature(url, method, signed_nonce, params),
+            "ssecurity": ssecurity,
+            "_nonce": nonce,
+        })
+        return params
+
+    @staticmethod
+    def _encrypt_rc4(password: str, payload: str) -> str:
+        r = ARC4.new(base64.b64decode(password))
+        r.encrypt(bytes(1024))
+        return base64.b64encode(r.encrypt(payload.encode())).decode()
+
+    @staticmethod
+    def _decrypt_rc4(password: str, payload: str) -> bytes:
+        r = ARC4.new(base64.b64decode(password))
+        r.encrypt(bytes(1024))
+        return r.encrypt(base64.b64decode(payload))
+
+    @staticmethod
+    def _to_json(text: str) -> dict:
+        return json.loads(text.replace("&&&START&&&", ""))
+
+    @staticmethod
+    def _generate_agent() -> str:
+        aid  = "".join(chr(random.randint(65, 69)) for _ in range(13))
+        rand = "".join(chr(random.randint(97, 122)) for _ in range(18))
+        return f"{rand}-{aid} APP/com.xiaomi.mihome APPV/10.5.201"
+
+    @staticmethod
+    def _generate_device_id() -> str:
+        return "".join(chr(random.randint(97, 122)) for _ in range(6))
+
+
+# ── QR login connector ─────────────────────────────────────────────────────────
+
+class QrLoginConnector(XiaomiCloudConnector):
+    """QR-code based login — no password input required."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._cUserId:     str | None = None
+        self._pass_token:  str | None = None
+        self._location:    str | None = None
+        self._qr_image_url: str | None = None
+        self._login_url:   str | None = None
+        self._long_poll_url: str | None = None
+        self._timeout:     int = ARGS.timeout
+
+    def login(self) -> bool:
+        if not self._step1_get_urls():
+            _emit("STATUS=login_failed reason=cannot_get_qr_url")
+            return False
+        if not self._step2_serve_qr():
+            _emit("STATUS=login_failed reason=cannot_download_qr_image")
+            return False
+        if not self._step3_long_poll():
+            return False  # STATUS already emitted inside
+        if not self._step4_service_token():
+            _emit("STATUS=login_failed reason=cannot_get_service_token")
+            return False
+        _emit("STATUS=login_success")
+        return True
+
+    def _step1_get_urls(self) -> bool:
+        """Get QR image URL, login URL, and long-polling URL from Xiaomi."""
+        url  = "https://account.xiaomi.com/longPolling/loginUrl"
+        data = {
+            "_qrsize": "480",
+            "qs": "%3Fsid%3Dxiaomiio%26_json%3Dtrue",
+            "callback": "https://sts.api.io.mi.com/sts",
+            "_hasLogo": "false",
+            "sid": "xiaomiio",
+            "serviceParam": "",
+            "_locale": "en_GB",
+            "_dc": str(int(time.time() * 1000)),
+        }
+        try:
+            resp = self._session.get(url, params=data, timeout=15)
+        except Exception as exc:
+            _emit(f"STATUS=login_failed reason=network_error detail={exc}")
+            return False
+        if resp.status_code != 200:
+            return False
+        rd = self._to_json(resp.text)
+        if "qr" not in rd:
+            return False
+        self._qr_image_url  = rd["qr"]
+        self._login_url     = rd["loginUrl"]
+        self._long_poll_url = rd["lp"]
+        self._timeout       = rd.get("timeout", ARGS.timeout)
+        return True
+
+    def _step2_serve_qr(self) -> bool:
+        """Download QR image, start HTTP server, emit URLs."""
+        global _qr_image_data
+        try:
+            resp = self._session.get(self._qr_image_url, timeout=15)
+        except Exception:
+            return False
+        if resp.status_code != 200 or not resp.content:
+            return False
+        _qr_image_data = resp.content
+        local_ip = _get_local_ip()
+        _start_qr_server()
+        _emit(f"QR_SERVER=http://{local_ip}:{ARGS.port}")
+        _emit(f"QR_URL={self._login_url}")
+        _emit("STATUS=waiting_for_scan")
+        return True
+
+    def _step3_long_poll(self) -> bool:
+        """Long-poll until user scans or timeout."""
+        url        = self._long_poll_url
+        start      = time.time()
+        last_retry = 0.0
+        while True:
+            try:
+                resp = self._session.get(url, timeout=15)
+            except requests.exceptions.Timeout:
+                if time.time() - start > self._timeout:
+                    _emit("STATUS=login_timeout")
+                    return False
+                continue
+            except Exception as exc:
+                _emit(f"STATUS=login_failed reason=poll_error detail={exc}")
+                return False
+
+            if resp.status_code == 200:
+                break
+            if time.time() - start > self._timeout:
+                _emit("STATUS=login_timeout")
+                return False
+            # back off briefly before retry
+            time.sleep(2)
+
+        rd = self._to_json(resp.text)
+        self.userId          = rd.get("userId")
+        self._ssecurity      = rd.get("ssecurity")
+        self._cUserId        = rd.get("cUserId")
+        self._pass_token     = rd.get("passToken")
+        self._location       = rd.get("location")
+        return bool(self._ssecurity)
+
+    def _step4_service_token(self) -> bool:
+        """Exchange location URL for service token."""
+        if not self._location:
+            return False
+        try:
+            resp = self._session.get(
+                self._location,
+                headers={"content-type": "application/x-www-form-urlencoded"},
+                timeout=15,
+            )
+        except Exception:
+            return False
+        if resp.status_code != 200:
+            return False
+        self._serviceToken = resp.cookies.get("serviceToken")
+        # Mirror to other Mi API domains
+        for domain in [".api.io.mi.com", ".io.mi.com", ".mi.com"]:
+            self._session.cookies.set("serviceToken", self._serviceToken, domain=domain)
+            self._session.cookies.set("yetAnotherServiceToken", self._serviceToken, domain=domain)
+        return bool(self._serviceToken)
+
+
+# ── Device collection ──────────────────────────────────────────────────────────
+
+def collect_devices(connector: XiaomiCloudConnector, servers_to_check: list[str]) -> list[dict]:
+    """Fetch all devices from all homes across the given servers."""
+    all_devices: list[dict] = []
+
+    for server in servers_to_check:
+        homes: list[dict] = []
+
+        # Own homes
+        homes_resp = connector.get_homes(server)
+        if homes_resp and "result" in homes_resp:
+            for h in homes_resp["result"].get("homelist", []):
+                homes.append({"home_id": h["id"], "home_owner": connector.userId})
+
+        # Shared homes
+        cnt_resp = connector.get_dev_cnt(server)
+        if cnt_resp and "result" in cnt_resp:
+            for h in cnt_resp["result"].get("share", {}).get("share_family", []):
+                homes.append({"home_id": h["home_id"], "home_owner": h["home_owner"]})
+
+        for home in homes:
+            dev_resp = connector.get_devices(server, home["home_id"], home["home_owner"])
+            if not dev_resp or "result" not in dev_resp:
+                continue
+            device_info = dev_resp["result"].get("device_info") or []
+            for device in device_info:
+                ble_key = None
+                did = device.get("did", "")
+                if "blt" in did:
+                    bk_resp = connector.get_beaconkey(server, did)
+                    if bk_resp and "result" in bk_resp:
+                        ble_key = bk_resp["result"].get("beaconkey")
+
+                entry = {
+                    "server":   server,
+                    "home_id":  str(home["home_id"]),
+                    "name":     device.get("name", ""),
+                    "did":      did,
+                    "ip":       device.get("localip", ""),
+                    "token":    device.get("token", ""),
+                    "mac":      device.get("mac", ""),
+                    "model":    device.get("model", ""),
+                    "ble_key":  ble_key,
+                }
+                all_devices.append(entry)
+
+    return all_devices
+
+
+# ── Output helpers ─────────────────────────────────────────────────────────────
+
+def _apply_filter(devices: list[dict]) -> list[dict]:
+    if not ARGS.filter:
+        return devices
+    q = ARGS.filter.lower()
+    return [d for d in devices if q in d["name"].lower()]
+
+
+def _save_json(devices: list[dict]) -> Path:
+    path = OUTPUT_DIR / "devices.json"
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(devices, f, ensure_ascii=False, indent=2)
+    return path
+
+
+def _save_markdown(devices: list[dict]) -> Path:
+    path = OUTPUT_DIR / "devices.md"
+    lines = [
+        "# Xiaomi Devices — Token Registry",
+        "",
+        "> Auto-generated by `xiaomi-token-extractor`. Do **not** commit tokens to public repos.",
+        "",
+        f"Last updated: {time.strftime('%Y-%m-%d %H:%M:%S')}",
+        "",
+    ]
+
+    # Group by server
+    by_server: dict[str, list[dict]] = {}
+    for d in devices:
+        by_server.setdefault(d["server"], []).append(d)
+
+    for server, devs in by_server.items():
+        lines += [
+            f"## Server: {server}",
+            "",
+            "| Device Name | IP | Token | Model | BLE Key |",
+            "| :--- | :--- | :--- | :--- | :--- |",
+        ]
+        for d in devs:
+            ble = d["ble_key"] or "-"
+            lines.append(
+                f"| {d['name']} | {d['ip'] or '-'} | {d['token'] or '-'} | {d['model'] or '-'} | {ble} |"
+            )
+        lines.append("")
+
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines))
+    return path
+
+
+# ── Main ───────────────────────────────────────────────────────────────────────
+
+def main() -> None:
+    servers = [ARGS.server] if ARGS.server else SERVERS
+
+    connector = QrLoginConnector()
+    if not connector.login():
+        sys.exit(1)
+
+    all_devices   = collect_devices(connector, servers)
+    shown_devices = _apply_filter(all_devices)
+
+    for d in shown_devices:
+        _emit(f"DEVICE={json.dumps(d, ensure_ascii=False)}")
+
+    json_path = _save_json(all_devices)   # always save full list
+    md_path   = _save_markdown(all_devices)
+    _emit(f"DEVICES_SAVED={json_path}")
+    _emit(f"DONE count={len(shown_devices)} json={json_path} md={md_path}")
+
+
+if __name__ == "__main__":
+    main()
