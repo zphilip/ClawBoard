@@ -1059,7 +1059,7 @@ def index(request: Request):
                         ).classes('w-full q-mb-sm')
                         wiz_prov_alias = ui.input(
                             'Alias  (used as config key, e.g. "openrouter")',
-                            value='default').classes('w-full q-mb-sm')
+                            value='openrouter').classes('w-full q-mb-sm')
                         wiz_prov_key = ui.input(
                             'API Key',
                             password=True, password_toggle_button=True).classes('w-full q-mb-sm')
@@ -1212,7 +1212,9 @@ def index(request: Request):
                                 'name': wiz_prov_id.value,
                                 'requires_openai_auth': False,
                             }
-                            if wiz_prov_key.value:  prov_entry['api_key']  = wiz_prov_key.value
+                            if wiz_prov_key.value:
+                                prov_entry['api_key'] = wiz_prov_key.value
+                                conf['api_key'] = wiz_prov_key.value  # top-level default
                             if wiz_prov_base.value: prov_entry['base_url'] = wiz_prov_base.value
                             conf.setdefault('model_providers', {})[alias] = prov_entry
                             conf['default_provider'] = wiz_prov_id.value
