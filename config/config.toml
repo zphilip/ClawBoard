@@ -57,7 +57,7 @@ forbidden_paths = [
     "~/.aws",
     "~/.config",
 ]
-max_actions_per_hour = 20
+max_actions_per_hour = 200
 max_cost_per_day_cents = 500
 require_approval_for_medium_risk = true
 block_high_risk_commands = true
@@ -207,7 +207,7 @@ max_concurrent = 4
 
 [agent]
 compact_context = true
-max_tool_iterations = 10
+max_tool_iterations = 30
 max_history_messages = 50
 max_context_tokens = 32000
 parallel_tools = false
@@ -471,7 +471,7 @@ include_jira_data = false
 enabled = false
 allowed_services = []
 allowed_operations = []
-rate_limit_per_minute = 60
+rate_limit_per_minute = 20
 timeout_secs = 30
 audit_log = false
 
