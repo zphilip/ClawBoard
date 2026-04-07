@@ -107,6 +107,7 @@ daemon/
 locales/
 lib/
 config/
+wifi-connect/
 dashboard.py
 clawberry_bluetooth.py
 clawberry_display.py
@@ -324,6 +325,21 @@ if [[ -d "$TMPDIR/config" ]]; then
     fi
 fi
 
+
+# ── Deploy wifi-connect helper script ────────────────────────────────────────
+WIFI_LAUNCH_SRC="$TMPDIR/wifi-connect/wifi-connect-gpio-launch.sh"
+WIFI_LAUNCH_DST="/opt/wifi-connect/wifi-connect-gpio-launch.sh"
+if [[ -f "$WIFI_LAUNCH_SRC" ]]; then
+    mkdir -p /opt/wifi-connect
+    if cp "$WIFI_LAUNCH_SRC" "$WIFI_LAUNCH_DST" 2>/dev/null; then
+        chmod 755 "$WIFI_LAUNCH_DST" || true
+        log "  installed wifi-connect-gpio-launch.sh → $WIFI_LAUNCH_DST"
+    else
+        log "WARNING: failed to install wifi-connect-gpio-launch.sh (permission?)"
+    fi
+else
+    log "WARNING: wifi-connect/wifi-connect-gpio-launch.sh not found in repo — skipping"
+fi
 
 # sudoers drop-in
 SUDOERS_SRC="$TMPDIR/daemon/sudoers.d-clawboard"
