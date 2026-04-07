@@ -44,15 +44,34 @@ def is_service_active(name: str) -> bool:
     return result.returncode == 0
 
 
+def kill_all_dnsmasq():
+    """Kill every running dnsmasq process.
+
+    NetworkManager can spawn its own dnsmasq (dns=dnsmasq plugin) that is
+    NOT managed by dnsmasq.service.  That process binds to 0.0.0.0:53 and
+    prevents wifi-connect's dnsmasq from binding to 192.168.42.1:53, which
+    produces the 'Address already in use' error seen in the journal.
+    A short sleep after pkill lets the kernel fully release the sockets
+    before wifi-connect starts.
+    """
+    subprocess.run(["pkill", "-x", "dnsmasq"], capture_output=True)
+    time.sleep(0.5)
+
+
 def main():
     wait_for_long_press()
 
-    # Stop dnsmasq if running so wifi-connect can bind port 53 / 192.168.42.1
+    # Stop dnsmasq.service if it is running
     dnsmasq_was_active = is_service_active("dnsmasq")
     if dnsmasq_was_active:
-        print("Stopping dnsmasq before wifi-connect...")
+        print("Stopping dnsmasq.service before wifi-connect...")
         subprocess.run(["sudo", "/usr/bin/systemctl", "stop", "dnsmasq"],
                        capture_output=True)
+
+    # Kill any remaining dnsmasq processes (e.g. NetworkManager's internal
+    # dnsmasq plugin) that would prevent wifi-connect from binding 192.168.42.1:53
+    print("Killing residual dnsmasq processes...")
+    kill_all_dnsmasq()
 
     try:
         subprocess.run(WIFI_CONNECT_CMD)
