@@ -2,7 +2,6 @@
 import RPi.GPIO as GPIO
 import time
 import subprocess
-import os
 
 BUTTON_PIN = 13
 LONG_PRESS_SECONDS = 2
@@ -37,9 +36,33 @@ def wait_for_long_press():
     finally:
         GPIO.cleanup()
 
+def is_service_active(name: str) -> bool:
+    result = subprocess.run(
+        ["systemctl", "is-active", "--quiet", name],
+        capture_output=True,
+    )
+    return result.returncode == 0
+
+
 def main():
     wait_for_long_press()
-    os.execv(WIFI_CONNECT_CMD[0], WIFI_CONNECT_CMD)
+
+    # Stop dnsmasq if running so wifi-connect can bind port 53 / 192.168.42.1
+    dnsmasq_was_active = is_service_active("dnsmasq")
+    if dnsmasq_was_active:
+        print("Stopping dnsmasq before wifi-connect...")
+        subprocess.run(["sudo", "/usr/bin/systemctl", "stop", "dnsmasq"],
+                       capture_output=True)
+
+    try:
+        subprocess.run(WIFI_CONNECT_CMD)
+    finally:
+        # Always restore dnsmasq if we stopped it
+        if dnsmasq_was_active:
+            print("Restoring dnsmasq...")
+            subprocess.run(["sudo", "/usr/bin/systemctl", "start", "dnsmasq"],
+                           capture_output=True)
+
 
 if __name__ == '__main__':
     main()
