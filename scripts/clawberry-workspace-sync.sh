@@ -90,17 +90,18 @@ command -v git  >/dev/null 2>&1 || die "git is not installed"
 command -v rsync >/dev/null 2>&1 || die "rsync is not installed"
 
 # ── Sparse-clone into a temp directory ──────────────────────────────────────
-TMPDIR="$(mktemp -d)"
-trap 'rm -rf "$TMPDIR"' EXIT
+# Use /var/tmp (on the main filesystem) instead of /tmp (tmpfs, often small)
+WORK_DIR="$(mktemp -d -p /var/tmp)"
+trap 'rm -rf "$WORK_DIR"' EXIT
 
-log "Cloning $REPO_URL (sparse, depth=1) into $TMPDIR ..."
-git -C "$TMPDIR" init -q
-git -C "$TMPDIR" remote add origin "$REPO_URL"
-git -C "$TMPDIR" config core.sparseCheckout true
+log "Cloning $REPO_URL (sparse, depth=1) into $WORK_DIR ..."
+git -C "$WORK_DIR" init -q
+git -C "$WORK_DIR" remote add origin "$REPO_URL"
+git -C "$WORK_DIR" config core.sparseCheckout true
 
 # Declare only the two workspace subtrees we care about
-mkdir -p "$TMPDIR/.git/info"
-cat > "$TMPDIR/.git/info/sparse-checkout" <<EOF
+mkdir -p "$WORK_DIR/.git/info"
+cat > "$WORK_DIR/.git/info/sparse-checkout" <<EOF
 $PICOCLAW_SRC/
 $ZEROCLAW_SRC/
 daemon/
@@ -116,12 +117,12 @@ publish_services.sh
 scripts/clawberry-workspace-sync.sh
 EOF
 
-git -C "$TMPDIR" fetch --depth=1 origin HEAD
-git -C "$TMPDIR" checkout -q FETCH_HEAD
+git -C "$WORK_DIR" fetch --depth=1 origin HEAD
+git -C "$WORK_DIR" checkout -q FETCH_HEAD
 log "Checkout complete."
 
 # ── Self-update: copy latest script from repo to /usr/local/bin and ensure executable ──
-REPO_SCRIPT_PATH="$TMPDIR/scripts/clawberry-workspace-sync.sh"
+REPO_SCRIPT_PATH="$WORK_DIR/scripts/clawberry-workspace-sync.sh"
 SCRIPT_PATH="/usr/local/bin/clawberry-workspace-sync.sh"
 if [[ -f "$REPO_SCRIPT_PATH" ]]; then
     _repo_hash=$(sha256sum "$REPO_SCRIPT_PATH" | cut -d' ' -f1)
@@ -166,10 +167,10 @@ if command -v systemctl >/dev/null 2>&1; then
 fi
 
 # ── Deploy prebuilt binaries (if present in repo)
-if [[ -f "$TMPDIR/picoclaw/picoclaw-linux-arm64" ]]; then
+if [[ -f "$WORK_DIR/picoclaw/picoclaw-linux-arm64" ]]; then
     log "Installing picoclaw binary to /opt/picoclaw/picoclaw"
     mkdir -p /opt/picoclaw
-    if cp "$TMPDIR/picoclaw/picoclaw-linux-arm64" /opt/picoclaw/picoclaw 2>/dev/null; then
+    if cp "$WORK_DIR/picoclaw/picoclaw-linux-arm64" /opt/picoclaw/picoclaw 2>/dev/null; then
         chmod +x /opt/picoclaw/picoclaw || true
         log "picoclaw installed to /opt/picoclaw/picoclaw"
     else
@@ -177,10 +178,10 @@ if [[ -f "$TMPDIR/picoclaw/picoclaw-linux-arm64" ]]; then
     fi
 fi
 
-if [[ -f "$TMPDIR/picoclaw/picoclaw-launcher-linux-arm64" ]]; then
+if [[ -f "$WORK_DIR/picoclaw/picoclaw-launcher-linux-arm64" ]]; then
     log "Installing picoclaw-web binary to /opt/picoclaw/picoclaw-launcher"
     mkdir -p /opt/picoclaw
-    if cp "$TMPDIR/picoclaw/picoclaw-launcher-linux-arm64" /opt/picoclaw/picoclaw-launcher 2>/dev/null; then
+    if cp "$WORK_DIR/picoclaw/picoclaw-launcher-linux-arm64" /opt/picoclaw/picoclaw-launcher 2>/dev/null; then
         chmod +x /opt/picoclaw/picoclaw-launcher || true
         ln -sf /opt/picoclaw/picoclaw-launcher /usr/local/bin/picoclaw-launcher 2>/dev/null || true
         log "picoclaw-web installed to /opt/picoclaw/picoclaw-launcher"
@@ -189,10 +190,10 @@ if [[ -f "$TMPDIR/picoclaw/picoclaw-launcher-linux-arm64" ]]; then
     fi
 fi
 
-if [[ -f "$TMPDIR/zeroclaw/zeroclaw" ]]; then
+if [[ -f "$WORK_DIR/zeroclaw/zeroclaw" ]]; then
     log "Installing zeroclaw binary to /opt/zeroclaw/zeroclaw"
     mkdir -p /opt/zeroclaw
-    if cp "$TMPDIR/zeroclaw/zeroclaw" /opt/zeroclaw/zeroclaw 2>/dev/null; then
+    if cp "$WORK_DIR/zeroclaw/zeroclaw" /opt/zeroclaw/zeroclaw 2>/dev/null; then
         chmod +x /opt/zeroclaw/zeroclaw || true
         log "zeroclaw installed to /opt/zeroclaw/zeroclaw"
     else
@@ -202,9 +203,9 @@ fi
 
 # ── Deploy daemon service files ─────────────────────────────────────────────
 SVC_CHANGED=no
-if [[ -d "$TMPDIR/daemon" ]]; then
+if [[ -d "$WORK_DIR/daemon" ]]; then
     log "Installing systemd service files from daemon/ ..."
-    for svc_file in "$TMPDIR/daemon/"*.service; do
+    for svc_file in "$WORK_DIR/daemon/"*.service; do
         [[ -f "$svc_file" ]] || continue
         svc_name="$(basename "$svc_file")"
         dst_svc="/etc/systemd/system/$svc_name"
@@ -221,7 +222,7 @@ else
 fi
 
 # ── Deploy picoclaw-web environment file ─────────────────────────────────────
-PICWEB_ENV_SRC="$TMPDIR/daemon/picoclaw-web.env"
+PICWEB_ENV_SRC="$WORK_DIR/daemon/picoclaw-web.env"
 PICWEB_ENV_DST="/etc/clawberry/picoclaw-web.env"
 if [[ -f "$PICWEB_ENV_SRC" ]]; then
     log "Installing picoclaw-web.env to $PICWEB_ENV_DST"
@@ -247,7 +248,7 @@ log "Deploying ClawBoard dashboard to $CLAWBOARD_DST ..."
 mkdir -p "$CLAWBOARD_DST/config" "$CLAWBOARD_DST/locales" "$CLAWBOARD_DST/lib"
 
 # dashboard.py and clawberry_*.py helper modules
-for f in "$TMPDIR/dashboard.py" "$TMPDIR"/clawberry_*.py "$TMPDIR/publish_services.sh"; do
+for f in "$WORK_DIR/dashboard.py" "$WORK_DIR"/clawberry_*.py "$WORK_DIR/publish_services.sh"; do
     [[ -f "$f" ]] || continue
     fname="$(basename "$f")"
     _pre_hash="none"
@@ -265,32 +266,32 @@ for f in "$TMPDIR/dashboard.py" "$TMPDIR"/clawberry_*.py "$TMPDIR/publish_servic
 done
 
 # locales/ directory (locale string modules)
-if [[ -d "$TMPDIR/locales" ]]; then
-    rsync --archive --update "$TMPDIR/locales/" "$CLAWBOARD_DST/locales/"
+if [[ -d "$WORK_DIR/locales" ]]; then
+    rsync --archive --update "$WORK_DIR/locales/" "$CLAWBOARD_DST/locales/"
     log "  synced locales/"
 fi
 
 # lib/ directory
-if [[ -d "$TMPDIR/lib" ]]; then
-    rsync --archive --update "$TMPDIR/lib/" "$CLAWBOARD_DST/lib/"
+if [[ -d "$WORK_DIR/lib" ]]; then
+    rsync --archive --update "$WORK_DIR/lib/" "$CLAWBOARD_DST/lib/"
     log "  synced lib/"
 fi
 
 # config/ — sync non-sensitive files always; the three protected config files
 # are only copied when explicitly requested via -config.
-if [[ -d "$TMPDIR/config" ]]; then
+if [[ -d "$WORK_DIR/config" ]]; then
     # Non-protected files (examples, templates, etc.) — always sync
     rsync --archive --update \
         --exclude='config.json' \
         --exclude='.security.yml' \
         --exclude='config.toml' \
-        "$TMPDIR/config/" "$CLAWBOARD_DST/config/"
+        "$WORK_DIR/config/" "$CLAWBOARD_DST/config/"
     log "  synced config/ (non-protected files)"
 
     # Protected files — only when -config flag was given
     if [[ "$SYNC_CONFIG_JSON" == "yes" ]]; then
-        if [[ -f "$TMPDIR/config/config.json" ]]; then
-            cp "$TMPDIR/config/config.json" "$CLAWBOARD_DST/config/config.json" && \
+        if [[ -f "$WORK_DIR/config/config.json" ]]; then
+            cp "$WORK_DIR/config/config.json" "$CLAWBOARD_DST/config/config.json" && \
                 log "  config.json: synced from repo" || \
                 log "WARNING: failed to copy config.json"
         else
@@ -301,8 +302,8 @@ if [[ -d "$TMPDIR/config" ]]; then
     fi
 
     if [[ "$SYNC_CONFIG_TOML" == "yes" ]]; then
-        if [[ -f "$TMPDIR/config/config.toml" ]]; then
-            cp "$TMPDIR/config/config.toml" "$CLAWBOARD_DST/config/config.toml" && \
+        if [[ -f "$WORK_DIR/config/config.toml" ]]; then
+            cp "$WORK_DIR/config/config.toml" "$CLAWBOARD_DST/config/config.toml" && \
                 log "  config.toml: synced from repo" || \
                 log "WARNING: failed to copy config.toml"
         else
@@ -313,8 +314,8 @@ if [[ -d "$TMPDIR/config" ]]; then
     fi
 
     if [[ "$SYNC_SECURITY_YML" == "yes" ]]; then
-        if [[ -f "$TMPDIR/config/.security.yml" ]]; then
-            cp "$TMPDIR/config/.security.yml" "$CLAWBOARD_DST/config/.security.yml" && \
+        if [[ -f "$WORK_DIR/config/.security.yml" ]]; then
+            cp "$WORK_DIR/config/.security.yml" "$CLAWBOARD_DST/config/.security.yml" && \
                 log "  .security.yml: synced from repo" || \
                 log "WARNING: failed to copy .security.yml"
         else
@@ -327,7 +328,7 @@ fi
 
 
 # ── Deploy wifi-connect helper script ────────────────────────────────────────
-WIFI_LAUNCH_SRC="$TMPDIR/wifi-connect/wifi-connect-gpio-launch.sh"
+WIFI_LAUNCH_SRC="$WORK_DIR/wifi-connect/wifi-connect-gpio-launch.sh"
 WIFI_LAUNCH_DST="/opt/wifi-connect/wifi-connect-gpio-launch.sh"
 if [[ -f "$WIFI_LAUNCH_SRC" ]]; then
     mkdir -p /opt/wifi-connect
@@ -342,7 +343,7 @@ else
 fi
 
 # sudoers drop-in
-SUDOERS_SRC="$TMPDIR/daemon/sudoers.d-clawboard"
+SUDOERS_SRC="$WORK_DIR/daemon/sudoers.d-clawboard"
 if [[ -f "$SUDOERS_SRC" ]]; then
     if cp "$SUDOERS_SRC" /etc/sudoers.d/clawboard 2>/dev/null; then
         chmod 440 /etc/sudoers.d/clawboard || true
@@ -359,7 +360,7 @@ log "ClawBoard dashboard deploy complete."
 
 # ── Helper: sync one workspace ───────────────────────────────────────────────
 sync_workspace() {
-    local src="$TMPDIR/$1"    # local path inside the clone
+    local src="$WORK_DIR/$1"    # local path inside the clone
     local dst="$2"             # destination on disk
     local owner="$3"           # user:group for chown
 
