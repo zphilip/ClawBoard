@@ -43,6 +43,7 @@ import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from io import BytesIO
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -192,10 +193,11 @@ def _print_qr_art(url: str) -> None:
 
     # Attempt 2: convert downloaded PNG to Unicode half-block characters via PIL
     try:
+        from PIL import Image as _PILImage
         img = (
-            Image.open(BytesIO(_qr_image_data))
+            _PILImage.open(BytesIO(_qr_image_data))
             .convert("1")
-            .resize((58, 58), Image.NEAREST)
+            .resize((58, 58), _PILImage.NEAREST)
         )
         w, h = img.size
         px   = list(img.getdata())
@@ -231,6 +233,7 @@ class _QrHandler(BaseHTTPRequestHandler):
             return
         self.send_response(200)
         self.send_header("Content-Type", "image/png")
+        self.send_header("Content-Length", str(len(_qr_image_data)))
         self.end_headers()
         self.wfile.write(_qr_image_data)
 
@@ -240,8 +243,16 @@ class _QrHandler(BaseHTTPRequestHandler):
 
 def _start_qr_server() -> HTTPServer:
     httpd = HTTPServer(("0.0.0.0", ARGS.port), _QrHandler)
-    t = threading.Thread(target=httpd.serve_forever, daemon=True)
+    # Use an Event so the caller only proceeds once serve_forever() has entered
+    # its select loop.  Without this there is a race window between t.start()
+    # and the loop being ready where the emitted URL can't be reached yet.
+    _ready = threading.Event()
+    def _serve():
+        _ready.set()
+        httpd.serve_forever()
+    t = threading.Thread(target=_serve, daemon=True)
     t.start()
+    _ready.wait(timeout=3.0)   # wait up to 3 s for the loop to be live
     return httpd
 
 
