@@ -1,27 +1,28 @@
 # MEMORY.md — Long-Term Memory
 
-*Your curated memories. The distilled essence, not raw logs.*
-
-## How This Works
-- Daily files (`memory/YYYY-MM-DD.md`) capture raw events (on-demand via tools)
-- This file captures what's WORTH KEEPING long-term
-- This file is auto-injected into your system prompt each session
-- Keep it concise — every character here costs tokens
-
-## Security
-- ONLY loaded in main session (direct chat with your human)
-- NEVER loaded in group chats or shared contexts
-
----
-
 ## Key Facts
-(Add important facts about your human here)
+
+### 用户偏好
+- 回答前显示「思考中」提示
+- 即使执行失败也要尽可能给出结果
+- 使用钉钉平台集成 ZeroClaw
+
+### 技术配置
+- `uv` v0.11.3 已安装
+- zeroclaw agent `max_iterations` 已设置为 50
+
+### 港股行情接口
+- 腾讯行情：`https://qt.gtimg.cn/q=hkXXXXX`
+- 港股代码格式：`hk` + 股票代码（无后缀）
+- 示例：小米 1810.HK → `hk01810`
+
+### 小米集团
+- 股票代码：1810.HK（港交所上市）
 
 ## Decisions & Preferences
-(Record decisions and preferences here)
+- 数据源优先级：腾讯行情 > 新浪 > Yahoo Finance
 
 ## Lessons Learned
-(Document mistakes and insights here)
-
-## Open Loops
-(Track unfinished tasks and follow-ups here)
+- 多个股票数据源均不稳定（新浪404、Yahoo 403、Google封锁）
+- 腾讯行情接口目前可用
+- ZeroClaw 无法访问系统目录，只能操作 `workspace/`

@@ -48,6 +48,7 @@ CLAWBOARD_USER="zero"
 
 PICOCLAW_WORKSPACE_DST="/var/lib/picoclaw/.picoclaw/workspace"
 ZEROCLAW_WORKSPACE_DST="/var/lib/zeroclaw/.zeroclaw/workspace"
+PICOCLAW_SKILLS_DST="/var/lib/picoclaw/.picoclaw/workspace/skills"
 
 PICOCLAW_USER="picoclaw"
 ZEROCLAW_USER="zeroclaw"
@@ -109,6 +110,7 @@ locales/
 lib/
 config/
 wifi-connect/
+skills/
 dashboard.py
 clawberry_bluetooth.py
 clawberry_display.py
@@ -388,7 +390,17 @@ sync_workspace() {
 # ── Sync both workspaces ─────────────────────────────────────────────────────
 sync_workspace "$PICOCLAW_WORKSPACE_SRC" "$PICOCLAW_WORKSPACE_DST" "$PICOCLAW_USER"
 sync_workspace "$ZEROCLAW_WORKSPACE_SRC" "$ZEROCLAW_WORKSPACE_DST" "$ZEROCLAW_USER"
-
+# ── Sync skills into picoclaw workspace ───────────────────────────────────────
+if [[ -d "$WORK_DIR/skills" ]]; then
+    log "Syncing skills/  →  $PICOCLAW_SKILLS_DST"
+    mkdir -p "$PICOCLAW_SKILLS_DST"
+    rsync --archive --update --times "$WORK_DIR/skills/" "$PICOCLAW_SKILLS_DST/"
+    chown -R "$PICOCLAW_USER:$PICOCLAW_USER" "$PICOCLAW_SKILLS_DST" 2>/dev/null || \
+        log "WARNING: chown $PICOCLAW_USER failed for $PICOCLAW_SKILLS_DST (running as non-root?)"
+    log "Done: $PICOCLAW_SKILLS_DST"
+else
+    log "WARNING: skills/ not found in repo — skipping"
+fi
 # Ensure /var/lib/picoclaw/.picoclaw exists and is owned by picoclaw
 if [[ ! -d "/var/lib/picoclaw/.picoclaw" ]]; then
     log "Creating /var/lib/picoclaw/.picoclaw"

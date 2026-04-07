@@ -10,6 +10,7 @@ tokens from Xiaomi Cloud, and saves results to:
 Machine-readable stdout lines (for the agent to parse):
   QR_SERVER=http://<ip>:<port>/qr/<token>  — single-use URL serving the QR image
   QR_URL=https://account.xiaomi.com/…  — direct Mi Account login URL
+  QR_IMAGE_B64=<base64-encoded PNG>     — QR image inline (for agent/UI display)
   STATUS=waiting_for_scan               — QR presented, waiting
   STATUS=login_success                  — user scanned successfully
   STATUS=login_timeout                  — no scan within --timeout seconds
@@ -167,6 +168,55 @@ def _get_local_ip() -> str:
 # ── QR image HTTP server ───────────────────────────────────────────────────────
 
 _qr_image_data: bytes = b""
+
+
+def _print_qr_art(url: str) -> None:
+    """Print the QR code as Unicode half-block art to stderr.
+
+    Tries the ``qrcode`` library first (clean vector rendering), then falls
+    back to converting the already-downloaded PNG via PIL.  Errors are
+    silently swallowed so a missing dependency never breaks the auth flow.
+    """
+    # Attempt 1: qrcode library — clean, no dependency on the downloaded PNG
+    try:
+        import qrcode as _qrcode
+        qr = _qrcode.QRCode(border=1)
+        qr.add_data(url)
+        qr.make(fit=True)
+        print("", file=sys.stderr)   # blank line before art
+        qr.print_ascii(out=sys.stderr, invert=True)
+        print("", file=sys.stderr)
+        return
+    except Exception:
+        pass
+
+    # Attempt 2: convert downloaded PNG to Unicode half-block characters via PIL
+    try:
+        img = (
+            Image.open(BytesIO(_qr_image_data))
+            .convert("1")
+            .resize((58, 58), Image.NEAREST)
+        )
+        w, h = img.size
+        px   = list(img.getdata())
+        print("", file=sys.stderr)
+        for row in range(0, h - 1, 2):
+            line = ""
+            for col in range(w):
+                top = px[row * w + col] == 0
+                bot = px[(row + 1) * w + col] == 0
+                if top and bot:
+                    line += "█"
+                elif top:
+                    line += "▀"
+                elif bot:
+                    line += "▄"
+                else:
+                    line += " "
+            print(line, file=sys.stderr)
+        print("", file=sys.stderr)
+    except Exception:
+        pass  # silently skip if both methods fail
 
 
 class _QrHandler(BaseHTTPRequestHandler):
@@ -411,7 +461,7 @@ class QrLoginConnector(XiaomiCloudConnector):
         return True
 
     def _step2_serve_qr(self) -> bool:
-        """Download QR image, start HTTP server, emit URLs."""
+        """Download QR image, start HTTP server, emit inline image + URLs."""
         global _qr_image_data, _qr_httpd
         try:
             resp = self._session.get(self._qr_image_url, timeout=15)
@@ -424,6 +474,11 @@ class QrLoginConnector(XiaomiCloudConnector):
         _qr_httpd = _start_qr_server()
         _emit(f"QR_SERVER=http://{local_ip}:{ARGS.port}/qr/{_QR_PATH_TOKEN}")
         _emit(f"QR_URL={self._login_url}")
+        # Inline base64 PNG — agents / UIs can render this directly without
+        # needing to reach the HTTP server.
+        _emit(f"QR_IMAGE_B64={base64.b64encode(_qr_image_data).decode()}")
+        # Print block-art to stderr so the QR is visible in a human terminal.
+        _print_qr_art(self._login_url)
         _emit("STATUS=waiting_for_scan")
         return True
 
