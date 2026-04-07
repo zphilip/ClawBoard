@@ -129,7 +129,7 @@ def _detect_display():
     Sets the module globals ``_disp``, ``_display_type``, ``_eink_mod`` /
     ``_lcd_mod`` and returns the active display object.
     """
-    global _disp, _display_type, _eink_mod, _lcd_mod
+    global _disp, _display_type, _eink_mod, _lcd_mod, _LCD_LANDSCAPE
 
     # ── 0. Check for a manual override file ───────────────────────────────
     _forced = None
@@ -141,6 +141,14 @@ def _detect_display():
         pass
     except Exception as _e:
         logging.warning('Could not read display_type.txt: %s', _e)
+
+    # Resolve orientation suffixes before the type check
+    if _forced == 'lcd-landscape':
+        _LCD_LANDSCAPE = True
+        _forced = 'lcd'
+    elif _forced == 'lcd-portrait':
+        _LCD_LANDSCAPE = False
+        _forced = 'lcd'
 
     # ── 1. Try LCD 1.69\" ────────────────────────────────────────────────
     if _forced != 'eink':
@@ -458,15 +466,29 @@ _IFACE_COL = {
     'BT':   (120,   0, 180),
 }
 
+# ── LCD orientation ──────────────────────────────────────────────────────
+# True  → landscape 280×240  (default)
+# False → portrait  240×280
+# Override via config/display_type.txt: write 'lcd-landscape' or 'lcd-portrait'
+_LCD_LANDSCAPE = True
+
+def _lcd_dims(disp):
+    """Return (W, H) for the active LCD orientation."""
+    if _LCD_LANDSCAPE:
+        return disp.height, disp.width   # 280 × 240
+    return disp.width, disp.height       # 240 × 280
+
 
 def draw_monitor_lcd(disp):
-    """Render the normal status screen for the 1.69\" LCD (240×280 portrait)."""
-    W, H  = disp.width, disp.height   # 240 × 280
+    """Render the normal status screen for the 1.69\" LCD.
+    Landscape (280×240): QR left, info right.
+    Portrait  (240×280): QR centred, info stacked below.
+    """
+    W, H  = _lcd_dims(disp)
     image = Image.new('RGB', (W, H), _C_BG)
     draw  = ImageDraw.Draw(image)
 
     f_hdr   = _load_font(_FONT_BOLD, 18)
-    f_label = _load_font(_FONT_BOLD, 13)
     f_body  = _load_font(_FONT_REG,  13)
     f_small = _load_font(_FONT_REG,  12)
 
@@ -481,59 +503,66 @@ def draw_monitor_lcd(disp):
     u_ip = get_ip_address('usb0')
     primary_ip = w_ip or e_ip or u_ip or b_ip
 
-    # QR code centred below header
-    QR_SIZE = 130
-    QR_X    = (W - QR_SIZE) // 2
-    QR_Y    = 48
-    if primary_ip:
-        qr_url = f'http://{primary_ip}:8080'
-        try:
-            qr_img = _generate_qr_image(qr_url, size=QR_SIZE).convert('RGB')
-            image.paste(qr_img, (QR_X, QR_Y))
-        except Exception as exc:
-            logging.warning('QR generation failed: %s', exc)
-            draw.rectangle((QR_X, QR_Y, QR_X + QR_SIZE, QR_Y + QR_SIZE),
-                           outline=_C_GREY, width=1)
-            draw.text((QR_X + 22, QR_Y + 55), 'QR err', font=f_body, fill=_C_RED)
-    else:
-        draw.rectangle((QR_X, QR_Y, QR_X + QR_SIZE, QR_Y + QR_SIZE),
-                       outline=_C_GREY, width=1)
-        draw.text((QR_X + 30, QR_Y + 55), 'No IP', font=f_body, fill=_C_GREY)
+    def _draw_qr(qx, qy, qsize):
+        if primary_ip:
+            qr_url = f'http://{primary_ip}:8080'
+            try:
+                qr_img = _generate_qr_image(qr_url, size=qsize).convert('RGB')
+                image.paste(qr_img, (qx, qy))
+            except Exception as exc:
+                logging.warning('QR generation failed: %s', exc)
+                draw.rectangle((qx, qy, qx + qsize, qy + qsize), outline=_C_GREY, width=1)
+                draw.text((qx + 14, qy + qsize // 2 - 7), 'QR err', font=f_body, fill=_C_RED)
+        else:
+            draw.rectangle((qx, qy, qx + qsize, qy + qsize), outline=_C_GREY, width=1)
+            draw.text((qx + 18, qy + qsize // 2 - 7), 'No IP', font=f_body, fill=_C_GREY)
 
-    # Interface rows
-    y = QR_Y + QR_SIZE + 10
-    any_ip = False
-    for iface_label, ip in (('WiFi', w_ip), ('ETH', e_ip), ('USB', u_ip), ('BT', b_ip)):
-        if ip:
-            col = _IFACE_COL.get(iface_label, (80, 80, 80))
-            draw.rectangle((6, y, 46, y + 18), fill=col)
-            draw.text((8,  y + 2), iface_label, font=f_small, fill=_C_WHITE)
-            draw.text((52, y + 2), ip,          font=f_small, fill=_C_DARK)
+    def _draw_ifaces_and_svcs(ix, iy):
+        any_ip = False
+        y = iy
+        for iface_label, ip in (('WiFi', w_ip), ('ETH', e_ip), ('USB', u_ip), ('BT', b_ip)):
+            if ip:
+                col = _IFACE_COL.get(iface_label, (80, 80, 80))
+                draw.rectangle((ix, y, ix + 40, y + 18), fill=col)
+                draw.text((ix + 2,  y + 2), iface_label, font=f_small, fill=_C_WHITE)
+                draw.text((ix + 46, y + 2), ip,          font=f_small, fill=_C_DARK)
+                y += 22
+                any_ip = True
+        if not any_ip:
+            draw.text((ix, y), 'No network', font=f_body, fill=_C_RED)
             y += 22
-            any_ip = True
-    if not any_ip:
-        draw.text((10, y), 'No network', font=f_body, fill=_C_RED)
-        y += 22
+        y += 4
+        draw.line((ix, y, W - 6, y), fill=(200, 200, 200), width=1)
+        y += 7
+        for svc, status in (('ZeroClaw', get_service_status('zeroclaw')),
+                            ('PicoClaw', get_service_status('picoclaw'))):
+            col = _C_GREEN if status == 'Running' else _C_RED
+            draw.ellipse((ix, y + 3, ix + 11, y + 14), fill=col)
+            draw.text((ix + 16, y + 1), f'{svc}: {status}', font=f_small, fill=_C_DARK)
+            y += 20
 
-    # Divider
-    y += 4
-    draw.line((6, y, W - 6, y), fill=(200, 200, 200), width=1)
-    y += 7
-
-    # Service status rows
-    for svc, status in (('ZeroClaw', get_service_status('zeroclaw')),
-                        ('PicoClaw', get_service_status('picoclaw'))):
-        col = _C_GREEN if status == 'Running' else _C_RED
-        draw.ellipse((8, y + 3, 19, y + 14), fill=col)
-        draw.text((25, y + 1), f'{svc}: {status}', font=f_small, fill=_C_DARK)
-        y += 20
+    if _LCD_LANDSCAPE:
+        # Landscape: QR left, info panel right
+        QR_SIZE = 128
+        QR_X, QR_Y = 6, 40 + (H - 40 - QR_SIZE) // 2
+        _draw_qr(QR_X, QR_Y, QR_SIZE)
+        _draw_ifaces_and_svcs(QR_X + QR_SIZE + 8, 48)
+    else:
+        # Portrait: QR centred below header, info below
+        QR_SIZE = 120
+        QR_X = (W - QR_SIZE) // 2
+        QR_Y = 48
+        _draw_qr(QR_X, QR_Y, QR_SIZE)
+        _draw_ifaces_and_svcs(6, QR_Y + QR_SIZE + 10)
 
     disp.ShowImage(image)
 
 
 def draw_paircode_lcd(disp, code):
-    """Render the ZeroClaw pair-code screen on the 1.69\" LCD."""
-    W, H  = disp.width, disp.height
+    """Render the ZeroClaw pair-code screen on the 1.69\" LCD.
+    Auto-sizes the code to fill the available width in either orientation.
+    """
+    W, H  = _lcd_dims(disp)
     image = Image.new('RGB', (W, H), _C_BG)
     draw  = ImageDraw.Draw(image)
 
@@ -563,36 +592,55 @@ def draw_paircode_lcd(disp, code):
 
 
 def draw_picoclaw_qr_lcd(disp, url, token=''):
-    """Render the PicoClaw pairing QR on the 1.69\" LCD."""
-    W, H  = disp.width, disp.height
+    """Render the PicoClaw pairing QR on the 1.69\" LCD.
+    Landscape (280×240): QR left, URL/token right.
+    Portrait  (240×280): QR centred, URL/token below.
+    """
+    W, H  = _lcd_dims(disp)
     image = Image.new('RGB', (W, H), _C_BG)
     draw  = ImageDraw.Draw(image)
 
     f_hdr   = _load_font(_FONT_BOLD, 18)
     f_small = _load_font(_FONT_REG,  12)
+    f_tiny  = _load_font(_FONT_REG,  11)
 
     draw.rectangle((0, 0, W, 40), fill=_C_HDR_PC)
     draw.text((10, 9), 'PicoClaw Pair QR', font=f_hdr, fill=_C_WHITE)
 
-    QR_SIZE = min(H - 90, 170)
-    QR_X    = (W - QR_SIZE) // 2
-    QR_Y    = 48
-    try:
-        qr_img = _fetch_qr_image(url, size=QR_SIZE).convert('RGB')
-        image.paste(qr_img, (QR_X, QR_Y))
-    except Exception as e:
-        logging.warning('Could not fetch QR image: %s', e)
-        draw.rectangle((QR_X, QR_Y, QR_X + QR_SIZE, QR_Y + QR_SIZE),
-                       outline=_C_GREY, width=2)
-        draw.text((QR_X + 55, QR_Y + 75), 'QR', font=f_hdr, fill=_C_GREY)
+    def _paste_qr(qx, qy, qsize):
+        try:
+            qr_img = _fetch_qr_image(url, size=qsize).convert('RGB')
+            image.paste(qr_img, (qx, qy))
+        except Exception as e:
+            logging.warning('Could not fetch QR image: %s', e)
+            draw.rectangle((qx, qy, qx + qsize, qy + qsize), outline=_C_GREY, width=2)
+            draw.text((qx + qsize // 2 - 12, qy + qsize // 2 - 10), 'QR', font=f_hdr, fill=_C_GREY)
 
-    y = QR_Y + QR_SIZE + 8
-    for line in textwrap.wrap(url, width=34)[:2]:
-        draw.text((6, y), line, font=f_small, fill=(60, 60, 60))
-        y += 16
-    if token:
-        tok_str = f'token: {token[:18]}...' if len(token) > 18 else f'token: {token}'
-        draw.text((6, y), tok_str, font=f_small, fill=_C_GREY)
+    if _LCD_LANDSCAPE:
+        # QR left, URL/token right
+        QR_SIZE = min(H - 50, 150)
+        QR_X, QR_Y = 6, 40 + (H - 40 - QR_SIZE) // 2
+        _paste_qr(QR_X, QR_Y, QR_SIZE)
+        tx, ty = QR_X + QR_SIZE + 8, 48
+        for line in textwrap.wrap(url, width=16)[:4]:
+            draw.text((tx, ty), line, font=f_small, fill=(60, 60, 60))
+            ty += 15
+        if token:
+            tok_str = f'tok:{token[:14]}...' if len(token) > 14 else f'tok:{token}'
+            draw.text((tx, H - 20), tok_str, font=f_tiny, fill=_C_GREY)
+    else:
+        # QR centred, URL/token below
+        QR_SIZE = min(W - 20, 180)
+        QR_X = (W - QR_SIZE) // 2
+        QR_Y = 48
+        _paste_qr(QR_X, QR_Y, QR_SIZE)
+        ty = QR_Y + QR_SIZE + 8
+        for line in textwrap.wrap(url, width=30)[:3]:
+            draw.text((6, ty), line, font=f_small, fill=(60, 60, 60))
+            ty += 15
+        if token:
+            tok_str = f'tok:{token[:22]}...' if len(token) > 22 else f'tok:{token}'
+            draw.text((6, H - 20), tok_str, font=f_tiny, fill=_C_GREY)
 
     disp.ShowImage(image)
 
