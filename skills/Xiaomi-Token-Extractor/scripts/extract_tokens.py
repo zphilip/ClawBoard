@@ -8,7 +8,7 @@ tokens from Xiaomi Cloud, and saves results to:
   references/devices.md     — Markdown table (compatible with xiaomi-home)
 
 Machine-readable stdout lines (for the agent to parse):
-  QR_SERVER=http://<ip>:<port>         — local URL serving the QR image
+  QR_SERVER=http://<ip>:<port>/qr/<token>  — single-use URL serving the QR image
   QR_URL=https://account.xiaomi.com/…  — direct Mi Account login URL
   STATUS=waiting_for_scan               — QR presented, waiting
   STATUS=login_success                  — user scanned successfully
@@ -36,12 +36,14 @@ import hmac
 import json
 import os
 import random
+import secrets
 import socket
 import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
+from urllib.parse import urlparse
 
 import requests
 
@@ -56,7 +58,29 @@ except ModuleNotFoundError:
 
 # ── Globals ────────────────────────────────────────────────────────────────────
 SERVERS = ["cn", "de", "us", "ru", "tw", "sg", "in", "i2"]
+# Random single-use path token for the QR endpoint — generated fresh each run.
+# Prevents drive-by fetches: only whoever holds the emitted QR_SERVER URL can
+# retrieve the image.
+_QR_PATH_TOKEN: str  = secrets.token_hex(16)
+_qr_httpd: HTTPServer | None = None   # kept so we can shut it down after auth
 
+# Xiaomi domains that are allowed to appear in server-provided URLs (qr, lp).
+# Any URL pointing elsewhere is rejected to prevent SSRF.
+_ALLOWED_MI_NETLOCS = (
+    "account.xiaomi.com",
+    "sts.api.io.mi.com",
+)
+
+def _assert_mi_url(url: str, label: str) -> None:
+    """Raise ValueError if *url* does not point to a trusted Xiaomi domain."""
+    host = urlparse(url).netloc.split(":")[0]
+    if not (host in _ALLOWED_MI_NETLOCS
+            or host.endswith(".xiaomi.com")
+            or host.endswith(".mi.com")):
+        raise ValueError(
+            f"Untrusted domain in server-provided {label!r}: {host!r} — "
+            "aborting to prevent SSRF"
+        )
 # ── Argument parsing ───────────────────────────────────────────────────────────
 _ap = argparse.ArgumentParser(
     description="Extract Xiaomi device tokens via QR-code cloud login."
@@ -91,17 +115,53 @@ def _emit(line: str) -> None:
 
 
 def _get_local_ip() -> str:
-    """Best-effort detection of the outbound local IP address."""
+    """Best-effort detection of the outbound local IP address.
+
+    Tries several strategies in order:
+      1. --host CLI override
+      2. UDP routing trick against multiple public targets (no packets sent)
+      3. Hostname-to-address resolution
+      4. Enumerate all non-loopback AF_INET addresses via getaddrinfo
+    Falls back to 127.0.0.1 and emits a warning if nothing else works.
+    """
     if ARGS.host:
         return ARGS.host
+
+    # Strategy 1: UDP routing trick — kernel fills in the source IP without
+    # actually sending any packets. Try several targets for robustness.
+    for target in ("8.8.8.8", "1.1.1.1", "192.168.1.1"):
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.settimeout(0.1)
+            s.connect((target, 80))
+            ip = s.getsockname()[0]
+            s.close()
+            if not ip.startswith("127."):
+                return ip
+        except Exception:
+            pass
+
+    # Strategy 2: hostname → address lookup
     try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.connect(("8.8.8.8", 80))
-        ip = s.getsockname()[0]
-        s.close()
-        return ip
+        ip = socket.gethostbyname(socket.gethostname())
+        if not ip.startswith("127."):
+            return ip
     except Exception:
-        return "127.0.0.1"
+        pass
+
+    # Strategy 3: enumerate all AF_INET addresses reported by the OS
+    try:
+        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+            ip = info[4][0]
+            if not ip.startswith("127."):
+                return ip
+    except Exception:
+        pass
+
+    # Nothing worked — server will only be reachable from localhost
+    _emit("WARNING=local_ip_detection_failed QR server accessible at 127.0.0.1 only; "
+          "pass --host <your-ip> to override")
+    return "127.0.0.1"
 
 
 # ── QR image HTTP server ───────────────────────────────────────────────────────
@@ -111,6 +171,14 @@ _qr_image_data: bytes = b""
 
 class _QrHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802
+        # Only serve the image at the secret path; reject everything else.
+        # This prevents any process or network peer from fetching the QR
+        # by simply hitting http://host:port/ .
+        expected = f"/qr/{_QR_PATH_TOKEN}"
+        if self.path.split("?")[0] != expected:
+            self.send_response(404)
+            self.end_headers()
+            return
         self.send_response(200)
         self.send_header("Content-Type", "image/png")
         self.end_headers()
@@ -120,10 +188,23 @@ class _QrHandler(BaseHTTPRequestHandler):
         pass
 
 
-def _start_qr_server() -> None:
-    httpd = HTTPServer(("", ARGS.port), _QrHandler)
+def _start_qr_server() -> HTTPServer:
+    httpd = HTTPServer(("0.0.0.0", ARGS.port), _QrHandler)
     t = threading.Thread(target=httpd.serve_forever, daemon=True)
     t.start()
+    return httpd
+
+
+def _stop_qr_server() -> None:
+    """Shut down the QR HTTP server and clear the credential-bearing image
+    from memory.  Called as soon as authentication succeeds, times out, or
+    fails so the QR can no longer be fetched.
+    """
+    global _qr_image_data, _qr_httpd
+    if _qr_httpd is not None:
+        _qr_httpd.shutdown()
+        _qr_httpd = None
+    _qr_image_data = b""  # clear from heap
 
 
 # ── Xiaomi Cloud connector ─────────────────────────────────────────────────────
@@ -277,11 +358,16 @@ class QrLoginConnector(XiaomiCloudConnector):
         if not self._step2_serve_qr():
             _emit("STATUS=login_failed reason=cannot_download_qr_image")
             return False
-        if not self._step3_long_poll():
-            return False  # STATUS already emitted inside
-        if not self._step4_service_token():
-            _emit("STATUS=login_failed reason=cannot_get_service_token")
-            return False
+        # _step3 and _step4 may succeed or fail; always stop the QR server
+        # afterwards so the image cannot be fetched once auth is decided.
+        try:
+            if not self._step3_long_poll():
+                return False  # STATUS already emitted inside
+            if not self._step4_service_token():
+                _emit("STATUS=login_failed reason=cannot_get_service_token")
+                return False
+        finally:
+            _stop_qr_server()   # clears image from memory & stops HTTP server
         _emit("STATUS=login_success")
         return True
 
@@ -311,12 +397,22 @@ class QrLoginConnector(XiaomiCloudConnector):
         self._qr_image_url  = rd["qr"]
         self._login_url     = rd["loginUrl"]
         self._long_poll_url = rd["lp"]
-        self._timeout       = rd.get("timeout", ARGS.timeout)
+        # Validate that server-provided URLs point to trusted Xiaomi domains
+        # (guards against SSRF if the response is tampered in transit).
+        try:
+            _assert_mi_url(self._qr_image_url,  "qr")
+            _assert_mi_url(self._long_poll_url,  "lp")
+        except ValueError as exc:
+            _emit(f"STATUS=login_failed reason=untrusted_url detail={exc}")
+            return False
+        # Cap the server-provided timeout at the user-supplied --timeout so a
+        # rogue/misbehaving server cannot extend the QR window indefinitely.
+        self._timeout = min(rd.get("timeout", ARGS.timeout), ARGS.timeout)
         return True
 
     def _step2_serve_qr(self) -> bool:
         """Download QR image, start HTTP server, emit URLs."""
-        global _qr_image_data
+        global _qr_image_data, _qr_httpd
         try:
             resp = self._session.get(self._qr_image_url, timeout=15)
         except Exception:
@@ -325,8 +421,8 @@ class QrLoginConnector(XiaomiCloudConnector):
             return False
         _qr_image_data = resp.content
         local_ip = _get_local_ip()
-        _start_qr_server()
-        _emit(f"QR_SERVER=http://{local_ip}:{ARGS.port}")
+        _qr_httpd = _start_qr_server()
+        _emit(f"QR_SERVER=http://{local_ip}:{ARGS.port}/qr/{_QR_PATH_TOKEN}")
         _emit(f"QR_URL={self._login_url}")
         _emit("STATUS=waiting_for_scan")
         return True
