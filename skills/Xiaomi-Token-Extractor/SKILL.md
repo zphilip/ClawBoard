@@ -17,9 +17,9 @@ Authenticate with Xiaomi Cloud via QR code and download the IP address, Token, a
 ### 🚀 How It Works
 
 1. Agent runs `scripts/extract_tokens.py` — a non-interactive QR login server starts automatically.
-2. Agent reads the `QR_SERVER` and `QR_URL` output lines and shows the user the link to scan.
-3. User scans the QR code with the Mi Home app (or visits the URL on their phone).
-4. Script detects login via long polling and fetches all device tokens from the cloud.
+2. Agent reads the `QR_IMAGE_B64` output line and renders the QR image inline for the user to scan.
+3. User scans the QR code with the **Mi Home app** (Profile → top-right → Scan).
+4. Script detects the scan via long polling and fetches all device tokens from the cloud.
 5. Results are written to `references/devices.json` and `references/devices.md`.
 6. Agent summarises the discovered devices for the user.
 
@@ -54,11 +54,13 @@ The script outputs structured lines. Look for these keys:
 | Output Line | Meaning |
 | :--- | :--- |
 | `QR_SERVER=http://<ip>:<port>/qr/<token>` | One-time URL serving the QR PNG (path token changes every run) |
-| `QR_URL=https://account.xiaomi.com/...` | Direct Mi Account login URL — use when QR image is unreachable |
+| `QR_URL=https://account.xiaomi.com/...` | URL decoded directly from the QR PNG — this is the **exact URL Mi Home reads when scanning**. If pyzbar/zxingcpp is installed it is decoded from the image; otherwise falls back to Xiaomi's `loginUrl` |
+| `QR_LOGIN_URL=https://account.xiaomi.com/...` | Emitted only when `QR_URL` was decoded from PNG. Browser-only fallback — requires existing Mi Account cookies; will say "expired" from a fresh browser |
 | `QR_IMAGE_B64=<base64 PNG>` | The QR image encoded inline — **decode and display this to the user** |
+| `QR_RETRY attempt=N of=M` | QR expired before scan; script auto-regenerated a fresh QR — show new `QR_IMAGE_B64` immediately |
 | `STATUS=waiting_for_scan` | QR presented, waiting for user to scan |
 | `STATUS=login_success` | User scanned and approved |
-| `STATUS=login_timeout` | No scan within `--timeout` seconds — tell user to retry |
+| `STATUS=login_timeout` | No scan within `--timeout` seconds on all `--retries` attempts |
 | `STATUS=login_failed reason=cannot_get_qr_url` | Could not reach Xiaomi login endpoint (network/firewall) |
 | `STATUS=login_failed reason=cannot_download_qr_image` | QR image download failed |
 | `STATUS=login_failed reason=qr_server_start_failed detail=…` | Port already in use — retry with `--port 31416` |
@@ -75,17 +77,19 @@ The script outputs structured lines. Look for these keys:
 
 The script emits a `QR_IMAGE_B64=` line containing the full PNG as base64. **Decode it and render it as an inline image** so the user can scan it directly from the chat.
 
-Then tell the user:
-> "Scan the QR code above with the **Mi Home app** (Profile → top-right menu → Scan). Or open this link on your phone:
-> [QR_URL]
-> I'll wait automatically for up to [timeout] seconds."
+Tell the user:
+> "Scan the QR code above with the **Mi Home app** (Profile → top-right menu → Scan). I'll detect the scan automatically."
 
-If `QR_IMAGE_B64` cannot be rendered, fall back to showing the `QR_SERVER` URL:
-> "Visit [QR_SERVER] on the same network to view the QR code."
+If `QR_IMAGE_B64` cannot be rendered as an image, show the `QR_SERVER` URL as a fallback:
+> "Open [QR_SERVER] on your phone (same WiFi) to view and scan the QR code."
+
+> ⚠️ **Do NOT suggest opening `QR_URL` or `QR_LOGIN_URL` in a browser as the primary method.** These URLs require existing Mi Account cookies in the browser. Opening them from a fresh browser session will say "QR code expired" even if the QR is still valid. Users should always **scan the QR image** with Mi Home.
 
 **Step 3 — Wait for STATUS=login_success or STATUS=login_timeout**
 
-The script blocks until login completes or times out (default 120 s). Stream stdout and watch for the STATUS line.
+The script blocks until login completes or times out (default 120 s, default 2 auto-retries).
+If you see `QR_RETRY attempt=N of=M`, the QR expired — **immediately show the new `QR_IMAGE_B64`** to the user without waiting for them to ask. Do NOT say "login failed" on a `QR_RETRY` line.
+Only report failure after `STATUS=login_timeout` appears.
 
 **Step 4 — Report devices**
 
@@ -139,7 +143,8 @@ If the user asked for a specific device, search the `DEVICE=` JSON lines for `na
 | `--filter TEXT` | *(all)* | Only show devices whose name contains TEXT (case-insensitive) |
 | `--host IP` | auto-detected | Override host IP for QR server URL |
 | `--port PORT` | `31415` | Port for QR image HTTP server |
-| `--timeout SECS` | `120` | Max seconds to wait for QR scan |
+| `--timeout SECS` | `120` | Max seconds to wait per QR scan attempt |
+| `--retries N` | `2` | Re-generate QR up to N times if it expires before scan (total attempts = N+1) |
 | `--output-dir DIR` | `references/` | Directory to save `devices.json` and `devices.md` |
 
 ---
@@ -148,7 +153,8 @@ If the user asked for a specific device, search the `DEVICE=` JSON lines for `na
 
 | Error | Action |
 | :--- | :--- |
-| `STATUS=login_timeout` | Login window expired; offer to run again |
+| `QR_RETRY attempt=N of=M` | QR expired — show the new `QR_IMAGE_B64` immediately; do NOT report failure |
+| `STATUS=login_timeout` | All retries exhausted; offer to run again (possibly with `--timeout 180`) |
 | `STATUS=login_failed reason=cannot_get_qr_url` | Network/firewall issue reaching Xiaomi; check connectivity and retry |
 | `STATUS=login_failed reason=cannot_download_qr_image` | QR image download failed; check connectivity and retry |
 | `STATUS=login_failed reason=qr_server_start_failed detail=…` | Port in use; re-run with `--port 31416` (or any free port) |
@@ -157,6 +163,7 @@ If the user asked for a specific device, search the `DEVICE=` JSON lines for `na
 | `STATUS=login_failed reason=poll_error` | Network error while waiting for scan; retry |
 | `STATUS=login_failed reason=cannot_get_service_token` | Session exchange failed; try again |
 | `WARNING=local_ip_detection_failed` | Add `--host <device-ip>` so the QR server URL is reachable |
+| "QR code expired" when visiting `QR_URL`/`QR_LOGIN_URL` | Expected — these URLs require Mi Account browser cookies. Tell user to **scan the QR image** instead |
 | Missing token (`token=""`) | Device is offline or on a different LAN segment; token still stored |
 | No devices found | Wrong server; try without `--server` flag to scan all |
 | `pycryptodome` not found | Run `pip3 install pycryptodome` |

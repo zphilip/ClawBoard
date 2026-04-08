@@ -97,6 +97,9 @@ _ap.add_argument("--port",       "-p", default=31415, type=int,
                  help="Port for QR image HTTP server (default: 31415)")
 _ap.add_argument("--timeout",    "-t", default=120,   type=int,
                  help="Seconds to wait for QR scan (default: 120)")
+_ap.add_argument("--retries",    "-r", default=2,     type=int,
+                 help="How many times to re-generate the QR if it expires before the user scans "
+                      "(default: 2; total attempts = retries + 1)")
 _ap.add_argument("--output-dir", "-o", default=None,
                  help="Directory for devices.json and devices.md "
                       "(default: ../references/ relative to this script)")
@@ -169,6 +172,44 @@ def _get_local_ip() -> str:
 # ── QR image HTTP server ───────────────────────────────────────────────────────
 
 _qr_image_data: bytes = b""
+
+
+def _decode_qr_url(png_data: bytes) -> str | None:
+    """Extract the URL encoded inside a QR-code PNG.
+
+    The pre-generated PNG served by Xiaomi encodes the *exact* URL that the
+    Mi Home app reads when it scans the image.  This URL is tied to the
+    current QR session and is different from ``loginUrl``, which is a
+    browser-based fallback that requires existing Mi Account cookies and
+    expires independently.
+
+    Tries two optional QR-decoding libraries in order:
+      1. ``pyzbar``   (``pip install pyzbar`` + ``apt install libzbar0``)
+      2. ``zxingcpp`` (``pip install zxingcpp``, pure-Python wheels available)
+
+    Returns the decoded URL string, or ``None`` if neither library is
+    installed / decoding fails.  Callers should fall back to ``loginUrl``.
+    """
+    if not png_data:
+        return None
+    for _lib in ("pyzbar", "zxingcpp"):
+        try:
+            from PIL import Image as _PIL
+            img = _PIL.open(BytesIO(png_data))
+            if _lib == "pyzbar":
+                from pyzbar.pyzbar import decode as _pyzbar_decode  # type: ignore
+                results = _pyzbar_decode(img)
+                if results:
+                    raw = results[0].data
+                    return raw.decode("utf-8") if isinstance(raw, bytes) else str(raw)
+            else:
+                import zxingcpp as _zxing  # type: ignore
+                results = _zxing.read_barcodes(img)
+                if results:
+                    return str(results[0].text)
+        except Exception:
+            continue
+    return None
 
 
 def _print_qr_art(url: str) -> None:
@@ -443,24 +484,46 @@ class QrLoginConnector(XiaomiCloudConnector):
         self._timeout:     int = ARGS.timeout
 
     def login(self) -> bool:
-        if not self._step1_get_urls():
-            _emit("STATUS=login_failed reason=cannot_get_qr_url")
-            return False
-        if not self._step2_serve_qr():
-            _emit("STATUS=login_failed reason=cannot_download_qr_image")
-            return False
-        # _step3 and _step4 may succeed or fail; always stop the QR server
-        # afterwards so the image cannot be fetched once auth is decided.
-        try:
-            if not self._step3_long_poll():
-                return False  # STATUS already emitted inside
-            if not self._step4_service_token():
-                _emit("STATUS=login_failed reason=cannot_get_service_token")
+        """Attempt QR login, auto-retrying up to ARGS.retries times on expiry.
+
+        QR sessions on Xiaomi's server are short-lived (typically 60–120 s).
+        In an AI-agent context the total latency from QR generation to the
+        user actually scanning (AI inference + user reaction) can easily
+        exceed that window.  Each timeout transparently regenerates a fresh
+        QR so the user gets another chance without having to restart.
+        """
+        max_attempts = 1 + ARGS.retries
+        for attempt in range(1, max_attempts + 1):
+            if attempt > 1:
+                _emit(f"QR_RETRY attempt={attempt} of={max_attempts}")
+
+            if not self._step1_get_urls():
+                _emit("STATUS=login_failed reason=cannot_get_qr_url")
                 return False
-        finally:
-            _stop_qr_server()   # clears image from memory & stops HTTP server
-        _emit("STATUS=login_success")
-        return True
+            if not self._step2_serve_qr():
+                _emit("STATUS=login_failed reason=cannot_download_qr_image")
+                return False
+
+            # _step3/_step4 always followed by QR server teardown.
+            try:
+                poll_result = self._step3_long_poll()
+                if poll_result is None:
+                    # QR expired — loop will regenerate a fresh one.
+                    continue
+                if not poll_result:
+                    return False  # hard error; STATUS already emitted
+                if not self._step4_service_token():
+                    _emit("STATUS=login_failed reason=cannot_get_service_token")
+                    return False
+            finally:
+                _stop_qr_server()   # clears image & stops HTTP server
+
+            _emit("STATUS=login_success")
+            return True
+
+        # All retries exhausted without a successful scan.
+        _emit("STATUS=login_timeout")
+        return False
 
     def _step1_get_urls(self) -> bool:
         """Get QR image URL, login URL, and long-polling URL from Xiaomi."""
@@ -522,27 +585,39 @@ class QrLoginConnector(XiaomiCloudConnector):
             _qr_image_data = b""   # nothing to serve; clear it
             return False
         _emit(f"QR_SERVER=http://{local_ip}:{ARGS.port}/qr/{_QR_PATH_TOKEN}")
-        _emit(f"QR_URL={self._login_url}")
+        # Try to decode the URL that is actually encoded inside the QR PNG.
+        # This URL is what Mi Home reads when scanning and does NOT require
+        # existing browser cookies — unlike loginUrl (the browser fallback).
+        qr_url = _decode_qr_url(_qr_image_data) or self._login_url
+        if qr_url != self._login_url:
+            _emit(f"QR_URL={qr_url}")          # decoded from PNG (preferred)
+            _emit(f"QR_LOGIN_URL={self._login_url}")  # browser fallback
+        else:
+            _emit(f"QR_URL={qr_url}")
         # Inline base64 PNG — agents / UIs can render this directly without
         # needing to reach the HTTP server.
         _emit(f"QR_IMAGE_B64={base64.b64encode(_qr_image_data).decode()}")
         # Print block-art to stderr so the QR is visible in a human terminal.
-        _print_qr_art(self._login_url)
+        _print_qr_art(qr_url)
         _emit("STATUS=waiting_for_scan")
         return True
 
-    def _step3_long_poll(self) -> bool:
-        """Long-poll until user scans or timeout."""
-        url        = self._long_poll_url
-        start      = time.time()
-        last_retry = 0.0
+    def _step3_long_poll(self) -> bool | None:
+        """Long-poll until user scans or timeout.
+
+        Returns:
+            True  — user scanned; session data populated.
+            None  — QR expired before scan (retriable: caller can regenerate).
+            False — hard network/parse error (not retriable).
+        """
+        url   = self._long_poll_url
+        start = time.time()
         while True:
             try:
                 resp = self._session.get(url, timeout=15)
             except requests.exceptions.Timeout:
                 if time.time() - start > self._timeout:
-                    _emit("STATUS=login_timeout")
-                    return False
+                    return None   # timeout — caller decides whether to retry
                 continue
             except Exception as exc:
                 _emit(f"STATUS=login_failed reason=poll_error detail={exc}")
@@ -551,8 +626,7 @@ class QrLoginConnector(XiaomiCloudConnector):
             if resp.status_code == 200:
                 break
             if time.time() - start > self._timeout:
-                _emit("STATUS=login_timeout")
-                return False
+                return None   # timeout — caller decides whether to retry
             # back off briefly before retry
             time.sleep(2)
 
