@@ -221,38 +221,68 @@ def _print_qr_art(url: str) -> None:
         pass  # silently skip if both methods fail
 
 
+# Minimal 1×1 grey PNG served as last-resort fallback when PIL is unavailable
+_FALLBACK_ERROR_PNG: bytes = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJ"
+    "AAAAC0lEQVQI12NgAAIABQAABjE+ibYAAAAASUVORK5CYII="
+)
+
+
+def _make_error_png(msg: str = "QR Unavailable") -> bytes:
+    """Return a 300×300 red PNG displaying *msg*.
+
+    Used by the QR HTTP server when _qr_image_data is empty (e.g. the image
+    was never downloaded, the server is called after _stop_qr_server cleared
+    it, or the QR download itself failed).  Falls back to a hardcoded 1×1
+    pixel if PIL is unavailable.
+    """
+    try:
+        from PIL import Image as _I, ImageDraw as _D
+        img  = _I.new("RGB", (300, 300), (180, 30, 30))
+        draw = _D.Draw(img)
+        draw.rectangle((15, 100, 285, 200), fill=(255, 255, 255))
+        for i, word in enumerate(msg.replace("/", " / ").split()):
+            draw.text((20, 108 + i * 22), word, fill=(180, 30, 30))
+        buf = BytesIO()
+        img.save(buf, "PNG")
+        return buf.getvalue()
+    except Exception:
+        return _FALLBACK_ERROR_PNG
+
+
 class _QrHandler(BaseHTTPRequestHandler):
+    """Minimal HTTP handler that serves the QR PNG at a secret one-time path."""
+
     def do_GET(self) -> None:  # noqa: N802
         # Only serve the image at the secret path; reject everything else.
-        # This prevents any process or network peer from fetching the QR
-        # by simply hitting http://host:port/ .
         expected = f"/qr/{_QR_PATH_TOKEN}"
         if self.path.split("?")[0] != expected:
             self.send_response(404)
             self.end_headers()
             return
-        self.send_response(200)
+        if _qr_image_data:
+            data, status = _qr_image_data, 200
+        else:
+            # Image data absent: either not yet downloaded, already cleared
+            # after auth completed/timed-out, or the download failed.
+            data, status = _make_error_png("QR Not Ready / Expired"), 503
+        self.send_response(status)
         self.send_header("Content-Type", "image/png")
-        self.send_header("Content-Length", str(len(_qr_image_data)))
+        self.send_header("Content-Length", str(len(data)))
         self.end_headers()
-        self.wfile.write(_qr_image_data)
+        self.wfile.write(data)
 
     def log_message(self, fmt, *args) -> None:  # suppress access log
         pass
 
 
 def _start_qr_server() -> HTTPServer:
+    # HTTPServer.__init__ calls server_bind() + server_activate() (socket.listen())
+    # so the kernel accepts and queues connections immediately after construction,
+    # before serve_forever() enters its select loop.  No Event needed.
     httpd = HTTPServer(("0.0.0.0", ARGS.port), _QrHandler)
-    # Use an Event so the caller only proceeds once serve_forever() has entered
-    # its select loop.  Without this there is a race window between t.start()
-    # and the loop being ready where the emitted URL can't be reached yet.
-    _ready = threading.Event()
-    def _serve():
-        _ready.set()
-        httpd.serve_forever()
-    t = threading.Thread(target=_serve, daemon=True)
+    t = threading.Thread(target=httpd.serve_forever, daemon=True)
     t.start()
-    _ready.wait(timeout=3.0)   # wait up to 3 s for the loop to be live
     return httpd
 
 
@@ -482,7 +512,15 @@ class QrLoginConnector(XiaomiCloudConnector):
             return False
         _qr_image_data = resp.content
         local_ip = _get_local_ip()
-        _qr_httpd = _start_qr_server()
+        try:
+            _qr_httpd = _start_qr_server()
+        except OSError as exc:
+            # Most common causes: port already bound by another process,
+            # or port < 1024 without root privileges.
+            _emit(f"STATUS=login_failed reason=qr_server_start_failed detail={exc}")
+            _emit(f"  hint: try a different port with --port, e.g. --port 31416")
+            _qr_image_data = b""   # nothing to serve; clear it
+            return False
         _emit(f"QR_SERVER=http://{local_ip}:{ARGS.port}/qr/{_QR_PATH_TOKEN}")
         _emit(f"QR_URL={self._login_url}")
         # Inline base64 PNG — agents / UIs can render this directly without

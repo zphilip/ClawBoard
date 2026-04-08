@@ -53,21 +53,35 @@ The script outputs structured lines. Look for these keys:
 
 | Output Line | Meaning |
 | :--- | :--- |
-| `QR_SERVER=http://192.168.x.x:31415` | Local URL where QR image is served |
-| `QR_URL=https://account.xiaomi.com/...` | Direct Mi Account login URL (use this if QR image unreachable) |
-| `STATUS=waiting_for_scan` | QR code presented, waiting for user |
+| `QR_SERVER=http://<ip>:<port>/qr/<token>` | One-time URL serving the QR PNG (path token changes every run) |
+| `QR_URL=https://account.xiaomi.com/...` | Direct Mi Account login URL — use when QR image is unreachable |
+| `QR_IMAGE_B64=<base64 PNG>` | The QR image encoded inline — **decode and display this to the user** |
+| `STATUS=waiting_for_scan` | QR presented, waiting for user to scan |
 | `STATUS=login_success` | User scanned and approved |
-| `STATUS=login_timeout` | No scan within timeout — tell user to retry |
-| `STATUS=login_failed` | Authentication error |
+| `STATUS=login_timeout` | No scan within `--timeout` seconds — tell user to retry |
+| `STATUS=login_failed reason=cannot_get_qr_url` | Could not reach Xiaomi login endpoint (network/firewall) |
+| `STATUS=login_failed reason=cannot_download_qr_image` | QR image download failed |
+| `STATUS=login_failed reason=qr_server_start_failed detail=…` | Port already in use — retry with `--port 31416` |
+| `STATUS=login_failed reason=untrusted_url detail=…` | Server returned a non-Xiaomi URL (possible MITM) |
+| `STATUS=login_failed reason=network_error detail=…` | Network error during login URL fetch |
+| `STATUS=login_failed reason=poll_error detail=…` | Network error while polling for scan confirmation |
+| `STATUS=login_failed reason=cannot_get_service_token` | Location exchange failed after successful scan |
+| `WARNING=local_ip_detection_failed …` | Could not detect LAN IP — pass `--host <ip>` to fix |
 | `DEVICE={"name":…,"ip":…,"token":…,"model":…,"server":…}` | One device (JSON) |
 | `DEVICES_SAVED=<path>` | Path to the saved JSON file |
 | `DONE count=<n> json=<path> md=<path>` | All done |
 
-**Tell the user:**
-> "Please open this link on your phone with the Mi Home app to log in:
-> [QR_SERVER URL] — or scan with Mi Home QR scanner.
-> Alternatively visit: [QR_URL]
-> Let me know once you've scanned it, or I'll wait automatically."
+**Display the QR image to the user:**
+
+The script emits a `QR_IMAGE_B64=` line containing the full PNG as base64. **Decode it and render it as an inline image** so the user can scan it directly from the chat.
+
+Then tell the user:
+> "Scan the QR code above with the **Mi Home app** (Profile → top-right menu → Scan). Or open this link on your phone:
+> [QR_URL]
+> I'll wait automatically for up to [timeout] seconds."
+
+If `QR_IMAGE_B64` cannot be rendered, fall back to showing the `QR_SERVER` URL:
+> "Visit [QR_SERVER] on the same network to view the QR code."
 
 **Step 3 — Wait for STATUS=login_success or STATUS=login_timeout**
 
@@ -134,8 +148,15 @@ If the user asked for a specific device, search the `DEVICE=` JSON lines for `na
 
 | Error | Action |
 | :--- | :--- |
-| `STATUS=login_timeout` | Tell user login window expired; offer to run again |
-| `STATUS=login_failed` | Check internet connection; try `--server` without cn; retry |
+| `STATUS=login_timeout` | Login window expired; offer to run again |
+| `STATUS=login_failed reason=cannot_get_qr_url` | Network/firewall issue reaching Xiaomi; check connectivity and retry |
+| `STATUS=login_failed reason=cannot_download_qr_image` | QR image download failed; check connectivity and retry |
+| `STATUS=login_failed reason=qr_server_start_failed detail=…` | Port in use; re-run with `--port 31416` (or any free port) |
+| `STATUS=login_failed reason=untrusted_url` | Possible MITM or API change; check network and retry |
+| `STATUS=login_failed reason=network_error` | Network error fetching login URL; check connectivity |
+| `STATUS=login_failed reason=poll_error` | Network error while waiting for scan; retry |
+| `STATUS=login_failed reason=cannot_get_service_token` | Session exchange failed; try again |
+| `WARNING=local_ip_detection_failed` | Add `--host <device-ip>` so the QR server URL is reachable |
 | Missing token (`token=""`) | Device is offline or on a different LAN segment; token still stored |
 | No devices found | Wrong server; try without `--server` flag to scan all |
 | `pycryptodome` not found | Run `pip3 install pycryptodome` |
