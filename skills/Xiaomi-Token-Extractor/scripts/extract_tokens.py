@@ -9,6 +9,7 @@ tokens from Xiaomi Cloud, and saves results to:
 
 Machine-readable stdout lines (for the agent to parse):
   QR_SERVER=http://<ip>:<port>/qr/<token>  — single-use URL serving the QR image
+  QR_IMAGE_URL=http://<ip>:<port>/qr/<token>  — same URL, use this verbatim value to show the user
   QR_URL=https://account.xiaomi.com/…  — direct Mi Account login URL
   QR_IMAGE_B64=<base64-encoded PNG>     — QR image inline (for agent/UI display)
   STATUS=waiting_for_scan               — QR presented, waiting
@@ -585,6 +586,9 @@ class QrLoginConnector(XiaomiCloudConnector):
             _qr_image_data = b""   # nothing to serve; clear it
             return False
         _emit(f"QR_SERVER=http://{local_ip}:{ARGS.port}/qr/{_QR_PATH_TOKEN}")
+        # QR_IMAGE_URL is the same URL written out explicitly — agents must
+        # use this FULL value verbatim (including the /qr/<hex-token> path).
+        _emit(f"QR_IMAGE_URL=http://{local_ip}:{ARGS.port}/qr/{_QR_PATH_TOKEN}")
         # Try to decode the URL that is actually encoded inside the QR PNG.
         # This URL is what Mi Home reads when scanning and does NOT require
         # existing browser cookies — unlike loginUrl (the browser fallback).
