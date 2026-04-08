@@ -39,8 +39,11 @@ import json
 import os
 import random
 import secrets
+import signal
 import socket
+import subprocess
 import sys
+import tempfile
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -65,7 +68,11 @@ SERVERS = ["cn", "de", "us", "ru", "tw", "sg", "in", "i2"]
 # Prevents drive-by fetches: only whoever holds the emitted QR_SERVER URL can
 # retrieve the image.
 _QR_PATH_TOKEN: str  = secrets.token_hex(16)
-_qr_httpd: HTTPServer | None = None   # kept so we can shut it down after auth
+# PID of the detached QR server subprocess; None until started.
+# Using a detached *process* (not a thread) means the server outlives this
+# script — critical when the agent tool blocks on script completion before
+# showing the QR URL to the user.
+_qr_server_pid: int | None = None
 
 # Xiaomi domains that are allowed to appear in server-provided URLs (qr, lp).
 # Any URL pointing elsewhere is rejected to prevent SSRF.
@@ -318,25 +325,104 @@ class _QrHandler(BaseHTTPRequestHandler):
         pass
 
 
-def _start_qr_server() -> HTTPServer:
-    # HTTPServer.__init__ calls server_bind() + server_activate() (socket.listen())
-    # so the kernel accepts and queues connections immediately after construction,
-    # before serve_forever() enters its select loop.  No Event needed.
-    httpd = HTTPServer(("0.0.0.0", ARGS.port), _QrHandler)
-    t = threading.Thread(target=httpd.serve_forever, daemon=True)
-    t.start()
-    return httpd
+def _check_port_free(port: int) -> tuple[bool, Exception | None]:
+    """Return (True, None) if *port* is available to bind, else (False, exc)."""
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        s.bind(("0.0.0.0", port))
+        s.close()
+        return True, None
+    except OSError as exc:
+        return False, exc
+
+
+def _start_qr_server() -> int | None:
+    """Spawn a self-contained QR image HTTP server as a **detached child process**.
+
+    Unlike the previous threaded approach (where the server lived inside this
+    Python process and died when the script exited), the detached process keeps
+    the server alive independently.  This is essential for AI-agent tool
+    runtimes that block on the script's completion before surfacing output to
+    the user: they receive ``QR_IMAGE_URL`` *after* the parent script has
+    already finished, so the server must still be reachable at that point.
+
+    The server auto-terminates (and deletes its temp image file) after
+    ``QR_SERVER_TTL`` seconds (default 300 s / 5 min).  Callers should also
+    invoke :func:`_stop_qr_server` to kill it early once auth completes.
+
+    Returns the PID of the server process, or ``None`` if spawning fails.
+    """
+    QR_SERVER_TTL = 300   # seconds the server stays up after the parent exits
+
+    # Write the QR image to a temp file the child will read on each request.
+    try:
+        tmp = tempfile.NamedTemporaryFile(
+            delete=False, suffix=".png", prefix="qr_extract_"
+        )
+        tmp.write(_qr_image_data)
+        tmp.close()
+        image_path = tmp.name
+    except Exception:
+        return None
+
+    server_code = "\n".join([
+        "import sys, time, threading, os",
+        "from http.server import HTTPServer, BaseHTTPRequestHandler",
+        f"_path = '/qr/{_QR_PATH_TOKEN}'",
+        f"_img  = {image_path!r}",
+        "class H(BaseHTTPRequestHandler):",
+        "    def do_GET(self):",
+        "        if self.path.split('?')[0] != _path:",
+        "            self.send_response(404); self.end_headers(); return",
+        "        try:",
+        "            with open(_img, 'rb') as f: d = f.read()",
+        "        except Exception:",
+        "            self.send_response(503); self.end_headers(); return",
+        "        self.send_response(200)",
+        "        self.send_header('Content-Type', 'image/png')",
+        "        self.send_header('Content-Length', str(len(d)))",
+        "        self.end_headers()",
+        "        self.wfile.write(d)",
+        "    def log_message(self, *a): pass",
+        "def _die():",
+        f"    time.sleep({QR_SERVER_TTL})",
+        "    try: os.unlink(_img)",
+        "    except: pass",
+        "    os._exit(0)",
+        "threading.Thread(target=_die, daemon=True).start()",
+        f"HTTPServer(('0.0.0.0', {ARGS.port}), H).serve_forever()",
+    ])
+
+    try:
+        proc = subprocess.Popen(
+            [sys.executable, "-c", server_code],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            close_fds=True,
+            start_new_session=True,   # fully detach from parent's process group
+        )
+        # Give the child ~0.5 s to bind the port before we return, so that the
+        # URL we emit is immediately reachable.
+        time.sleep(0.5)
+        return proc.pid
+    except Exception:
+        return None
 
 
 def _stop_qr_server() -> None:
-    """Shut down the QR HTTP server and clear the credential-bearing image
-    from memory.  Called as soon as authentication succeeds, times out, or
-    fails so the QR can no longer be fetched.
+    """Send SIGTERM to the detached QR server process and clear the image.
+
+    Called once auth completes (success, timeout, or error) so the server
+    is shut down before its built-in 5-minute TTL expires.
     """
-    global _qr_image_data, _qr_httpd
-    if _qr_httpd is not None:
-        _qr_httpd.shutdown()
-        _qr_httpd = None
+    global _qr_image_data, _qr_server_pid
+    if _qr_server_pid is not None:
+        try:
+            os.kill(_qr_server_pid, signal.SIGTERM)
+        except OSError:
+            pass   # already dead — that's fine
+        _qr_server_pid = None
     _qr_image_data = b""  # clear from heap
 
 
@@ -576,19 +662,30 @@ class QrLoginConnector(XiaomiCloudConnector):
             return False
         _qr_image_data = resp.content
         local_ip = _get_local_ip()
-        try:
-            _qr_httpd = _start_qr_server()
-        except OSError as exc:
-            # Most common causes: port already bound by another process,
-            # or port < 1024 without root privileges.
-            _emit(f"STATUS=login_failed reason=qr_server_start_failed detail={exc}")
+
+        # Pre-check port availability in the parent so we get a clean error
+        # message if the port is already in use.
+        port_ok, port_exc = _check_port_free(ARGS.port)
+        if not port_ok:
+            _emit(f"STATUS=login_failed reason=qr_server_start_failed detail={port_exc}")
             _emit(f"  hint: try a different port with --port, e.g. --port 31416")
-            _qr_image_data = b""   # nothing to serve; clear it
+            _qr_image_data = b""
             return False
+
+        global _qr_server_pid
+        _qr_server_pid = _start_qr_server()
+        if _qr_server_pid is None:
+            _emit("STATUS=login_failed reason=qr_server_start_failed detail=failed to spawn server process")
+            _qr_image_data = b""
+            return False
+
         _emit(f"QR_SERVER=http://{local_ip}:{ARGS.port}/qr/{_QR_PATH_TOKEN}")
         # QR_IMAGE_URL is the same URL written out explicitly — agents must
         # use this FULL value verbatim (including the /qr/<hex-token> path).
+        # The server is a detached process that stays alive for up to 5 minutes
+        # even after this script exits, so the URL remains reachable.
         _emit(f"QR_IMAGE_URL=http://{local_ip}:{ARGS.port}/qr/{_QR_PATH_TOKEN}")
+        _emit(f"QR_SERVER_PID={_qr_server_pid}")
         # Try to decode the URL that is actually encoded inside the QR PNG.
         # This URL is what Mi Home reads when scanning and does NOT require
         # existing browser cookies — unlike loginUrl (the browser fallback).
