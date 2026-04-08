@@ -653,7 +653,7 @@ class QrLoginConnector(XiaomiCloudConnector):
 
     def _step2_serve_qr(self) -> bool:
         """Download QR image, start HTTP server, emit inline image + URLs."""
-        global _qr_image_data, _qr_httpd
+        global _qr_image_data, _qr_server_pid
         try:
             resp = self._session.get(self._qr_image_url, timeout=15)
         except Exception:
@@ -672,7 +672,6 @@ class QrLoginConnector(XiaomiCloudConnector):
             _qr_image_data = b""
             return False
 
-        global _qr_server_pid
         _qr_server_pid = _start_qr_server()
         if _qr_server_pid is None:
             _emit("STATUS=login_failed reason=qr_server_start_failed detail=failed to spawn server process")
@@ -680,26 +679,35 @@ class QrLoginConnector(XiaomiCloudConnector):
             return False
 
         _emit(f"QR_SERVER=http://{local_ip}:{ARGS.port}/qr/{_QR_PATH_TOKEN}")
-        # QR_IMAGE_URL is the same URL written out explicitly — agents must
-        # use this FULL value verbatim (including the /qr/<hex-token> path).
-        # The server is a detached process that stays alive for up to 5 minutes
-        # even after this script exits, so the URL remains reachable.
+        # QR_IMAGE_URL: the full URL serving the QR PNG — agents must copy this
+        # verbatim (including /qr/<hex-token>) and show it to the user.
+        # The detached server stays alive for up to 5 minutes after this script
+        # exits so the URL is still reachable when the agent processes the output.
         _emit(f"QR_IMAGE_URL=http://{local_ip}:{ARGS.port}/qr/{_QR_PATH_TOKEN}")
         _emit(f"QR_SERVER_PID={_qr_server_pid}")
-        # Try to decode the URL that is actually encoded inside the QR PNG.
-        # This URL is what Mi Home reads when scanning and does NOT require
-        # existing browser cookies — unlike loginUrl (the browser fallback).
-        qr_url = _decode_qr_url(_qr_image_data) or self._login_url
-        if qr_url != self._login_url:
-            _emit(f"QR_URL={qr_url}")          # decoded from PNG (preferred)
-            _emit(f"QR_LOGIN_URL={self._login_url}")  # browser fallback
-        else:
-            _emit(f"QR_URL={qr_url}")
-        # Inline base64 PNG — agents / UIs can render this directly without
-        # needing to reach the HTTP server.
+
+        # QR_IMAGE_B64: the QR PNG downloaded directly from Xiaomi's server.
+        # This IS the correct image to show/scan — it encodes the real Mi Home
+        # login URL.  Always show this to the user; do NOT regenerate a QR from
+        # any other URL (loginUrl encodes a browser-session URL that Mi Home
+        # reports as "expired").
         _emit(f"QR_IMAGE_B64={base64.b64encode(_qr_image_data).decode()}")
+
+        # QR_URL: only emitted when pyzbar or zxingcpp is installed and can
+        # decode the actual URL from inside the PNG.  When absent, the
+        # QR_IMAGE_B64 / QR_IMAGE_URL is sufficient — do NOT fall back to
+        # QR_LOGIN_URL as a scan target.
+        decoded_url = _decode_qr_url(_qr_image_data)
+        if decoded_url:
+            _emit(f"QR_URL={decoded_url}")
+
+        # QR_LOGIN_URL: browser-only fallback — requires existing Mi Account
+        # cookies and will say "expired" if opened from a fresh browser or
+        # scanned directly with Mi Home.  Show only as a secondary hint.
+        _emit(f"QR_LOGIN_URL={self._login_url}")
+
         # Print block-art to stderr so the QR is visible in a human terminal.
-        _print_qr_art(qr_url)
+        _print_qr_art(decoded_url or self._login_url)
         _emit("STATUS=waiting_for_scan")
         return True
 

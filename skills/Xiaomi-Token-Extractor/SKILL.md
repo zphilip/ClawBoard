@@ -1,6 +1,6 @@
 ---
 name: xiaomi-token-extractor
-version: 1.4.0
+version: 1.5.0
 description: "[English] Extract Xiaomi device tokens from Xiaomi Cloud using a QR code login flow. Retrieves IP addresses, tokens (32-char hex), models, and BLE keys for all devices across all homes. Saves results to local files for use by other skills like xiaomi-home. | [中文] 通过扫码登录小米账号，从小米云端提取所有设备的 IP、Token（32位十六进制）、型号及 BLE 密钥，并保存到本地文件供 xiaomi-home 等技能直接使用。"
 metadata: {"clawdbot":{"emoji":"🔑","requires":{"bins":["python3"]},"install":[{"id":"pip-deps","kind":"exec","command":"pip3 install requests pycryptodome pillow colorama","label":"Install Python dependencies"}]}}
 ---
@@ -57,9 +57,9 @@ The script outputs structured lines. Look for these keys:
 | `QR_SERVER=http://<ip>:<port>/qr/<token>` | Informational — the QR server address pattern. Use `QR_IMAGE_URL` instead |
 | `QR_IMAGE_URL=http://192.168.1.x:31415/qr/a3f8...` | ⚠️ **Copy this FULL value exactly as-is** (including the `/qr/...` path) — this is the URL the user opens to see the QR image. **Never strip the path.** |
 | `QR_SERVER_PID=<pid>` | PID of the detached QR server process. The server runs independently of this script and **stays alive for up to 5 minutes after the script exits**, so the URL is reachable even if the agent tool blocks on script completion before showing the URL to the user. You do not need to kill it manually — it self-terminates. |
-| `QR_URL=https://account.xiaomi.com/...` | URL decoded directly from the QR PNG — this is the **exact URL Mi Home reads when scanning**. If pyzbar/zxingcpp is installed it is decoded from the image; otherwise falls back to Xiaomi's `loginUrl` |
-| `QR_LOGIN_URL=https://account.xiaomi.com/...` | Emitted only when `QR_URL` was decoded from PNG. Browser-only fallback — requires existing Mi Account cookies; will say "expired" from a fresh browser |
-| `QR_IMAGE_B64=<base64 PNG>` | The QR image encoded inline — **decode and display this to the user** |
+| `QR_IMAGE_B64=<base64 PNG>` | ⚠️ **Always decode and show this inline image to the user — this IS the correct QR to scan.** It is the PNG downloaded directly from Xiaomi's server. Never regenerate a QR from any other URL. |
+| `QR_URL=https://account.xiaomi.com/...` | **Only emitted when pyzbar or zxingcpp is installed.** The actual URL decoded from inside the PNG — what Mi Home reads when scanning. If absent, `QR_IMAGE_B64` alone is sufficient. |
+| `QR_LOGIN_URL=https://account.xiaomi.com/...` | Browser-only fallback — always emitted. **Do NOT use as a scan target.** Requires existing Mi Account cookies; scanning this URL with Mi Home reports "expired". Show only as a secondary hint ("alternatively open in browser"). |
 | `QR_RETRY attempt=N of=M` | QR expired before scan; script auto-regenerated a fresh QR — show new `QR_IMAGE_B64` immediately |
 | `STATUS=waiting_for_scan` | QR presented, waiting for user to scan |
 | `STATUS=login_success` | User scanned and approved |
@@ -88,7 +88,7 @@ If `QR_IMAGE_B64` cannot be rendered as an image, show the `QR_IMAGE_URL` value 
 
 > ⚠️ **`QR_IMAGE_URL` contains a secret `/qr/<hex-token>` path — always show the FULL URL verbatim. Never truncate it to just the host and port.**
 
-> ⚠️ **Do NOT suggest opening `QR_URL` or `QR_LOGIN_URL` in a browser as the primary method.** These URLs require existing Mi Account cookies in the browser. Opening them from a fresh browser session will say "QR code expired" even if the QR is still valid. Users should always **scan the QR image** with Mi Home.
+> ⚠️ **`QR_LOGIN_URL` is a browser-session URL — do NOT show it as the QR scan target and do NOT regenerate a QR image from it.** Mi Home will report "expired" if it scans a QR encoding `QR_LOGIN_URL`. The only correct QR to scan is `QR_IMAGE_B64`.
 
 **Step 3 — Wait for STATUS=login_success or STATUS=login_timeout**
 
