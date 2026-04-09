@@ -111,6 +111,10 @@ _ap.add_argument("--retries",    "-r", default=2,     type=int,
 _ap.add_argument("--output-dir", "-o", default=None,
                  help="Directory for devices.json and devices.md "
                       "(default: ../references/ relative to this script)")
+_ap.add_argument("--collect",    "-c", default=None,
+                 metavar="SESSION_FILE",
+                 help="Phase-2 mode: load saved QR session and collect tokens "
+                      "(run automatically by the agent after the user scans the QR)")
 ARGS = _ap.parse_args()
 
 # Output directory: default is ../references/ relative to this script
@@ -119,6 +123,20 @@ if ARGS.output_dir:
 else:
     OUTPUT_DIR = Path(__file__).parent.parent / "references"
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+# Detect whether this script is running as an AI-agent tool (stdout is a pipe)
+# or directly in a user's terminal (stdout is a TTY).
+#
+# In agent mode the agent BLOCKS on script completion before surfacing ANY
+# output to the user.  If we long-polled inside this process the QR session
+# (~60–120 s TTL) would be expired before the user ever sees the URL.
+# Fix: exit after Phase 1 (emit QR + save state file); the agent calls
+#   python3 extract_tokens.py --collect SESSION_FILE
+# for Phase 2 (long-poll + token collection) after showing the QR.
+#
+# In TTY mode stdout is line-buffered so the QR URL appears immediately while
+# the script is still long-polling — no split needed.
+_IS_AGENT_MODE: bool = (ARGS.collect is None) and (not sys.stdout.isatty())
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -555,6 +573,55 @@ class XiaomiCloudConnector:
         return "".join(chr(random.randint(97, 122)) for _ in range(6))
 
 
+# ── Session state helpers (Phase-1 / Phase-2 split) ───────────────────────────
+
+def _save_session_state(connector: "QrLoginConnector", servers: list[str]) -> str:
+    """Serialize post-QR-download session state to a temp JSON file.
+
+    The file is read back by ``--collect`` (Phase 2) to restore the session
+    and complete long-polling + token collection without repeating Phase 1.
+    """
+    cookies_data = [
+        {"name": c.name, "value": c.value,
+         "domain": c.domain or "", "path": c.path or "/"}
+        for c in connector._session.cookies
+    ]
+    state = {
+        "version":       1,
+        "long_poll_url": connector._long_poll_url,
+        "timeout":       connector._timeout,
+        "servers":       servers,
+        "filter":        ARGS.filter,
+        "output_dir":    str(OUTPUT_DIR),
+        "qr_server_pid": _qr_server_pid,
+        "cookies":       cookies_data,
+        "agent":         connector._agent,
+        "device_id":     connector._device_id,
+    }
+    tmp = tempfile.NamedTemporaryFile(
+        mode="w", suffix=".json", prefix="qr_session_", delete=False
+    )
+    json.dump(state, tmp)
+    tmp.close()
+    return tmp.name
+
+
+def _restore_session(connector: "QrLoginConnector", state: dict) -> None:
+    """Restore connector + globals from a state dict produced by _save_session_state."""
+    global _qr_server_pid
+    connector._long_poll_url = state["long_poll_url"]
+    connector._timeout       = state.get("timeout", ARGS.timeout)
+    connector._agent         = state.get("agent", connector._agent)
+    connector._device_id     = state.get("device_id", connector._device_id)
+    _qr_server_pid           = state.get("qr_server_pid")
+    for c in state.get("cookies", []):
+        connector._session.cookies.set(
+            c["name"], c["value"],
+            domain=c.get("domain") or None,
+            path=c.get("path", "/"),
+        )
+
+
 # ── QR login connector ─────────────────────────────────────────────────────────
 
 class QrLoginConnector(XiaomiCloudConnector):
@@ -571,14 +638,36 @@ class QrLoginConnector(XiaomiCloudConnector):
         self._timeout:     int = ARGS.timeout
 
     def login(self) -> bool:
-        """Attempt QR login, auto-retrying up to ARGS.retries times on expiry.
+        """Attempt QR code login.
 
-        QR sessions on Xiaomi's server are short-lived (typically 60–120 s).
-        In an AI-agent context the total latency from QR generation to the
-        user actually scanning (AI inference + user reaction) can easily
-        exceed that window.  Each timeout transparently regenerates a fresh
-        QR so the user gets another chance without having to restart.
+        **Agent mode** (non-TTY stdout, no ``--collect``):
+            Runs Phase 1 only — downloads the QR image, starts the detached
+            HTTP server, emits all QR output lines, then returns ``True``
+            immediately.  ``main()`` will save the session state and call
+            ``sys.exit(0)`` so the agent receives output while the Xiaomi
+            session is still fresh.  The agent must call
+            ``extract_tokens.py --collect SESSION_FILE`` to complete login.
+
+        **Interactive mode** (TTY stdout):
+            Blocks until the user scans or ``--timeout`` ×
+            (``--retries`` + 1) seconds elapse, auto-regenerating the QR
+            on each expiry.
         """
+        if _IS_AGENT_MODE:
+            # ── Phase 1: emit QR, exit fast ───────────────────────────────
+            # The agent blocks on our completion, so we MUST NOT long-poll
+            # here — the QR session (60–120 s TTL) would expire before the
+            # agent ever shows the URL to the user.
+            if not self._step1_get_urls():
+                _emit("STATUS=login_failed reason=cannot_get_qr_url")
+                return False
+            if not self._step2_serve_qr():
+                _emit("STATUS=login_failed reason=cannot_download_qr_image")
+                return False
+            # Return True; main() saves state + exits.  No long-poll here.
+            return True
+
+        # ── Interactive (TTY) mode: block until scan or timeout ────────────
         max_attempts = 1 + ARGS.retries
         for attempt in range(1, max_attempts + 1):
             if attempt > 1:
@@ -821,10 +910,11 @@ def collect_devices(connector: XiaomiCloudConnector, servers_to_check: list[str]
 
 # ── Output helpers ─────────────────────────────────────────────────────────────
 
-def _apply_filter(devices: list[dict]) -> list[dict]:
-    if not ARGS.filter:
+def _apply_filter(devices: list[dict], override: str | None = None) -> list[dict]:
+    """Filter devices by name substring.  *override* takes precedence over ARGS.filter."""
+    q = (override if override is not None else (ARGS.filter or "")).lower()
+    if not q:
         return devices
-    q = ARGS.filter.lower()
     return [d for d in devices if q in d["name"].lower()]
 
 
@@ -872,13 +962,88 @@ def _save_markdown(devices: list[dict]) -> Path:
 
 # ── Main ───────────────────────────────────────────────────────────────────────
 
+def _phase2_collect() -> None:
+    """Phase 2 (``--collect SESSION_FILE``): long-poll → collect tokens → emit.
+
+    The agent calls this after showing the QR to the user and the user has
+    (or is about to) scan it.  Because the agent is no longer blocked waiting
+    for Phase 1 to complete, the Xiaomi session is still live when this runs.
+    """
+    global OUTPUT_DIR
+    try:
+        with open(ARGS.collect, encoding="utf-8") as fh:
+            state = json.load(fh)
+    except Exception as exc:
+        _emit(f"STATUS=login_failed reason=invalid_session_file detail={exc}")
+        sys.exit(1)
+
+    servers    = state.get("servers", SERVERS)
+    filter_str = state.get("filter")
+    out_dir    = state.get("output_dir")
+    if out_dir:
+        OUTPUT_DIR = Path(out_dir)
+        OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+    connector = QrLoginConnector()
+    _restore_session(connector, state)
+
+    try:
+        poll_result = connector._step3_long_poll()
+        if poll_result is None:
+            _emit("STATUS=login_timeout")
+            sys.exit(1)
+        if not poll_result:
+            sys.exit(1)
+        if not connector._step4_service_token():
+            _emit("STATUS=login_failed reason=cannot_get_service_token")
+            sys.exit(1)
+    finally:
+        _stop_qr_server()   # kill QR HTTP server now that login is done
+
+    _emit("STATUS=login_success")
+
+    all_devices   = collect_devices(connector, servers)
+    shown_devices = _apply_filter(all_devices, filter_str)
+
+    for d in shown_devices:
+        _emit(f"DEVICE={json.dumps(d, ensure_ascii=False)}")
+
+    json_path = _save_json(all_devices)
+    md_path   = _save_markdown(all_devices)
+    _emit(f"DEVICES_SAVED={json_path}")
+    _emit(f"DONE count={len(shown_devices)} json={json_path} md={md_path}")
+
+    # Remove the session state file now that it has been consumed.
+    try:
+        os.unlink(ARGS.collect)
+    except Exception:
+        pass
+
+
 def main() -> None:
+    # ── Phase 2 (--collect): complete a previously started QR session ──────
+    if ARGS.collect:
+        _phase2_collect()
+        return
+
     servers = [ARGS.server] if ARGS.server else SERVERS
 
     connector = QrLoginConnector()
     if not connector.login():
         sys.exit(1)
 
+    if _IS_AGENT_MODE:
+        # Phase 1 complete: QR is live, session state saved to a temp file.
+        # Exit immediately so the agent can show the QR while the Xiaomi
+        # session (60–120 s TTL) is still fresh.  The QR HTTP server process
+        # remains alive independently (up to 5 min).
+        # The agent MUST run QR_COLLECT_CMD after showing the QR to the user.
+        session_file = _save_session_state(connector, servers)
+        _emit(f"SESSION_FILE={session_file}")
+        _emit(f"QR_COLLECT_CMD=python3 {__file__} --collect {session_file}")
+        sys.exit(0)
+
+    # ── Interactive (TTY) mode: login() already did steps 1–4 ─────────────
     all_devices   = collect_devices(connector, servers)
     shown_devices = _apply_filter(all_devices)
 
