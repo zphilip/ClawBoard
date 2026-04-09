@@ -2,12 +2,15 @@
 Description=ClawBerry mDNS Discovery Service
 After=avahi-daemon.service
 Wants=avahi-daemon.service
+# Re-run when avahi-daemon restarts so our XML files are always current
+PartOf=avahi-daemon.service
 
 [Service]
 Type=simple
 ExecStart=/bin/bash /opt/clawboard/publish_services.sh
+ExecStop=/bin/bash -c 'rm -f /etc/avahi/services/clawberry-*.service'
 User=root
-Restart=on-failure
+Restart=always
 RestartSec=5
 
 [Install]
