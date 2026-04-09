@@ -364,93 +364,178 @@ def _check_port_free(port: int) -> tuple[bool, Exception | None]:
         return False, exc
 
 
-def _start_qr_server() -> int | None:
-    """Spawn a self-contained QR image HTTP server as a **detached child process**.
+def _start_qr_worker(
+    session_file: str,
+    long_poll_url: str,
+    cookies: list[dict],
+    timeout: int,
+) -> int | None:
+    """Spawn a detached worker process that does TWO things simultaneously:
 
-    Unlike the previous threaded approach (where the server lived inside this
-    Python process and died when the script exited), the detached process keeps
-    the server alive independently.  This is essential for AI-agent tool
-    runtimes that block on the script's completion before surfacing output to
-    the user: they receive ``QR_IMAGE_URL`` *after* the parent script has
-    already finished, so the server must still be reachable at that point.
+    1. Serves the QR image PNG over HTTP (so the user can open it on their phone).
+    2. Maintains the long-poll connection to Xiaomi's server.
 
-    The server auto-terminates (and deletes its temp image file) after
-    ``QR_SERVER_TTL`` seconds (default 300 s / 5 min).  Callers should also
-    invoke :func:`_stop_qr_server` to kill it early once auth completes.
+    This is the critical fix.  Xiaomi's QR session is kept alive by an active
+    HTTP connection to the ``lp`` (long-poll) URL.  If that connection drops
+    (e.g. because the parent process exited), Xiaomi's server immediately
+    invalidates the QR — scanning it then returns "expired".  Both the image
+    server and the poller must therefore run in a process that outlives the
+    parent script.
 
-    Returns the PID of the server process, or ``None`` if spawning fails.
+    When the user scans the QR, the long-poll endpoint returns 200 with the
+    session credentials.  The worker writes them to ``session_file`` under the
+    key ``"poll_result"`` so that Phase 2 (``--collect``) can read them back
+    without issuing a second poll (which would fail because the session is
+    already consumed).
+
+    The worker auto-exits after ``QR_SERVER_TTL`` seconds.
     """
-    QR_SERVER_TTL = 300   # seconds the server stays up after the parent exits
+    QR_SERVER_TTL = 300
 
-    # Write the QR image to a temp file the child will read on each request.
+    # Write QR image to a temp file the child reads on each HTTP request.
     try:
-        tmp = tempfile.NamedTemporaryFile(
+        tmp_img = tempfile.NamedTemporaryFile(
             delete=False, suffix=".png", prefix="qr_extract_"
         )
-        tmp.write(_qr_image_data)
-        tmp.close()
-        image_path = tmp.name
+        tmp_img.write(_qr_image_data)
+        tmp_img.close()
+        image_path = tmp_img.name
     except Exception:
         return None
 
-    server_code = "\n".join([
-        "import sys, time, threading, os",
-        "from http.server import HTTPServer, BaseHTTPRequestHandler",
-        f"_path = '/qr/{_QR_PATH_TOKEN}'",
-        f"_img  = {image_path!r}",
-        "class H(BaseHTTPRequestHandler):",
-        "    def do_GET(self):",
-        "        if self.path.split('?')[0] != _path:",
-        "            self.send_response(404); self.end_headers(); return",
-        "        try:",
-        "            with open(_img, 'rb') as f: d = f.read()",
-        "        except Exception:",
-        "            self.send_response(503); self.end_headers(); return",
-        "        self.send_response(200)",
-        "        self.send_header('Content-Type', 'image/png')",
-        "        self.send_header('Content-Length', str(len(d)))",
-        "        self.end_headers()",
-        "        self.wfile.write(d)",
-        "    def log_message(self, *a): pass",
-        "def _die():",
-        f"    time.sleep({QR_SERVER_TTL})",
-        "    try: os.unlink(_img)",
-        "    except: pass",
-        "    os._exit(0)",
-        "threading.Thread(target=_die, daemon=True).start()",
-        f"HTTPServer(('0.0.0.0', {ARGS.port}), H).serve_forever()",
-    ])
+    # The worker is a self-contained Python script embedded as a string.
+    # It imports nothing from this file — all data is passed via the variables
+    # bound in the f-string below.
+    worker_code = f"""
+import json, os, sys, threading, time
+import requests
+from http.server import HTTPServer, BaseHTTPRequestHandler
+
+_img_path   = {image_path!r}
+_qr_path    = '/qr/{_QR_PATH_TOKEN}'
+_sess_file  = {session_file!r}
+_lp_url     = {long_poll_url!r}
+_timeout    = {timeout!r}
+_ttl        = {QR_SERVER_TTL!r}
+_cookies    = {json.dumps(cookies)!r}
+
+# ── HTTP image server ──────────────────────────────────────────────────────────
+class H(BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path.split('?')[0] != _qr_path:
+            self.send_response(404); self.end_headers(); return
+        try:
+            with open(_img_path, 'rb') as f: d = f.read()
+        except Exception:
+            self.send_response(503); self.end_headers(); return
+        self.send_response(200)
+        self.send_header('Content-Type', 'image/png')
+        self.send_header('Content-Length', str(len(d)))
+        self.end_headers()
+        self.wfile.write(d)
+    def log_message(self, *a): pass
+
+httpd = HTTPServer(('0.0.0.0', {ARGS.port}), H)
+threading.Thread(target=httpd.serve_forever, daemon=True).start()
+
+# ── Long-poll (keeps QR session alive on Xiaomi's server) ─────────────────────
+def _do_poll():
+    session = requests.Session()
+    # Restore cookies so Xiaomi recognises this as the same client
+    for c in json.loads(_cookies):
+        session.cookies.set(c['name'], c['value'],
+                            domain=c.get('domain') or None,
+                            path=c.get('path', '/'))
+    start = time.time()
+    result = {{'status': 'timeout'}}
+    while True:
+        try:
+            resp = session.get(_lp_url, timeout=15)
+        except requests.exceptions.Timeout:
+            if time.time() - start > _timeout:
+                break
+            continue
+        except Exception as e:
+            result = {{'status': 'error', 'detail': str(e)}}
+            break
+        if resp.status_code == 200:
+            try:
+                text = resp.text.replace('&&&START&&&', '')
+                rd = json.loads(text)
+                result = {{
+                    'status':    'scanned',
+                    'userId':    rd.get('userId'),
+                    'ssecurity': rd.get('ssecurity'),
+                    'cUserId':   rd.get('cUserId'),
+                    'passToken': rd.get('passToken'),
+                    'location':  rd.get('location'),
+                }}
+            except Exception as e:
+                result = {{'status': 'error', 'detail': str(e)}}
+            break
+        if time.time() - start > _timeout:
+            break
+        time.sleep(2)
+    # Write poll result into the session file so --collect can read it
+    try:
+        with open(_sess_file, 'r') as f:
+            state = json.load(f)
+        state['poll_result'] = result
+        with open(_sess_file, 'w') as f:
+            json.dump(state, f)
+    except Exception:
+        pass
+    # Shut down HTTP server after scan (or after 30s grace for image loads)
+    time.sleep(30)
+    os._exit(0)
+
+threading.Thread(target=_do_poll, daemon=False).start()
+
+# TTL watchdog: kill the whole worker if nothing happened after _ttl seconds
+def _ttl_watchdog():
+    time.sleep(_ttl)
+    try: os.unlink(_img_path)
+    except: pass
+    os._exit(0)
+threading.Thread(target=_ttl_watchdog, daemon=True).start()
+
+# Block forever — the poll thread will os._exit when done
+while True:
+    time.sleep(60)
+"""
 
     try:
         proc = subprocess.Popen(
-            [sys.executable, "-c", server_code],
+            [sys.executable, "-c", worker_code],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             close_fds=True,
-            start_new_session=True,   # fully detach from parent's process group
+            start_new_session=True,
         )
-        # Give the child ~0.5 s to bind the port before we return, so that the
-        # URL we emit is immediately reachable.
-        time.sleep(0.5)
+        # Give the child ~0.8 s to bind the port and establish the poll
+        # connection before the parent emits the QR URL.
+        time.sleep(0.8)
         return proc.pid
     except Exception:
         return None
 
 
 def _stop_qr_server() -> None:
-    """Send SIGTERM to the detached QR server process and clear the image.
+    """Send SIGTERM to the detached QR worker process and clear the image.
 
-    Called once auth completes (success, timeout, or error) so the server
-    is shut down before its built-in 5-minute TTL expires.
+    Called once auth completes (success, timeout, or error) so the worker
+    is shut down before its built-in TTL expires.  In agent mode the worker
+    shuts itself down after the poll completes, so this is a best-effort
+    early cleanup.
     """
     global _qr_image_data, _qr_server_pid
     if _qr_server_pid is not None:
         try:
             os.kill(_qr_server_pid, signal.SIGTERM)
         except OSError:
-            pass   # already dead — that's fine
+            pass
         _qr_server_pid = None
-    _qr_image_data = b""  # clear from heap
+    _qr_image_data = b""
 
 
 # ── Xiaomi Cloud connector ─────────────────────────────────────────────────────
@@ -584,11 +669,21 @@ class XiaomiCloudConnector:
 
 # ── Session state helpers (Phase-1 / Phase-2 split) ───────────────────────────
 
-def _save_session_state(connector: "QrLoginConnector", servers: list[str]) -> str:
-    """Serialize post-QR-download session state to a temp JSON file.
+def _save_session_state(
+    connector: "QrLoginConnector",
+    servers: list[str],
+    path: str | None = None,
+) -> str:
+    """Serialize session state to a temp JSON file for Phase 2 to read.
 
-    The file is read back by ``--collect`` (Phase 2) to restore the session
-    and complete long-polling + token collection without repeating Phase 1.
+    The detached worker process will add ``poll_result`` to this file once
+    the user scans the QR.  Phase 2 (``--collect``) polls this file until
+    ``poll_result`` appears, then uses the credentials to fetch service token
+    and collect device tokens.
+
+    If *path* is given the state is written (overwriting) to that file;
+    this is used so the worker subprocess (which was given that path before
+    the full session state was known) picks up the update automatically.
     """
     cookies_data = [
         {"name": c.name, "value": c.value,
@@ -596,7 +691,7 @@ def _save_session_state(connector: "QrLoginConnector", servers: list[str]) -> st
         for c in connector._session.cookies
     ]
     state = {
-        "version":       1,
+        "version":       2,
         "long_poll_url": connector._long_poll_url,
         "timeout":       connector._timeout,
         "servers":       servers,
@@ -606,7 +701,12 @@ def _save_session_state(connector: "QrLoginConnector", servers: list[str]) -> st
         "cookies":       cookies_data,
         "agent":         connector._agent,
         "device_id":     connector._device_id,
+        "poll_result":   None,   # worker fills this in when user scans
     }
+    if path:
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(state, fh)
+        return path
     tmp = tempfile.NamedTemporaryFile(
         mode="w", suffix=".json", prefix="qr_session_", delete=False
     )
@@ -665,15 +765,25 @@ class QrLoginConnector(XiaomiCloudConnector):
         if _IS_AGENT_MODE:
             # ── Phase 1: emit QR, exit fast ───────────────────────────────
             # The agent blocks on our completion, so we MUST NOT long-poll
-            # here — the QR session (60–120 s TTL) would expire before the
-            # agent ever shows the URL to the user.
+            # here. Instead we spawn a detached worker that both serves the
+            # QR image AND maintains the long-poll connection (keeping the
+            # Xiaomi session alive). The worker writes credentials to the
+            # session file when the user scans; Phase 2 reads them back.
             if not self._step1_get_urls():
                 _emit("STATUS=login_failed reason=cannot_get_qr_url")
                 return False
-            if not self._step2_serve_qr():
+            # session_file must exist before the worker starts so it can
+            # write poll_result into it. Create a placeholder now; main()
+            # will fill in the full state after _step2_serve_qr returns.
+            tmp_sess = tempfile.NamedTemporaryFile(
+                mode="w", suffix=".json", prefix="qr_session_", delete=False
+            )
+            json.dump({"poll_result": None}, tmp_sess)
+            tmp_sess.close()
+            self._session_file_placeholder = tmp_sess.name
+            if not self._step2_serve_qr(session_file=tmp_sess.name):
                 _emit("STATUS=login_failed reason=cannot_download_qr_image")
                 return False
-            # Return True; main() saves state + exits.  No long-poll here.
             return True
 
         # ── Interactive (TTY) mode: block until scan or timeout ────────────
@@ -685,7 +795,7 @@ class QrLoginConnector(XiaomiCloudConnector):
             if not self._step1_get_urls():
                 _emit("STATUS=login_failed reason=cannot_get_qr_url")
                 return False
-            if not self._step2_serve_qr():
+            if not self._step2_serve_qr(session_file=""):
                 _emit("STATUS=login_failed reason=cannot_download_qr_image")
                 return False
 
@@ -749,8 +859,8 @@ class QrLoginConnector(XiaomiCloudConnector):
         self._timeout = min(rd.get("timeout", ARGS.timeout), ARGS.timeout)
         return True
 
-    def _step2_serve_qr(self) -> bool:
-        """Download QR image, start HTTP server, emit inline image + URLs."""
+    def _step2_serve_qr(self, session_file: str = "") -> bool:
+        """Download QR image, start detached worker (image server + long-poll), emit URLs."""
         global _qr_image_data, _qr_server_pid
         try:
             resp = self._session.get(self._qr_image_url, timeout=15)
@@ -761,8 +871,6 @@ class QrLoginConnector(XiaomiCloudConnector):
         _qr_image_data = resp.content
         local_ip = _get_local_ip()
 
-        # Pre-check port availability in the parent so we get a clean error
-        # message if the port is already in use.
         port_ok, port_exc = _check_port_free(ARGS.port)
         if not port_ok:
             _emit(f"STATUS=login_failed reason=qr_server_start_failed detail={port_exc}")
@@ -770,41 +878,34 @@ class QrLoginConnector(XiaomiCloudConnector):
             _qr_image_data = b""
             return False
 
-        _qr_server_pid = _start_qr_server()
+        # Serialize cookies so the worker can restore the session for polling
+        cookies_data = [
+            {"name": c.name, "value": c.value,
+             "domain": c.domain or "", "path": c.path or "/"}
+            for c in self._session.cookies
+        ]
+
+        _qr_server_pid = _start_qr_worker(
+            session_file  = session_file,
+            long_poll_url = self._long_poll_url,
+            cookies       = cookies_data,
+            timeout       = self._timeout,
+        )
         if _qr_server_pid is None:
-            _emit("STATUS=login_failed reason=qr_server_start_failed detail=failed to spawn server process")
+            _emit("STATUS=login_failed reason=qr_server_start_failed detail=failed to spawn worker process")
             _qr_image_data = b""
             return False
 
         _emit(f"QR_SERVER=http://{local_ip}:{ARGS.port}/qr/{_QR_PATH_TOKEN}")
-        # QR_IMAGE_URL: the full URL serving the QR PNG — agents must copy this
-        # verbatim (including /qr/<hex-token>) and show it to the user.
-        # The detached server stays alive for up to 5 minutes after this script
-        # exits so the URL is still reachable when the agent processes the output.
         _emit(f"QR_IMAGE_URL=http://{local_ip}:{ARGS.port}/qr/{_QR_PATH_TOKEN}")
         _emit(f"QR_SERVER_PID={_qr_server_pid}")
-
-        # QR_IMAGE_B64: the QR PNG downloaded directly from Xiaomi's server.
-        # This IS the correct image to show/scan — it encodes the real Mi Home
-        # login URL.  Always show this to the user; do NOT regenerate a QR from
-        # any other URL (loginUrl encodes a browser-session URL that Mi Home
-        # reports as "expired").
         _emit(f"QR_IMAGE_B64={base64.b64encode(_qr_image_data).decode()}")
 
-        # QR_URL: only emitted when pyzbar or zxingcpp is installed and can
-        # decode the actual URL from inside the PNG.  When absent, the
-        # QR_IMAGE_B64 / QR_IMAGE_URL is sufficient — do NOT fall back to
-        # QR_LOGIN_URL as a scan target.
         decoded_url = _decode_qr_url(_qr_image_data)
         if decoded_url:
             _emit(f"QR_URL={decoded_url}")
 
-        # QR_LOGIN_URL: browser-only fallback — requires existing Mi Account
-        # cookies and will say "expired" if opened from a fresh browser or
-        # scanned directly with Mi Home.  Show only as a secondary hint.
         _emit(f"QR_LOGIN_URL={self._login_url}")
-
-        # Print block-art to stderr so the QR is visible in a human terminal.
         _print_qr_art(decoded_url or self._login_url)
         _emit("STATUS=waiting_for_scan")
         return True
@@ -972,11 +1073,13 @@ def _save_markdown(devices: list[dict]) -> Path:
 # ── Main ───────────────────────────────────────────────────────────────────────
 
 def _phase2_collect() -> None:
-    """Phase 2 (``--collect SESSION_FILE``): long-poll → collect tokens → emit.
+    """Phase 2 (``--collect SESSION_FILE``): wait for worker poll result → collect tokens.
 
-    The agent calls this after showing the QR to the user and the user has
-    (or is about to) scan it.  Because the agent is no longer blocked waiting
-    for Phase 1 to complete, the Xiaomi session is still live when this runs.
+    The detached worker started in Phase 1 is maintaining the long-poll
+    connection and will write credentials into the session file under
+    ``poll_result`` as soon as the user scans the QR.  This function simply
+    polls the file until that key is populated, then uses the credentials
+    to fetch the service token and collect device tokens.
     """
     global OUTPUT_DIR
     try:
@@ -989,25 +1092,50 @@ def _phase2_collect() -> None:
     servers    = state.get("servers", SERVERS)
     filter_str = state.get("filter")
     out_dir    = state.get("output_dir")
+    timeout    = state.get("timeout", ARGS.timeout)
     if out_dir:
         OUTPUT_DIR = Path(out_dir)
         OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
+    # Wait for the detached worker to write poll_result into the session file.
+    # The worker long-polls Xiaomi and writes credentials when the user scans.
+    _emit("STATUS=waiting_for_scan")
+    deadline = time.time() + timeout + 10   # small grace over worker timeout
+    poll_result = None
+    while time.time() < deadline:
+        try:
+            with open(ARGS.collect, encoding="utf-8") as fh:
+                current = json.load(fh)
+            poll_result = current.get("poll_result")
+            if poll_result and poll_result.get("status") != "timeout":
+                break
+            if poll_result and poll_result.get("status") == "timeout":
+                _emit("STATUS=login_timeout")
+                sys.exit(1)
+        except Exception:
+            pass
+        time.sleep(1)
+
+    if not poll_result or poll_result.get("status") != "scanned":
+        _emit("STATUS=login_timeout")
+        sys.exit(1)
+
+    # Credentials are ready — build connector from saved state
     connector = QrLoginConnector()
     _restore_session(connector, state)
+    # Inject the credentials the worker received from the poll response
+    connector.userId       = poll_result.get("userId")
+    connector._ssecurity   = poll_result.get("ssecurity")
+    connector._cUserId     = poll_result.get("cUserId")
+    connector._pass_token  = poll_result.get("passToken")
+    connector._location    = poll_result.get("location")
 
     try:
-        poll_result = connector._step3_long_poll()
-        if poll_result is None:
-            _emit("STATUS=login_timeout")
-            sys.exit(1)
-        if not poll_result:
-            sys.exit(1)
         if not connector._step4_service_token():
             _emit("STATUS=login_failed reason=cannot_get_service_token")
             sys.exit(1)
     finally:
-        _stop_qr_server()   # kill QR HTTP server now that login is done
+        _stop_qr_server()
 
     _emit("STATUS=login_success")
 
@@ -1022,7 +1150,6 @@ def _phase2_collect() -> None:
     _emit(f"DEVICES_SAVED={json_path}")
     _emit(f"DONE count={len(shown_devices)} json={json_path} md={md_path}")
 
-    # Remove the session state file now that it has been consumed.
     try:
         os.unlink(ARGS.collect)
     except Exception:
@@ -1042,12 +1169,15 @@ def main() -> None:
         sys.exit(1)
 
     if _IS_AGENT_MODE:
-        # Phase 1 complete: QR is live, session state saved to a temp file.
-        # Exit immediately so the agent can show the QR while the Xiaomi
-        # session (60–120 s TTL) is still fresh.  The QR HTTP server process
-        # remains alive independently (up to 5 min).
-        # The agent MUST run QR_COLLECT_CMD after showing the QR to the user.
-        session_file = _save_session_state(connector, servers)
+        # Phase 1 complete. The detached worker is alive, maintaining the
+        # long-poll and serving the QR image. Write the full session state
+        # (including cookies for service-token exchange) into the placeholder
+        # file the worker already has a reference to.
+        placeholder = getattr(connector, "_session_file_placeholder", None)
+        session_file = _save_session_state(
+            connector, servers,
+            path=placeholder,
+        )
         _emit(f"SESSION_FILE={session_file}")
         _emit(f"QR_COLLECT_CMD=python3 {__file__} --collect {session_file}")
         sys.exit(0)
