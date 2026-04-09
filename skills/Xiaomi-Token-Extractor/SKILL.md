@@ -1,6 +1,6 @@
 ---
 name: xiaomi-token-extractor
-version: 1.8.0
+version: 1.9.0
 description: "[English] Extract Xiaomi device tokens from Xiaomi Cloud using a QR code login flow. Retrieves IP addresses, tokens (32-char hex), models, and BLE keys for all devices across all homes. Saves results to local files for use by other skills like xiaomi-home. | [中文] 通过扫码登录小米账号，从小米云端提取所有设备的 IP、Token（32位十六进制）、型号及 BLE 密钥，并保存到本地文件供 xiaomi-home 等技能直接使用。"
 metadata: {"clawdbot":{"emoji":"🔑","requires":{"bins":["python3"]},"install":[{"id":"pip-deps","kind":"exec","command":"pip3 install requests pycryptodome pillow colorama","label":"Install Python dependencies"}]}}
 ---
@@ -102,12 +102,14 @@ If `QR_URL` is also present, you may show it as a secondary hint:
 
 **Step 3 — Run Phase 2 to complete login and collect tokens**
 
-Once you have shown the QR to the user and asked them to scan it, run the **exact** `QR_COLLECT_CMD` value from Step 1 output. This starts Phase 2, which long-polls Xiaomi until the user scans (or until timeout).
+Once you have shown the QR to the user and asked them to scan it, run the **exact** `QR_COLLECT_CMD` value from Step 1 output using a **blocking / foreground exec** tool (NOT `spawn`, NOT a background task). You MUST wait for it to finish and capture its full output.
 
 ```bash
 # Use the exact QR_COLLECT_CMD value from Step 1 output, e.g.:
 python3 scripts/extract_tokens.py --collect /tmp/qr_session_xxxx.json
 ```
+
+> ⚠️ **MUST use blocking exec (foreground). Do NOT use `spawn` or any background/async tool for this command.** If run in the background, the output is lost and the user never receives their device tokens.
 
 This command blocks until one of:
 - `STATUS=login_success` — scan detected; `DEVICE=` and `DONE` lines follow.
@@ -117,17 +119,25 @@ This command blocks until one of:
 > ⚠️ **Because the agent already showed the QR in Step 2, the user may have already scanned — Phase 2's long-poll will return success immediately if so.**
 > If `STATUS=login_timeout` appears, the session expired before the user scanned. Re-run from Step 1 to get a fresh QR.
 
-**Step 4 — Report devices**
+**Step 4 — Report devices to the user (MANDATORY)**
 
-Each `DEVICE=` line contains a JSON object. Collect them all. When `DONE` appears, present a summary table to the user:
+After `--collect` finishes, you MUST immediately reply to the user with the results. Do NOT stay silent.
+
+Collect every `DEVICE=` line from the output (each is a JSON object). When `DONE` appears, present a summary table:
 
 ```
 | Device Name | IP | Token | Model |
+|---|---|---|---|
 | 热水器 | 192.168.1.10 | abc123…ef | cuco.plug.v3 |
 …
 ```
 
-Also tell the user: "Tokens saved to `references/devices.json` — the xiaomi-home skill can use these directly."
+Also tell the user:
+> "Found **N** device(s). Tokens saved to `references/devices.json` — the xiaomi-home skill can use these directly."
+
+If `DEVICE=` lines are present but `DONE` is missing, still report what was collected.
+
+If `count=0` or no `DEVICE=` lines appear, tell the user no devices were found and suggest trying without `--server` to scan all regions.
 
 **Step 5 — Optional: filter a specific device**
 
