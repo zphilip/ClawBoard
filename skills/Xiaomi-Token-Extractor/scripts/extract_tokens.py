@@ -28,6 +28,8 @@ Usage:
   python3 extract_tokens.py [--server SERVER] [--filter TEXT]
                             [--host IP] [--port PORT] [--timeout SECS]
                             [--output-dir DIR]
+  python3 extract_tokens.py --interactive          # blocking single-process (terminal use)
+  python3 extract_tokens.py --collect SESSION_FILE # Phase 2 (agent use)
 """
 from __future__ import annotations
 
@@ -115,6 +117,11 @@ _ap.add_argument("--collect",    "-c", default=None,
                  metavar="SESSION_FILE",
                  help="Phase-2 mode: load saved QR session and collect tokens "
                       "(run automatically by the agent after the user scans the QR)")
+_ap.add_argument("--interactive", "-i", action="store_true",
+                 help="Run in single-process interactive mode (blocks until scan). "
+                      "Only use when calling directly from a terminal. "
+                      "Default (without this flag) is always two-phase mode so that "
+                      "agent tools receive the QR output before the session expires.")
 ARGS = _ap.parse_args()
 
 # Output directory: default is ../references/ relative to this script
@@ -124,19 +131,21 @@ else:
     OUTPUT_DIR = Path(__file__).parent.parent / "references"
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-# Detect whether this script is running as an AI-agent tool (stdout is a pipe)
-# or directly in a user's terminal (stdout is a TTY).
+# Two-phase mode is the DEFAULT for all invocations that are not:
+#   a) --collect  (Phase 2 itself)
+#   b) --interactive  (explicit opt-in to blocking single-process mode)
 #
-# In agent mode the agent BLOCKS on script completion before surfacing ANY
-# output to the user.  If we long-polled inside this process the QR session
-# (~60–120 s TTL) would be expired before the user ever sees the URL.
-# Fix: exit after Phase 1 (emit QR + save state file); the agent calls
-#   python3 extract_tokens.py --collect SESSION_FILE
-# for Phase 2 (long-poll + token collection) after showing the QR.
+# WHY: TTY detection (sys.stdout.isatty()) is unreliable — agent runtimes
+# (openclaw, Claude tool-use, etc.) commonly allocate a PTY for the child
+# process, making isatty() return True even though the agent blocks on
+# script completion before surfacing ANY output.  The result: the script
+# long-polls for up to timeout×retries seconds, the Xiaomi QR session
+# (60–120 s TTL) expires, and scanning gives “expired”.
 #
-# In TTY mode stdout is line-buffered so the QR URL appears immediately while
-# the script is still long-polling — no split needed.
-_IS_AGENT_MODE: bool = (ARGS.collect is None) and (not sys.stdout.isatty())
+# With two-phase as the default:
+#   Phase 1 → exits in ~2 s, emits QR + SESSION_FILE + QR_COLLECT_CMD
+#   Phase 2 → agent runs --collect after showing the QR; long-polls then
+_IS_AGENT_MODE: bool = (ARGS.collect is None) and (not ARGS.interactive)
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 

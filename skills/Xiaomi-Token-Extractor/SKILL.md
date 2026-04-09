@@ -1,6 +1,6 @@
 ---
 name: xiaomi-token-extractor
-version: 1.6.0
+version: 1.7.0
 description: "[English] Extract Xiaomi device tokens from Xiaomi Cloud using a QR code login flow. Retrieves IP addresses, tokens (32-char hex), models, and BLE keys for all devices across all homes. Saves results to local files for use by other skills like xiaomi-home. | [中文] 通过扫码登录小米账号，从小米云端提取所有设备的 IP、Token（32位十六进制）、型号及 BLE 密钥，并保存到本地文件供 xiaomi-home 等技能直接使用。"
 metadata: {"clawdbot":{"emoji":"🔑","requires":{"bins":["python3"]},"install":[{"id":"pip-deps","kind":"exec","command":"pip3 install requests pycryptodome pillow colorama","label":"Install Python dependencies"}]}}
 ---
@@ -48,7 +48,9 @@ To scan ALL servers (slower but finds every device):
 python3 scripts/extract_tokens.py
 ```
 
-> ⚠️ **In agent mode (non-TTY stdout) the script exits in ~2 seconds.** It does NOT long-poll. Capture `SESSION_FILE` and `QR_COLLECT_CMD` from the output — you will need them in Step 3.
+> ⚠️ **The script ALWAYS exits in ~2 seconds (Phase 1) unless `--interactive` is passed.**  
+> It does NOT long-poll. Capture `SESSION_FILE` and `QR_COLLECT_CMD` from the output — you will need them in Step 3.  
+> **Do NOT pass `--interactive`** — that flag is only for direct terminal use and will cause the same "expired" issue by blocking for 120 s before returning output.
 
 **Step 2 — Parse the output and tell the user to scan**
 
@@ -168,6 +170,7 @@ If the user asked for a specific device, search the `DEVICE=` JSON lines for `na
 | `--retries N` | `2` | Re-generate QR up to N times if it expires before scan (interactive/TTY mode only) |
 | `--output-dir DIR` | `references/` | Directory to save `devices.json` and `devices.md` |
 | `--collect SESSION_FILE` | — | **Phase 2**: load saved session state and complete login + token collection |
+| `--interactive` | — | **Terminal-only**: single-process blocking mode. **Never use from an agent tool** — causes QR to expire before output is returned. |
 
 ---
 
