@@ -1,6 +1,6 @@
 ---
 name: xiaomi-token-extractor
-version: 1.7.0
+version: 1.8.0
 description: "[English] Extract Xiaomi device tokens from Xiaomi Cloud using a QR code login flow. Retrieves IP addresses, tokens (32-char hex), models, and BLE keys for all devices across all homes. Saves results to local files for use by other skills like xiaomi-home. | [中文] 通过扫码登录小米账号，从小米云端提取所有设备的 IP、Token（32位十六进制）、型号及 BLE 密钥，并保存到本地文件供 xiaomi-home 等技能直接使用。"
 metadata: {"clawdbot":{"emoji":"🔑","requires":{"bins":["python3"]},"install":[{"id":"pip-deps","kind":"exec","command":"pip3 install requests pycryptodome pillow colorama","label":"Install Python dependencies"}]}}
 ---
@@ -18,7 +18,7 @@ Authenticate with Xiaomi Cloud via QR code and download the IP address, Token, a
 ### 🚀 How It Works
 
 1. Agent runs `scripts/extract_tokens.py` — QR image is downloaded, a detached QR server starts, and a `SESSION_FILE` path is emitted. **Script exits in ~2 s** so the agent can show the QR while the Xiaomi session is still fresh.
-2. Agent reads `QR_IMAGE_B64` and renders the QR image inline for the user to scan.
+2. Agent shows the `QR_IMAGE_URL` link (and optionally `QR_URL`) to the user. `QR_IMAGE_B64` is only rendered inline if the user explicitly asks for it.
 3. User scans the QR code with the **Mi Home app** (Profile → top-right → Scan).
 4. Agent runs `scripts/extract_tokens.py --collect SESSION_FILE` — long-polls until the scan is detected, then fetches all device tokens from the cloud.
 5. Results are written to `references/devices.json` and `references/devices.md`.
@@ -61,12 +61,12 @@ The script outputs structured lines. Look for these keys:
 | `QR_SERVER=http://<ip>:<port>/qr/<token>` | Informational — the QR server address pattern. Use `QR_IMAGE_URL` instead |
 | `QR_IMAGE_URL=http://192.168.1.x:31415/qr/a3f8...` | ⚠️ **Copy this FULL value exactly as-is** (including the `/qr/...` path) — this is the URL the user opens to see the QR image. **Never strip the path.** |
 | `QR_SERVER_PID=<pid>` | PID of the detached QR server process. Stays alive up to 5 min after Phase 1 exits. Self-terminates automatically. |
-| `QR_IMAGE_B64=<base64 PNG>` | ⚠️ **Always decode and show this inline image to the user — this IS the correct QR to scan.** It is the PNG downloaded directly from Xiaomi's server. Never regenerate a QR from any other URL. |
+| `QR_IMAGE_B64=<base64 PNG>` | The QR PNG as base64, downloaded directly from Xiaomi's server. **Do NOT render this inline by default.** Only decode and display it if the user explicitly asks to see the QR image. `QR_IMAGE_URL` is sufficient for normal use. |
 | `QR_URL=https://account.xiaomi.com/...` | **Only emitted when pyzbar or zxingcpp is installed.** The actual URL decoded from inside the PNG. If absent, `QR_IMAGE_B64` alone is sufficient. |
 | `QR_LOGIN_URL=https://account.xiaomi.com/...` | Browser-only fallback. **Do NOT use as a scan target.** Requires Mi Account cookies; scanning this URL with Mi Home reports "expired". |
 | `SESSION_FILE=<path>` | ⚠️ **Path to the saved QR session state file. Required for Phase 2.** Pass this exact path to `--collect`. |
 | `QR_COLLECT_CMD=python3 <script> --collect <path>` | ⚠️ **Exact command to run after showing the QR to the user.** Copy and run verbatim. This completes login and collects tokens. |
-| `QR_RETRY attempt=N of=M` | QR expired before scan (interactive/TTY mode only); script auto-regenerated a fresh QR — show new `QR_IMAGE_B64` immediately |
+| `QR_RETRY attempt=N of=M` | QR expired before scan (interactive/TTY mode only); script auto-regenerated a fresh QR — show the new `QR_IMAGE_URL` to the user immediately |
 | `STATUS=waiting_for_scan` | QR presented, waiting for user to scan |
 | `STATUS=login_success` | User scanned and approved |
 | `STATUS=login_timeout` | No scan within `--timeout` seconds; re-run from Step 1 for a fresh QR |
@@ -83,19 +83,22 @@ The script outputs structured lines. Look for these keys:
 | `DEVICES_SAVED=<path>` | Path to the saved JSON file |
 | `DONE count=<n> json=<path> md=<path>` | All done |
 
-**Display the QR image to the user:**
+**Display the QR link to the user:**
 
-The script emits a `QR_IMAGE_B64=` line containing the full PNG as base64. **Decode it and render it as an inline image** so the user can scan it directly from the chat.
+By default, show the user the **`QR_IMAGE_URL`** (a clickable link to the QR image served locally) and, if present, `QR_URL` (the decoded login URL). This is enough for the user to open the image on their phone and scan it with Mi Home.
 
 Tell the user:
-> "Scan the QR code above with the **Mi Home app** (Profile → top-right menu → Scan). I'll detect the scan automatically."
+> "Open this link on your phone (must be on the same WiFi): **[exact QR_IMAGE_URL value]**  
+> Then scan the QR with the **Mi Home app** (Profile → top-right menu → Scan). I'll detect it automatically."
 
-If `QR_IMAGE_B64` cannot be rendered as an image, show the `QR_IMAGE_URL` value to the user:
-> "Open **[exact QR_IMAGE_URL value]** on your phone (same WiFi) to view and scan the QR code."
+If `QR_URL` is also present, you may show it as a secondary hint:
+> "Alternatively, scan this URL directly with Mi Home: `[QR_URL value]`"
+
+**Only show `QR_IMAGE_B64` if the user explicitly asks** (e.g. "show me the QR code", "display the image"). In that case decode it and render it as an inline image.
 
 > ⚠️ **`QR_IMAGE_URL` contains a secret `/qr/<hex-token>` path — always show the FULL URL verbatim. Never truncate it to just the host and port.**
 
-> ⚠️ **`QR_LOGIN_URL` is a browser-session URL — do NOT show it as the QR scan target and do NOT regenerate a QR image from it.** Mi Home will report "expired" if it scans a QR encoding `QR_LOGIN_URL`. The only correct QR to scan is `QR_IMAGE_B64`.
+> ⚠️ **`QR_LOGIN_URL` is a browser-session URL — do NOT show it as the QR scan target and do NOT regenerate a QR image from it.** Mi Home will report "expired" if it scans a QR encoding `QR_LOGIN_URL`. The only correct QR to scan is the image at `QR_IMAGE_URL`.
 
 **Step 3 — Run Phase 2 to complete login and collect tokens**
 
@@ -178,7 +181,7 @@ If the user asked for a specific device, search the `DEVICE=` JSON lines for `na
 
 | Error | Action |
 | :--- | :--- |
-| `QR_RETRY attempt=N of=M` | QR expired (interactive/TTY mode) — show the new `QR_IMAGE_B64` immediately; do NOT report failure |
+| `QR_RETRY attempt=N of=M` | QR expired (interactive/TTY mode) — show the new `QR_IMAGE_URL` immediately; do NOT report failure |
 | `STATUS=login_timeout` | Session expired; re-run Step 1 for a fresh QR |
 | `STATUS=login_failed reason=cannot_get_qr_url` | Network/firewall issue reaching Xiaomi; check connectivity and retry |
 | `STATUS=login_failed reason=cannot_download_qr_image` | QR image download failed; check connectivity and retry |
