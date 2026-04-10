@@ -34,6 +34,7 @@
 set -euo pipefail
 
 REPO_URL="https://gitee.com/tiandazhu/ClawBoard.git"
+REPO_URL_FALLBACK="https://github.com/zphilip/ClawBoard.git"
 
 # Path where the sync script should live on the device
 SCRIPT_PATH="/usr/local/bin/clawberry-workspace-sync.sh"
@@ -119,7 +120,14 @@ publish_services.sh
 scripts/clawberry-workspace-sync.sh
 EOF
 
-git -C "$WORK_DIR" fetch --depth=1 origin HEAD
+# GIT_TERMINAL_PROMPT=0 prevents git from hanging asking for credentials.
+# If the primary (gitee) fails, fall back to github automatically.
+if ! GIT_TERMINAL_PROMPT=0 git -C "$WORK_DIR" fetch --depth=1 origin HEAD 2>/dev/null; then
+    log "Primary mirror ($REPO_URL) failed, falling back to $REPO_URL_FALLBACK ..."
+    git -C "$WORK_DIR" remote set-url origin "$REPO_URL_FALLBACK"
+    GIT_TERMINAL_PROMPT=0 git -C "$WORK_DIR" fetch --depth=1 origin HEAD \
+        || die "Both mirrors failed. Check network connectivity."
+fi
 git -C "$WORK_DIR" checkout -q FETCH_HEAD
 log "Checkout complete."
 
