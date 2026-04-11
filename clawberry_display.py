@@ -45,6 +45,7 @@ DISPLAY_TYPE_OVERRIDE_FILE = os.path.join(_HERE, 'config', 'display_type.txt')
 _FALLBACK_HOLD_SECONDS        = 30
 MONITOR_FORCE_REFRESH_SECONDS = 3600  # force a full monitor redraw after this many idle seconds (ghost-busting)
 POLL_SECONDS = 1
+_OLED_SCROLL_INTERVAL = 0.10   # seconds between OLED scroll frames (~10 FPS)
 
 _FONT_BOLD = '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf'
 _FONT_REG  = '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf'
@@ -53,6 +54,7 @@ _FONT_REG  = '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf'
 _disp         = None   # active display object (EPD or LCD_1inch69)
 _display_type = None   # 'eink' | 'lcd'
 _qr_cache     = {}     # {(url, size): PIL.Image} — avoid regenerating unchanged QR codes
+_oled_scroll_offset: int = 0   # advances each scroll frame; drives IP text animation
 
 
 def _epd_render(epd, image, force_full=False):
@@ -674,6 +676,31 @@ _OLED_W = 128   # canvas width  (landscape)
 _OLED_H =  64   # canvas height (landscape)
 
 
+def _oled_scrolling_text(image, draw, x, y, text, font, fill, avail_w, row_h=11):
+    """Draw *text* at (x, y) clipped to *avail_w* pixels wide.
+
+    If the text fits it is drawn normally.  If it is wider it scrolls
+    horizontally using ``_oled_scroll_offset`` — a seamless loop with a
+    short blank gap between repetitions.
+    """
+    global _oled_scroll_offset
+    bbox   = draw.textbbox((0, 0), text, font=font)
+    text_w = bbox[2] - bbox[0]
+    if text_w <= avail_w:
+        draw.text((x, y), text, font=font, fill=fill)
+        return
+    SCROLL_GAP = 18                          # blank pixels between repeats
+    cycle      = text_w + SCROLL_GAP
+    off        = _oled_scroll_offset % cycle
+    strip_w    = cycle + avail_w             # always avail_w pixels available from off
+    strip      = Image.new('RGB', (strip_w, row_h), (0, 0, 0))
+    sd         = ImageDraw.Draw(strip)
+    sd.text((0,     0), text, font=font, fill=fill)   # first copy
+    sd.text((cycle, 0), text, font=font, fill=fill)   # second copy for seamless wrap
+    crop = strip.crop((off, 0, off + avail_w, row_h))
+    image.paste(crop, (x, y))
+
+
 def _oled_show(disp, image: 'Image.Image') -> None:
     """Push a 128×64 RGB PIL image to the OLED.
 
@@ -735,11 +762,13 @@ def draw_monitor_oled(disp):
         'USB':  (255, 160,  40),
         'BT':   (200,  80, 255),
     }
+    ip_avail_w = W - 1 - (tx + 27)   # pixels available right of the label badge
     for label, ip in (('WiFi', w_ip), ('ETH', e_ip), ('USB', u_ip), ('BT', b_ip)):
         if ip:
             col = _OLED_IFACE_COL.get(label, (180, 180, 180))
             draw.text((tx,      y), f'{label}:', font=f_small, fill=col)
-            draw.text((tx + 27, y), ip,          font=f_small, fill=(220, 220, 220))
+            _oled_scrolling_text(image, draw, tx + 27, y, ip,
+                                 f_small, (220, 220, 220), ip_avail_w)
             y += 11
             any_ip = True
     if not any_ip:
@@ -904,7 +933,7 @@ hold_until        = 0.0             # monotonic time until temp screen must not 
 was_holding       = False           # True while a temporary screen is being shown
 
 while True:
-    time.sleep(POLL_SECONDS)
+    time.sleep(_OLED_SCROLL_INTERVAL if _display_type == 'oled' else POLL_SECONDS)
     now = time.monotonic()
 
     # ── 1. Check for new / updated pair-code or pico-QR request file ─────
@@ -932,7 +961,23 @@ while True:
     if currently_holding:
         continue
 
-    # ── 3. Check for network / service state changes ──────────────────────
+    # ── 3. OLED: advance scroll offset and redraw every frame ─────────────
+    # State changes are picked up each frame; no separate change-detection
+    # path is needed because we're already redrawing continuously.
+    if _display_type == 'oled':
+        _oled_scroll_offset = (_oled_scroll_offset + 1) % 100000
+        current_state = _get_current_state()
+        if current_state != last_state:
+            changed = [k for k in current_state if current_state[k] != last_state.get(k)]
+            logging.info("State change detected (%s)", ', '.join(changed))
+            last_state = current_state
+        if just_released:
+            logging.info("Temporary screen hold expired — restoring monitor display")
+        _render_monitor()
+        last_monitor_draw = now
+        continue
+
+    # ── 4. (non-OLED) Check for network / service state changes ──────────
     current_state = _get_current_state()
     age           = now - last_monitor_draw
     state_changed = current_state != last_state
