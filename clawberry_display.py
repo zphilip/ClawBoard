@@ -22,6 +22,7 @@ if os.path.exists(libdir):
 # Module-level references are set once detection succeeds.
 _eink_mod = None   # waveshare_epd.epd2in13_V4 when e-ink is active
 _lcd_mod  = None   # LCD_1inch69 module when LCD is active
+_oled_mod = None   # waveshare_OLED.OLED_0in96_rgb module when OLED is active
 
 logging.basicConfig(level=logging.INFO)
 
@@ -88,6 +89,11 @@ def _shutdown(signum=None, frame=None):
                 _disp.module_exit()
             except Exception as e:
                 logging.warning("LCD module_exit failed: %s", e)
+        elif _display_type == 'oled':
+            try:
+                _disp.module_exit()
+            except Exception as e:
+                logging.warning("OLED module_exit failed: %s", e)
         else:  # eink
             released = False
             for _attr in ('Dev_exit',):
@@ -129,7 +135,7 @@ def _detect_display():
     Sets the module globals ``_disp``, ``_display_type``, ``_eink_mod`` /
     ``_lcd_mod`` and returns the active display object.
     """
-    global _disp, _display_type, _eink_mod, _lcd_mod, _LCD_LANDSCAPE
+    global _disp, _display_type, _eink_mod, _lcd_mod, _oled_mod, _LCD_LANDSCAPE
 
     # ── 0. Check for a manual override file ───────────────────────────────
     _forced = None
@@ -199,7 +205,7 @@ def _detect_display():
                 logging.info('LCD 1.69\" not available: %s', e)
 
     # ── 2. Try e-ink 2.13\" ──────────────────────────────────────────────
-    if _forced != 'lcd':
+    if _forced not in ('lcd', 'oled'):
         try:
             from waveshare_epd import epd2in13_V4 as _em
             _obj = _em.EPD()
@@ -208,14 +214,29 @@ def _detect_display():
             _eink_mod     = _em
             _disp         = _obj
             _display_type = 'eink'
-            logging.info('Display detected: e-ink 2.13\" (epd2in13_V4)')
+            logging.info('Display detected: e-ink 2.13" (epd2in13_V4)')
             return _obj
         except Exception as e:
-            logging.info('E-ink 2.13\" not available: %s', e)
+            logging.info('E-ink 2.13" not available: %s', e)
+
+    # ── 3. Try OLED 0.96" RGB ────────────────────────────────────────────
+    if _forced not in ('lcd', 'eink'):
+        try:
+            from waveshare_OLED import OLED_0in96_rgb as _om
+            _obj = _om.OLED_0in96_rgb()
+            _obj.Init()
+            _obj.clear()
+            _oled_mod     = _om
+            _disp         = _obj
+            _display_type = 'oled'
+            logging.info('Display detected: OLED 0.96" RGB (OLED_0in96_rgb)')
+            return _obj
+        except Exception as e:
+            logging.info('OLED 0.96" not available: %s', e)
 
     raise RuntimeError(
         'No supported display detected '
-        '(tried LCD 1.69\" and e-ink 2.13\"). '
+        '(tried LCD 1.69", e-ink 2.13", OLED 0.96"). '
         f'Override file: {DISPLAY_TYPE_OVERRIDE_FILE}'
     )
 
@@ -645,10 +666,171 @@ def draw_picoclaw_qr_lcd(disp, url, token=''):
     disp.ShowImage(image)
 
 
+# ── OLED 0.96" RGB Screens (128×64 landscape, RGB colour) ─────────────────────
+# Physical: width=64, height=128 (portrait). We draw on a 128×64 canvas
+# then rotate 270° before passing to getbuffer so the image fills the screen.
+
+_OLED_W = 128   # canvas width  (landscape)
+_OLED_H =  64   # canvas height (landscape)
+
+
+def _oled_show(disp, image: 'Image.Image') -> None:
+    """Push a 128×64 RGB PIL image to the OLED.
+
+    The OLED physical orientation is portrait (width=64, height=128), so the
+    128×64 landscape canvas must be rotated 270° (→ 64×128) before handing
+    off to getbuffer / ShowImage.
+    """
+    rotated = image.rotate(270, expand=True)   # 128×64 → 64×128
+    disp.ShowImage(disp.getbuffer(rotated))
+
+
+def draw_monitor_oled(disp):
+    """Render the status screen on the 0.96\" OLED (128×64 landscape)."""
+    W, H = _OLED_W, _OLED_H
+    image = Image.new('RGB', (W, H), (0, 0, 0))   # black background
+    draw  = ImageDraw.Draw(image)
+
+    f_title = _load_font(_FONT_BOLD, 10)
+    f_small = _load_font(_FONT_REG,   9)
+
+    # Gather IPs
+    w_ip = get_ip_address('wlan0')
+    e_ip = get_ip_address('eth0')
+    b_ip = get_ip_address('bnep0')
+    u_ip = get_ip_address('usb0')
+    primary_ip = w_ip or e_ip or u_ip or b_ip
+
+    # ── QR left ─────────────────────────────────────────────────────────
+    QR_SIZE = 52
+    QR_X, QR_Y = 2, (H - QR_SIZE) // 2
+    if primary_ip:
+        qr_url = f'http://{primary_ip}:8080'
+        try:
+            qr_img = _generate_qr_image(qr_url, size=QR_SIZE).convert('RGB')
+            image.paste(qr_img, (QR_X, QR_Y))
+        except Exception as exc:
+            logging.warning('OLED QR generation failed: %s', exc)
+            draw.rectangle((QR_X, QR_Y, QR_X + QR_SIZE, QR_Y + QR_SIZE),
+                           outline=(255, 255, 255), width=1)
+            draw.text((QR_X + 4, QR_Y + 20), 'QR?', font=f_small, fill=(255, 80, 80))
+    else:
+        draw.rectangle((QR_X, QR_Y, QR_X + QR_SIZE, QR_Y + QR_SIZE),
+                       outline=(100, 100, 100), width=1)
+        draw.text((QR_X + 6, QR_Y + 20), 'No IP', font=f_small, fill=(150, 150, 150))
+
+    # ── Right panel ──────────────────────────────────────────────────────
+    tx = QR_X + QR_SIZE + 4
+    y  = 1
+
+    draw.text((tx, y), 'ClawBerry', font=f_title, fill=(80, 160, 255))
+    y += 11
+    draw.line((tx, y, W - 1, y), fill=(60, 60, 60))
+    y += 3
+
+    any_ip = False
+    _OLED_IFACE_COL = {
+        'WiFi': (  0, 200, 100),
+        'ETH':  ( 80, 160, 255),
+        'USB':  (255, 160,  40),
+        'BT':   (200,  80, 255),
+    }
+    for label, ip in (('WiFi', w_ip), ('ETH', e_ip), ('USB', u_ip), ('BT', b_ip)):
+        if ip:
+            col = _OLED_IFACE_COL.get(label, (180, 180, 180))
+            draw.text((tx,      y), f'{label}:', font=f_small, fill=col)
+            draw.text((tx + 27, y), ip,          font=f_small, fill=(220, 220, 220))
+            y += 11
+            any_ip = True
+    if not any_ip:
+        draw.text((tx, y), 'No network', font=f_small, fill=(255, 80, 80))
+        y += 11
+
+    y += 2
+    draw.line((tx, y, W - 1, y), fill=(60, 60, 60))
+    y += 3
+
+    s_zc = get_service_status('zeroclaw')
+    s_pc = get_service_status('picoclaw')
+    for svc, status in (('ZC', s_zc), ('PC', s_pc)):
+        col = (0, 200, 80) if status == 'Running' else (255, 60, 60)
+        draw.ellipse((tx, y + 2, tx + 7, y + 9), fill=col)
+        draw.text((tx + 10, y), f'{svc}: {status}', font=f_small, fill=(200, 200, 200))
+        y += 11
+
+    _oled_show(disp, image)
+
+
+def draw_paircode_oled(disp, code):
+    """Render the pair-code screen on the 0.96\" OLED."""
+    W, H  = _OLED_W, _OLED_H
+    image = Image.new('RGB', (W, H), (0, 0, 0))
+    draw  = ImageDraw.Draw(image)
+
+    f_hint = _load_font(_FONT_REG, 9)
+
+    draw.text((2, 1), 'Pair Code', font=_load_font(_FONT_BOLD, 10), fill=(80, 160, 255))
+    draw.line((2, 13, W - 2, 13), fill=(40, 40, 80))
+
+    # Auto-size code
+    for fsize in (36, 28, 22, 16):
+        f_code = _load_font(_FONT_BOLD, fsize)
+        bbox   = draw.textbbox((0, 0), code, font=f_code)
+        tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+        if tw <= W - 8:
+            break
+
+    cy = 15 + (H - 15 - 14 - th) // 2
+    draw.text(((W - tw) // 2, cy), code, font=f_code, fill=(255, 220, 80))
+
+    hint = 'scan / type in app'
+    hbbox = draw.textbbox((0, 0), hint, font=f_hint)
+    draw.text(((W - (hbbox[2] - hbbox[0])) // 2, H - 11),
+              hint, font=f_hint, fill=(120, 120, 120))
+
+    _oled_show(disp, image)
+
+
+def draw_picoclaw_qr_oled(disp, url, token=''):
+    """Render a PicoClaw pairing QR on the 0.96\" OLED."""
+    W, H  = _OLED_W, _OLED_H
+    image = Image.new('RGB', (W, H), (0, 0, 0))
+    draw  = ImageDraw.Draw(image)
+
+    f_hdr   = _load_font(_FONT_BOLD, 10)
+    f_small = _load_font(_FONT_REG,   9)
+
+    draw.text((2, 1), 'PicoClaw QR', font=f_hdr, fill=(200, 80, 255))
+    draw.line((2, 13, W - 2, 13), fill=(60, 20, 80))
+
+    QR_SIZE = 48
+    QR_X, QR_Y = 2, 15
+    try:
+        qr_img = _generate_qr_image(url, size=QR_SIZE).convert('RGB')
+        image.paste(qr_img, (QR_X, QR_Y))
+    except Exception as e:
+        logging.warning('OLED QR fetch failed: %s', e)
+        draw.rectangle((QR_X, QR_Y, QR_X + QR_SIZE, QR_Y + QR_SIZE),
+                       outline=(200, 80, 255), width=1)
+        draw.text((QR_X + 10, QR_Y + 18), 'QR', font=f_hdr, fill=(200, 80, 255))
+
+    tx, ty = QR_X + QR_SIZE + 4, 16
+    for line in textwrap.wrap(url, width=14)[:3]:
+        draw.text((tx, ty), line, font=f_small, fill=(180, 180, 180))
+        ty += 11
+    if token:
+        tok = f'{token[:10]}...' if len(token) > 10 else token
+        draw.text((tx, H - 11), tok, font=f_small, fill=(120, 120, 120))
+
+    _oled_show(disp, image)
+
+
 # ── Dispatch wrappers (route to eink or LCD based on _display_type) ──────────
 def _render_monitor(force_full=False):
     if _display_type == 'lcd':
         draw_monitor_lcd(_disp)
+    elif _display_type == 'oled':
+        draw_monitor_oled(_disp)
     else:
         draw_monitor(_disp, force_full=force_full)
 
@@ -656,6 +838,8 @@ def _render_monitor(force_full=False):
 def _render_paircode(code):
     if _display_type == 'lcd':
         draw_paircode_lcd(_disp, code)
+    elif _display_type == 'oled':
+        draw_paircode_oled(_disp, code)
     else:
         draw_paircode(_disp, code)
 
@@ -663,6 +847,8 @@ def _render_paircode(code):
 def _render_picoclaw_qr(url, token=''):
     if _display_type == 'lcd':
         draw_picoclaw_qr_lcd(_disp, url, token)
+    elif _display_type == 'oled':
+        draw_picoclaw_qr_oled(_disp, url, token)
     else:
         draw_picoclaw_qr(_disp, url, token)
 
