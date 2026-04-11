@@ -138,5 +138,51 @@ STRINGS = {
     'pc_pair_show_display':    '🖥️ Show QR on display',
     'pc_pair_missing_token':   'PicoClaw token is missing in channels.pico.token.',
     'pc_pair_queue_ok':        '✅ PicoClaw QR queued for the display service',
-    'pc_pair_copy_ok':         '✅ Pairing URL copied to clipboard',
-}
+    'pc_pair_copy_ok':         '✅ Pairing URL copied to clipboard',    # ── Sidebar navigation ────────────────────────────────────────────────────
+    'btn_wifi':    '📶 WiFi Setup',
+    'btn_upgrade': '⬆ Upgrade',
+    # ── Dashboard section headers ─────────────────────────────────────────────
+    'zc_dashboard':   '🦾 ZeroClaw Dashboard',
+    'pc_dashboard':   '🐾 PicoClaw Dashboard',
+    'tooltip_reload': 'Reload Config',
+    # ── Providers panel ──────────────────────────────────────────────────────
+    'lbl_add_provider': '➕ Add provider',
+    # ── Security tab — Dashboard Access ──────────────────────────────────────
+    'exp_dashboard_access': '🔒 Dashboard Access',
+    'lbl_change_password':  'Change Password',
+    'lbl_cur_pw':           'Current password',
+    'lbl_new_pw':           'New password',
+    'lbl_confirm_pw':       'Confirm new',
+    'btn_change_pw':        'Change Password',
+    'notify_pw_wrong':      '❌ Current password incorrect',
+    'notify_pw_short':      'Min 6 characters',
+    'notify_pw_mismatch':   'Passwords do not match',
+    'notify_pw_changed':    '✅ Password changed',
+    # ── Pair Device ───────────────────────────────────────────────────────────
+    'pair_gw_title':      '🔑 Gateway Pair Code',
+    'pair_gw_hint':       'Generate a new pair code for the ZeroClaw gateway. The code will also be sent to the 2.13\u2033 e-ink display.',
+    'pair_loading':       'Loading\u2026',
+    'pair_idle':          'Press a button below to load or generate a pair code',
+    'pair_btn_refresh':   '🔄 Refresh Code + Show on Display',
+    'pair_btn_new':       '🔑 Generate New Code + Show on Display',
+    'pair_devices_title': '📱 Paired Devices',
+    'pair_no_devices':    'No paired devices',
+    'pair_invite_btn':    '🔗 Generate Invite Link',
+    'pair_invite_copied': '✅ Invite link copied to clipboard',
+    # ── WiFi Setup ───────────────────────────────────────────────────────────
+    'wifi_title':         '📶 WiFi Setup',
+    'wifi_cur_status':    'Current Status',
+    'wifi_refresh_tip':   'Refresh',
+    'wifi_config_title':  'Wireless Network Configuration',
+    'wifi_config_hint':   'Launch the wifi-connect captive portal. The device will broadcast a "ClawBerry WiFi Setup" access point. Connect to it with any device, then choose your network and enter the password.',
+    'wifi_btn_start':     '▶ Start WiFi Setup',
+    'wifi_btn_stop':      '■ Stop',
+    # ── Upgrade ──────────────────────────────────────────────────────────────
+    'upgrade_title':        '⬆ Upgrade',
+    'upgrade_card_title':   'System Upgrade',
+    'upgrade_hint':         'Run the ClawBerry workspace-sync upgrade script. Output is streamed below in real time.',
+    'upgrade_sync_hint':    'Also sync config files from repo (leave unchecked to keep local versions):',
+    'upgrade_chk_pc_cfg':   'PicoClaw config  (config.json)',
+    'upgrade_chk_pc_sec':   'PicoClaw secrets  (.security.yml)',
+    'upgrade_chk_zc_cfg':   'ZeroClaw config  (config.toml)',
+    'upgrade_btn_run':      '▶ Run Upgrade',}

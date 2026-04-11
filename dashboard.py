@@ -1009,16 +1009,16 @@ def index(request: Request):
         ui.separator()
         btn_zc   = ui.button('🦾 ZeroClaw',    icon='terminal').props('flat align=left color=blue-8').classes('w-full q-mt-xs')
         btn_pc   = ui.button('🐾 PicoClaw',     icon='memory'  ).props('flat align=left color=grey-7').classes('w-full')
-        btn_wifi    = ui.button('📶 WiFi Setup',   icon='wifi'    ).props('flat align=left color=grey-7').classes('w-full')
-        btn_upgrade = ui.button('⬆ Upgrade',         icon='system_update_alt').props('flat align=left color=grey-7').classes('w-full')
+        btn_wifi    = ui.button(T['btn_wifi'],    icon='wifi'    ).props('flat align=left color=grey-7').classes('w-full')
+        btn_upgrade = ui.button(T['btn_upgrade'], icon='system_update_alt').props('flat align=left color=grey-7').classes('w-full')
 
     # ══ ZeroClaw Dashboard ════════════════════════════════════════════════════
     zc_content = ui.column().classes('w-full q-px-sm q-pt-sm')
     with zc_content:
         with ui.row().classes('w-full items-center q-mb-xs'):
-            ui.label('🦾 ZeroClaw Dashboard').classes('text-h6 text-blue-9')
+            ui.label(T['zc_dashboard']).classes('text-h6 text-blue-9')
             ui.button(icon='refresh', on_click=lambda: ui.navigate.reload()) \
-                .props('flat round dense color=blue-9').tooltip('重载配置')
+                .props('flat round dense color=blue-9').tooltip(T['tooltip_reload'])
         with ui.tabs().classes('w-full bg-blue-1') as zc_sub_tabs:
             t_zc_wiz  = ui.tab(T['tab_wizard'],        icon='auto_fix_high')
             t_zc_cfg  = ui.tab(T['tab_configuration'], icon='settings')
@@ -1325,7 +1325,7 @@ def index(request: Request):
                         for alias, mp_data in conf.get('model_providers', {}).items():
                             build_provider_card(provider_container, alias, mp_data)
                         ui.separator().classes('q-my-sm')
-                        ui.label('➕ Add provider').classes('text-caption text-blue-7')
+                        ui.label(T['lbl_add_provider']).classes('text-caption text-blue-7')
                         # unique provider ids from hints, preserving first-seen order
                         _seen_pids: list[str] = []
                         for _hh in _ph_hints:
@@ -1505,24 +1505,24 @@ def index(request: Request):
 
                     # ══ Security ═════════════════════════════════════════════
                     with ui.tab_panel(t_sec):
-                        with ui.expansion('🔒 Dashboard Access', icon='vpn_key').classes('w-full'):
-                            ui.label('Change Password').classes('text-subtitle2 q-mt-xs')
-                            w_cur_pw  = ui.input('Current password', password=True, password_toggle_button=True).classes('w-full')
-                            w_new_pw  = ui.input('New password',     password=True, password_toggle_button=True).classes('w-full')
-                            w_new_pw2 = ui.input('Confirm new',      password=True, password_toggle_button=True).classes('w-full')
+                        with ui.expansion(T['exp_dashboard_access'], icon='vpn_key').classes('w-full'):
+                            ui.label(T['lbl_change_password']).classes('text-subtitle2 q-mt-xs')
+                            w_cur_pw  = ui.input(T['lbl_cur_pw'],    password=True, password_toggle_button=True).classes('w-full')
+                            w_new_pw  = ui.input(T['lbl_new_pw'],    password=True, password_toggle_button=True).classes('w-full')
+                            w_new_pw2 = ui.input(T['lbl_confirm_pw'], password=True, password_toggle_button=True).classes('w-full')
                             def do_change_pw():
                                 d = _load_auth()
                                 if not d or not _verify_pw(w_cur_pw.value, d['password_hash']):
-                                    ui.notify('❌ Current password incorrect', type='negative'); return
+                                    ui.notify(T['notify_pw_wrong'], type='negative'); return
                                 if len(w_new_pw.value) < 6:
-                                    ui.notify('Min 6 characters', type='warning'); return
+                                    ui.notify(T['notify_pw_short'], type='warning'); return
                                 if w_new_pw.value != w_new_pw2.value:
-                                    ui.notify('Passwords do not match', type='warning'); return
+                                    ui.notify(T['notify_pw_mismatch'], type='warning'); return
                                 d['password_hash'] = _hash_pw(w_new_pw.value)
                                 _save_auth(d)
-                                ui.notify('✅ Password changed', type='positive')
+                                ui.notify(T['notify_pw_changed'], type='positive')
                                 w_cur_pw.set_value(''); w_new_pw.set_value(''); w_new_pw2.set_value('')
-                            ui.button('Change Password', on_click=do_change_pw).props('outline color=blue').classes('q-mb-sm')
+                            ui.button(T['btn_change_pw'], on_click=do_change_pw).props('outline color=blue').classes('q-mb-sm')
                         with ui.expansion(T['exp_resources'], icon='memory').classes('w-full'):
                             w_sec_mem         = ui.number('max_memory_mb',        value=sec_res.get('max_memory_mb', 512),        min=64,  step=64).classes('w-full')
                             w_sec_cpu         = ui.number('max_cpu_time_seconds', value=sec_res.get('max_cpu_time_seconds', 60),  min=5,   step=5).classes('w-full')
@@ -1650,17 +1650,14 @@ def index(request: Request):
             with ui.tab_panel(t_zc_pair):
                 # ── Gateway pair code ──────────────────────────────────────
                 with ui.card().classes('w-full q-mb-sm'):
-                    ui.label('🔑 Gateway Pair Code').classes('text-subtitle1 text-bold q-mb-xs')
-                    ui.label(
-                        'Generate a new pair code for the ZeroClaw gateway. '
-                        'The code will also be sent to the 2.13″ e-ink display.'
-                    ).classes('text-caption text-grey-6 q-mb-sm')
+                    ui.label(T['pair_gw_title']).classes('text-subtitle1 text-bold q-mb-xs')
+                    ui.label(T['pair_gw_hint']).classes('text-caption text-grey-6 q-mb-sm')
                     paircode_box = ui.card().classes('w-full bg-grey-2 q-pa-md items-center')
                     with paircode_box:
                         paircode_lbl = ui.label('…').classes(
                             'text-h4 text-bold text-blue-9 text-center letter-spacing-wide'
                         )
-                        paircode_status = ui.label('Loading…').classes('text-caption text-grey-6 text-center q-mt-xs')
+                        paircode_status = ui.label(T['pair_loading']).classes('text-caption text-grey-6 text-center q-mt-xs')
 
                     _PAIRCODE_SCRIPT = os.path.join(SCRIPT_DIR, 'clawberry_paircode.py')
 
@@ -1729,19 +1726,19 @@ def index(request: Request):
 
                     # Idle state — user presses a button to load/generate
                     paircode_lbl.set_text('NA')
-                    paircode_status.set_text('Press a button below to load or generate a pair code')
+                    paircode_status.set_text(T['pair_idle'])
 
                     with ui.row().classes('w-full gap-2 q-mt-sm'):
-                        ui.button('🔄 Refresh Code + Show on Display', on_click=lambda: _fetch_paircode(new=False, push_display=True)).props(
+                        ui.button(T['pair_btn_refresh'], on_click=lambda: _fetch_paircode(new=False, push_display=True)).props(
                             'outline color=blue-8'
                         ).classes('flex-1')
-                        ui.button('🔑 Generate New Code + Show on Display', on_click=lambda: _fetch_paircode(new=True, push_display=True)).props(
+                        ui.button(T['pair_btn_new'], on_click=lambda: _fetch_paircode(new=True, push_display=True)).props(
                             'elevated color=blue-8'
                         ).classes('flex-1')
 
                 # ── Paired Devices ─────────────────────────────────────────
                 with ui.card().classes('w-full q-mb-sm'):
-                    ui.label('📱 Paired Devices').classes('text-subtitle1 text-bold q-mb-xs')
+                    ui.label(T['pair_devices_title']).classes('text-subtitle1 text-bold q-mb-xs')
                     device_list = ui.column().classes('w-full')
                     def _refresh_devices():
                         device_list.clear()
@@ -1749,7 +1746,7 @@ def index(request: Request):
                         devs = d2.get('paired_devices', []) if d2 else []
                         if not devs:
                             with device_list:
-                                ui.label('No paired devices').classes('text-caption text-grey-5')
+                                ui.label(T['pair_no_devices']).classes('text-caption text-grey-5')
                             return
                         for dv in devs:
                             dt = datetime.fromtimestamp(dv['paired_at']).strftime('%Y-%m-%d %H:%M')
@@ -1773,17 +1770,17 @@ def index(request: Request):
                         link = f'{base}/pair?token={it}'
                         invite_lbl.set_text(f'🔗 {link}  (valid 5 min)')
                         ui.clipboard.write(link)
-                        ui.notify('✅ Invite link copied to clipboard', type='positive')
-                    ui.button('🔗 Generate Invite Link', on_click=_gen_invite).props('outline color=green')
+                        ui.notify(T['pair_invite_copied'], type='positive')
+                    ui.button(T['pair_invite_btn'], on_click=_gen_invite).props('outline color=green')
 
     # ══ PicoClaw Dashboard ════════════════════════════════════════════════════
     pc_content = ui.column().classes('w-full q-px-sm q-pt-sm')
     pc_content.set_visibility(False)
     with pc_content:
         with ui.row().classes('w-full items-center q-mb-xs'):
-            ui.label('🐾 PicoClaw Dashboard').classes('text-h6 text-purple-8')
+            ui.label(T['pc_dashboard']).classes('text-h6 text-purple-8')
             ui.button(icon='refresh', on_click=lambda: ui.navigate.reload()) \
-                .props('flat round dense color=purple-8').tooltip('重载配置')
+                .props('flat round dense color=purple-8').tooltip(T['tooltip_reload'])
         with ui.tabs().classes('w-full bg-purple-1') as pc_sub_tabs:
             t_pc_wiz  = ui.tab(T['pc_tab_wizard'],     icon='auto_fix_high')
             t_pc_cfg  = ui.tab(T['tab_configuration'], icon='settings')
@@ -2678,12 +2675,12 @@ def index(request: Request):
     wifi_content = ui.column().classes('w-full q-px-sm q-pt-sm')
     wifi_content.set_visibility(False)
     with wifi_content:
-        ui.label('📶 WiFi Setup').classes('text-h6 text-teal-8 q-mb-xs')
+        ui.label(T['wifi_title']).classes('text-h6 text-teal-8 q-mb-xs')
 
         # ── Current WiFi status card ─────────────────────────────────────────
         with ui.card().classes('w-full q-pa-md q-mb-sm'):
             with ui.row().classes('w-full items-center justify-between'):
-                ui.label('Current Status').classes('text-subtitle1 text-bold')
+                ui.label(T['wifi_cur_status']).classes('text-subtitle1 text-bold')
                 def _refresh_wifi_status():
                     import subprocess as _sp
                     lines = []
@@ -2741,19 +2738,15 @@ def index(request: Request):
 
                     wifi_cur_lbl.set_text('\n'.join(lines))
 
-                ui.button(icon='refresh', on_click=_refresh_wifi_status).props('flat round dense color=teal-8').tooltip('Refresh')
+                ui.button(icon='refresh', on_click=_refresh_wifi_status).props('flat round dense color=teal-8').tooltip(T['wifi_refresh_tip'])
             wifi_cur_lbl = ui.label('…').classes('text-caption text-mono q-mt-xs').style('white-space: pre')
             # Populate immediately when the card is built
             _refresh_wifi_status()
 
         # ── Captive portal card ───────────────────────────────────────────────
         with ui.card().classes('w-full q-pa-md'):
-            ui.label('Wireless Network Configuration').classes('text-subtitle1 text-bold q-mb-xs')
-            ui.label(
-                'Launch the wifi-connect captive portal. The device will broadcast a '
-                '"ClawBerry WiFi Setup" access point. Connect to it with any device, '
-                'then choose your network and enter the password.'
-            ).classes('text-caption text-grey-6 q-mb-md')
+            ui.label(T['wifi_config_title']).classes('text-subtitle1 text-bold q-mb-xs')
+            ui.label(T['wifi_config_hint']).classes('text-caption text-grey-6 q-mb-md')
 
             wifi_status_lbl = ui.label('').classes('text-caption text-grey-7 q-mb-sm')
             wifi_log_area   = ui.textarea().classes('w-full').props('outlined rows=8 readonly label="Output"')
@@ -2822,34 +2815,30 @@ def index(request: Request):
 
             with ui.row().classes('gap-2 q-mt-sm'):
                 btn_wifi_start = ui.button(
-                    '▶ Start WiFi Setup', on_click=_start_wifi_setup
+                    T['wifi_btn_start'], on_click=_start_wifi_setup
                 ).props('elevated color=teal-8')
                 btn_wifi_stop = ui.button(
-                    '■ Stop', on_click=_stop_wifi_setup
+                    T['wifi_btn_stop'], on_click=_stop_wifi_setup
                 ).props('outline color=negative disabled')
 
     # ══ Upgrade ═══════════════════════════════════════════════════════════════
     upgrade_content = ui.column().classes('w-full q-px-sm q-pt-sm')
     upgrade_content.set_visibility(False)
     with upgrade_content:
-        ui.label('⬆ Upgrade').classes('text-h6 text-orange-9 q-mb-xs')
+        ui.label(T['upgrade_title']).classes('text-h6 text-orange-9 q-mb-xs')
         with ui.card().classes('w-full q-pa-md'):
-            ui.label('System Upgrade').classes('text-subtitle1 text-bold q-mb-xs')
-            ui.label(
-                'Run the ClawBerry workspace-sync upgrade script. '
-                'Output is streamed below in real time.'
-            ).classes('text-caption text-grey-6 q-mb-sm')
+            ui.label(T['upgrade_card_title']).classes('text-subtitle1 text-bold q-mb-xs')
+            ui.label(T['upgrade_hint']).classes('text-caption text-grey-6 q-mb-sm')
 
             # ── Config-file sync options ──────────────────────────────────
-            ui.label('Also sync config files from repo (leave unchecked to keep local versions):') \
-                .classes('text-caption text-grey-7 q-mb-xs')
+            ui.label(T['upgrade_sync_hint']).classes('text-caption text-grey-7 q-mb-xs')
             with ui.row().classes('gap-4 q-mb-sm'):
                 upg_chk_pc_cfg = ui.checkbox(
-                    'PicoClaw config  (config.json)', value=False)
+                    T['upgrade_chk_pc_cfg'], value=False)
                 upg_chk_pc_sec = ui.checkbox(
-                    'PicoClaw secrets  (.security.yml)', value=False)
+                    T['upgrade_chk_pc_sec'], value=False)
                 upg_chk_zc_cfg = ui.checkbox(
-                    'ZeroClaw config  (config.toml)', value=False)
+                    T['upgrade_chk_zc_cfg'], value=False)
 
             upg_status_lbl = ui.label('').classes('text-caption text-grey-7 q-mb-sm')
             upg_log_area   = ui.textarea().classes('w-full font-mono').props('outlined rows=16 readonly label="Output"')
@@ -2906,7 +2895,7 @@ def index(request: Request):
                 threading.Thread(target=_run_upg, daemon=True).start()
 
             btn_upg_run = ui.button(
-                '▶ Run Upgrade', on_click=_start_upgrade
+                T['upgrade_btn_run'], on_click=_start_upgrade
             ).props('elevated color=orange-9')
 
     # ── Sidebar navigation wiring ──────────────────────────────────────────────

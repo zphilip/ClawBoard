@@ -965,7 +965,7 @@ while True:
     # State changes are picked up each frame; no separate change-detection
     # path is needed because we're already redrawing continuously.
     if _display_type == 'oled':
-        _oled_scroll_offset = (_oled_scroll_offset + 1) % 100000
+        _oled_scroll_offset = (_oled_scroll_offset + 3) % 100000
         current_state = _get_current_state()
         if current_state != last_state:
             changed = [k for k in current_state if current_state[k] != last_state.get(k)]
