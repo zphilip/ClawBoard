@@ -208,6 +208,15 @@ def _detect_display():
 
     # ── 2. Try e-ink 2.13\" ──────────────────────────────────────────────
     if _forced not in ('lcd', 'oled'):
+        # Clear any stale RPi.GPIO state left by a previous uncleaned process.
+        # Without this, GPIO.setmode() inside the waveshare driver raises
+        # RuntimeError('GPIO busy') even when no process holds the chip open.
+        try:
+            import RPi.GPIO as _gpio_pre
+            _gpio_pre.setmode(_gpio_pre.BCM)
+            _gpio_pre.cleanup()
+        except Exception:
+            pass
         try:
             from waveshare_epd import epd2in13_V4 as _em
             _obj = _em.EPD()
@@ -236,11 +245,15 @@ def _detect_display():
         except Exception as e:
             logging.info('OLED 0.96" not available: %s', e)
 
-    raise RuntimeError(
+    logging.warning(
         'No supported display detected '
         '(tried LCD 1.69", e-ink 2.13", OLED 0.96"). '
-        f'Override file: {DISPLAY_TYPE_OVERRIDE_FILE}'
+        'Running in headless mode (no rendering). '
+        'Override file: %s',
+        DISPLAY_TYPE_OVERRIDE_FILE,
     )
+    _display_type = 'none'
+    return None
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -856,6 +869,8 @@ def draw_picoclaw_qr_oled(disp, url, token=''):
 
 # ── Dispatch wrappers (route to eink or LCD based on _display_type) ──────────
 def _render_monitor(force_full=False):
+    if _disp is None:
+        return
     if _display_type == 'lcd':
         draw_monitor_lcd(_disp)
     elif _display_type == 'oled':
@@ -865,6 +880,8 @@ def _render_monitor(force_full=False):
 
 
 def _render_paircode(code):
+    if _disp is None:
+        return
     if _display_type == 'lcd':
         draw_paircode_lcd(_disp, code)
     elif _display_type == 'oled':
@@ -874,6 +891,8 @@ def _render_paircode(code):
 
 
 def _render_picoclaw_qr(url, token=''):
+    if _disp is None:
+        return
     if _display_type == 'lcd':
         draw_picoclaw_qr_lcd(_disp, url, token)
     elif _display_type == 'oled':
@@ -923,7 +942,8 @@ def _draw_request_screen(payload):
 #   • IP address or service status change    → immediate monitor refresh
 #   • MONITOR_FORCE_REFRESH_SECONDS elapsed  → periodic ghost-busting refresh
 _detect_display()
-logging.info('ClawBerry display service starting — display type: %s', _display_type)
+logging.info('ClawBerry display service starting — display type: %s',
+             _display_type or 'none (headless)')
 
 last_state        = _get_current_state()
 _render_monitor()
