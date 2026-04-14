@@ -80,37 +80,49 @@ pairCode string
 }
 
 func (z *zcAuth) setup() error {
-base := fmt.Sprintf("http://%s:%d", z.host, z.port)
-health, err := httpGet(base + "/health")
-if err != nil {
-return fmt.Errorf("cannot reach zeroclaw at %s: %w", base, err)
-}
-requirePairing, _ := health["require_pairing"].(bool)
-fmt.Printf("%szeroclaw %s  require_pairing=%v\n", prefixZC(), base, requirePairing)
-if !requirePairing || z.token != "" {
-return nil
-}
-code := z.pairCode
-if code == "" {
-fmt.Printf("%sGet pair code:  %szeroclaw gateway get-paircode%s\n", prefixZC(), colYellow, colReset)
-fmt.Print(prefixZC() + "Pairing code: ")
-fmt.Scanln(&code)
-code = strings.TrimSpace(code)
-}
-if code == "" {
-return fmt.Errorf("pairing code required")
-}
-data, err := httpPost(base+"/pair", map[string]string{"X-Pairing-Code": code})
-if err != nil {
-return fmt.Errorf("pairing failed: %w", err)
-}
-tok, ok := data["token"].(string)
-if !ok || tok == "" {
-return fmt.Errorf("pair response missing token: %v", data)
-}
-z.token = tok
-fmt.Printf("%sPaired!  token=%s…\n", prefixZC(), tok[:min(12, len(tok))])
-return nil
+	base := fmt.Sprintf("http://%s:%d", z.host, z.port)
+
+	// load saved token if none supplied
+	if z.token == "" {
+		z.token = loadToken("zc_token")
+		if z.token != "" {
+			fmt.Printf("%szeroclaw token loaded from ~/.clawproxy/zc_token\n", prefixZC())
+		}
+	}
+
+	health, err := httpGet(base + "/health")
+	if err != nil {
+		return fmt.Errorf("cannot reach zeroclaw at %s: %w", base, err)
+	}
+	requirePairing, _ := health["require_pairing"].(bool)
+	fmt.Printf("%szeroclaw %s  require_pairing=%v\n", prefixZC(), base, requirePairing)
+	if !requirePairing || z.token != "" {
+		return nil
+	}
+
+	// need to pair
+	code := z.pairCode
+	if code == "" {
+		fmt.Printf("%sGet pair code:  %szeroclaw gateway get-paircode%s\n", prefixZC(), colYellow, colReset)
+		fmt.Print(prefixZC() + "Pairing code: ")
+		fmt.Scanln(&code)
+		code = strings.TrimSpace(code)
+	}
+	if code == "" {
+		return fmt.Errorf("pairing code required")
+	}
+	data, err := httpPost(base+"/pair", map[string]string{"X-Pairing-Code": code})
+	if err != nil {
+		return fmt.Errorf("pairing failed: %w", err)
+	}
+	tok, ok := data["token"].(string)
+	if !ok || tok == "" {
+		return fmt.Errorf("pair response missing token: %v", data)
+	}
+	z.token = tok
+	saveToken("zc_token", tok)
+	fmt.Printf("%sPaired!  token saved to ~/.clawproxy/zc_token\n", prefixZC())
+	return nil
 }
 
 func (z *zcAuth) wsURL(sessionID string) string {
@@ -130,6 +142,44 @@ gwPort  int
 direct  bool
 token   string
 wsURL   string
+}
+
+// ── Token store (~/.clawproxy/) ──────────────────────────────────────────────
+//
+// Tokens are persisted as plain text files so auth survives restarts:
+//   ~/.clawproxy/zc_token   — zeroclaw bearer token
+//   ~/.clawproxy/pc_token   — picoclaw bearer token
+
+func clawproxyDir() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	dir := home + "/.clawproxy"
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", err
+	}
+	return dir, nil
+}
+
+func saveToken(filename, token string) {
+	dir, err := clawproxyDir()
+	if err != nil {
+		return
+	}
+	_ = os.WriteFile(dir+"/"+filename, []byte(token), 0o600)
+}
+
+func loadToken(filename string) string {
+	dir, err := clawproxyDir()
+	if err != nil {
+		return ""
+	}
+	b, err := os.ReadFile(dir + "/" + filename)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(b))
 }
 
 // readPicoTokenFromConfig reads the picoclaw bearer token from the local config file.
@@ -168,13 +218,16 @@ func readPicoTokenFromConfig() (string, error) {
 func (p *pcAuth) setup() error {
 	if p.direct {
 		if p.token == "" {
-			// 1. try config file
-			tok, err := readPicoTokenFromConfig()
-			if err == nil {
+			// 1. try ~/.clawproxy/pc_token (previously entered)
+			if saved := loadToken("pc_token"); saved != "" {
+				p.token = saved
+				fmt.Printf("%spicoclaw token loaded from ~/.clawproxy/pc_token\n", prefixPC())
+			} else if tok, err := readPicoTokenFromConfig(); err == nil {
+				// 2. try ~/.picoclaw/config.json
 				p.token = tok
 				fmt.Printf("%spicoclaw token loaded from ~/.picoclaw/config.json\n", prefixPC())
 			} else {
-				// 2. prompt interactively
+				// 3. prompt interactively
 				fmt.Printf("%sToken not found in ~/.picoclaw/config.json\n", prefixPC())
 				fmt.Printf("%sGet your token:  %sjq '.channels.pico.token' ~/.picoclaw/config.json%s\n",
 					prefixPC(), colYellow, colReset)
@@ -184,6 +237,8 @@ func (p *pcAuth) setup() error {
 				if p.token == "" {
 					return fmt.Errorf("picoclaw token is required")
 				}
+				saveToken("pc_token", p.token)
+				fmt.Printf("%spicoclaw token saved to ~/.clawproxy/pc_token\n", prefixPC())
 			}
 		}
 		p.wsURL = fmt.Sprintf("ws://%s:%d/pico/ws", p.host, p.gwPort)
