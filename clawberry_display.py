@@ -141,6 +141,11 @@ def _detect_display():
     """
     global _disp, _display_type, _eink_mod, _lcd_mod, _oled_mod, _LCD_LANDSCAPE
 
+    # Ensure any GPIOZERO_PIN_FACTORY left by a previous run (or inherited from
+    # the parent shell) is cleared before we start probing. We set it again
+    # only for the LCD/OLED probes that actually need it.
+    os.environ.pop('GPIOZERO_PIN_FACTORY', None)
+
     # ── 0. Check for a manual override file ───────────────────────────────
     _forced = None
     try:
@@ -222,6 +227,10 @@ def _detect_display():
 
     # ── 2. Try e-ink 2.13\" ──────────────────────────────────────────────
     if _forced not in ('lcd', 'oled'):
+        # epdconfig uses RPi.GPIO directly (not gpiozero). Remove the env var
+        # so gpiozero (if already imported) doesn't re-initialise its pin
+        # factory on the same chip while RPi.GPIO is opening it.
+        os.environ.pop('GPIOZERO_PIN_FACTORY', None)
         try:
             from waveshare_epd import epd2in13_V4 as _em
             _obj = _em.EPD()
