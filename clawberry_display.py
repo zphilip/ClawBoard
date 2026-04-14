@@ -12,9 +12,7 @@ from urllib.request import urlopen
 from PIL import Image, ImageDraw, ImageFont
 
 # ── Driver path setup ─────────────────────────────────────────────────────
-# NOTE: GPIOZERO_PIN_FACTORY is set lazily inside _detect_display() only when
-# probing the LCD or OLED (both use gpiozero). Setting it here at module level
-# caused RPi.GPIO to be left in a bad state before the e-ink probe runs.
+os.environ['GPIOZERO_PIN_FACTORY'] = 'rpigpio'
 current_dir = os.path.dirname(os.path.realpath(__file__))
 libdir = os.path.join(current_dir, 'lib')
 if os.path.exists(libdir):
@@ -24,7 +22,6 @@ if os.path.exists(libdir):
 # Module-level references are set once detection succeeds.
 _eink_mod = None   # waveshare_epd.epd2in13_V4 when e-ink is active
 _lcd_mod  = None   # LCD_1inch69 module when LCD is active
-_oled_mod = None   # waveshare_OLED.OLED_0in96_rgb module when OLED is active
 
 logging.basicConfig(level=logging.INFO)
 
@@ -47,7 +44,6 @@ DISPLAY_TYPE_OVERRIDE_FILE = os.path.join(_HERE, 'config', 'display_type.txt')
 _FALLBACK_HOLD_SECONDS        = 30
 MONITOR_FORCE_REFRESH_SECONDS = 3600  # force a full monitor redraw after this many idle seconds (ghost-busting)
 POLL_SECONDS = 1
-_OLED_SCROLL_INTERVAL = 0.10   # seconds between OLED scroll frames (~10 FPS)
 
 _FONT_BOLD = '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf'
 _FONT_REG  = '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf'
@@ -56,7 +52,6 @@ _FONT_REG  = '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf'
 _disp         = None   # active display object (EPD or LCD_1inch69)
 _display_type = None   # 'eink' | 'lcd'
 _qr_cache     = {}     # {(url, size): PIL.Image} — avoid regenerating unchanged QR codes
-_oled_scroll_offset: int = 0   # advances each scroll frame; drives IP text animation
 
 
 def _epd_render(epd, image, force_full=False):
@@ -93,11 +88,6 @@ def _shutdown(signum=None, frame=None):
                 _disp.module_exit()
             except Exception as e:
                 logging.warning("LCD module_exit failed: %s", e)
-        elif _display_type == 'oled':
-            try:
-                _disp.module_exit()
-            except Exception as e:
-                logging.warning("OLED module_exit failed: %s", e)
         else:  # eink
             released = False
             for _attr in ('Dev_exit',):
@@ -139,12 +129,7 @@ def _detect_display():
     Sets the module globals ``_disp``, ``_display_type``, ``_eink_mod`` /
     ``_lcd_mod`` and returns the active display object.
     """
-    global _disp, _display_type, _eink_mod, _lcd_mod, _oled_mod, _LCD_LANDSCAPE
-
-    # Ensure any GPIOZERO_PIN_FACTORY left by a previous run (or inherited from
-    # the parent shell) is cleared before we start probing. We set it again
-    # only for the LCD/OLED probes that actually need it.
-    os.environ.pop('GPIOZERO_PIN_FACTORY', None)
+    global _disp, _display_type, _eink_mod, _lcd_mod
 
     # ── 0. Check for a manual override file ───────────────────────────────
     _forced = None
@@ -157,20 +142,8 @@ def _detect_display():
     except Exception as _e:
         logging.warning('Could not read display_type.txt: %s', _e)
 
-    # Resolve orientation suffixes before the type check
-    if _forced == 'lcd-landscape':
-        _LCD_LANDSCAPE = True
-        _forced = 'lcd'
-    elif _forced == 'lcd-portrait':
-        _LCD_LANDSCAPE = False
-        _forced = 'lcd'
-
     # ── 1. Try LCD 1.69\" ────────────────────────────────────────────────
-    if _forced not in ('eink', 'oled'):
-        # Set pin factory for gpiozero ONLY while probing the LCD driver.
-        # The e-ink driver uses RPi.GPIO directly; if gpiozero holds GPIO 25
-        # (DC_PIN) open at the same time, RPi.GPIO.setup(25) raises 'GPIO busy'.
-        os.environ['GPIOZERO_PIN_FACTORY'] = 'rpigpio'
+    if _forced != 'eink':
         import importlib as _il
         # LCD_1inch69.py uses relative imports (from . import ...) so it MUST
         # be loaded as part of a package.  We add the *parent* of the package
@@ -216,21 +189,9 @@ def _detect_display():
                 return _obj
             except Exception as e:
                 logging.info('LCD 1.69\" not available: %s', e)
-                # Release gpiozero GPIO pins so e-ink probe can claim them via
-                # RPi.GPIO. The LCD config creates DigitalOutputDevice(25) etc.
-                # which hold /dev/gpiochip0 GPIO 25 open — the same pin e-ink
-                # uses as DC_PIN. Calling module_exit() closes those fds.
-                try:
-                    _obj.module_exit()
-                except Exception:
-                    pass
 
     # ── 2. Try e-ink 2.13\" ──────────────────────────────────────────────
-    if _forced not in ('lcd', 'oled'):
-        # epdconfig uses RPi.GPIO directly (not gpiozero). Remove the env var
-        # so gpiozero (if already imported) doesn't re-initialise its pin
-        # factory on the same chip while RPi.GPIO is opening it.
-        os.environ.pop('GPIOZERO_PIN_FACTORY', None)
+    if _forced != 'lcd':
         try:
             from waveshare_epd import epd2in13_V4 as _em
             _obj = _em.EPD()
@@ -239,50 +200,16 @@ def _detect_display():
             _eink_mod     = _em
             _disp         = _obj
             _display_type = 'eink'
-            logging.info('Display detected: e-ink 2.13" (epd2in13_V4)')
+            logging.info('Display detected: e-ink 2.13\" (epd2in13_V4)')
             return _obj
         except Exception as e:
-            logging.info('E-ink 2.13" not available: %s', e)
+            logging.info('E-ink 2.13\" not available: %s', e)
 
-    # ── 3. Try OLED 0.96" RGB ────────────────────────────────────────────
-    if _forced not in ('lcd', 'eink'):
-        # Same gpiozero isolation as for LCD above.
-        os.environ['GPIOZERO_PIN_FACTORY'] = 'rpigpio'
-        try:
-            from waveshare_OLED import OLED_0in96_rgb as _om
-            _obj = _om.OLED_0in96_rgb()
-            _obj.Init()
-            _obj.clear()
-            _oled_mod     = _om
-            _disp         = _obj
-            _display_type = 'oled'
-            logging.info('Display detected: OLED 0.96" RGB (OLED_0in96_rgb)')
-            return _obj
-        except Exception as e:
-            logging.info('OLED 0.96" not available: %s', e)
-            # waveshare_OLED/config.py's RaspberryPi creates DigitalOutputDevice
-            # for GPIO 25 (DC) and GPIO 27 (RST) but its module_exit() doesn't
-            # close them. Close explicitly so e-ink (if retried) can claim them.
-            try:
-                for _attr in ('RST_PIN', 'DC_PIN'):
-                    _pin_obj = getattr(_obj, _attr, None)
-                    if _pin_obj is not None:
-                        try:
-                            _pin_obj.close()
-                        except Exception:
-                            pass
-            except Exception:
-                pass
-
-    logging.warning(
+    raise RuntimeError(
         'No supported display detected '
-        '(tried LCD 1.69", e-ink 2.13", OLED 0.96"). '
-        'Running in headless mode (no rendering). '
-        'Override file: %s',
-        DISPLAY_TYPE_OVERRIDE_FILE,
+        '(tried LCD 1.69\" and e-ink 2.13\"). '
+        f'Override file: {DISPLAY_TYPE_OVERRIDE_FILE}'
     )
-    _display_type = 'none'
-    return None
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -531,29 +458,15 @@ _IFACE_COL = {
     'BT':   (120,   0, 180),
 }
 
-# ── LCD orientation ──────────────────────────────────────────────────────
-# True  → landscape 280×240  (default)
-# False → portrait  240×280
-# Override via config/display_type.txt: write 'lcd-landscape' or 'lcd-portrait'
-_LCD_LANDSCAPE = True
-
-def _lcd_dims(disp):
-    """Return (W, H) for the active LCD orientation."""
-    if _LCD_LANDSCAPE:
-        return disp.height, disp.width   # 280 × 240
-    return disp.width, disp.height       # 240 × 280
-
 
 def draw_monitor_lcd(disp):
-    """Render the normal status screen for the 1.69\" LCD.
-    Landscape (280×240): QR left, info right.
-    Portrait  (240×280): QR centred, info stacked below.
-    """
-    W, H  = _lcd_dims(disp)
+    """Render the normal status screen for the 1.69\" LCD (240×280 portrait)."""
+    W, H  = disp.width, disp.height   # 240 × 280
     image = Image.new('RGB', (W, H), _C_BG)
     draw  = ImageDraw.Draw(image)
 
     f_hdr   = _load_font(_FONT_BOLD, 18)
+    f_label = _load_font(_FONT_BOLD, 13)
     f_body  = _load_font(_FONT_REG,  13)
     f_small = _load_font(_FONT_REG,  12)
 
@@ -568,66 +481,59 @@ def draw_monitor_lcd(disp):
     u_ip = get_ip_address('usb0')
     primary_ip = w_ip or e_ip or u_ip or b_ip
 
-    def _draw_qr(qx, qy, qsize):
-        if primary_ip:
-            qr_url = f'http://{primary_ip}:8080'
-            try:
-                qr_img = _generate_qr_image(qr_url, size=qsize).convert('RGB')
-                image.paste(qr_img, (qx, qy))
-            except Exception as exc:
-                logging.warning('QR generation failed: %s', exc)
-                draw.rectangle((qx, qy, qx + qsize, qy + qsize), outline=_C_GREY, width=1)
-                draw.text((qx + 14, qy + qsize // 2 - 7), 'QR err', font=f_body, fill=_C_RED)
-        else:
-            draw.rectangle((qx, qy, qx + qsize, qy + qsize), outline=_C_GREY, width=1)
-            draw.text((qx + 18, qy + qsize // 2 - 7), 'No IP', font=f_body, fill=_C_GREY)
-
-    def _draw_ifaces_and_svcs(ix, iy):
-        any_ip = False
-        y = iy
-        for iface_label, ip in (('WiFi', w_ip), ('ETH', e_ip), ('USB', u_ip), ('BT', b_ip)):
-            if ip:
-                col = _IFACE_COL.get(iface_label, (80, 80, 80))
-                draw.rectangle((ix, y, ix + 40, y + 18), fill=col)
-                draw.text((ix + 2,  y + 2), iface_label, font=f_small, fill=_C_WHITE)
-                draw.text((ix + 46, y + 2), ip,          font=f_small, fill=_C_DARK)
-                y += 22
-                any_ip = True
-        if not any_ip:
-            draw.text((ix, y), 'No network', font=f_body, fill=_C_RED)
-            y += 22
-        y += 4
-        draw.line((ix, y, W - 6, y), fill=(200, 200, 200), width=1)
-        y += 7
-        for svc, status in (('ZeroClaw', get_service_status('zeroclaw')),
-                            ('PicoClaw', get_service_status('picoclaw'))):
-            col = _C_GREEN if status == 'Running' else _C_RED
-            draw.ellipse((ix, y + 3, ix + 11, y + 14), fill=col)
-            draw.text((ix + 16, y + 1), f'{svc}: {status}', font=f_small, fill=_C_DARK)
-            y += 20
-
-    if _LCD_LANDSCAPE:
-        # Landscape: QR left, info panel right
-        QR_SIZE = 128
-        QR_X, QR_Y = 6, 40 + (H - 40 - QR_SIZE) // 2
-        _draw_qr(QR_X, QR_Y, QR_SIZE)
-        _draw_ifaces_and_svcs(QR_X + QR_SIZE + 8, 48)
+    # QR code centred below header
+    QR_SIZE = 130
+    QR_X    = (W - QR_SIZE) // 2
+    QR_Y    = 48
+    if primary_ip:
+        qr_url = f'http://{primary_ip}:8080'
+        try:
+            qr_img = _generate_qr_image(qr_url, size=QR_SIZE).convert('RGB')
+            image.paste(qr_img, (QR_X, QR_Y))
+        except Exception as exc:
+            logging.warning('QR generation failed: %s', exc)
+            draw.rectangle((QR_X, QR_Y, QR_X + QR_SIZE, QR_Y + QR_SIZE),
+                           outline=_C_GREY, width=1)
+            draw.text((QR_X + 22, QR_Y + 55), 'QR err', font=f_body, fill=_C_RED)
     else:
-        # Portrait: QR centred below header, info below
-        QR_SIZE = 120
-        QR_X = (W - QR_SIZE) // 2
-        QR_Y = 48
-        _draw_qr(QR_X, QR_Y, QR_SIZE)
-        _draw_ifaces_and_svcs(6, QR_Y + QR_SIZE + 10)
+        draw.rectangle((QR_X, QR_Y, QR_X + QR_SIZE, QR_Y + QR_SIZE),
+                       outline=_C_GREY, width=1)
+        draw.text((QR_X + 30, QR_Y + 55), 'No IP', font=f_body, fill=_C_GREY)
+
+    # Interface rows
+    y = QR_Y + QR_SIZE + 10
+    any_ip = False
+    for iface_label, ip in (('WiFi', w_ip), ('ETH', e_ip), ('USB', u_ip), ('BT', b_ip)):
+        if ip:
+            col = _IFACE_COL.get(iface_label, (80, 80, 80))
+            draw.rectangle((6, y, 46, y + 18), fill=col)
+            draw.text((8,  y + 2), iface_label, font=f_small, fill=_C_WHITE)
+            draw.text((52, y + 2), ip,          font=f_small, fill=_C_DARK)
+            y += 22
+            any_ip = True
+    if not any_ip:
+        draw.text((10, y), 'No network', font=f_body, fill=_C_RED)
+        y += 22
+
+    # Divider
+    y += 4
+    draw.line((6, y, W - 6, y), fill=(200, 200, 200), width=1)
+    y += 7
+
+    # Service status rows
+    for svc, status in (('ZeroClaw', get_service_status('zeroclaw')),
+                        ('PicoClaw', get_service_status('picoclaw'))):
+        col = _C_GREEN if status == 'Running' else _C_RED
+        draw.ellipse((8, y + 3, 19, y + 14), fill=col)
+        draw.text((25, y + 1), f'{svc}: {status}', font=f_small, fill=_C_DARK)
+        y += 20
 
     disp.ShowImage(image)
 
 
 def draw_paircode_lcd(disp, code):
-    """Render the ZeroClaw pair-code screen on the 1.69\" LCD.
-    Auto-sizes the code to fill the available width in either orientation.
-    """
-    W, H  = _lcd_dims(disp)
+    """Render the ZeroClaw pair-code screen on the 1.69\" LCD."""
+    W, H  = disp.width, disp.height
     image = Image.new('RGB', (W, H), _C_BG)
     draw  = ImageDraw.Draw(image)
 
@@ -657,275 +563,58 @@ def draw_paircode_lcd(disp, code):
 
 
 def draw_picoclaw_qr_lcd(disp, url, token=''):
-    """Render the PicoClaw pairing QR on the 1.69\" LCD.
-    Landscape (280×240): QR left, URL/token right.
-    Portrait  (240×280): QR centred, URL/token below.
-    """
-    W, H  = _lcd_dims(disp)
+    """Render the PicoClaw pairing QR on the 1.69\" LCD."""
+    W, H  = disp.width, disp.height
     image = Image.new('RGB', (W, H), _C_BG)
     draw  = ImageDraw.Draw(image)
 
     f_hdr   = _load_font(_FONT_BOLD, 18)
     f_small = _load_font(_FONT_REG,  12)
-    f_tiny  = _load_font(_FONT_REG,  11)
 
     draw.rectangle((0, 0, W, 40), fill=_C_HDR_PC)
     draw.text((10, 9), 'PicoClaw Pair QR', font=f_hdr, fill=_C_WHITE)
 
-    def _paste_qr(qx, qy, qsize):
-        try:
-            qr_img = _fetch_qr_image(url, size=qsize).convert('RGB')
-            image.paste(qr_img, (qx, qy))
-        except Exception as e:
-            logging.warning('Could not fetch QR image: %s', e)
-            draw.rectangle((qx, qy, qx + qsize, qy + qsize), outline=_C_GREY, width=2)
-            draw.text((qx + qsize // 2 - 12, qy + qsize // 2 - 10), 'QR', font=f_hdr, fill=_C_GREY)
+    QR_SIZE = min(H - 90, 170)
+    QR_X    = (W - QR_SIZE) // 2
+    QR_Y    = 48
+    try:
+        qr_img = _fetch_qr_image(url, size=QR_SIZE).convert('RGB')
+        image.paste(qr_img, (QR_X, QR_Y))
+    except Exception as e:
+        logging.warning('Could not fetch QR image: %s', e)
+        draw.rectangle((QR_X, QR_Y, QR_X + QR_SIZE, QR_Y + QR_SIZE),
+                       outline=_C_GREY, width=2)
+        draw.text((QR_X + 55, QR_Y + 75), 'QR', font=f_hdr, fill=_C_GREY)
 
-    if _LCD_LANDSCAPE:
-        # QR left, URL/token right
-        QR_SIZE = min(H - 50, 150)
-        QR_X, QR_Y = 6, 40 + (H - 40 - QR_SIZE) // 2
-        _paste_qr(QR_X, QR_Y, QR_SIZE)
-        tx, ty = QR_X + QR_SIZE + 8, 48
-        for line in textwrap.wrap(url, width=16)[:4]:
-            draw.text((tx, ty), line, font=f_small, fill=(60, 60, 60))
-            ty += 15
-        if token:
-            tok_str = f'tok:{token[:14]}...' if len(token) > 14 else f'tok:{token}'
-            draw.text((tx, H - 20), tok_str, font=f_tiny, fill=_C_GREY)
-    else:
-        # QR centred, URL/token below
-        QR_SIZE = min(W - 20, 180)
-        QR_X = (W - QR_SIZE) // 2
-        QR_Y = 48
-        _paste_qr(QR_X, QR_Y, QR_SIZE)
-        ty = QR_Y + QR_SIZE + 8
-        for line in textwrap.wrap(url, width=30)[:3]:
-            draw.text((6, ty), line, font=f_small, fill=(60, 60, 60))
-            ty += 15
-        if token:
-            tok_str = f'tok:{token[:22]}...' if len(token) > 22 else f'tok:{token}'
-            draw.text((6, H - 20), tok_str, font=f_tiny, fill=_C_GREY)
+    y = QR_Y + QR_SIZE + 8
+    for line in textwrap.wrap(url, width=34)[:2]:
+        draw.text((6, y), line, font=f_small, fill=(60, 60, 60))
+        y += 16
+    if token:
+        tok_str = f'token: {token[:18]}...' if len(token) > 18 else f'token: {token}'
+        draw.text((6, y), tok_str, font=f_small, fill=_C_GREY)
 
     disp.ShowImage(image)
 
 
-# ── OLED 0.96" RGB Screens (128×64 landscape, RGB colour) ─────────────────────
-# Physical: width=64, height=128 (portrait). We draw on a 128×64 canvas
-# then rotate 270° before passing to getbuffer so the image fills the screen.
-
-_OLED_W = 128   # canvas width  (landscape)
-_OLED_H =  64   # canvas height (landscape)
-
-
-def _oled_scrolling_text(image, draw, x, y, text, font, fill, avail_w, row_h=11):
-    """Draw *text* at (x, y) clipped to *avail_w* pixels wide.
-
-    If the text fits it is drawn normally.  If it is wider it scrolls
-    horizontally using ``_oled_scroll_offset`` — a seamless loop with a
-    short blank gap between repetitions.
-    """
-    global _oled_scroll_offset
-    bbox   = draw.textbbox((0, 0), text, font=font)
-    text_w = bbox[2] - bbox[0]
-    if text_w <= avail_w:
-        draw.text((x, y), text, font=font, fill=fill)
-        return
-    SCROLL_GAP = 18                          # blank pixels between repeats
-    cycle      = text_w + SCROLL_GAP
-    off        = _oled_scroll_offset % cycle
-    strip_w    = cycle + avail_w             # always avail_w pixels available from off
-    strip      = Image.new('RGB', (strip_w, row_h), (0, 0, 0))
-    sd         = ImageDraw.Draw(strip)
-    sd.text((0,     0), text, font=font, fill=fill)   # first copy
-    sd.text((cycle, 0), text, font=font, fill=fill)   # second copy for seamless wrap
-    crop = strip.crop((off, 0, off + avail_w, row_h))
-    image.paste(crop, (x, y))
-
-
-def _oled_show(disp, image: 'Image.Image') -> None:
-    """Push a 128×64 RGB PIL image to the OLED.
-
-    The OLED physical orientation is portrait (width=64, height=128), so the
-    128×64 landscape canvas must be rotated 270° (→ 64×128) before handing
-    off to getbuffer / ShowImage.
-    """
-    rotated = image.rotate(270, expand=True)   # 128×64 → 64×128
-    disp.ShowImage(disp.getbuffer(rotated))
-
-
-def draw_monitor_oled(disp):
-    """Render the status screen on the 0.96\" OLED (128×64 landscape)."""
-    W, H = _OLED_W, _OLED_H
-    image = Image.new('RGB', (W, H), (0, 0, 0))   # black background
-    draw  = ImageDraw.Draw(image)
-
-    f_title = _load_font(_FONT_BOLD, 10)
-    f_small = _load_font(_FONT_REG,   9)
-
-    # Gather IPs
-    w_ip = get_ip_address('wlan0')
-    e_ip = get_ip_address('eth0')
-    b_ip = get_ip_address('bnep0')
-    u_ip = get_ip_address('usb0')
-    primary_ip = w_ip or e_ip or u_ip or b_ip
-
-    # ── QR left ─────────────────────────────────────────────────────────
-    QR_SIZE = 52
-    QR_X, QR_Y = 2, (H - QR_SIZE) // 2
-    if primary_ip:
-        qr_url = f'http://{primary_ip}:8080'
-        try:
-            qr_img = _generate_qr_image(qr_url, size=QR_SIZE).convert('RGB')
-            image.paste(qr_img, (QR_X, QR_Y))
-        except Exception as exc:
-            logging.warning('OLED QR generation failed: %s', exc)
-            draw.rectangle((QR_X, QR_Y, QR_X + QR_SIZE, QR_Y + QR_SIZE),
-                           outline=(255, 255, 255), width=1)
-            draw.text((QR_X + 4, QR_Y + 20), 'QR?', font=f_small, fill=(255, 80, 80))
-    else:
-        draw.rectangle((QR_X, QR_Y, QR_X + QR_SIZE, QR_Y + QR_SIZE),
-                       outline=(100, 100, 100), width=1)
-        draw.text((QR_X + 6, QR_Y + 20), 'No IP', font=f_small, fill=(150, 150, 150))
-
-    # ── Right panel ──────────────────────────────────────────────────────
-    tx = QR_X + QR_SIZE + 4
-    y  = 1
-
-    draw.text((tx, y), 'ClawBerry', font=f_title, fill=(80, 160, 255))
-    y += 11
-    draw.line((tx, y, W - 1, y), fill=(60, 60, 60))
-    y += 3
-
-    any_ip = False
-    _OLED_IFACE_COL = {
-        'WiFi': (  0, 200, 100),
-        'ETH':  ( 80, 160, 255),
-        'USB':  (255, 160,  40),
-        'BT':   (200,  80, 255),
-    }
-    ip_avail_w = W - 1 - (tx + 27)   # pixels available right of the label badge
-    for label, ip in (('WiFi', w_ip), ('ETH', e_ip), ('USB', u_ip), ('BT', b_ip)):
-        if ip:
-            col = _OLED_IFACE_COL.get(label, (180, 180, 180))
-            draw.text((tx,      y), f'{label}:', font=f_small, fill=col)
-            _oled_scrolling_text(image, draw, tx + 27, y, ip,
-                                 f_small, (220, 220, 220), ip_avail_w)
-            y += 11
-            any_ip = True
-    if not any_ip:
-        draw.text((tx, y), 'No network', font=f_small, fill=(255, 80, 80))
-        y += 11
-
-    y += 2
-    draw.line((tx, y, W - 1, y), fill=(60, 60, 60))
-    y += 3
-
-    s_zc = get_service_status('zeroclaw')
-    s_pc = get_service_status('picoclaw')
-    for svc, status in (('ZC', s_zc), ('PC', s_pc)):
-        col = (0, 200, 80) if status == 'Running' else (255, 60, 60)
-        draw.ellipse((tx, y + 2, tx + 7, y + 9), fill=col)
-        draw.text((tx + 10, y), f'{svc}: {status}', font=f_small, fill=(200, 200, 200))
-        y += 11
-
-    _oled_show(disp, image)
-
-
-def draw_paircode_oled(disp, code):
-    """Render the pair-code screen on the 0.96\" OLED."""
-    W, H  = _OLED_W, _OLED_H
-    image = Image.new('RGB', (W, H), (0, 0, 0))
-    draw  = ImageDraw.Draw(image)
-
-    f_hint = _load_font(_FONT_REG, 9)
-
-    draw.text((2, 1), 'Pair Code', font=_load_font(_FONT_BOLD, 10), fill=(80, 160, 255))
-    draw.line((2, 13, W - 2, 13), fill=(40, 40, 80))
-
-    # Auto-size code
-    for fsize in (36, 28, 22, 16):
-        f_code = _load_font(_FONT_BOLD, fsize)
-        bbox   = draw.textbbox((0, 0), code, font=f_code)
-        tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
-        if tw <= W - 8:
-            break
-
-    cy = 15 + (H - 15 - 14 - th) // 2
-    draw.text(((W - tw) // 2, cy), code, font=f_code, fill=(255, 220, 80))
-
-    hint = 'scan / type in app'
-    hbbox = draw.textbbox((0, 0), hint, font=f_hint)
-    draw.text(((W - (hbbox[2] - hbbox[0])) // 2, H - 11),
-              hint, font=f_hint, fill=(120, 120, 120))
-
-    _oled_show(disp, image)
-
-
-def draw_picoclaw_qr_oled(disp, url, token=''):
-    """Render a PicoClaw pairing QR on the 0.96\" OLED."""
-    W, H  = _OLED_W, _OLED_H
-    image = Image.new('RGB', (W, H), (0, 0, 0))
-    draw  = ImageDraw.Draw(image)
-
-    f_hdr   = _load_font(_FONT_BOLD, 10)
-    f_small = _load_font(_FONT_REG,   9)
-
-    draw.text((2, 1), 'PicoClaw QR', font=f_hdr, fill=(200, 80, 255))
-    draw.line((2, 13, W - 2, 13), fill=(60, 20, 80))
-
-    QR_SIZE = 48
-    QR_X, QR_Y = 2, 15
-    try:
-        qr_img = _generate_qr_image(url, size=QR_SIZE).convert('RGB')
-        image.paste(qr_img, (QR_X, QR_Y))
-    except Exception as e:
-        logging.warning('OLED QR fetch failed: %s', e)
-        draw.rectangle((QR_X, QR_Y, QR_X + QR_SIZE, QR_Y + QR_SIZE),
-                       outline=(200, 80, 255), width=1)
-        draw.text((QR_X + 10, QR_Y + 18), 'QR', font=f_hdr, fill=(200, 80, 255))
-
-    tx, ty = QR_X + QR_SIZE + 4, 16
-    for line in textwrap.wrap(url, width=14)[:3]:
-        draw.text((tx, ty), line, font=f_small, fill=(180, 180, 180))
-        ty += 11
-    if token:
-        tok = f'{token[:10]}...' if len(token) > 10 else token
-        draw.text((tx, H - 11), tok, font=f_small, fill=(120, 120, 120))
-
-    _oled_show(disp, image)
-
-
 # ── Dispatch wrappers (route to eink or LCD based on _display_type) ──────────
 def _render_monitor(force_full=False):
-    if _disp is None:
-        return
     if _display_type == 'lcd':
         draw_monitor_lcd(_disp)
-    elif _display_type == 'oled':
-        draw_monitor_oled(_disp)
     else:
         draw_monitor(_disp, force_full=force_full)
 
 
 def _render_paircode(code):
-    if _disp is None:
-        return
     if _display_type == 'lcd':
         draw_paircode_lcd(_disp, code)
-    elif _display_type == 'oled':
-        draw_paircode_oled(_disp, code)
     else:
         draw_paircode(_disp, code)
 
 
 def _render_picoclaw_qr(url, token=''):
-    if _disp is None:
-        return
     if _display_type == 'lcd':
         draw_picoclaw_qr_lcd(_disp, url, token)
-    elif _display_type == 'oled':
-        draw_picoclaw_qr_oled(_disp, url, token)
     else:
         draw_picoclaw_qr(_disp, url, token)
 
@@ -971,8 +660,7 @@ def _draw_request_screen(payload):
 #   • IP address or service status change    → immediate monitor refresh
 #   • MONITOR_FORCE_REFRESH_SECONDS elapsed  → periodic ghost-busting refresh
 _detect_display()
-logging.info('ClawBerry display service starting — display type: %s',
-             _display_type or 'none (headless)')
+logging.info('ClawBerry display service starting — display type: %s', _display_type)
 
 last_state        = _get_current_state()
 _render_monitor()
@@ -982,7 +670,7 @@ hold_until        = 0.0             # monotonic time until temp screen must not 
 was_holding       = False           # True while a temporary screen is being shown
 
 while True:
-    time.sleep(_OLED_SCROLL_INTERVAL if _display_type == 'oled' else POLL_SECONDS)
+    time.sleep(POLL_SECONDS)
     now = time.monotonic()
 
     # ── 1. Check for new / updated pair-code or pico-QR request file ─────
@@ -1010,23 +698,7 @@ while True:
     if currently_holding:
         continue
 
-    # ── 3. OLED: advance scroll offset and redraw every frame ─────────────
-    # State changes are picked up each frame; no separate change-detection
-    # path is needed because we're already redrawing continuously.
-    if _display_type == 'oled':
-        _oled_scroll_offset = (_oled_scroll_offset + 3) % 100000
-        current_state = _get_current_state()
-        if current_state != last_state:
-            changed = [k for k in current_state if current_state[k] != last_state.get(k)]
-            logging.info("State change detected (%s)", ', '.join(changed))
-            last_state = current_state
-        if just_released:
-            logging.info("Temporary screen hold expired — restoring monitor display")
-        _render_monitor()
-        last_monitor_draw = now
-        continue
-
-    # ── 4. (non-OLED) Check for network / service state changes ──────────
+    # ── 3. Check for network / service state changes ──────────────────────
     current_state = _get_current_state()
     age           = now - last_monitor_draw
     state_changed = current_state != last_state
