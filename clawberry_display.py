@@ -12,7 +12,9 @@ from urllib.request import urlopen
 from PIL import Image, ImageDraw, ImageFont
 
 # ── Driver path setup ─────────────────────────────────────────────────────
-os.environ['GPIOZERO_PIN_FACTORY'] = 'rpigpio'
+# NOTE: GPIOZERO_PIN_FACTORY is set lazily inside _detect_display() only when
+# probing the LCD or OLED (both use gpiozero). Setting it here at module level
+# caused RPi.GPIO to be left in a bad state before the e-ink probe runs.
 current_dir = os.path.dirname(os.path.realpath(__file__))
 libdir = os.path.join(current_dir, 'lib')
 if os.path.exists(libdir):
@@ -160,6 +162,10 @@ def _detect_display():
 
     # ── 1. Try LCD 1.69\" ────────────────────────────────────────────────
     if _forced not in ('eink', 'oled'):
+        # Set pin factory for gpiozero ONLY while probing the LCD driver.
+        # The e-ink driver uses RPi.GPIO directly; if gpiozero holds GPIO 25
+        # (DC_PIN) open at the same time, RPi.GPIO.setup(25) raises 'GPIO busy'.
+        os.environ['GPIOZERO_PIN_FACTORY'] = 'rpigpio'
         import importlib as _il
         # LCD_1inch69.py uses relative imports (from . import ...) so it MUST
         # be loaded as part of a package.  We add the *parent* of the package
@@ -205,18 +211,17 @@ def _detect_display():
                 return _obj
             except Exception as e:
                 logging.info('LCD 1.69\" not available: %s', e)
+                # Release gpiozero GPIO pins so e-ink probe can claim them via
+                # RPi.GPIO. The LCD config creates DigitalOutputDevice(25) etc.
+                # which hold /dev/gpiochip0 GPIO 25 open — the same pin e-ink
+                # uses as DC_PIN. Calling module_exit() closes those fds.
+                try:
+                    _obj.module_exit()
+                except Exception:
+                    pass
 
     # ── 2. Try e-ink 2.13\" ──────────────────────────────────────────────
     if _forced not in ('lcd', 'oled'):
-        # Clear any stale RPi.GPIO state left by a previous uncleaned process.
-        # Without this, GPIO.setmode() inside the waveshare driver raises
-        # RuntimeError('GPIO busy') even when no process holds the chip open.
-        try:
-            import RPi.GPIO as _gpio_pre
-            _gpio_pre.setmode(_gpio_pre.BCM)
-            _gpio_pre.cleanup()
-        except Exception:
-            pass
         try:
             from waveshare_epd import epd2in13_V4 as _em
             _obj = _em.EPD()
@@ -232,6 +237,8 @@ def _detect_display():
 
     # ── 3. Try OLED 0.96" RGB ────────────────────────────────────────────
     if _forced not in ('lcd', 'eink'):
+        # Same gpiozero isolation as for LCD above.
+        os.environ['GPIOZERO_PIN_FACTORY'] = 'rpigpio'
         try:
             from waveshare_OLED import OLED_0in96_rgb as _om
             _obj = _om.OLED_0in96_rgb()
@@ -244,6 +251,19 @@ def _detect_display():
             return _obj
         except Exception as e:
             logging.info('OLED 0.96" not available: %s', e)
+            # waveshare_OLED/config.py's RaspberryPi creates DigitalOutputDevice
+            # for GPIO 25 (DC) and GPIO 27 (RST) but its module_exit() doesn't
+            # close them. Close explicitly so e-ink (if retried) can claim them.
+            try:
+                for _attr in ('RST_PIN', 'DC_PIN'):
+                    _pin_obj = getattr(_obj, _attr, None)
+                    if _pin_obj is not None:
+                        try:
+                            _pin_obj.close()
+                        except Exception:
+                            pass
+            except Exception:
+                pass
 
     logging.warning(
         'No supported display detected '
