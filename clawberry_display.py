@@ -13,10 +13,24 @@ from PIL import Image, ImageDraw, ImageFont
 
 # ── Driver path setup ─────────────────────────────────────────────────────
 # Do NOT set GPIOZERO_PIN_FACTORY here at module level.
-# The e-ink driver (waveshare epdconfig) uses RPi.GPIO directly. If gpiozero
-# is already loaded with rpigpio factory, it holds GPIO lines open and
-# RPi.GPIO.setup() fails with 'GPIO busy'. The LCD probe sets it lazily.
+# The e-ink driver (waveshare epdconfig) uses RPi.GPIO directly; gpiozero
+# must not hold the same GPIO lines open when it runs.
 os.environ.pop('GPIOZERO_PIN_FACTORY', None)   # clear any inherited value
+
+# ── Release stale sysfs GPIO exports from previous crashed runs ──────────
+# RPi.GPIO exports pins via /sys/class/gpio/gpioN/. If a previous run was
+# killed without GPIO.cleanup(), those exports persist in the kernel and
+# RPi.GPIO.setup() on the same pin raises RuntimeError('GPIO busy') even
+# though no process currently holds /dev/gpiomem open.
+# Writing to /sys/class/gpio/unexport clears them unconditionally (root only).
+for _pin in (17, 18, 24, 25, 27):   # RST / PWR / BUSY / DC / CS used by EPD
+    if os.path.exists(f'/sys/class/gpio/gpio{_pin}'):
+        try:
+            with open('/sys/class/gpio/unexport', 'w') as _uf:
+                _uf.write(str(_pin))
+        except OSError:
+            pass   # already unexported by a concurrent call, or not root
+
 current_dir = os.path.dirname(os.path.realpath(__file__))
 libdir = os.path.join(current_dir, 'lib')
 if os.path.exists(libdir):
@@ -209,11 +223,13 @@ def _detect_display():
         except Exception as e:
             logging.info('E-ink 2.13\" not available: %s', e)
 
-    raise RuntimeError(
-        'No supported display detected '
-        '(tried LCD 1.69\" and e-ink 2.13\"). '
-        f'Override file: {DISPLAY_TYPE_OVERRIDE_FILE}'
+    logging.warning(
+        'No supported display detected (tried LCD 1.69\" and e-ink 2.13\"). '
+        'Running in headless mode. Override file: %s',
+        DISPLAY_TYPE_OVERRIDE_FILE,
     )
+    _display_type = 'none'
+    return None
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
