@@ -23,8 +23,9 @@ zero ALL=(root) NOPASSWD: /usr/bin/systemctl restart picoclaw.service
 zero ALL=(root) NOPASSWD: /usr/bin/systemctl stop picoclaw.service
 zero ALL=(root) NOPASSWD: /usr/bin/systemctl start picoclaw.service
 
-# ── PicoClaw runtime files (owned by picoclaw, read-only by dashboard) ───────
-# Used to compose the runtime WebSocket token shown in the Pair Device panel.
+# ── PicoClaw runtime files ───────────────────────────────────────────────────
+# Note: clawberry-proxy.service reads these via AmbientCapabilities=CAP_DAC_READ_SEARCH
+# (no sudo needed).  The rules below are kept only for interactive shell use.
 zero ALL=(root) NOPASSWD: /usr/bin/cat /var/lib/picoclaw/.picoclaw/.picoclaw.pid
 zero ALL=(root) NOPASSWD: /usr/bin/cat /var/lib/picoclaw/.picoclaw/.security.yml
 

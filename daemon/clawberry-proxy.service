@@ -38,9 +38,14 @@ PrivateTmp=false
 ProtectSystem=strict
 ProtectHome=false
 ReadWritePaths=/var/lib/zero /home/zero
+ReadOnlyPaths=/var/lib/picoclaw/.picoclaw
 RestrictNamespaces=true
 RestrictRealtime=true
 LockPersonality=true
+# Allow reading picoclaw runtime files (owned by picoclaw:picoclaw 600)
+# without sudo.  CAP_DAC_READ_SEARCH bypasses DAC read/search checks.
+CapabilityBoundingSet=CAP_DAC_READ_SEARCH
+AmbientCapabilities=CAP_DAC_READ_SEARCH
 
 [Install]
 WantedBy=multi-user.target
