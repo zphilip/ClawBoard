@@ -38,5 +38,10 @@ zero ALL=(root) NOPASSWD: /opt/wifi-connect/wifi-connect
 zero ALL=(root) NOPASSWD: /usr/bin/systemctl stop dnsmasq
 zero ALL=(root) NOPASSWD: /usr/bin/systemctl start dnsmasq
 
+# ── ClawBerry Proxy service management ───────────────────────────────────────
+zero ALL=(root) NOPASSWD: /usr/bin/systemctl restart clawberry-proxy.service
+zero ALL=(root) NOPASSWD: /usr/bin/systemctl stop clawberry-proxy.service
+zero ALL=(root) NOPASSWD: /usr/bin/systemctl start clawberry-proxy.service
+
 # ── Workspace-sync upgrade script ────────────────────────────────────────────
 zero ALL=(root) NOPASSWD: /usr/bin/bash /usr/local/bin/clawberry-workspace-sync.sh

@@ -1,0 +1,46 @@
+[Unit]
+Description=ClawBerry Proxy — transparent WebSocket proxy for zeroclaw / picoclaw
+# Start after both AI backends are up; survive if either is absent.
+After=network-online.target zeroclaw.service picoclaw.service
+Wants=network-online.target
+# Restart automatically if zeroclaw or picoclaw restarts.
+PartOf=zeroclaw.service
+
+[Service]
+Type=simple
+User=zero
+Group=zero
+
+ExecStartPre=/usr/bin/test -x /usr/local/bin/clawproxy
+
+# --proxy        : enable proxy server mode (listen on --proxy-port)
+# --proxy-port   : port served to clients (default 18780)
+# --zc / --pc    : enable both upstream agents
+# Tokens are loaded from ~/.clawproxy/{zc,pc}_token at startup;
+# if absent, clawproxy will prompt once on first run and persist them.
+ExecStart=/usr/local/bin/clawproxy \
+    --proxy \
+    --proxy-port 18780 \
+    --zc \
+    --pc
+
+WorkingDirectory=/var/lib/zero
+
+Restart=on-failure
+RestartSec=10
+
+StandardOutput=journal
+StandardError=journal
+
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=false
+ProtectSystem=strict
+ProtectHome=false
+ReadWritePaths=/var/lib/zero /home/zero
+RestrictNamespaces=true
+RestrictRealtime=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target

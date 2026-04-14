@@ -1,6 +1,6 @@
 package main
 
-// proxy.go — v2 proxy server mode for clawproxy.
+// proxy.go — v3 proxy server mode for clawproxy.
 //
 // ── Two endpoint families ─────────────────────────────────────────────────────
 //
@@ -17,7 +17,7 @@ package main
 //
 // 2. PROXY endpoint — multi-agent unified protocol:
 //
-//    WS   /proxy/ws                  → Pico Protocol + "agent":"zc"|"pc" field
+//    WS   /proxy/ws?client_id=<id>  → Pico Protocol + "agent":"zc"|"pc" field
 //    GET  /proxy/status
 //
 // ── Architecture ─────────────────────────────────────────────────────────────
@@ -28,6 +28,7 @@ package main
 //     ├── /ws/chat          → raw relay → zeroclaw  :42617  (zeroclaw.v1)
 //     ├── /pico/ws          → raw relay → picoclaw  :18790  (Pico Protocol)
 //     └── /proxy/ws         → unified proxy (per-session ZC + shared PC)
+//                             ?client_id=X  — optional; enables offline queue
 
 import (
 "encoding/json"
@@ -48,22 +49,24 @@ pcAuth        *pcAuth
 port          int
 internalToken string // stable token for compat endpoints
 upgrader      websocket.Upgrader
+store         *sessionStore
 }
 
-func newProxyServer(zca *zcAuth, pca *pcAuth, port int) *proxyServer {
+func newProxyServer(zca *zcAuth, pca *pcAuth, port, maxQueue int) *proxyServer {
 return &proxyServer{
 zcAuth:        zca,
 pcAuth:        pca,
 port:          port,
 internalToken: fmt.Sprintf("clawproxy-%d", time.Now().UnixMilli()),
+store:         newSessionStore(maxQueue),
 upgrader: websocket.Upgrader{
 CheckOrigin: func(r *http.Request) bool { return true },
 },
 }
 }
 
-func runProxy(port int, zca *zcAuth, pca *pcAuth) {
-s := newProxyServer(zca, pca, port)
+func runProxy(port int, zca *zcAuth, pca *pcAuth, maxQueue int) {
+s := newProxyServer(zca, pca, port, maxQueue)
 mux := http.NewServeMux()
 
 // ── compat: zeroclaw (chat.py) ──────────────────────────────────
@@ -80,10 +83,10 @@ mux.HandleFunc("/proxy/ws",     s.handleWS)
 mux.HandleFunc("/proxy/status", s.handleStatus)
 
 addr := fmt.Sprintf(":%d", port)
-fmt.Printf("\n%s%sClawProxy v2%s — proxy mode\n", prefixSYS(), colBold, colReset)
+fmt.Printf("\n%s%sClawProxy v3%s — proxy mode\n", prefixSYS(), colBold, colReset)
 fmt.Printf("%s  ZC compat  ←  GET /health · POST /pair · WS /ws/chat\n", prefixSYS())
 fmt.Printf("%s  PC compat  ←  GET /api/pico/token · WS /pico/ws\n", prefixSYS())
-fmt.Printf("%s  Unified    ←  WS /proxy/ws\n", prefixSYS())
+fmt.Printf("%s  Unified    ←  WS /proxy/ws?client_id=<id>\n", prefixSYS())
 fmt.Printf("%s  Status     ←  GET /proxy/status\n", prefixSYS())
 zcOK := colGreen + "✓" + colReset
 if zca == nil {
@@ -93,7 +96,12 @@ pcOK := colGreen + "✓" + colReset
 if pca == nil {
 pcOK = colRed + "✗ unavailable" + colReset
 }
-fmt.Printf("%s  ZC: %s   PC: %s   listen: %s\n\n", prefixSYS(), zcOK, pcOK, addr)
+queueStr := "disabled"
+if maxQueue > 0 {
+queueStr = fmt.Sprintf("%d msgs/session", maxQueue)
+}
+fmt.Printf("%s  ZC: %s   PC: %s   queue: %s   listen: %s\n\n",
+prefixSYS(), zcOK, pcOK, queueStr, addr)
 if err := http.ListenAndServe(addr, mux); err != nil {
 fmt.Printf("%sproxy server: %v\n", prefixERR(), err)
 }
@@ -291,13 +299,20 @@ Timestamp int64          `json:"timestamp,omitempty"`
 Payload   map[string]any `json:"payload,omitempty"`
 }
 
+// handleWS upgrades the connection and hands it to a proxyClient.
+// The optional ?client_id=<id> query parameter is the reconnect key:
+// passing the same client_id on reconnect drains queued messages first.
 func (s *proxyServer) handleWS(w http.ResponseWriter, r *http.Request) {
 conn, err := s.upgrader.Upgrade(w, r, nil)
 if err != nil {
 fmt.Printf("%supgrade: %v\n", prefixERR(), err)
 return
 }
-c := newProxyClient(conn, s)
+clientID := r.URL.Query().Get("client_id")
+if clientID == "" {
+clientID = fmt.Sprintf("c%d", time.Now().UnixNano()%1_000_000_000)
+}
+c := newProxyClient(conn, s, clientID)
 fmt.Printf("%sapp connected    id=%s  remote=%s\n", prefixSYS(), c.id, r.RemoteAddr)
 c.run()
 fmt.Printf("%sapp disconnected id=%s\n", prefixSYS(), c.id)
@@ -306,44 +321,53 @@ fmt.Printf("%sapp disconnected id=%s\n", prefixSYS(), c.id)
 func (s *proxyServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 w.Header().Set("Content-Type", "application/json")
 json.NewEncoder(w).Encode(map[string]any{ //nolint:errcheck
-"version": "2",
+"version": "3",
 "agents": map[string]any{
 "zc": map[string]any{"configured": s.zcAuth != nil},
 "pc": map[string]any{"configured": s.pcAuth != nil},
 },
+"sessions":  s.store.size(),
+"queue_max": s.store.maxQueue,
 })
 }
 
 // ── Proxy client (unified /proxy/ws) ─────────────────────────────────────────
 
+// proxyClient is the per-WebSocket-connection handler.
+// It is a thin layer over clientSession, which owns the upstream connections
+// and the offline queue.
 type proxyClient struct {
-id     string
-conn   *websocket.Conn
-mu     sync.Mutex
-server *proxyServer
-done   chan struct{}
-
-zcMu    sync.RWMutex
-zcConns map[string]*agentConn
-
-pcMu   sync.Mutex
-pcConn *agentConn
+id      string
+conn    *websocket.Conn
+mu      sync.Mutex
+server  *proxyServer
+session *clientSession
+done    chan struct{}
 }
 
-func newProxyClient(conn *websocket.Conn, s *proxyServer) *proxyClient {
+func newProxyClient(conn *websocket.Conn, s *proxyServer, clientID string) *proxyClient {
 return &proxyClient{
-id:      fmt.Sprintf("c%d", time.Now().UnixNano()%1_000_000_000),
+id:      clientID,
 conn:    conn,
 server:  s,
+session: s.store.getOrCreate(clientID),
 done:    make(chan struct{}),
-zcConns: make(map[string]*agentConn),
 }
 }
 
 func (c *proxyClient) run() {
+// Attach to session; drain any messages buffered while offline.
+queued := c.session.attach(c)
+for _, qm := range queued {
+c.relayRaw(qm.agent, qm.sessionID, qm.raw)
+}
+if len(queued) > 0 {
+fmt.Printf("%sclient %s: drained %d queued messages\n", prefixSYS(), c.id, len(queued))
+}
+
 defer func() {
 close(c.done)
-c.closeAll()
+c.session.detach()
 }()
 for {
 _, raw, err := c.conn.ReadMessage()
@@ -385,37 +409,8 @@ c.sendError(msg.Agent, msg.SessionID, "unknown message type: "+msg.Type)
 }
 }
 
-func (c *proxyClient) getOrCreateZC(sessionID string) (*agentConn, error) {
-c.zcMu.RLock()
-conn := c.zcConns[sessionID]
-c.zcMu.RUnlock()
-if conn != nil {
-return conn, nil
-}
-zca := c.server.zcAuth
-if zca == nil {
-return nil, fmt.Errorf("zeroclaw not configured on this proxy")
-}
-recv := make(chan []byte, 128)
-stop := make(chan struct{})
-conn = &agentConn{
-kind: kindZC, wsURL: zca.wsURL(sessionID), token: zca.token,
-sessionID: sessionID, recv: recv, stop: stop,
-}
-if err := conn.dial(); err != nil {
-return nil, fmt.Errorf("zeroclaw connect: %w", err)
-}
-go conn.reconnectLoop()
-go c.drainZC(sessionID, recv, stop)
-c.zcMu.Lock()
-c.zcConns[sessionID] = conn
-c.zcMu.Unlock()
-fmt.Printf("%sclient %s: ZC session=%s\n", prefixSYS(), c.id, sessionID)
-return conn, nil
-}
-
 func (c *proxyClient) sendToZC(msg appMsg) {
-conn, err := c.getOrCreateZC(msg.SessionID)
+conn, err := c.session.getOrCreateZC(c.server, msg.SessionID)
 if err != nil {
 c.sendError("zc", msg.SessionID, err.Error())
 return
@@ -426,66 +421,8 @@ c.sendError("zc", msg.SessionID, err.Error())
 }
 }
 
-func (c *proxyClient) drainZC(sessionID string, recv chan []byte, stop chan struct{}) {
-for {
-select {
-case <-c.done:
-return
-case <-stop:
-return
-case raw, ok := <-recv:
-if !ok {
-return
-}
-c.relayRaw("zc", sessionID, raw)
-}
-}
-}
-
-func (c *proxyClient) getOrCreatePC() (*agentConn, error) {
-c.pcMu.Lock()
-defer c.pcMu.Unlock()
-if c.pcConn != nil {
-return c.pcConn, nil
-}
-pca := c.server.pcAuth
-if pca == nil {
-return nil, fmt.Errorf("picoclaw not configured on this proxy")
-}
-sid := "proxy-" + c.id
-wsURL := appendSessionID(pca.wsURL, sid)
-recv := make(chan []byte, 128)
-stop := make(chan struct{})
-conn := &agentConn{
-kind: kindPC, wsURL: wsURL, token: pca.token,
-sessionID: sid, recv: recv, stop: stop,
-}
-if err := conn.dial(); err != nil {
-return nil, fmt.Errorf("picoclaw connect: %w", err)
-}
-c.pcConn = conn
-go conn.reconnectLoop()
-go c.drainPC(recv, stop)
-go func() {
-t := time.NewTicker(30 * time.Second)
-defer t.Stop()
-for {
-select {
-case <-c.done:
-return
-case <-stop:
-return
-case <-t.C:
-conn.pingPC()
-}
-}
-}()
-fmt.Printf("%sclient %s: PC connected\n", prefixSYS(), c.id)
-return conn, nil
-}
-
 func (c *proxyClient) sendToPC(msg appMsg) {
-conn, err := c.getOrCreatePC()
+conn, err := c.session.getOrCreatePC(c.server)
 if err != nil {
 c.sendError("pc", msg.SessionID, err.Error())
 return
@@ -493,26 +430,6 @@ return
 content, _ := msg.Payload["content"].(string)
 if err := conn.sendPCWithSession(msg.SessionID, content); err != nil {
 c.sendError("pc", msg.SessionID, err.Error())
-}
-}
-
-func (c *proxyClient) drainPC(recv chan []byte, stop chan struct{}) {
-for {
-select {
-case <-c.done:
-return
-case <-stop:
-return
-case raw, ok := <-recv:
-if !ok {
-return
-}
-var peek struct {
-SessionID string `json:"session_id"`
-}
-json.Unmarshal(raw, &peek) //nolint:errcheck
-c.relayRaw("pc", peek.SessionID, raw)
-}
 }
 }
 
@@ -551,23 +468,14 @@ zc = "available"
 if c.server.pcAuth != nil {
 pc = "available"
 }
+c.session.qMu.Lock()
+queuedCount := len(c.session.queue)
+c.session.qMu.Unlock()
 c.sendRaw(map[string]any{
 "type":   "status",
 "agents": map[string]string{"zc": zc, "pc": pc},
+"queue":  map[string]any{"buffered": queuedCount, "max": c.server.store.maxQueue},
 })
-}
-
-func (c *proxyClient) closeAll() {
-c.zcMu.Lock()
-for _, conn := range c.zcConns {
-conn.close()
-}
-c.zcMu.Unlock()
-c.pcMu.Lock()
-if c.pcConn != nil {
-c.pcConn.close()
-}
-c.pcMu.Unlock()
 }
 
 var _ = strings.Contains

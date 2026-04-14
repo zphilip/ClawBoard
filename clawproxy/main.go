@@ -608,7 +608,8 @@ pcEnable  := flag.Bool("pc",          false,        "enable picoclaw")
 // mode
 active    := flag.String("active",     "zc",   "default agent in CLI mode: zc|pc")
 proxyMode := flag.Bool("proxy",        false,  "run as proxy server (v2)")
-proxyPort := flag.Int("proxy-port",    18780,  "proxy server listen port")
+proxyPort  := flag.Int("proxy-port",   18780, "proxy server listen port")
+	queueDepth := flag.Int("queue-depth",  256,   "offline queue depth per session (0 = disabled)")
 
 flag.Parse()
 
@@ -666,8 +667,7 @@ os.Exit(1)
 
 // ── proxy mode ────────────────────────────────────────────────────
 if *proxyMode {
-runProxy(*proxyPort, zca, pca)
-return
+		runProxy(*proxyPort, zca, pca, *queueDepth)
 }
 
 // ── CLI mode: connect ─────────────────────────────────────────────
