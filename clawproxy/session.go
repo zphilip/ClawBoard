@@ -131,8 +131,14 @@ func (cs *clientSession) getOrCreateZC(srv *proxyServer, sessionID string) (*age
 		stop:      stop,
 	}
 	if err := conn.dial(); err != nil {
+		if conn.lastDialHTTPStatus == 401 || conn.lastDialHTTPStatus == 403 {
+			srv.setHealth("zc", "auth_error")
+		} else {
+			srv.setHealth("zc", "offline")
+		}
 		return nil, fmt.Errorf("zeroclaw connect: %w", err)
 	}
+	srv.setHealth("zc", "online")
 	go conn.reconnectLoop()
 	go cs.drainZC(sessionID, recv, stop)
 
@@ -168,8 +174,14 @@ func (cs *clientSession) getOrCreatePC(srv *proxyServer) (*agentConn, error) {
 		stop:      stop,
 	}
 	if err := conn.dial(); err != nil {
+		if conn.lastDialHTTPStatus == 401 || conn.lastDialHTTPStatus == 403 {
+			srv.setHealth("pc", "auth_error")
+		} else {
+			srv.setHealth("pc", "offline")
+		}
 		return nil, fmt.Errorf("picoclaw connect: %w", err)
 	}
+	srv.setHealth("pc", "online")
 	cs.pcConn = conn
 	go conn.reconnectLoop()
 	go cs.drainPC(recv, stop)

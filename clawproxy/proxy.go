@@ -50,18 +50,102 @@ port          int
 internalToken string // stable token for compat endpoints
 upgrader      websocket.Upgrader
 store         *sessionStore
+healthMu      sync.RWMutex
+zcHealth      string // "not_configured"|"unknown"|"online"|"offline"|"auth_error"
+pcHealth      string
 }
 
 func newProxyServer(zca *zcAuth, pca *pcAuth, port, maxQueue int) *proxyServer {
+zcH, pcH := "not_configured", "not_configured"
+if zca != nil {
+zcH = "unknown"
+}
+if pca != nil {
+pcH = "unknown"
+}
 return &proxyServer{
 zcAuth:        zca,
 pcAuth:        pca,
 port:          port,
 internalToken: fmt.Sprintf("clawproxy-%d", time.Now().UnixMilli()),
 store:         newSessionStore(maxQueue),
+zcHealth:      zcH,
+pcHealth:      pcH,
 upgrader: websocket.Upgrader{
 CheckOrigin: func(r *http.Request) bool { return true },
 },
+}
+}
+
+// ── Upstream health tracking ──────────────────────────────────────────────────
+
+func (s *proxyServer) setHealth(agent, status string) {
+s.healthMu.Lock()
+if agent == "zc" {
+s.zcHealth = status
+} else {
+s.pcHealth = status
+}
+s.healthMu.Unlock()
+}
+
+func (s *proxyServer) getHealth() (zc, pc string) {
+s.healthMu.RLock()
+zc, pc = s.zcHealth, s.pcHealth
+s.healthMu.RUnlock()
+return
+}
+
+// dialProbe does a quick connect-and-close to check if an upstream is reachable.
+// Returns "online", "offline", or "auth_error".
+func dialProbe(wsURL, token string, subprotos []string) string {
+dialer := &websocket.Dialer{
+HandshakeTimeout: 5 * time.Second,
+Subprotocols:     subprotos,
+}
+header := http.Header{}
+if token != "" {
+header.Set("Authorization", "Bearer "+token)
+}
+conn, resp, err := dialer.Dial(wsURL, header)
+if resp != nil && resp.Body != nil {
+resp.Body.Close()
+}
+if err == nil {
+conn.Close()
+return "online"
+}
+if resp != nil && (resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden) {
+return "auth_error"
+}
+return "offline"
+}
+
+// startHealthProbe runs an initial probe then re-probes every 30 s in the background.
+func (s *proxyServer) startHealthProbe() {
+go func() {
+s.probeAll()
+t := time.NewTicker(30 * time.Second)
+defer t.Stop()
+for range t.C {
+s.probeAll()
+}
+}()
+}
+
+func (s *proxyServer) probeAll() {
+if s.zcAuth != nil {
+sid := fmt.Sprintf("probe-%d", time.Now().UnixMilli())
+status := dialProbe(s.zcAuth.wsURL(sid), s.zcAuth.token, []string{"zeroclaw.v1"})
+s.setHealth("zc", status)
+fmt.Printf("%sZC probe: %s\n", prefixSYS(), status)
+}
+if s.pcAuth != nil {
+sid := fmt.Sprintf("probe-%d", time.Now().UnixMilli())
+wsURL := appendSessionID(s.pcAuth.wsURL, sid)
+status := dialProbe(wsURL, s.pcAuth.token, []string{"token." + s.pcAuth.token})
+s.setHealth("pc", status)
+fmt.Printf("%sPC probe: %s\n", prefixSYS(), status)
 }
 }
 
@@ -102,6 +186,7 @@ queueStr = fmt.Sprintf("%d msgs/session", maxQueue)
 }
 fmt.Printf("%s  ZC: %s   PC: %s   queue: %s   listen: %s\n\n",
 prefixSYS(), zcOK, pcOK, queueStr, addr)
+s.startHealthProbe()
 if err := http.ListenAndServe(addr, mux); err != nil {
 fmt.Printf("%sproxy server: %v\n", prefixERR(), err)
 }
@@ -320,11 +405,12 @@ fmt.Printf("%sapp disconnected id=%s\n", prefixSYS(), c.id)
 
 func (s *proxyServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 w.Header().Set("Content-Type", "application/json")
+zcH, pcH := s.getHealth()
 json.NewEncoder(w).Encode(map[string]any{ //nolint:errcheck
 "version": "3",
 "agents": map[string]any{
-"zc": map[string]any{"configured": s.zcAuth != nil},
-"pc": map[string]any{"configured": s.pcAuth != nil},
+"zc": map[string]any{"configured": s.zcAuth != nil, "status": zcH},
+"pc": map[string]any{"configured": s.pcAuth != nil, "status": pcH},
 },
 "sessions":  s.store.size(),
 "queue_max": s.store.maxQueue,
@@ -461,19 +547,13 @@ c.sendRaw(map[string]any{
 }
 
 func (c *proxyClient) sendStatus() {
-zc, pc := "unavailable", "unavailable"
-if c.server.zcAuth != nil {
-zc = "available"
-}
-if c.server.pcAuth != nil {
-pc = "available"
-}
+zcH, pcH := c.server.getHealth()
 c.session.qMu.Lock()
 queuedCount := len(c.session.queue)
 c.session.qMu.Unlock()
 c.sendRaw(map[string]any{
 "type":   "status",
-"agents": map[string]string{"zc": zc, "pc": pc},
+"agents": map[string]string{"zc": zcH, "pc": pcH},
 "queue":  map[string]any{"buffered": queuedCount, "max": c.server.store.maxQueue},
 })
 }

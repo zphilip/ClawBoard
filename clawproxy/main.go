@@ -318,6 +318,7 @@ mu        sync.Mutex
 conn      *websocket.Conn
 connected atomic.Bool
 
+lastDialHTTPStatus int // HTTP status from last failed dial (0 = none)
 zcBuf strings.Builder // CLI mode: accumulate ZC stream chunks
 recv  chan []byte      // proxy mode: raw gateway messages (nil = CLI mode)
 stop  chan struct{}    // close to stop reconnectLoop
@@ -342,10 +343,16 @@ Subprotocols:     []string{"zeroclaw.v1"},
 }
 }
 conn, resp, err := dialer.Dial(a.wsURL, header)
-if resp != nil && resp.Body != nil {
+if resp != nil {
+a.lastDialHTTPStatus = resp.StatusCode
+if resp.Body != nil {
 resp.Body.Close()
 }
+}
 if err != nil {
+if resp != nil {
+return fmt.Errorf("%w (HTTP %d)", err, resp.StatusCode)
+}
 return err
 }
 a.mu.Lock()
