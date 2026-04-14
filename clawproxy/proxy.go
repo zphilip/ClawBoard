@@ -379,24 +379,36 @@ func (s *proxyServer) handlePCCompat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Derive a stable session key from the app's token subprotocol.
-	// The same device always sends the same token, so this naturally
-	// identifies returning clients across reconnects.
+	// Derive a stable session key that survives app reconnects.
+	// Priority:
+	//  1. Authorization: Bearer <token>  — sent by chat_picoclaw.py on every connect
+	//  2. token.* WebSocket subprotocol  — browser-native alternative
+	//  3. ?proxy_client_id=<id>          — explicit override
+	//  4. UnixNano fallback              — no identity, buffering won't work
 	sessionKey := ""
 	var subprotos []string
+
+	if auth := r.Header.Get("Authorization"); strings.HasPrefix(auth, "Bearer ") {
+		sessionKey = strings.TrimPrefix(auth, "Bearer ")
+	}
 	for _, p := range websocket.Subprotocols(r) {
 		if strings.HasPrefix(p, "token.") {
-			sessionKey = strings.TrimPrefix(p, "token.")
 			subprotos = []string{p}
+			if sessionKey == "" {
+				sessionKey = strings.TrimPrefix(p, "token.")
+			}
 			break
 		}
 	}
-	if sessionKey == "" {
-		sessionKey = r.URL.Query().Get("proxy_client_id")
+	if q := r.URL.Query().Get("proxy_client_id"); q != "" {
+		sessionKey = q
 	}
 	if sessionKey == "" {
 		sessionKey = fmt.Sprintf("pc-%d", time.Now().UnixNano())
 	}
+
+	fmt.Printf("%sPC compat connect  key=%s  subprotos=%v  remote=%s\n",
+		prefixSYS(), sessionKey, websocket.Subprotocols(r), r.RemoteAddr)
 
 	// Upgrade app WebSocket; expose the session key so the client can reuse it.
 	respHdr := http.Header{"X-Proxy-Client-Id": []string{sessionKey}}
@@ -411,8 +423,8 @@ func (s *proxyServer) handlePCCompat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	keyShort := sessionKey
-	if len(keyShort) > 8 {
-		keyShort = keyShort[:8]
+	if len(keyShort) > 16 {
+		keyShort = keyShort[:8] + "…" + keyShort[len(keyShort)-4:]
 	}
 
 	// Get or create the persistent session for this app identity.
