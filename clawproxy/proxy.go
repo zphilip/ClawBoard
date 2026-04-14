@@ -33,6 +33,7 @@ package main
 import (
 "encoding/json"
 "fmt"
+"net"
 "net/http"
 "strings"
 "sync"
@@ -404,7 +405,13 @@ func (s *proxyServer) handlePCCompat(w http.ResponseWriter, r *http.Request) {
 		sessionKey = q
 	}
 	if sessionKey == "" {
-		sessionKey = fmt.Sprintf("pc-%d", time.Now().UnixNano())
+		// Stable fallback: key on the client IP so the same device always
+		// resumes its buffered session even without a token or subprotocol.
+		host, _, err := net.SplitHostPort(r.RemoteAddr)
+		if err != nil {
+			host = r.RemoteAddr
+		}
+		sessionKey = "ip-" + host
 	}
 
 	fmt.Printf("%sPC compat connect  key=%s  subprotos=%v  remote=%s\n",
@@ -470,6 +477,34 @@ func (s *proxyServer) handlePCCompat(w http.ResponseWriter, r *http.Request) {
 		fmt.Printf("%sPC relay[%s] app\u2192gw (%d B): %s\n", prefixSYS(), keyShort, len(data), preview)
 		if werr := cs.sendToUpstream(msgType, data); werr != nil {
 			fmt.Printf("%sPC relay[%s] app\u2192gw write-err: %v\n", prefixERR(), keyShort, werr)
+			continue
+		}
+		// After forwarding a message.send, start a 90-second watcher.
+		// If the gateway goes silent the proxy synthesises an error frame so
+		// the app doesn't hang indefinitely (e.g. when the LLM provider has
+		// no API key configured).
+		{
+			var m struct {
+				Type string `json:"type"`
+				ID   string `json:"id"`
+			}
+			if jerr := json.Unmarshal(data, &m); jerr == nil && m.Type == "message.send" {
+				msgID := m.ID
+				respCh := cs.markPending()
+				go func() {
+					select {
+					case <-respCh:
+						// Response arrived — nothing to do.
+					case <-time.After(90 * time.Second):
+						fmt.Printf("%sPC relay[%s] no gateway response for msg %s after 90 s — synthesising error\n",
+							prefixERR(), keyShort, msgID)
+						errorPayload := fmt.Sprintf(
+						`{"type":"error","id":%q,"payload":{"code":"timeout","message":"No response from AI gateway after 90 s. The LLM provider may be misconfigured or unavailable."}}`,
+						msgID)
+						cs.deliverOrBuffer([]byte(errorPayload), keyShort)
+					}
+				}()
+			}
 		}
 	}}
 // ── Raw bidirectional relay ───────────────────────────────────────────────────
@@ -561,7 +596,13 @@ type pcCompatSession struct {
 	appMu sync.RWMutex
 	app   *websocket.Conn
 
-	getToken func() string        // reads current token from proxyServer
+	// pending response tracking: notified when any gw→app frame arrives
+	// after app sends a message.send. Used to detect silent failures.
+	pendingMu  sync.Mutex
+	pendingCh  chan struct{} // closed/replaced when a response frame arrives
+	pendingReq bool        // true while waiting for a response
+
+	getToken func() string           // reads current token from proxyServer
 	getWSURL func(sid string) string // builds upstream wsURL
 
 	startOnce sync.Once
@@ -654,6 +695,15 @@ func (cs *pcCompatSession) detachApp() {
 }
 
 func (cs *pcCompatSession) deliverOrBuffer(data []byte, keyShort string) {
+	// Notify any pending response watcher that a frame arrived from the gateway.
+	cs.pendingMu.Lock()
+	if cs.pendingReq && cs.pendingCh != nil {
+		close(cs.pendingCh)
+		cs.pendingCh = nil
+		cs.pendingReq = false
+	}
+	cs.pendingMu.Unlock()
+
 	cs.appMu.RLock()
 	app := cs.app
 	cs.appMu.RUnlock()
@@ -695,6 +745,22 @@ func (cs *pcCompatSession) sendToUpstream(msgType int, data []byte) error {
 		return fmt.Errorf("upstream reconnecting")
 	}
 	return conn.WriteMessage(msgType, data)
+}
+
+// markPending registers that the app just sent a message and we expect a
+// response from the gateway.  Returns a channel that is closed when any
+// gateway→app frame arrives (or the timeout fires).
+func (cs *pcCompatSession) markPending() <-chan struct{} {
+	ch := make(chan struct{})
+	cs.pendingMu.Lock()
+	if cs.pendingCh != nil {
+		// Previous watcher still open — close it so that goroutine exits.
+		close(cs.pendingCh)
+	}
+	cs.pendingCh = ch
+	cs.pendingReq = true
+	cs.pendingMu.Unlock()
+	return ch
 }
 
 // pcCompatStore maps session key → pcCompatSession.
