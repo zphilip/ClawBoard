@@ -134,19 +134,32 @@ s.probeAll()
 }
 
 func (s *proxyServer) probeAll() {
-if s.zcAuth != nil {
-sid := fmt.Sprintf("probe-%d", time.Now().UnixMilli())
-status := dialProbe(s.zcAuth.wsURL(sid), s.zcAuth.token, []string{"zeroclaw.v1"})
-s.setHealth("zc", status)
-fmt.Printf("%sZC probe: %s\n", prefixSYS(), status)
-}
-if s.pcAuth != nil {
-sid := fmt.Sprintf("probe-%d", time.Now().UnixMilli())
-wsURL := appendSessionID(s.pcAuth.wsURL, sid)
-status := dialProbe(wsURL, s.pcAuth.token, []string{"token." + s.pcAuth.token})
-s.setHealth("pc", status)
-fmt.Printf("%sPC probe: %s\n", prefixSYS(), status)
-}
+	if s.zcAuth != nil {
+		sid := fmt.Sprintf("probe-%d", time.Now().UnixMilli())
+		status := dialProbe(s.zcAuth.wsURL(sid), s.zcAuth.token, []string{"zeroclaw.v1"})
+		s.setHealth("zc", status)
+		fmt.Printf("%sZC probe: %s\n", prefixSYS(), status)
+	}
+	if s.pcAuth != nil {
+		sid := fmt.Sprintf("probe-%d", time.Now().UnixMilli())
+		wsURL := appendSessionID(s.pcAuth.wsURL, sid)
+		status := dialProbe(wsURL, s.pcAuth.token, []string{"token." + s.pcAuth.token})
+		if status == "auth_error" {
+			// Stale token — wipe the cache and re-assemble from runtime files.
+			fmt.Printf("%sPC probe: auth_error — discarding cached token, re-reading from runtime files\n", prefixSYS())
+			deleteToken("pc_token")
+			if fresh, err := readPicoTokenFromConfig(); err == nil {
+				s.pcAuth.token = fresh
+				fmt.Printf("%sPC token refreshed from runtime files\n", prefixSYS())
+				// Re-probe with the new token.
+				status = dialProbe(wsURL, s.pcAuth.token, []string{"token." + s.pcAuth.token})
+			} else {
+				fmt.Printf("%sPC token refresh failed: %v\n", prefixERR(), err)
+			}
+		}
+		s.setHealth("pc", status)
+		fmt.Printf("%sPC probe: %s\n", prefixSYS(), status)
+	}
 }
 
 func runProxy(port int, zca *zcAuth, pca *pcAuth, maxQueue int) {

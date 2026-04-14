@@ -182,37 +182,92 @@ func loadToken(filename string) string {
 	return strings.TrimSpace(string(b))
 }
 
-// readPicoTokenFromConfig reads the picoclaw bearer token from the local config file.
-// It checks ~/.picoclaw/config.json for channels.pico.token or pico.token.
+func deleteToken(filename string) {
+	dir, err := clawproxyDir()
+	if err != nil {
+		return
+	}
+	_ = os.Remove(dir + "/" + filename)
+}
+
+// readPicoTokenFromConfig assembles the picoclaw bearer token from the two
+// runtime files that picoclaw writes under /var/lib/picoclaw/.picoclaw/:
+//
+//	.picoclaw.pid   — the PID token (numeric string)
+//	.security.yml   — the channel token under channels.pico.token
+//
+// The combined token has the form:  pico-<pidToken><picoToken>
+// which is what the picoclaw gateway expects as the WS bearer token.
 func readPicoTokenFromConfig() (string, error) {
-	home, err := os.UserHomeDir()
+	const (
+		pidFile = "/var/lib/picoclaw/.picoclaw/.picoclaw.pid"
+		ymlFile = "/var/lib/picoclaw/.picoclaw/.security.yml"
+	)
+
+	// ── 1. PID token ──────────────────────────────────────────────────────
+	pidRaw, err := os.ReadFile(pidFile)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("cannot read %s: %w", pidFile, err)
 	}
-	path := home + "/.picoclaw/config.json"
-	data, err := os.ReadFile(path)
+	pidToken := strings.TrimSpace(string(pidRaw))
+	if pidToken == "" {
+		return "", fmt.Errorf("%s is empty", pidFile)
+	}
+
+	// ── 2. Channel token from .security.yml ──────────────────────────────
+	ymlRaw, err := os.ReadFile(ymlFile)
 	if err != nil {
-		return "", fmt.Errorf("cannot read %s: %w", path, err)
+		return "", fmt.Errorf("cannot read %s: %w", ymlFile, err)
 	}
-	var cfg map[string]any
-	if err := json.Unmarshal(data, &cfg); err != nil {
-		return "", fmt.Errorf("bad JSON in %s: %w", path, err)
+	// Parse only the lines we care about; avoid a YAML dependency.
+	// We look for the value under the 'pico:' block's 'token:' key.
+	picoToken, parseErr := extractYAMLPicoToken(string(ymlRaw))
+	if parseErr != nil {
+		return "", fmt.Errorf("cannot parse pico token from %s: %w", ymlFile, parseErr)
 	}
-	// try channels.pico.token
-	if channels, ok := cfg["channels"].(map[string]any); ok {
-		if pico, ok := channels["pico"].(map[string]any); ok {
-			if tok, ok := pico["token"].(string); ok && tok != "" {
-				return tok, nil
+
+	return fmt.Sprintf("pico-%s%s", pidToken, picoToken), nil
+}
+
+// extractYAMLPicoToken is a minimal parser for the .security.yml file.
+// It finds the 'pico:' section and extracts its 'token:' value.
+// Handles both the top-level 'channels:' wrapper and a bare 'pico:' block.
+func extractYAMLPicoToken(yml string) (string, error) {
+	lines := strings.Split(yml, "\n")
+	inChannels := false
+	inPico := false
+	for _, raw := range lines {
+		line := strings.TrimRight(raw, "\r")
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		// Detect top-level 'channels:' block (no leading spaces)
+		if !strings.HasPrefix(line, " ") && !strings.HasPrefix(line, "\t") {
+			inChannels = strings.TrimSuffix(trimmed, ":") == "channels"
+			if !inChannels {
+				inPico = false
+			}
+			continue
+		}
+		// Inside 'channels:' — look for '  pico:' (one indent level)
+		if inChannels {
+			indent := len(raw) - len(strings.TrimLeft(raw, " \t"))
+			if indent <= 2 {
+				key := strings.TrimSuffix(trimmed, ":")
+				inPico = (key == "pico")
+				continue
+			}
+		}
+		// Inside 'pico:' block — look for 'token:'
+		if inPico && strings.HasPrefix(trimmed, "token:") {
+			val := strings.TrimSpace(strings.TrimPrefix(trimmed, "token:"))
+			if val != "" {
+				return val, nil
 			}
 		}
 	}
-	// try pico.token
-	if pico, ok := cfg["pico"].(map[string]any); ok {
-		if tok, ok := pico["token"].(string); ok && tok != "" {
-			return tok, nil
-		}
-	}
-	return "", fmt.Errorf("token not found in %s (checked channels.pico.token, pico.token)", path)
+	return "", fmt.Errorf("channels.pico.token not found in YAML")
 }
 
 func (p *pcAuth) setup() error {
@@ -223,14 +278,13 @@ func (p *pcAuth) setup() error {
 				p.token = saved
 				fmt.Printf("%spicoclaw token loaded from ~/.clawproxy/pc_token\n", prefixPC())
 			} else if tok, err := readPicoTokenFromConfig(); err == nil {
-				// 2. try ~/.picoclaw/config.json
+				// 2. try /var/lib/picoclaw/.picoclaw/{.picoclaw.pid,.security.yml}
 				p.token = tok
-				fmt.Printf("%spicoclaw token loaded from ~/.picoclaw/config.json\n", prefixPC())
+				fmt.Printf("%spicoclaw token assembled from runtime files (pico-<pid><token>)\n", prefixPC())
 			} else {
 				// 3. prompt interactively
-				fmt.Printf("%sToken not found in ~/.picoclaw/config.json\n", prefixPC())
-				fmt.Printf("%sGet your token:  %sjq '.channels.pico.token' ~/.picoclaw/config.json%s\n",
-					prefixPC(), colYellow, colReset)
+				fmt.Printf("%sToken not found in runtime files: %v\n", prefixPC(), err)
+				fmt.Printf("%sExpected: /var/lib/picoclaw/.picoclaw/.picoclaw.pid + .security.yml\n", prefixPC())
 				fmt.Print(prefixPC() + "Picoclaw token: ")
 				fmt.Scanln(&p.token)
 				p.token = strings.TrimSpace(p.token)
