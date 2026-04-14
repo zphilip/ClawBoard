@@ -1,40 +1,3 @@
-// clawproxy — dual-agent CLI client for zeroclaw and picoclaw gateways.
-//
-// # Auth
-//
-//   zeroclaw  — pair-code flow:  GET /health → POST /pair → bearer token
-//   picoclaw  — token flow:
-//                 mode 1 (default): GET /api/pico/token from web-backend (:18800)
-//                 mode 2 (--pc-direct): bearer token straight to gateway (:18790)
-//
-// # Usage
-//
-//clawproxy [flags]
-//
-// # Flags
-//
-//--zc-host       localhost      zeroclaw host
-//--zc-port       42617          zeroclaw gateway port
-//--zc-token      TOKEN          skip pairing, use existing token
-//--zc-pair-code  CODE           supply pair code non-interactively
-//--zc-sid        SESSION_ID     session ID (default: random)
-//
-//--pc-host       localhost      picoclaw host
-//--pc-port       18800          picoclaw web-backend port (mode 1)
-//--pc-gw-port    18790          picoclaw gateway port (mode 2, --pc-direct)
-//--pc-direct                    connect directly to gateway, skip web-backend
-//--pc-token      TOKEN          picoclaw token (required for --pc-direct)
-//--pc-sid        SESSION_ID     session ID (default: random)
-//
-//--active        zc|pc          default agent (default: zc)
-//
-// # CLI commands
-//
-//@zc <text>   send to zeroclaw
-//@pc <text>   send to picoclaw
-///switch zc|pc  change active agent
-///status        connection status
-///quit
 package main
 
 import (
@@ -59,10 +22,10 @@ const (
 colReset  = "\033[0m"
 colBold   = "\033[1m"
 colGrey   = "\033[90m"
-colCyan   = "\033[1;36m" // zeroclaw
-colGreen  = "\033[1;32m" // picoclaw
-colYellow = "\033[1;33m" // system / meta
-colRed    = "\033[1;31m" // error
+colCyan   = "\033[1;36m"
+colGreen  = "\033[1;32m"
+colYellow = "\033[1;33m"
+colRed    = "\033[1;31m"
 )
 
 func prefixZC() string  { return colCyan + "[zc]" + colReset + " " }
@@ -107,37 +70,29 @@ return nil, fmt.Errorf("bad JSON: %w", err)
 return out, nil
 }
 
-// ── zeroclaw auth: GET /health → POST /pair ───────────────────────────────────
+// ── zeroclaw auth ─────────────────────────────────────────────────────────────
 
 type zcAuth struct {
-host      string
-port      int
-token     string // pre-supplied; set after successful pair()
-pairCode  string // from --zc-pair-code or interactive prompt
+host     string
+port     int
+token    string
+pairCode string
 }
 
-// setup resolves the bearer token, prompting for a pair code if needed.
 func (z *zcAuth) setup() error {
 base := fmt.Sprintf("http://%s:%d", z.host, z.port)
-
-// health check
 health, err := httpGet(base + "/health")
 if err != nil {
-return fmt.Errorf("cannot reach zeroclaw at %s: %w\n  Is zeroclaw running?  zeroclaw gateway", base, err)
+return fmt.Errorf("cannot reach zeroclaw at %s: %w", base, err)
 }
-
 requirePairing, _ := health["require_pairing"].(bool)
-fmt.Printf("%szeroclaw gateway: %s  require_pairing=%v\n", prefixZC(), base, requirePairing)
-
+fmt.Printf("%szeroclaw %s  require_pairing=%v\n", prefixZC(), base, requirePairing)
 if !requirePairing || z.token != "" {
-return nil // nothing to do
+return nil
 }
-
-// need to pair
 code := z.pairCode
 if code == "" {
-fmt.Printf("%sGet your pair code:  %szeroclaw gateway get-paircode%s\n",
-prefixZC(), colYellow, colReset)
+fmt.Printf("%sGet pair code:  %szeroclaw gateway get-paircode%s\n", prefixZC(), colYellow, colReset)
 fmt.Print(prefixZC() + "Pairing code: ")
 fmt.Scanln(&code)
 code = strings.TrimSpace(code)
@@ -145,7 +100,6 @@ code = strings.TrimSpace(code)
 if code == "" {
 return fmt.Errorf("pairing code required")
 }
-
 data, err := httpPost(base+"/pair", map[string]string{"X-Pairing-Code": code})
 if err != nil {
 return fmt.Errorf("pairing failed: %w", err)
@@ -155,76 +109,63 @@ if !ok || tok == "" {
 return fmt.Errorf("pair response missing token: %v", data)
 }
 z.token = tok
-fmt.Printf("%sPaired! token=%s…\n", prefixZC(), tok[:min(12, len(tok))])
+fmt.Printf("%sPaired!  token=%s…\n", prefixZC(), tok[:min(12, len(tok))])
 return nil
 }
 
-// wsURL builds the zeroclaw WebSocket URL including the token.
 func (z *zcAuth) wsURL(sessionID string) string {
-url := fmt.Sprintf("ws://%s:%d/ws/chat?session_id=%s", z.host, z.port, sessionID)
+u := fmt.Sprintf("ws://%s:%d/ws/chat?session_id=%s", z.host, z.port, sessionID)
 if z.token != "" {
-url += "&token=" + z.token
+u += "&token=" + z.token
 }
-return url
+return u
 }
 
-// ── picoclaw auth: web-backend (/api/pico/token) or direct ───────────────────
+// ── picoclaw auth ─────────────────────────────────────────────────────────────
 
 type pcAuth struct {
 host    string
-webPort int    // web-backend port (:18800), used in mode 1
-gwPort  int    // gateway port (:18790), used in mode 2
-direct  bool   // skip web-backend, connect straight to gateway
-token   string // resolved token
-wsURL   string // resolved WebSocket URL (set by setup())
+webPort int
+gwPort  int
+direct  bool
+token   string
+wsURL   string
 }
 
-// setup resolves the token and WS URL.
 func (p *pcAuth) setup() error {
 if p.direct {
-// Mode 2 — direct to gateway
 if p.token == "" {
-return fmt.Errorf(
-"--pc-direct requires --pc-token\n  hint: get token from picoclaw config.json: jq '.channels.pico.token' ~/.picoclaw/config.json")
+return fmt.Errorf("--pc-direct requires --pc-token")
 }
 p.wsURL = fmt.Sprintf("ws://%s:%d/pico/ws", p.host, p.gwPort)
-fmt.Printf("%spicoclaw direct gateway: %s\n", prefixPC(), p.wsURL)
+fmt.Printf("%spicoclaw direct %s\n", prefixPC(), p.wsURL)
 return nil
 }
-
-// Mode 1 — via web-backend
 base := fmt.Sprintf("http://%s:%d", p.host, p.webPort)
 data, err := httpGet(base + "/api/pico/token")
 if err != nil {
-return fmt.Errorf(
-"cannot reach picoclaw-web at %s: %w\n  Is picoclaw-web running?\n  Or use direct mode: --pc-direct --pc-token <token>",
-base, err)
+return fmt.Errorf("cannot reach picoclaw-web at %s: %w\n  Use --pc-direct --pc-token <token>", base, err)
 }
-
 tok, _ := data["token"].(string)
 wsURL, _ := data["ws_url"].(string)
 enabled, _ := data["enabled"].(bool)
-
 if tok == "" || wsURL == "" {
-return fmt.Errorf("invalid /api/pico/token response: %v\n  Run --pc-setup or use --pc-direct", data)
+return fmt.Errorf("invalid /api/pico/token response: %v", data)
 }
-
 p.token = tok
 p.wsURL = wsURL
-fmt.Printf("%spicoclaw web-backend: %s  enabled=%v\n", prefixPC(), base, enabled)
+fmt.Printf("%spicoclaw web-backend %s  enabled=%v\n", prefixPC(), base, enabled)
 return nil
 }
 
 // ── Protocol types ────────────────────────────────────────────────────────────
 
-// zeroclaw.v1 — inbound from server
 type zcMsg struct {
 Type         string          `json:"type"`
 Content      string          `json:"content,omitempty"`
 FullResponse string          `json:"full_response,omitempty"`
 SessionID    string          `json:"session_id,omitempty"`
 Name         string          `json:"name,omitempty"`
-ToolName     string          `json:"name,omitempty"`
 Args         json.RawMessage `json:"args,omitempty"`
 Output       string          `json:"output,omitempty"`
 Message      string          `json:"message,omitempty"`
@@ -232,7 +173,6 @@ Resumed      bool            `json:"resumed,omitempty"`
 MessageCount int             `json:"message_count,omitempty"`
 }
 
-// Pico Protocol — inbound from server
 type picoMsg struct {
 Type      string         `json:"type"`
 ID        string         `json:"id,omitempty"`
@@ -266,32 +206,29 @@ kindPC agentKind = "pc"
 
 type agentConn struct {
 kind      agentKind
-wsURL     string // fully resolved WS URL (token embedded or in header)
-token     string // used for picoclaw Sec-WebSocket-Protocol subprotocol
+wsURL     string
+token     string
 sessionID string
 
 mu        sync.Mutex
 conn      *websocket.Conn
 connected atomic.Bool
 
-zcBuf strings.Builder // accumulate zeroclaw stream chunks
+zcBuf strings.Builder // CLI mode: accumulate ZC stream chunks
+recv  chan []byte      // proxy mode: raw gateway messages (nil = CLI mode)
+stop  chan struct{}    // close to stop reconnectLoop
 }
 
-// dial connects and starts the read loop.
 func (a *agentConn) dial() error {
 header := http.Header{}
 var dialer *websocket.Dialer
-
 if a.kind == kindPC && a.token != "" {
-// picoclaw: Authorization header + Sec-WebSocket-Protocol: token.<value>
-// (mirrors chat_picoclaw.py: both auth methods for maximum compatibility)
 header.Set("Authorization", "Bearer "+a.token)
 dialer = &websocket.Dialer{
 HandshakeTimeout: 10 * time.Second,
 Subprotocols:     []string{"token." + a.token},
 }
 } else {
-// zeroclaw: token already in WS URL query param; add header as fallback
 if a.token != "" {
 header.Set("Authorization", "Bearer "+a.token)
 }
@@ -300,7 +237,6 @@ HandshakeTimeout: 10 * time.Second,
 Subprotocols:     []string{"zeroclaw.v1"},
 }
 }
-
 conn, resp, err := dialer.Dial(a.wsURL, header)
 if resp != nil && resp.Body != nil {
 resp.Body.Close()
@@ -308,33 +244,77 @@ resp.Body.Close()
 if err != nil {
 return err
 }
-
 a.mu.Lock()
 a.conn = conn
 a.mu.Unlock()
 a.connected.Store(true)
-
 go a.readLoop()
 return nil
 }
 
-// reconnectLoop keeps re-dialing after disconnection.
+func (a *agentConn) isStopped() bool {
+if a.stop == nil {
+return false
+}
+select {
+case <-a.stop:
+return true
+default:
+return false
+}
+}
+
+func (a *agentConn) sleepOrStop(d time.Duration) bool {
+if a.stop == nil {
+time.Sleep(d)
+return false
+}
+select {
+case <-a.stop:
+return true
+case <-time.After(d):
+return false
+}
+}
+
 func (a *agentConn) reconnectLoop() {
 for {
+if a.isStopped() {
+return
+}
 if !a.connected.Load() {
 fmt.Printf("%s%s reconnecting...\n", prefixSYS(), a.kind)
 if err := a.dial(); err != nil {
 fmt.Printf("%s%s connect failed: %v — retry in 5s\n", prefixERR(), a.kind, err)
-time.Sleep(5 * time.Second)
+if a.sleepOrStop(5 * time.Second) {
+return
+}
 continue
 }
 fmt.Printf("%s%s reconnected\n", prefixSYS(), a.kind)
 }
-time.Sleep(2 * time.Second)
+if a.sleepOrStop(2 * time.Second) {
+return
+}
 }
 }
 
-// readLoop reads messages from the gateway and prints them.
+func (a *agentConn) close() {
+if a.stop != nil {
+select {
+case <-a.stop:
+default:
+close(a.stop)
+}
+}
+a.mu.Lock()
+if a.conn != nil {
+a.conn.Close()
+a.conn = nil
+}
+a.mu.Unlock()
+}
+
 func (a *agentConn) readLoop() {
 defer func() {
 a.connected.Store(false)
@@ -344,9 +324,10 @@ a.conn.Close()
 a.conn = nil
 }
 a.mu.Unlock()
+if a.recv == nil {
 fmt.Printf("%s%s disconnected\n", prefixSYS(), a.kind)
+}
 }()
-
 for {
 a.mu.Lock()
 conn := a.conn
@@ -361,7 +342,13 @@ fmt.Printf("%s%s read error: %v\n", prefixERR(), a.kind, err)
 }
 return
 }
-if a.kind == kindZC {
+if a.recv != nil {
+// proxy mode: route raw bytes to drain goroutine
+select {
+case a.recv <- raw:
+default: // drop if full (backpressure)
+}
+} else if a.kind == kindZC {
 a.handleZC(raw)
 } else {
 a.handlePC(raw)
@@ -369,7 +356,6 @@ a.handlePC(raw)
 }
 }
 
-// handleZC processes a zeroclaw gateway message.
 func (a *agentConn) handleZC(raw []byte) {
 var msg zcMsg
 if err := json.Unmarshal(raw, &msg); err != nil {
@@ -393,9 +379,9 @@ fmt.Print(prefixZC() + colCyan + msg.Content + colReset)
 case "thinking":
 fmt.Print(colGrey + "·" + colReset)
 case "tool_call":
-fmt.Printf("\n%s%stool_call%s %s  args=%s\n", prefixZC(), colGrey, colReset, msg.ToolName, msg.Args)
+fmt.Printf("\n%s%stool_call%s %s  args=%s\n", prefixZC(), colGrey, colReset, msg.Name, msg.Args)
 case "tool_result":
-fmt.Printf("%s%stool_result%s %s  output=%s\n", prefixZC(), colGrey, colReset, msg.ToolName, truncate(msg.Output, 120))
+fmt.Printf("%s%stool_result%s %s  output=%s\n", prefixZC(), colGrey, colReset, msg.Name, truncate(msg.Output, 120))
 case "done":
 if a.zcBuf.Len() > 0 {
 fmt.Println()
@@ -414,7 +400,6 @@ fmt.Printf("%s%s[%s]%s %s\n", prefixZC(), colGrey, msg.Type, colReset, raw)
 }
 }
 
-// handlePC processes a picoclaw Pico Protocol message.
 func (a *agentConn) handlePC(raw []byte) {
 var msg picoMsg
 if err := json.Unmarshal(raw, &msg); err != nil {
@@ -423,7 +408,6 @@ return
 }
 switch msg.Type {
 case "pong":
-// keepalive, silent
 case "message.create":
 content, _ := msg.Payload["content"].(string)
 fmt.Printf("%s%s\n", prefixPC(), content)
@@ -433,13 +417,11 @@ fmt.Printf("%s%s(update)%s %s\n", prefixPC(), colGrey, colReset, content)
 case "typing.start":
 fmt.Printf("%s%s(typing...)%s\n", prefixPC(), colGrey, colReset)
 case "typing.stop":
-// silent
 default:
 fmt.Printf("%s%s[%s]%s %s\n", prefixPC(), colGrey, msg.Type, colReset, raw)
 }
 }
 
-// sendZC sends a chat message to zeroclaw.
 func (a *agentConn) sendZC(content string) error {
 if !a.connected.Load() {
 return fmt.Errorf("zeroclaw not connected")
@@ -449,14 +431,17 @@ defer a.mu.Unlock()
 return a.conn.WriteJSON(map[string]any{"type": "message", "content": content})
 }
 
-// sendPC sends a message via Pico Protocol.
 func (a *agentConn) sendPC(content string) error {
+return a.sendPCWithSession(a.sessionID, content)
+}
+
+func (a *agentConn) sendPCWithSession(sessionID, content string) error {
 if !a.connected.Load() {
 return fmt.Errorf("picoclaw not connected")
 }
 a.mu.Lock()
 defer a.mu.Unlock()
-return a.conn.WriteJSON(newPicoSend(a.sessionID, content))
+return a.conn.WriteJSON(newPicoSend(sessionID, content))
 }
 
 func (a *agentConn) pingPC() {
@@ -485,43 +470,57 @@ return a
 return b
 }
 
+func appendSessionID(wsURL, sessionID string) string {
+if strings.Contains(wsURL, "session_id=") {
+return wsURL
+}
+sep := "?"
+if strings.Contains(wsURL, "?") {
+sep = "&"
+}
+return wsURL + sep + "session_id=" + sessionID
+}
+
 // ── Main ──────────────────────────────────────────────────────────────────────
 
 func main() {
 // zeroclaw flags
-zcHost      := flag.String("zc-host",      "127.0.0.1", "zeroclaw host")
-zcPort      := flag.Int("zc-port",         42617,        "zeroclaw gateway port")
-zcToken     := flag.String("zc-token",     "",           "zeroclaw bearer token (skips pairing)")
-zcPairCode  := flag.String("zc-pair-code", "",           "zeroclaw pair code (non-interactive)")
-zcSID       := flag.String("zc-sid",       "",           "zeroclaw session ID")
-zcEnable    := flag.Bool("zc",             false,        "enable zeroclaw connection")
+zcHost     := flag.String("zc-host",      "127.0.0.1", "zeroclaw host")
+zcPort     := flag.Int("zc-port",         42617,        "zeroclaw gateway port")
+zcToken    := flag.String("zc-token",     "",           "zeroclaw bearer token (skips pairing)")
+zcPairCode := flag.String("zc-pair-code", "",           "zeroclaw pair code (non-interactive)")
+zcSID      := flag.String("zc-sid",       "",           "zeroclaw session ID (CLI mode)")
+zcEnable   := flag.Bool("zc",             false,        "enable zeroclaw")
 
 // picoclaw flags
-pcHost      := flag.String("pc-host",      "127.0.0.1", "picoclaw host")
-pcPort      := flag.Int("pc-port",         18800,        "picoclaw web-backend port (mode 1)")
-pcGWPort    := flag.Int("pc-gw-port",      18790,        "picoclaw gateway port (--pc-direct mode)")
-pcDirect    := flag.Bool("pc-direct",      false,        "connect directly to gateway, skip web-backend")
-pcToken     := flag.String("pc-token",     "",           "picoclaw token (required for --pc-direct)")
-pcSID       := flag.String("pc-sid",       "",           "picoclaw session ID")
-pcEnable    := flag.Bool("pc",             false,        "enable picoclaw connection")
+pcHost    := flag.String("pc-host",    "127.0.0.1", "picoclaw host")
+pcPort    := flag.Int("pc-port",       18800,        "picoclaw web-backend port")
+pcGWPort  := flag.Int("pc-gw-port",    18790,        "picoclaw gateway port (--pc-direct)")
+pcDirect  := flag.Bool("pc-direct",   false,        "connect directly to gateway")
+pcToken   := flag.String("pc-token",  "",           "picoclaw token (required for --pc-direct)")
+pcSID     := flag.String("pc-sid",    "",           "picoclaw session ID (CLI mode)")
+pcEnable  := flag.Bool("pc",          false,        "enable picoclaw")
 
-active := flag.String("active", "zc", "default active agent: zc or pc")
+// mode
+active    := flag.String("active",     "zc",   "default agent in CLI mode: zc|pc")
+proxyMode := flag.Bool("proxy",        false,  "run as proxy server (v2)")
+proxyPort := flag.Int("proxy-port",    18780,  "proxy server listen port")
+
 flag.Parse()
 
-// Enable an agent if its host/token flags were explicitly set, or via --zc/--pc
+// auto-enable based on supplied flags
 if *zcToken != "" || *zcPairCode != "" {
 *zcEnable = true
 }
 if *pcToken != "" || *pcDirect {
 *pcEnable = true
 }
-// If neither explicit enable, enable both (let auth setup fail gracefully)
 if !*zcEnable && !*pcEnable {
 *zcEnable = true
 *pcEnable = true
 }
 
-// Session IDs
+// default session IDs (CLI mode)
 if *zcSID == "" {
 *zcSID = fmt.Sprintf("clawproxy-zc-%d", time.Now().UnixMilli())
 }
@@ -529,25 +528,54 @@ if *pcSID == "" {
 *pcSID = fmt.Sprintf("clawproxy-pc-%d", time.Now().UnixMilli())
 }
 
+// ── auth (shared between CLI and proxy mode) ──────────────────────
+var zca *zcAuth
+if *zcEnable {
+a := &zcAuth{host: *zcHost, port: *zcPort, token: *zcToken, pairCode: *zcPairCode}
+if err := a.setup(); err != nil {
+fmt.Printf("%s%v\n", prefixERR(), err)
+} else {
+zca = a
+}
+}
+
+var pca *pcAuth
+if *pcEnable {
+a := &pcAuth{
+host:    *pcHost,
+webPort: *pcPort,
+gwPort:  *pcGWPort,
+direct:  *pcDirect,
+token:   *pcToken,
+}
+if err := a.setup(); err != nil {
+fmt.Printf("%s%v\n", prefixERR(), err)
+} else {
+pca = a
+}
+}
+
+if zca == nil && pca == nil {
+fmt.Fprintln(os.Stderr, "Error: no agents configured.")
+os.Exit(1)
+}
+
+// ── proxy mode ────────────────────────────────────────────────────
+if *proxyMode {
+runProxy(*proxyPort, zca, pca)
+return
+}
+
+// ── CLI mode: connect ─────────────────────────────────────────────
 activeAgent := agentKind(*active)
 if activeAgent != kindZC && activeAgent != kindPC {
 fmt.Fprintf(os.Stderr, "Error: --active must be 'zc' or 'pc'\n")
 os.Exit(1)
 }
 
-// ── zeroclaw: pair-code auth ──────────────────────────────────────
 var zc *agentConn
-if *zcEnable {
-auth := &zcAuth{host: *zcHost, port: *zcPort, token: *zcToken, pairCode: *zcPairCode}
-if err := auth.setup(); err != nil {
-fmt.Printf("%s%v\n", prefixERR(), err)
-} else {
-zc = &agentConn{
-kind:      kindZC,
-wsURL:     auth.wsURL(*zcSID),
-token:     auth.token,
-sessionID: *zcSID,
-}
+if zca != nil {
+zc = &agentConn{kind: kindZC, wsURL: zca.wsURL(*zcSID), token: zca.token, sessionID: *zcSID}
 fmt.Printf("%sConnecting: %s\n", prefixZC(), zc.wsURL)
 if err := zc.dial(); err != nil {
 fmt.Printf("%szeroclaw connect failed: %v\n", prefixERR(), err)
@@ -556,35 +584,11 @@ zc = nil
 go zc.reconnectLoop()
 }
 }
-}
 
-// ── picoclaw: token auth (web-backend or direct) ──────────────────
 var pc *agentConn
-if *pcEnable {
-auth := &pcAuth{
-host:    *pcHost,
-webPort: *pcPort,
-gwPort:  *pcGWPort,
-direct:  *pcDirect,
-token:   *pcToken,
-}
-if err := auth.setup(); err != nil {
-fmt.Printf("%s%v\n", prefixERR(), err)
-} else {
-wsURL := auth.wsURL
-if !strings.Contains(wsURL, "session_id=") {
-sep := "?"
-if strings.Contains(wsURL, "?") {
-sep = "&"
-}
-wsURL += sep + "session_id=" + *pcSID
-}
-pc = &agentConn{
-kind:      kindPC,
-wsURL:     wsURL,
-token:     auth.token,
-sessionID: *pcSID,
-}
+if pca != nil {
+wsURL := appendSessionID(pca.wsURL, *pcSID)
+pc = &agentConn{kind: kindPC, wsURL: wsURL, token: pca.token, sessionID: *pcSID}
 fmt.Printf("%sConnecting: %s\n", prefixPC(), pc.wsURL)
 if err := pc.dial(); err != nil {
 fmt.Printf("%spicoclaw connect failed: %v\n", prefixERR(), err)
@@ -600,23 +604,21 @@ pc.pingPC()
 }()
 }
 }
-}
 
 if zc == nil && pc == nil {
-fmt.Fprintln(os.Stderr, "Error: no agents connected. Check flags and gateway availability.")
+fmt.Fprintln(os.Stderr, "Error: no agents connected.")
 os.Exit(1)
 }
 
-// ── Banner ────────────────────────────────────────────────────────
-fmt.Printf("\n%s%sClawProxy v1%s — dual-agent CLI\n", prefixSYS(), colBold, colReset)
-fmt.Printf("%s  %s@zc <text>%s     send to zeroclaw\n", prefixSYS(), colCyan, colReset)
-fmt.Printf("%s  %s@pc <text>%s     send to picoclaw\n", prefixSYS(), colGreen, colReset)
-fmt.Printf("%s  /switch zc|pc    change active agent (current: %s%s%s)\n",
+// ── CLI banner ────────────────────────────────────────────────────
+fmt.Printf("\n%s%sClawProxy v1%s — CLI mode\n", prefixSYS(), colBold, colReset)
+fmt.Printf("%s  %s@zc <text>%s   send to zeroclaw\n", prefixSYS(), colCyan, colReset)
+fmt.Printf("%s  %s@pc <text>%s   send to picoclaw\n", prefixSYS(), colGreen, colReset)
+fmt.Printf("%s  /switch zc|pc  change active agent (current: %s%s%s)\n",
 prefixSYS(), colYellow, activeAgent, colReset)
-fmt.Printf("%s  /status          connection status\n", prefixSYS())
-fmt.Printf("%s  /quit            exit\n\n", prefixSYS())
+fmt.Printf("%s  /status        connection status\n", prefixSYS())
+fmt.Printf("%s  /quit          exit\n\n", prefixSYS())
 
-// ── Interactive loop ──────────────────────────────────────────────
 scanner := bufio.NewScanner(os.Stdin)
 for {
 var promptColor string
@@ -635,17 +637,13 @@ if line == "" {
 continue
 }
 
-if line == "/quit" || line == "/exit" {
+switch {
+case line == "/quit" || line == "/exit":
 fmt.Println(prefixSYS() + "bye!")
-break
-}
-
-if line == "/status" {
+return
+case line == "/status":
 printStatus(zc, pc, activeAgent)
-continue
-}
-
-if strings.HasPrefix(line, "/switch ") {
+case strings.HasPrefix(line, "/switch "):
 target := agentKind(strings.TrimSpace(strings.TrimPrefix(line, "/switch ")))
 switch target {
 case kindZC:
@@ -663,26 +661,22 @@ activeAgent = kindPC
 fmt.Printf("%sActive → %spc%s\n", prefixSYS(), colGreen, colReset)
 }
 default:
-fmt.Printf("%sunknown agent %q — use 'zc' or 'pc'\n", prefixERR(), target)
+fmt.Printf("%sunknown agent %q\n", prefixERR(), target)
 }
-continue
-}
-
-// resolve target + content
+default:
 var target agentKind
 var content string
 switch {
 case strings.HasPrefix(line, "@zc "):
 target = kindZC
-content = strings.TrimSpace(strings.TrimPrefix(line, "@zc "))
+content = strings.TrimPrefix(line, "@zc ")
 case strings.HasPrefix(line, "@pc "):
 target = kindPC
-content = strings.TrimSpace(strings.TrimPrefix(line, "@pc "))
+content = strings.TrimPrefix(line, "@pc ")
 default:
 target = activeAgent
 content = line
 }
-
 var sendErr error
 switch target {
 case kindZC:
@@ -702,7 +696,7 @@ if sendErr != nil {
 fmt.Printf("%ssend to %s failed: %v\n", prefixERR(), target, sendErr)
 }
 }
-
+}
 if err := scanner.Err(); err != nil {
 fmt.Fprintf(os.Stderr, "stdin error: %v\n", err)
 }
