@@ -143,6 +143,13 @@ func (s *proxyServer) probeAll() {
 	if s.pcAuth != nil {
 		sid := fmt.Sprintf("probe-%d", time.Now().UnixMilli())
 		wsURL := appendSessionID(s.pcAuth.wsURL, sid)
+		tokenPreview := func(t string) string {
+			if len(t) <= 16 {
+				return t
+			}
+			return t[:8] + "…" + t[len(t)-4:]
+		}
+		fmt.Printf("%sPC probe: url=%s  token=%s\n", prefixSYS(), s.pcAuth.wsURL, tokenPreview(s.pcAuth.token))
 		status := dialProbe(wsURL, s.pcAuth.token, []string{"token." + s.pcAuth.token})
 		if status == "auth_error" {
 			// Stale token — wipe the cache and re-assemble from runtime files.
@@ -150,9 +157,11 @@ func (s *proxyServer) probeAll() {
 			deleteToken("pc_token")
 			if fresh, err := readPicoTokenFromConfig(); err == nil {
 				s.pcAuth.token = fresh
-				fmt.Printf("%sPC token refreshed from runtime files\n", prefixSYS())
+				fmt.Printf("%sPC token refreshed: %s\n", prefixSYS(), tokenPreview(fresh))
 				// Re-probe with the new token.
+				wsURL = appendSessionID(s.pcAuth.wsURL, fmt.Sprintf("probe2-%d", time.Now().UnixMilli()))
 				status = dialProbe(wsURL, s.pcAuth.token, []string{"token." + s.pcAuth.token})
+				fmt.Printf("%sPC re-probe after refresh: %s\n", prefixSYS(), status)
 			} else {
 				fmt.Printf("%sPC token refresh failed: %v\n", prefixERR(), err)
 			}

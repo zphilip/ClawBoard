@@ -8,6 +8,7 @@ import (
 "io"
 "net/http"
 "os"
+"os/exec"
 "strings"
 "sync"
 "sync/atomic"
@@ -190,6 +191,20 @@ func deleteToken(filename string) {
 	_ = os.Remove(dir + "/" + filename)
 }
 
+// sudoReadFile reads a file that may be owned by another user by running
+// "sudo /usr/bin/cat <path>".  The sudoers rule for this must already exist.
+func sudoReadFile(path string) ([]byte, error) {
+	out, err := exec.Command("sudo", "/usr/bin/cat", path).Output()
+	if err != nil {
+		// exec.ExitError carries stderr; surface it for better diagnostics.
+		if ee, ok := err.(*exec.ExitError); ok && len(ee.Stderr) > 0 {
+			return nil, fmt.Errorf("sudo cat %s: %s", path, strings.TrimSpace(string(ee.Stderr)))
+		}
+		return nil, fmt.Errorf("sudo cat %s: %w", path, err)
+	}
+	return out, nil
+}
+
 // readPicoTokenFromConfig assembles the picoclaw bearer token from the two
 // runtime files that picoclaw writes under /var/lib/picoclaw/.picoclaw/:
 //
@@ -205,7 +220,7 @@ func readPicoTokenFromConfig() (string, error) {
 	)
 
 	// ── 1. PID token ──────────────────────────────────────────────────────
-	pidRaw, err := os.ReadFile(pidFile)
+	pidRaw, err := sudoReadFile(pidFile)
 	if err != nil {
 		return "", fmt.Errorf("cannot read %s: %w", pidFile, err)
 	}
@@ -215,7 +230,7 @@ func readPicoTokenFromConfig() (string, error) {
 	}
 
 	// ── 2. Channel token from .security.yml ──────────────────────────────
-	ymlRaw, err := os.ReadFile(ymlFile)
+	ymlRaw, err := sudoReadFile(ymlFile)
 	if err != nil {
 		return "", fmt.Errorf("cannot read %s: %w", ymlFile, err)
 	}
