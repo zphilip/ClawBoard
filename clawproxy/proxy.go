@@ -607,14 +607,21 @@ func (cs *pcCompatSession) upstreamLoop() {
 		cs.upMu.Lock()
 		cs.upConn = conn
 		cs.upMu.Unlock()
-		fmt.Printf("%sPC compat[%s] upstream connected\n", prefixSYS(), keyShort)
+		fmt.Printf("%sPC compat[%s] upstream connected  url=%s\n", prefixSYS(), keyShort, wsURL)
+		frameCount := 0
 		for {
 			_, data, rerr := conn.ReadMessage()
 			if rerr != nil {
-				fmt.Printf("%sPC compat[%s] upstream read: %v\n", prefixSYS(), keyShort, rerr)
+				fmt.Printf("%sPC compat[%s] upstream read-err after %d frames: %v\n", prefixSYS(), keyShort, frameCount, rerr)
 				break
 			}
-			cs.deliverOrBuffer(data)
+			frameCount++
+			preview := string(data)
+			if len(preview) > 120 {
+				preview = preview[:120] + "\u2026"
+			}
+			fmt.Printf("%sPC compat[%s] gw\u2192app frame#%d (%d B): %s\n", prefixSYS(), keyShort, frameCount, len(data), preview)
+			cs.deliverOrBuffer(data, keyShort)
 		}
 		cs.upMu.Lock()
 		cs.upConn = nil
@@ -646,15 +653,26 @@ func (cs *pcCompatSession) detachApp() {
 	cs.appMu.Unlock()
 }
 
-func (cs *pcCompatSession) deliverOrBuffer(data []byte) {
+func (cs *pcCompatSession) deliverOrBuffer(data []byte, keyShort string) {
 	cs.appMu.RLock()
 	app := cs.app
 	cs.appMu.RUnlock()
 	if app != nil {
 		if err := app.WriteMessage(websocket.TextMessage, data); err == nil {
-			return
+			return // delivered
 		}
 		// Write failed — app likely disconnected; fall through to buffer.
+		fmt.Printf("%sPC compat[%s] deliver→app failed (app disconnected?), buffering\n", prefixERR(), keyShort)
+	} else {
+		if cs.maxQ > 0 {
+			fmt.Printf("%sPC compat[%s] app offline — buffering frame (%d B), queue now %d\n",
+				prefixSYS(), keyShort, len(data), func() int {
+					cs.qMu.Lock(); defer cs.qMu.Unlock(); return len(cs.queue) + 1
+				}())
+		} else {
+			fmt.Printf("%sPC compat[%s] app offline, buffering disabled — frame dropped\n", prefixSYS(), keyShort)
+			return
+		}
 	}
 	if cs.maxQ <= 0 {
 		return
