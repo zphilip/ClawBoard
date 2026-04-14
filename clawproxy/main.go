@@ -707,18 +707,26 @@ zca = a
 
 var pca *pcAuth
 if *pcEnable {
-a := &pcAuth{
-host:    *pcHost,
-webPort: *pcPort,
-gwPort:  *pcGWPort,
-direct:  *pcDirect,
-token:   *pcToken,
-}
-if err := a.setup(); err != nil {
-fmt.Printf("%s%v\n", prefixERR(), err)
-} else {
-pca = a
-}
+	a := &pcAuth{
+		host:    *pcHost,
+		webPort: *pcPort,
+		gwPort:  *pcGWPort,
+		direct:  *pcDirect,
+		token:   *pcToken,
+	}
+	if err := a.setup(); err != nil {
+		fmt.Printf("%s%v\n", prefixERR(), err)
+		if a.wsURL == "" {
+			// wsURL is needed for probes; fill it even without a token so
+			// probeAll() can keep retrying until picoclaw starts writing its
+			// runtime files.
+			a.wsURL = fmt.Sprintf("ws://%s:%d/pico/ws", a.host, a.gwPort)
+		}
+		// Keep pca non-nil so probeAll() retries token assembly every 30s.
+		pca = a
+	} else {
+		pca = a
+	}
 }
 
 if zca == nil && pca == nil {
