@@ -132,30 +132,79 @@ token   string
 wsURL   string
 }
 
+// readPicoTokenFromConfig reads the picoclaw bearer token from the local config file.
+// It checks ~/.picoclaw/config.json for channels.pico.token or pico.token.
+func readPicoTokenFromConfig() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	path := home + "/.picoclaw/config.json"
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("cannot read %s: %w", path, err)
+	}
+	var cfg map[string]any
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return "", fmt.Errorf("bad JSON in %s: %w", path, err)
+	}
+	// try channels.pico.token
+	if channels, ok := cfg["channels"].(map[string]any); ok {
+		if pico, ok := channels["pico"].(map[string]any); ok {
+			if tok, ok := pico["token"].(string); ok && tok != "" {
+				return tok, nil
+			}
+		}
+	}
+	// try pico.token
+	if pico, ok := cfg["pico"].(map[string]any); ok {
+		if tok, ok := pico["token"].(string); ok && tok != "" {
+			return tok, nil
+		}
+	}
+	return "", fmt.Errorf("token not found in %s (checked channels.pico.token, pico.token)", path)
+}
+
 func (p *pcAuth) setup() error {
-if p.direct {
-if p.token == "" {
-return fmt.Errorf("--pc-direct requires --pc-token")
-}
-p.wsURL = fmt.Sprintf("ws://%s:%d/pico/ws", p.host, p.gwPort)
-fmt.Printf("%spicoclaw direct %s\n", prefixPC(), p.wsURL)
-return nil
-}
-base := fmt.Sprintf("http://%s:%d", p.host, p.webPort)
-data, err := httpGet(base + "/api/pico/token")
-if err != nil {
-return fmt.Errorf("cannot reach picoclaw-web at %s: %w\n  Use --pc-direct --pc-token <token>", base, err)
-}
-tok, _ := data["token"].(string)
-wsURL, _ := data["ws_url"].(string)
-enabled, _ := data["enabled"].(bool)
-if tok == "" || wsURL == "" {
-return fmt.Errorf("invalid /api/pico/token response: %v", data)
-}
-p.token = tok
-p.wsURL = wsURL
-fmt.Printf("%spicoclaw web-backend %s  enabled=%v\n", prefixPC(), base, enabled)
-return nil
+	if p.direct {
+		if p.token == "" {
+			// 1. try config file
+			tok, err := readPicoTokenFromConfig()
+			if err == nil {
+				p.token = tok
+				fmt.Printf("%spicoclaw token loaded from ~/.picoclaw/config.json\n", prefixPC())
+			} else {
+				// 2. prompt interactively
+				fmt.Printf("%sToken not found in ~/.picoclaw/config.json\n", prefixPC())
+				fmt.Printf("%sGet your token:  %sjq '.channels.pico.token' ~/.picoclaw/config.json%s\n",
+					prefixPC(), colYellow, colReset)
+				fmt.Print(prefixPC() + "Picoclaw token: ")
+				fmt.Scanln(&p.token)
+				p.token = strings.TrimSpace(p.token)
+				if p.token == "" {
+					return fmt.Errorf("picoclaw token is required")
+				}
+			}
+		}
+		p.wsURL = fmt.Sprintf("ws://%s:%d/pico/ws", p.host, p.gwPort)
+		fmt.Printf("%spicoclaw direct %s\n", prefixPC(), p.wsURL)
+		return nil
+	}
+	base := fmt.Sprintf("http://%s:%d", p.host, p.webPort)
+	data, err := httpGet(base + "/api/pico/token")
+	if err != nil {
+		return fmt.Errorf("cannot reach picoclaw-web at %s: %w\n  Use --pc-direct (or set --pc-token)", base, err)
+	}
+	tok, _ := data["token"].(string)
+	wsURL, _ := data["ws_url"].(string)
+	enabled, _ := data["enabled"].(bool)
+	if tok == "" || wsURL == "" {
+		return fmt.Errorf("invalid /api/pico/token response: %v", data)
+	}
+	p.token = tok
+	p.wsURL = wsURL
+	fmt.Printf("%spicoclaw web-backend %s  enabled=%v\n", prefixPC(), base, enabled)
+	return nil
 }
 
 // ── Protocol types ────────────────────────────────────────────────────────────
@@ -495,9 +544,9 @@ zcEnable   := flag.Bool("zc",             false,        "enable zeroclaw")
 // picoclaw flags
 pcHost    := flag.String("pc-host",    "127.0.0.1", "picoclaw host")
 pcPort    := flag.Int("pc-port",       18800,        "picoclaw web-backend port")
-pcGWPort  := flag.Int("pc-gw-port",    18790,        "picoclaw gateway port (--pc-direct)")
-pcDirect  := flag.Bool("pc-direct",   false,        "connect directly to gateway")
-pcToken   := flag.String("pc-token",  "",           "picoclaw token (required for --pc-direct)")
+pcGWPort  := flag.Int("pc-gw-port",    18790,        "picoclaw gateway port")
+	pcDirect  := flag.Bool("pc-direct",   true,         "connect directly to gateway (default; skips web-backend)")
+	pcToken   := flag.String("pc-token",  "",           "picoclaw token (default: read from ~/.picoclaw/config.json)")
 pcSID     := flag.String("pc-sid",    "",           "picoclaw session ID (CLI mode)")
 pcEnable  := flag.Bool("pc",          false,        "enable picoclaw")
 
@@ -512,7 +561,7 @@ flag.Parse()
 if *zcToken != "" || *zcPairCode != "" {
 *zcEnable = true
 }
-if *pcToken != "" || *pcDirect {
+if *pcToken != "" {
 *pcEnable = true
 }
 if !*zcEnable && !*pcEnable {
