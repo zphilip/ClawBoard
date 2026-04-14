@@ -399,23 +399,29 @@ stop  chan struct{}    // close to stop reconnectLoop
 }
 
 func (a *agentConn) dial() error {
-header := http.Header{}
-var dialer *websocket.Dialer
-if a.kind == kindPC && a.token != "" {
-header.Set("Authorization", "Bearer "+a.token)
-dialer = &websocket.Dialer{
-HandshakeTimeout: 10 * time.Second,
-Subprotocols:     []string{"token." + a.token},
-}
-} else {
-if a.token != "" {
-header.Set("Authorization", "Bearer "+a.token)
-}
-dialer = &websocket.Dialer{
-HandshakeTimeout: 10 * time.Second,
-Subprotocols:     []string{"zeroclaw.v1"},
-}
-}
+	// Snapshot token under lock — getOrCreatePC may update it concurrently
+	// when picoclaw restarts and the proxy server refreshes pcAuth.token.
+	a.mu.Lock()
+	tok := a.token
+	a.mu.Unlock()
+
+	header := http.Header{}
+	var dialer *websocket.Dialer
+	if a.kind == kindPC && tok != "" {
+		header.Set("Authorization", "Bearer "+tok)
+		dialer = &websocket.Dialer{
+			HandshakeTimeout: 10 * time.Second,
+			Subprotocols:     []string{"token." + tok},
+		}
+	} else {
+		if tok != "" {
+			header.Set("Authorization", "Bearer "+tok)
+		}
+		dialer = &websocket.Dialer{
+			HandshakeTimeout: 10 * time.Second,
+			Subprotocols:     []string{"zeroclaw.v1"},
+		}
+	}
 conn, resp, err := dialer.Dial(a.wsURL, header)
 if resp != nil {
 a.lastDialHTTPStatus = resp.StatusCode

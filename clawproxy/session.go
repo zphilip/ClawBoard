@@ -154,6 +154,12 @@ func (cs *clientSession) getOrCreatePC(srv *proxyServer) (*agentConn, error) {
 	cs.pcMu.Lock()
 	defer cs.pcMu.Unlock()
 	if cs.pcConn != nil {
+		// Sync the current token in case picoclaw restarted and probeAll refreshed
+		// s.pcAuth.token.  reconnectLoop reads agentConn.token on every dial attempt,
+		// so keeping it current lets the background reconnect succeed with the new token.
+		cs.pcConn.mu.Lock()
+		cs.pcConn.token = srv.pcAuth.token
+		cs.pcConn.mu.Unlock()
 		return cs.pcConn, nil
 	}
 
