@@ -218,14 +218,20 @@ func readPicoTokenFromConfig() (string, error) {
 		ymlFile = "/var/lib/picoclaw/.picoclaw/.security.yml"
 	)
 
-	// ── 1. PID token ──────────────────────────────────────────────────────
+	// ── 1. PID token — .picoclaw.pid is JSON: {"pid":…,"token":"…",…} ───
 	pidRaw, err := sudoReadFile(pidFile)
 	if err != nil {
 		return "", fmt.Errorf("cannot read %s: %w", pidFile, err)
 	}
-	pidToken := strings.TrimSpace(string(pidRaw))
+	var pidJSON struct {
+		Token string `json:"token"`
+	}
+	if err := json.Unmarshal(pidRaw, &pidJSON); err != nil {
+		return "", fmt.Errorf("cannot parse %s as JSON: %w", pidFile, err)
+	}
+	pidToken := strings.TrimSpace(pidJSON.Token)
 	if pidToken == "" {
-		return "", fmt.Errorf("%s is empty", pidFile)
+		return "", fmt.Errorf("%s has no token field", pidFile)
 	}
 
 	// ── 2. Channel token from .security.yml ──────────────────────────────────────
