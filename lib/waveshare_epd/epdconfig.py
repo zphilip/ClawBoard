@@ -50,25 +50,50 @@ class RaspberryPi:
 
     def __init__(self):
         import spidev
-        import RPi.GPIO as GPIO
-
+        import gpiozero
+        
         self.SPI = spidev.SpiDev()
-        self.GPIO = GPIO
-        self.GPIO.setmode(self.GPIO.BCM)
-        self.GPIO.setwarnings(False)
-        self.GPIO.setup(self.RST_PIN,  self.GPIO.OUT, initial=self.GPIO.LOW)
-        self.GPIO.setup(self.DC_PIN,   self.GPIO.OUT, initial=self.GPIO.LOW)
-        self.GPIO.setup(self.CS_PIN,   self.GPIO.OUT, initial=self.GPIO.LOW)
-        self.GPIO.setup(self.PWR_PIN,  self.GPIO.OUT, initial=self.GPIO.LOW)
-        self.GPIO.setup(self.BUSY_PIN, self.GPIO.IN)
+        self.GPIO_RST_PIN    = gpiozero.LED(self.RST_PIN)
+        self.GPIO_DC_PIN     = gpiozero.LED(self.DC_PIN)
+        # self.GPIO_CS_PIN     = gpiozero.LED(self.CS_PIN)
+        self.GPIO_PWR_PIN    = gpiozero.LED(self.PWR_PIN)
+        self.GPIO_BUSY_PIN   = gpiozero.Button(self.BUSY_PIN, pull_up = False)
+
+        
 
     def digital_write(self, pin, value):
-        self.GPIO.output(pin, value)
+        if pin == self.RST_PIN:
+            if value:
+                self.GPIO_RST_PIN.on()
+            else:
+                self.GPIO_RST_PIN.off()
+        elif pin == self.DC_PIN:
+            if value:
+                self.GPIO_DC_PIN.on()
+            else:
+                self.GPIO_DC_PIN.off()
+        # elif pin == self.CS_PIN:
+        #     if value:
+        #         self.GPIO_CS_PIN.on()
+        #     else:
+        #         self.GPIO_CS_PIN.off()
+        elif pin == self.PWR_PIN:
+            if value:
+                self.GPIO_PWR_PIN.on()
+            else:
+                self.GPIO_PWR_PIN.off()
 
     def digital_read(self, pin):
         if pin == self.BUSY_PIN:
-            return self.GPIO.input(self.BUSY_PIN)
-        return self.GPIO.input(pin)
+            return self.GPIO_BUSY_PIN.value
+        elif pin == self.RST_PIN:
+            return self.RST_PIN.value
+        elif pin == self.DC_PIN:
+            return self.DC_PIN.value
+        # elif pin == self.CS_PIN:
+        #     return self.CS_PIN.value
+        elif pin == self.PWR_PIN:
+            return self.PWR_PIN.value
 
     def delay_ms(self, delaytime):
         time.sleep(delaytime / 1000.0)
@@ -89,7 +114,7 @@ class RaspberryPi:
         return self.DEV_SPI.DEV_SPI_ReadData()
 
     def module_init(self, cleanup=False):
-        self.GPIO.output(self.PWR_PIN, 1)
+        self.GPIO_PWR_PIN.on()
         
         if cleanup:
             find_dirs = [
@@ -124,13 +149,17 @@ class RaspberryPi:
         logger.debug("spi end")
         self.SPI.close()
 
-        self.GPIO.output(self.RST_PIN, 0)
-        self.GPIO.output(self.DC_PIN, 0)
-        self.GPIO.output(self.PWR_PIN, 0)
+        self.GPIO_RST_PIN.off()
+        self.GPIO_DC_PIN.off()
+        self.GPIO_PWR_PIN.off()
         logger.debug("close 5V, Module enters 0 power consumption ...")
         
         if cleanup:
-            self.GPIO.cleanup([self.RST_PIN, self.DC_PIN, self.PWR_PIN, self.BUSY_PIN])
+            self.GPIO_RST_PIN.close()
+            self.GPIO_DC_PIN.close()
+            # self.GPIO_CS_PIN.close()
+            self.GPIO_PWR_PIN.close()
+            self.GPIO_BUSY_PIN.close()
 
         
 
