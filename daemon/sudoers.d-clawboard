@@ -5,7 +5,10 @@
 #   sudo cp daemon/sudoers.d-clawboard /etc/sudoers.d/clawboard
 #   sudo chmod 440 /etc/sudoers.d/clawboard
 #   sudo visudo -c   # validate before relying on it
-#
+
+# ── Allow zero to run sudo without a terminal (needed for systemd services) ──
+Defaults:zero !requiretty
+
 # ── ZeroClaw service management ──────────────────────────────────────────────
 zero ALL=(root) NOPASSWD: /usr/bin/systemctl restart zeroclaw.service
 zero ALL=(root) NOPASSWD: /usr/bin/systemctl stop zeroclaw.service

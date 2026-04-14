@@ -149,6 +149,18 @@ func (s *proxyServer) probeAll() {
 			}
 			return t[:8] + "…" + t[len(t)-4:]
 		}
+		// If we have no token yet, try to read it from the picoclaw runtime files.
+		// picoclaw may not have started when clawproxy first launched.
+		if s.pcAuth.token == "" {
+			if fresh, err := readPicoTokenFromConfig(); err == nil {
+				s.pcAuth.token = fresh
+				fmt.Printf("%sPC token loaded from runtime files: %s\n", prefixSYS(), tokenPreview(fresh))
+			} else {
+				fmt.Printf("%sPC token not yet available: %v\n", prefixSYS(), err)
+				s.setHealth("pc", "not_configured")
+				return
+			}
+		}
 		fmt.Printf("%sPC probe: url=%s  token=%s\n", prefixSYS(), s.pcAuth.wsURL, tokenPreview(s.pcAuth.token))
 		status := dialProbe(wsURL, s.pcAuth.token, []string{"token." + s.pcAuth.token})
 		if status == "auth_error" {
