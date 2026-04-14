@@ -12,7 +12,11 @@ from urllib.request import urlopen
 from PIL import Image, ImageDraw, ImageFont
 
 # ── Driver path setup ─────────────────────────────────────────────────────
-os.environ['GPIOZERO_PIN_FACTORY'] = 'rpigpio'
+# Do NOT set GPIOZERO_PIN_FACTORY here at module level.
+# The e-ink driver (waveshare epdconfig) uses RPi.GPIO directly. If gpiozero
+# is already loaded with rpigpio factory, it holds GPIO lines open and
+# RPi.GPIO.setup() fails with 'GPIO busy'. The LCD probe sets it lazily.
+os.environ.pop('GPIOZERO_PIN_FACTORY', None)   # clear any inherited value
 current_dir = os.path.dirname(os.path.realpath(__file__))
 libdir = os.path.join(current_dir, 'lib')
 if os.path.exists(libdir):
