@@ -1,6 +1,6 @@
 package main
 
-// session.go — v3 offline queue: per-client session store.
+// session.go — v4 offline queue: per-client session store (SQLite-backed).
 //
 // A clientSession outlives individual WebSocket connections.  It owns the
 // upstream agentConns (ZC + PC) and an in-memory queue of agent replies that
@@ -35,8 +35,8 @@ type queuedMsg struct {
 // clientSession persists in sessionStore across WebSocket reconnections.
 // It owns upstream agentConns and the offline message queue.
 type clientSession struct {
-	id       string
-	maxQueue int // 0 = buffering disabled
+	id string
+	db *queueStore // SQLite-backed offline queue (shared with all sessions)
 
 	// upstream ZC connections, one per ZC session_id
 	zcMu    sync.RWMutex
@@ -45,10 +45,6 @@ type clientSession struct {
 	// upstream PC connection (single mux over all PC session_ids)
 	pcMu   sync.Mutex
 	pcConn *agentConn
-
-	// offline queue
-	qMu   sync.Mutex
-	queue []queuedMsg
 
 	// currently attached app (nil = offline)
 	appMu sync.RWMutex
@@ -65,10 +61,11 @@ func (cs *clientSession) attach(app *proxyClient) []queuedMsg {
 	cs.lastSeen = time.Now()
 	cs.appMu.Unlock()
 
-	cs.qMu.Lock()
-	q := cs.queue
-	cs.queue = nil
-	cs.qMu.Unlock()
+	msgs := cs.db.drain(cs.id)
+	q := make([]queuedMsg, len(msgs))
+	for i, m := range msgs {
+		q[i] = queuedMsg{agent: m.agent, sessionID: m.sid, raw: m.data}
+	}
 	return q
 }
 
@@ -93,16 +90,7 @@ func (cs *clientSession) relay(agent, sessionID string, raw []byte) {
 		return
 	}
 
-	if cs.maxQueue <= 0 {
-		return // buffering disabled
-	}
-
-	cs.qMu.Lock()
-	defer cs.qMu.Unlock()
-	if len(cs.queue) >= cs.maxQueue {
-		cs.queue = cs.queue[1:] // drop oldest on overflow
-	}
-	cs.queue = append(cs.queue, queuedMsg{agent: agent, sessionID: sessionID, raw: raw})
+	cs.db.push(cs.id, agent, sessionID, raw)
 }
 
 // ── Upstream connection management ───────────────────────────────────────────
@@ -265,18 +253,56 @@ func (cs *clientSession) closeUpstreams() {
 
 // ── Session store ─────────────────────────────────────────────────────────────
 
-// sessionStore maps client_id → clientSession.  Sessions are never evicted
-// in v3 (v4 will add TTL purge).
+// sessionStore maps client_id → clientSession.
+// Sessions idle longer than sessionTTL are evicted from memory (the SQLite
+// queue remains and will be drained if the client reconnects before the row TTL).
 type sessionStore struct {
-	mu       sync.RWMutex
-	sessions map[string]*clientSession
-	maxQueue int
+	mu         sync.RWMutex
+	sessions   map[string]*clientSession
+	maxQueue   int           // kept for /proxy/status reporting only
+	db         *queueStore
+	sessionTTL time.Duration // evict sessions idle longer than this; 0 = never
 }
 
-func newSessionStore(maxQueue int) *sessionStore {
-	return &sessionStore{
-		sessions: make(map[string]*clientSession),
-		maxQueue: maxQueue,
+func newSessionStore(db *queueStore, sessionTTL time.Duration) *sessionStore {
+	ss := &sessionStore{
+		sessions:   make(map[string]*clientSession),
+		maxQueue:   db.maxQ,
+		db:         db,
+		sessionTTL: sessionTTL,
+	}
+	if sessionTTL > 0 {
+		go ss.purgeLoop()
+	}
+	return ss
+}
+
+// purgeLoop runs every hour and evicts in-memory sessions that have been idle
+// (no attached app) longer than sessionTTL.  Buffered frames in SQLite are
+// NOT deleted — they'll be drained if the client reconnects before row TTL.
+func (ss *sessionStore) purgeLoop() {
+	t := time.NewTicker(time.Hour)
+	defer t.Stop()
+	for range t.C {
+		cutoff := time.Now().Add(-ss.sessionTTL)
+		ss.mu.Lock()
+		var evicted []string
+		for id, cs := range ss.sessions {
+			cs.appMu.RLock()
+			app, ls := cs.app, cs.lastSeen
+			cs.appMu.RUnlock()
+			if app == nil && ls.Before(cutoff) {
+				evicted = append(evicted, id)
+			}
+		}
+		for _, id := range evicted {
+			ss.sessions[id].closeUpstreams()
+			delete(ss.sessions, id)
+		}
+		ss.mu.Unlock()
+		if len(evicted) > 0 {
+			fmt.Printf("%ssession TTL purge: evicted %d idle sessions\n", prefixSYS(), len(evicted))
+		}
 	}
 }
 
@@ -288,9 +314,9 @@ func (ss *sessionStore) getOrCreate(clientID string) *clientSession {
 		return cs
 	}
 	cs := &clientSession{
-		id:       clientID,
-		maxQueue: ss.maxQueue,
-		zcConns:  make(map[string]*agentConn),
+		id:      clientID,
+		db:      ss.db,
+		zcConns: make(map[string]*agentConn),
 		lastSeen: time.Now(),
 	}
 	ss.sessions[clientID] = cs

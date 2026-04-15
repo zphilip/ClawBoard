@@ -22,7 +22,9 @@ ExecStart=/usr/local/bin/clawproxy \
     --proxy \
     --proxy-port 18780 \
     --zc \
-    --pc
+    --pc \
+    --queue-db /var/lib/zero/clawproxy.db \
+    --queue-ttl 3600
 
 WorkingDirectory=/var/lib/zero
 

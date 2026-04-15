@@ -1,6 +1,6 @@
 package main
 
-// proxy.go — v3 proxy server mode for clawproxy.
+// proxy.go — v4 proxy server mode for clawproxy.
 //
 // ── Two endpoint families ─────────────────────────────────────────────────────
 //
@@ -50,6 +50,7 @@ type proxyServer struct {
 	port          int
 	internalToken string // stable token for compat endpoints
 	upgrader      websocket.Upgrader
+	db            *queueStore    // SQLite-backed offline queue (shared by all sessions)
 	store         *sessionStore
 	pcCompat      *pcCompatStore // persistent PC compat sessions (keyed by app token)
 	zcCompat      *zcCompatStore // persistent ZC compat sessions (keyed by session_id/IP)
@@ -58,7 +59,7 @@ type proxyServer struct {
 	pcHealth      string
 }
 
-func newProxyServer(zca *zcAuth, pca *pcAuth, port, maxQueue int) *proxyServer {
+func newProxyServer(zca *zcAuth, pca *pcAuth, port int, db *queueStore, sessionTTL time.Duration) *proxyServer {
 zcH, pcH := "not_configured", "not_configured"
 if zca != nil {
 zcH = "unknown"
@@ -71,9 +72,10 @@ return &proxyServer{
 		pcAuth:        pca,
 		port:          port,
 		internalToken: fmt.Sprintf("clawproxy-%d", time.Now().UnixMilli()),
-		store:         newSessionStore(maxQueue),
-		pcCompat:      newPCCompatStore(maxQueue),
-		zcCompat:      newZCCompatStore(maxQueue),
+		db:            db,
+		store:         newSessionStore(db, sessionTTL),
+		pcCompat:      newPCCompatStore(db),
+		zcCompat:      newZCCompatStore(db),
 		zcHealth:      zcH,
 		pcHealth:      pcH,
 		upgrader: websocket.Upgrader{
@@ -190,8 +192,13 @@ func (s *proxyServer) probeAll() {
 	}
 }
 
-func runProxy(port int, zca *zcAuth, pca *pcAuth, maxQueue int) {
-s := newProxyServer(zca, pca, port, maxQueue)
+func runProxy(port int, zca *zcAuth, pca *pcAuth, maxQueue int, dbPath string, ttl time.Duration) {
+db, err := openQueueStore(dbPath, maxQueue, ttl)
+if err != nil {
+fmt.Printf("%scannot open queue DB %q: %v — falling back to in-memory\n", prefixERR(), dbPath, err)
+db, _ = openQueueStore(":memory:", maxQueue, ttl)
+}
+s := newProxyServer(zca, pca, port, db, 24*time.Hour)
 mux := http.NewServeMux()
 
 // ── compat: zeroclaw (chat.py) ──────────────────────────────────
@@ -651,15 +658,11 @@ type pcCompatSession struct {
 	srv      string // upstream wsURL prefix (filled on start)
 	key      string // session key (app token value)
 	keyShort string // display-safe truncation of key, computed once
-	maxQ     int
+	db       *queueStore
 
 	// upstream connection
 	upMu   sync.Mutex
 	upConn *websocket.Conn
-
-	// offline queue: frames from upstream buffered while app is away
-	qMu   sync.Mutex
-	queue [][]byte
 
 	// currently attached app (nil = offline)
 	// appWrMu serialises all WriteMessage calls to cs.app so the drain loop
@@ -672,7 +675,7 @@ type pcCompatSession struct {
 	// after app sends a message.send. Used to detect silent failures.
 	pendingMu  sync.Mutex
 	pendingCh  chan struct{} // closed/replaced when a response frame arrives
-	pendingReq bool        // true while waiting for a response
+	pendingReq bool
 
 	getToken func() string           // reads current token from proxyServer
 	getWSURL func(sid string) string // builds upstream wsURL
@@ -754,10 +757,11 @@ func (cs *pcCompatSession) attachApp(app *websocket.Conn) [][]byte {
 	cs.appMu.Lock()
 	cs.app = app
 	cs.appMu.Unlock()
-	cs.qMu.Lock()
-	q := append([][]byte(nil), cs.queue...)
-	cs.queue = nil
-	cs.qMu.Unlock()
+	msgs := cs.db.drain(cs.key)
+	q := make([][]byte, len(msgs))
+	for i, m := range msgs {
+		q[i] = m.data
+	}
 	return q
 }
 
@@ -791,28 +795,13 @@ func (cs *pcCompatSession) deliverOrBuffer(data []byte, keyShort string) {
 		// so subsequent frames go straight to the buffer instead of retrying.
 		cs.detachApp()
 		fmt.Printf("%sPC compat[%s] deliver→app failed (app disconnected?), buffering\n", prefixERR(), keyShort)
-	} else {
-		if cs.maxQ > 0 {
-			fmt.Printf("%sPC compat[%s] app offline — buffering frame (%d B), queue now %d\n",
-				prefixSYS(), keyShort, len(data), func() int {
-					cs.qMu.Lock(); defer cs.qMu.Unlock(); return len(cs.queue) + 1
-				}())
-		} else {
-			fmt.Printf("%sPC compat[%s] app offline, buffering disabled — frame dropped\n", prefixSYS(), keyShort)
-			return
-		}
 	}
-	if cs.maxQ <= 0 {
+	if cs.db.maxQ <= 0 {
+		fmt.Printf("%sPC compat[%s] app offline, buffering disabled — frame dropped\n", prefixSYS(), keyShort)
 		return
 	}
-	cp := make([]byte, len(data))
-	copy(cp, data)
-	cs.qMu.Lock()
-	if len(cs.queue) >= cs.maxQ {
-		cs.queue = cs.queue[1:]
-	}
-	cs.queue = append(cs.queue, cp)
-	cs.qMu.Unlock()
+	cs.db.push(cs.key, "", "", data)
+	fmt.Printf("%sPC compat[%s] buffered (%d B), queue=%d\n", prefixSYS(), keyShort, len(data), cs.db.count(cs.key))
 }
 
 func (cs *pcCompatSession) sendToUpstream(msgType int, data []byte) error {
@@ -843,13 +832,13 @@ func (cs *pcCompatSession) markPending() <-chan struct{} {
 
 // pcCompatStore maps session key → pcCompatSession.
 type pcCompatStore struct {
-	mu       sync.Mutex
-	entries  map[string]*pcCompatSession
-	maxQueue int
+	mu      sync.Mutex
+	entries map[string]*pcCompatSession
+	db      *queueStore
 }
 
-func newPCCompatStore(maxQueue int) *pcCompatStore {
-	return &pcCompatStore{entries: make(map[string]*pcCompatSession), maxQueue: maxQueue}
+func newPCCompatStore(db *queueStore) *pcCompatStore {
+	return &pcCompatStore{entries: make(map[string]*pcCompatSession), db: db}
 }
 
 func (s *pcCompatStore) getOrCreate(key string, getToken func() string, getWSURL func(string) string) *pcCompatSession {
@@ -865,7 +854,7 @@ func (s *pcCompatStore) getOrCreate(key string, getToken func() string, getWSURL
 	e := &pcCompatSession{
 		key:      key,
 		keyShort: ks,
-		maxQ:     s.maxQueue,
+		db:       s.db,
 		getToken: getToken,
 		getWSURL: getWSURL,
 		stopCh:   make(chan struct{}),
@@ -885,15 +874,11 @@ func (s *pcCompatStore) getOrCreate(key string, getToken func() string, getWSURL
 type zcCompatSession struct {
 	key      string // session key (query session_id or ip-<clientIP>)
 	keyShort string // display-safe truncation of key, computed once
-	maxQ     int
+	db       *queueStore
 
 	// upstream connection
 	upMu   sync.Mutex
 	upConn *websocket.Conn
-
-	// offline queue: frames from upstream buffered while app is away
-	qMu   sync.Mutex
-	queue [][]byte
 
 	// currently attached app (nil = offline)
 	// appWrMu serialises all WriteMessage calls to cs.app so the drain loop
@@ -988,10 +973,11 @@ func (cs *zcCompatSession) attachApp(app *websocket.Conn) [][]byte {
 	cs.appMu.Lock()
 	cs.app = app
 	cs.appMu.Unlock()
-	cs.qMu.Lock()
-	q := append([][]byte(nil), cs.queue...)
-	cs.queue = nil
-	cs.qMu.Unlock()
+	msgs := cs.db.drain(cs.key)
+	q := make([][]byte, len(msgs))
+	for i, m := range msgs {
+		q[i] = m.data
+	}
 	return q
 }
 
@@ -1025,28 +1011,13 @@ func (cs *zcCompatSession) deliverOrBuffer(data []byte, keyShort string) {
 		// so subsequent frames go straight to the buffer instead of retrying.
 		cs.detachApp()
 		fmt.Printf("%sZC compat[%s] deliver→app failed (app disconnected?), buffering\n", prefixERR(), keyShort)
-	} else {
-		if cs.maxQ > 0 {
-			fmt.Printf("%sZC compat[%s] app offline — buffering frame (%d B), queue now %d\n",
-				prefixSYS(), keyShort, len(data), func() int {
-					cs.qMu.Lock(); defer cs.qMu.Unlock(); return len(cs.queue) + 1
-				}())
-		} else {
-			fmt.Printf("%sZC compat[%s] app offline, buffering disabled — frame dropped\n", prefixSYS(), keyShort)
-			return
-		}
 	}
-	if cs.maxQ <= 0 {
+	if cs.db.maxQ <= 0 {
+		fmt.Printf("%sZC compat[%s] app offline, buffering disabled — frame dropped\n", prefixSYS(), keyShort)
 		return
 	}
-	cp := make([]byte, len(data))
-	copy(cp, data)
-	cs.qMu.Lock()
-	if len(cs.queue) >= cs.maxQ {
-		cs.queue = cs.queue[1:]
-	}
-	cs.queue = append(cs.queue, cp)
-	cs.qMu.Unlock()
+	cs.db.push(cs.key, "", "", data)
+	fmt.Printf("%sZC compat[%s] buffered (%d B), queue=%d\n", prefixSYS(), keyShort, len(data), cs.db.count(cs.key))
 }
 
 func (cs *zcCompatSession) sendToUpstream(msgType int, data []byte) error {
@@ -1077,13 +1048,13 @@ func (cs *zcCompatSession) markPending() <-chan struct{} {
 
 // zcCompatStore maps session key → zcCompatSession.
 type zcCompatStore struct {
-	mu       sync.Mutex
-	entries  map[string]*zcCompatSession
-	maxQueue int
+	mu      sync.Mutex
+	entries map[string]*zcCompatSession
+	db      *queueStore
 }
 
-func newZCCompatStore(maxQueue int) *zcCompatStore {
-	return &zcCompatStore{entries: make(map[string]*zcCompatSession), maxQueue: maxQueue}
+func newZCCompatStore(db *queueStore) *zcCompatStore {
+	return &zcCompatStore{entries: make(map[string]*zcCompatSession), db: db}
 }
 
 func (s *zcCompatStore) getOrCreate(key string, getToken func() string, getWSURL func(string) string) *zcCompatSession {
@@ -1099,7 +1070,7 @@ func (s *zcCompatStore) getOrCreate(key string, getToken func() string, getWSURL
 	e := &zcCompatSession{
 		key:      key,
 		keyShort: ks,
-		maxQ:     s.maxQueue,
+		db:       s.db,
 		getToken: getToken,
 		getWSURL: getWSURL,
 		stopCh:   make(chan struct{}),
@@ -1143,7 +1114,7 @@ func (s *proxyServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 w.Header().Set("Content-Type", "application/json")
 zcH, pcH := s.getHealth()
 json.NewEncoder(w).Encode(map[string]any{ //nolint:errcheck
-"version": "3",
+"version": "4",
 "agents": map[string]any{
 "zc": map[string]any{"configured": s.zcAuth != nil, "status": zcH},
 "pc": map[string]any{"configured": s.pcAuth != nil, "status": pcH},
@@ -1284,9 +1255,7 @@ c.sendRaw(map[string]any{
 
 func (c *proxyClient) sendStatus() {
 zcH, pcH := c.server.getHealth()
-c.session.qMu.Lock()
-queuedCount := len(c.session.queue)
-c.session.qMu.Unlock()
+queuedCount := c.server.db.count(c.session.id)
 c.sendRaw(map[string]any{
 "type":   "status",
 "agents": map[string]string{"zc": zcH, "pc": pcH},
