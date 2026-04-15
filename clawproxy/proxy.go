@@ -52,6 +52,7 @@ type proxyServer struct {
 	upgrader      websocket.Upgrader
 	store         *sessionStore
 	pcCompat      *pcCompatStore // persistent PC compat sessions (keyed by app token)
+	zcCompat      *zcCompatStore // persistent ZC compat sessions (keyed by session_id/IP)
 	healthMu      sync.RWMutex
 	zcHealth      string // "not_configured"|"unknown"|"online"|"offline"|"auth_error"
 	pcHealth      string
@@ -72,6 +73,7 @@ return &proxyServer{
 		internalToken: fmt.Sprintf("clawproxy-%d", time.Now().UnixMilli()),
 		store:         newSessionStore(maxQueue),
 		pcCompat:      newPCCompatStore(maxQueue),
+		zcCompat:      newZCCompatStore(maxQueue),
 		zcHealth:      zcH,
 		pcHealth:      pcH,
 		upgrader: websocket.Upgrader{
@@ -273,54 +275,118 @@ json.NewEncoder(w).Encode(map[string]any{ //nolint:errcheck
 
 // ── Compat: zeroclaw WS relay (/ws/chat) ─────────────────────────────────────
 
-// WS /ws/chat — raw bidirectional relay to zeroclaw upstream.
-// chat.py connects here with subprotocol zeroclaw.v1; messages pass through unchanged.
+// WS /ws/chat — persistent relay to zeroclaw upstream.
+// chat.py connects here with subprotocol zeroclaw.v1.
+// The upstream ZC connection is kept alive across app disconnects; frames
+// buffered while the app is offline are drained on reconnect.
 func (s *proxyServer) handleZCCompat(w http.ResponseWriter, r *http.Request) {
-if s.zcAuth == nil {
-http.Error(w, `{"type":"error","message":"zeroclaw not configured"}`, http.StatusServiceUnavailable)
-return
-}
+	if s.zcAuth == nil {
+		http.Error(w, `{"type":"error","message":"zeroclaw not configured"}`, http.StatusServiceUnavailable)
+		return
+	}
 
-// Upgrade app connection — negotiate zeroclaw.v1 subprotocol.
-upg := websocket.Upgrader{
-CheckOrigin:  func(r *http.Request) bool { return true },
-Subprotocols: []string{"zeroclaw.v1"},
-}
-appConn, err := upg.Upgrade(w, r, nil)
-if err != nil {
-fmt.Printf("%sZC compat upgrade: %v\n", prefixERR(), err)
-return
-}
+	// Derive a stable session key that survives app reconnects.
+	// Priority:
+	//  1. ?session_id= query param — chat.py sends this on every connect (stable per chat session)
+	//  2. ip-<clientIP> fallback   — same device always resumes its session
+	sessionKey := r.URL.Query().Get("session_id")
+	if sessionKey == "" {
+		host, _, err := net.SplitHostPort(r.RemoteAddr)
+		if err != nil {
+			host = r.RemoteAddr
+		}
+		sessionKey = "ip-" + host
+	}
 
-sid := r.URL.Query().Get("session_id")
-if sid == "" {
-sid = fmt.Sprintf("compat-zc-%d", time.Now().UnixMilli())
-}
+	fmt.Printf("%sZC compat connect  key=%s  subprotos=%v  remote=%s\n",
+		prefixSYS(), sessionKey, websocket.Subprotocols(r), r.RemoteAddr)
 
-// Connect to real ZC upstream.
-upURL := s.zcAuth.wsURL(sid)
-upHeader := http.Header{}
-if s.zcAuth.token != "" {
-upHeader.Set("Authorization", "Bearer "+s.zcAuth.token)
-}
-upDialer := &websocket.Dialer{
-HandshakeTimeout: 10 * time.Second,
-Subprotocols:     []string{"zeroclaw.v1"},
-}
-upConn, resp, err := upDialer.Dial(upURL, upHeader)
-if resp != nil && resp.Body != nil {
-resp.Body.Close()
-}
-if err != nil {
-appConn.WriteMessage(websocket.TextMessage, //nolint:errcheck
-[]byte(`{"type":"error","message":"zeroclaw upstream unavailable"}`))
-appConn.Close()
-return
-}
+	// Upgrade app WebSocket; negotiate zeroclaw.v1 and expose the session key.
+	respHdr := http.Header{"X-Proxy-Session-Id": []string{sessionKey}}
+	upg := websocket.Upgrader{
+		CheckOrigin:  func(r *http.Request) bool { return true },
+		Subprotocols: []string{"zeroclaw.v1"},
+	}
+	appConn, err := upg.Upgrade(w, r, respHdr)
+	if err != nil {
+		fmt.Printf("%sZC compat upgrade: %v\n", prefixERR(), err)
+		return
+	}
 
-fmt.Printf("%sZC compat relay  sid=%s  remote=%s\n", prefixSYS(), sid, r.RemoteAddr)
-rawRelay(appConn, upConn)
-fmt.Printf("%sZC compat closed sid=%s\n", prefixSYS(), sid)
+	// Get or create the persistent session for this app identity.
+	cs := s.zcCompat.getOrCreate(
+		sessionKey,
+		func() string { return s.zcAuth.token },
+		func(sid string) string { return s.zcAuth.wsURL(sid) },
+	)
+	keyShort := cs.keyShort
+	cs.start() // no-op if already running
+
+	// Attach the new app connection; drain any buffered upstream messages.
+	queued := cs.attachApp(appConn)
+	fmt.Printf("%sZC compat attach  key=%s  remote=%s  queued=%d\n",
+		prefixSYS(), keyShort, r.RemoteAddr, len(queued))
+	for _, data := range queued {
+		preview := string(data)
+		if len(preview) > 80 {
+			preview = preview[:80] + "\u2026"
+		}
+		fmt.Printf("%sZC compat[%s] drain→app (%d B): %s\n", prefixSYS(), keyShort, len(data), preview)
+		cs.appWrMu.Lock()
+		err := appConn.WriteMessage(websocket.TextMessage, data)
+		cs.appWrMu.Unlock()
+		if err != nil {
+			cs.detachApp()
+			appConn.Close()
+			return
+		}
+	}
+
+	// App → upstream relay loop.
+	defer func() {
+		cs.detachApp()
+		appConn.Close()
+		fmt.Printf("%sZC compat detach  key=%s\n", prefixSYS(), keyShort)
+	}()
+	for {
+		msgType, data, err := appConn.ReadMessage()
+		if err != nil {
+			return
+		}
+		preview := string(data)
+		if len(preview) > 120 {
+			preview = preview[:120] + "\u2026"
+		}
+		fmt.Printf("%sZC relay[%s] app\u2192gw (%d B): %s\n", prefixSYS(), keyShort, len(data), preview)
+		if werr := cs.sendToUpstream(msgType, data); werr != nil {
+			fmt.Printf("%sZC relay[%s] app\u2192gw write-err: %v\n", prefixERR(), keyShort, werr)
+			continue
+		}
+		// After forwarding a message, start a 90-second silent-failure watcher.
+		{
+			var m struct {
+				Type string `json:"type"`
+				ID   string `json:"id"`
+			}
+			if jerr := json.Unmarshal(data, &m); jerr == nil && m.Type == "message.send" {
+				msgID := m.ID
+				respCh := cs.markPending()
+				go func() {
+					select {
+					case <-respCh:
+						// Response arrived — nothing to do.
+					case <-time.After(90 * time.Second):
+						fmt.Printf("%sZC relay[%s] no gateway response for msg %s after 90 s — synthesising error\n",
+							prefixERR(), keyShort, msgID)
+						errorPayload := fmt.Sprintf(
+							`{"type":"error","id":%q,"payload":{"code":"timeout","message":"No response from AI gateway after 90 s. The LLM provider may be misconfigured or unavailable."}}`,
+							msgID)
+						cs.deliverOrBuffer([]byte(errorPayload), keyShort)
+					}
+				}()
+			}
+		}
+	}
 }
 
 // ── Compat: picoclaw WS relay (/pico/ws) ─────────────────────────────────────
@@ -797,6 +863,240 @@ func (s *pcCompatStore) getOrCreate(key string, getToken func() string, getWSURL
 		ks = ks[:8] + "\u2026" + ks[len(ks)-4:]
 	}
 	e := &pcCompatSession{
+		key:      key,
+		keyShort: ks,
+		maxQ:     s.maxQueue,
+		getToken: getToken,
+		getWSURL: getWSURL,
+		stopCh:   make(chan struct{}),
+	}
+	s.entries[key] = e
+	return e
+}
+
+// ── ZC compat persistent session ─────────────────────────────────────────────
+//
+// zcCompatSession keeps a zeroclaw upstream connection alive across app
+// reconnects.  The session is keyed by the ?session_id= query param that
+// chat.py sends on every connect (stable across reconnects for the same chat
+// session), falling back to the client IP.  Buffered upstream frames are
+// drained to the app on reconnect.
+
+type zcCompatSession struct {
+	key      string // session key (query session_id or ip-<clientIP>)
+	keyShort string // display-safe truncation of key, computed once
+	maxQ     int
+
+	// upstream connection
+	upMu   sync.Mutex
+	upConn *websocket.Conn
+
+	// offline queue: frames from upstream buffered while app is away
+	qMu   sync.Mutex
+	queue [][]byte
+
+	// currently attached app (nil = offline)
+	// appWrMu serialises all WriteMessage calls to cs.app so the drain loop
+	// in handleZCCompat and deliverOrBuffer never write concurrently.
+	appMu   sync.RWMutex
+	appWrMu sync.Mutex
+	app     *websocket.Conn
+
+	// pending response tracking: notified when any gw→app frame arrives
+	// after app sends a message.  Used to detect silent failures.
+	pendingMu  sync.Mutex
+	pendingCh  chan struct{} // closed/replaced when a response frame arrives
+	pendingReq bool
+
+	getToken func() string           // reads current ZC token from proxyServer
+	getWSURL func(sid string) string // builds upstream zeroclaw wsURL
+
+	startOnce sync.Once
+	stopCh    chan struct{}
+}
+
+func (cs *zcCompatSession) start() {
+	cs.startOnce.Do(func() { go cs.upstreamLoop() })
+}
+
+func (cs *zcCompatSession) upstreamLoop() {
+	keyShort := cs.keyShort
+	for {
+		select {
+		case <-cs.stopCh:
+			return
+		default:
+		}
+		// Use the stable session key as the zeroclaw session_id so ZC's cron
+		// jobs always deliver to the same session, even after reconnects.
+		wsURL := cs.getWSURL("zc-compat-" + cs.key)
+		tok := cs.getToken()
+		h := http.Header{}
+		if tok != "" {
+			h.Set("Authorization", "Bearer "+tok)
+		}
+		d := &websocket.Dialer{
+			HandshakeTimeout: 10 * time.Second,
+			Subprotocols:     []string{"zeroclaw.v1"},
+		}
+		conn, resp, err := d.Dial(wsURL, h)
+		if resp != nil && resp.Body != nil {
+			resp.Body.Close()
+		}
+		if err != nil {
+			fmt.Printf("%sZC compat[%s] upstream dial failed: %v — retry 5s\n", prefixERR(), keyShort, err)
+			select {
+			case <-cs.stopCh:
+				return
+			case <-time.After(5 * time.Second):
+			}
+			continue
+		}
+		cs.upMu.Lock()
+		cs.upConn = conn
+		cs.upMu.Unlock()
+		fmt.Printf("%sZC compat[%s] upstream connected  url=%s\n", prefixSYS(), keyShort, wsURL)
+		frameCount := 0
+		for {
+			_, data, rerr := conn.ReadMessage()
+			if rerr != nil {
+				fmt.Printf("%sZC compat[%s] upstream read-err after %d frames: %v\n", prefixSYS(), keyShort, frameCount, rerr)
+				break
+			}
+			frameCount++
+			preview := string(data)
+			if len(preview) > 120 {
+				preview = preview[:120] + "\u2026"
+			}
+			fmt.Printf("%sZC compat[%s] gw\u2192app frame#%d (%d B): %s\n", prefixSYS(), keyShort, frameCount, len(data), preview)
+			cs.deliverOrBuffer(data, keyShort)
+		}
+		cs.upMu.Lock()
+		cs.upConn = nil
+		cs.upMu.Unlock()
+		conn.Close()
+		// Brief pause before reconnect so we don't spin if zeroclaw is restarting.
+		select {
+		case <-cs.stopCh:
+			return
+		case <-time.After(2 * time.Second):
+		}
+	}
+}
+
+func (cs *zcCompatSession) attachApp(app *websocket.Conn) [][]byte {
+	cs.appMu.Lock()
+	cs.app = app
+	cs.appMu.Unlock()
+	cs.qMu.Lock()
+	q := append([][]byte(nil), cs.queue...)
+	cs.queue = nil
+	cs.qMu.Unlock()
+	return q
+}
+
+func (cs *zcCompatSession) detachApp() {
+	cs.appMu.Lock()
+	cs.app = nil
+	cs.appMu.Unlock()
+}
+
+func (cs *zcCompatSession) deliverOrBuffer(data []byte, keyShort string) {
+	// Notify any pending response watcher that a frame arrived from the gateway.
+	cs.pendingMu.Lock()
+	if cs.pendingReq && cs.pendingCh != nil {
+		close(cs.pendingCh)
+		cs.pendingCh = nil
+		cs.pendingReq = false
+	}
+	cs.pendingMu.Unlock()
+
+	cs.appMu.RLock()
+	app := cs.app
+	cs.appMu.RUnlock()
+	if app != nil {
+		cs.appWrMu.Lock()
+		err := app.WriteMessage(websocket.TextMessage, data)
+		cs.appWrMu.Unlock()
+		if err == nil {
+			return // delivered
+		}
+		// Write failed — app disconnected; clear the dead reference immediately
+		// so subsequent frames go straight to the buffer instead of retrying.
+		cs.detachApp()
+		fmt.Printf("%sZC compat[%s] deliver→app failed (app disconnected?), buffering\n", prefixERR(), keyShort)
+	} else {
+		if cs.maxQ > 0 {
+			fmt.Printf("%sZC compat[%s] app offline — buffering frame (%d B), queue now %d\n",
+				prefixSYS(), keyShort, len(data), func() int {
+					cs.qMu.Lock(); defer cs.qMu.Unlock(); return len(cs.queue) + 1
+				}())
+		} else {
+			fmt.Printf("%sZC compat[%s] app offline, buffering disabled — frame dropped\n", prefixSYS(), keyShort)
+			return
+		}
+	}
+	if cs.maxQ <= 0 {
+		return
+	}
+	cp := make([]byte, len(data))
+	copy(cp, data)
+	cs.qMu.Lock()
+	if len(cs.queue) >= cs.maxQ {
+		cs.queue = cs.queue[1:]
+	}
+	cs.queue = append(cs.queue, cp)
+	cs.qMu.Unlock()
+}
+
+func (cs *zcCompatSession) sendToUpstream(msgType int, data []byte) error {
+	cs.upMu.Lock()
+	conn := cs.upConn
+	cs.upMu.Unlock()
+	if conn == nil {
+		return fmt.Errorf("upstream reconnecting")
+	}
+	return conn.WriteMessage(msgType, data)
+}
+
+// markPending registers that the app just sent a message and we expect a
+// response from the gateway.  Returns a channel that is closed when any
+// gateway→app frame arrives (or the timeout fires).
+func (cs *zcCompatSession) markPending() <-chan struct{} {
+	ch := make(chan struct{})
+	cs.pendingMu.Lock()
+	if cs.pendingCh != nil {
+		// Previous watcher still open — close it so that goroutine exits.
+		close(cs.pendingCh)
+	}
+	cs.pendingCh = ch
+	cs.pendingReq = true
+	cs.pendingMu.Unlock()
+	return ch
+}
+
+// zcCompatStore maps session key → zcCompatSession.
+type zcCompatStore struct {
+	mu       sync.Mutex
+	entries  map[string]*zcCompatSession
+	maxQueue int
+}
+
+func newZCCompatStore(maxQueue int) *zcCompatStore {
+	return &zcCompatStore{entries: make(map[string]*zcCompatSession), maxQueue: maxQueue}
+}
+
+func (s *zcCompatStore) getOrCreate(key string, getToken func() string, getWSURL func(string) string) *zcCompatSession {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if e, ok := s.entries[key]; ok {
+		return e
+	}
+	ks := key
+	if len(ks) > 16 {
+		ks = ks[:8] + "\u2026" + ks[len(ks)-4:]
+	}
+	e := &zcCompatSession{
 		key:      key,
 		keyShort: ks,
 		maxQ:     s.maxQueue,
