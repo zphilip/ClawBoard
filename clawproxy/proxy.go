@@ -429,10 +429,8 @@ func (s *proxyServer) handlePCCompat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	keyShort := sessionKey
-	if len(keyShort) > 16 {
-		keyShort = keyShort[:8] + "…" + keyShort[len(keyShort)-4:]
-	}
+	keyShort := sessionKey // will be replaced by cs.keyShort after getOrCreate
+	_ = keyShort           // suppress unused-variable error before reassignment
 
 	// Get or create the persistent session for this app identity.
 	cs := s.pcCompat.getOrCreate(
@@ -440,7 +438,8 @@ func (s *proxyServer) handlePCCompat(w http.ResponseWriter, r *http.Request) {
 		func() string { return s.pcAuth.token },
 		func(sid string) string { return appendSessionID(s.pcAuth.wsURL, sid) },
 	)
-	cs.start() // no-op if already running
+	keyShort = cs.keyShort // use the one stored in the session (consistent across all log lines)
+	cs.start()             // no-op if already running
 
 	// Attach the new app connection; drain any buffered upstream messages.
 	queued := cs.attachApp(appConn)
@@ -452,7 +451,10 @@ func (s *proxyServer) handlePCCompat(w http.ResponseWriter, r *http.Request) {
 			preview = preview[:80] + "\u2026"
 		}
 		fmt.Printf("%sPC compat[%s] drain→app (%d B): %s\n", prefixSYS(), keyShort, len(data), preview)
-		if err := appConn.WriteMessage(websocket.TextMessage, data); err != nil {
+		cs.appWrMu.Lock()
+		err := appConn.WriteMessage(websocket.TextMessage, data)
+		cs.appWrMu.Unlock()
+		if err != nil {
 			cs.detachApp()
 			appConn.Close()
 			return
@@ -580,9 +582,10 @@ func loggedRelay(sid string, app, up *websocket.Conn) {
 // a returning client and drain buffered upstream messages before normal relay.
 
 type pcCompatSession struct {
-	srv string // upstream wsURL prefix (filled on start)
-	key string // session key (app token value)
-	maxQ int
+	srv      string // upstream wsURL prefix (filled on start)
+	key      string // session key (app token value)
+	keyShort string // display-safe truncation of key, computed once
+	maxQ     int
 
 	// upstream connection
 	upMu   sync.Mutex
@@ -593,8 +596,11 @@ type pcCompatSession struct {
 	queue [][]byte
 
 	// currently attached app (nil = offline)
-	appMu sync.RWMutex
-	app   *websocket.Conn
+	// appWrMu serialises all WriteMessage calls to cs.app so the drain loop
+	// in handlePCCompat and deliverOrBuffer never write concurrently.
+	appMu   sync.RWMutex
+	appWrMu sync.Mutex
+	app     *websocket.Conn
 
 	// pending response tracking: notified when any gw→app frame arrives
 	// after app sends a message.send. Used to detect silent failures.
@@ -614,10 +620,7 @@ func (cs *pcCompatSession) start() {
 }
 
 func (cs *pcCompatSession) upstreamLoop() {
-	keyShort := cs.key
-	if len(keyShort) > 8 {
-		keyShort = keyShort[:8]
-	}
+	keyShort := cs.keyShort // consistent with handlePCCompat logs
 	for {
 		select {
 		case <-cs.stopCh:
@@ -625,7 +628,11 @@ func (cs *pcCompatSession) upstreamLoop() {
 		default:
 		}
 		tok := cs.getToken()
-		wsURL := cs.getWSURL("pc-compat-" + keyShort)
+		// Use the FULL key as the picoclaw session_id so each proxy session
+		// gets its own picoclaw session.  Using only keyShort (8 chars) caused
+		// every reconnect to map to the same session_id, sending duplicate
+		// frames to both upstreamLoops and confusing picoclaw's task scheduler.
+		wsURL := cs.getWSURL("pc-compat-" + cs.key)
 		h := http.Header{}
 		h.Set("Authorization", "Bearer "+tok)
 		d := &websocket.Dialer{
@@ -708,10 +715,15 @@ func (cs *pcCompatSession) deliverOrBuffer(data []byte, keyShort string) {
 	app := cs.app
 	cs.appMu.RUnlock()
 	if app != nil {
-		if err := app.WriteMessage(websocket.TextMessage, data); err == nil {
+		cs.appWrMu.Lock()
+		err := app.WriteMessage(websocket.TextMessage, data)
+		cs.appWrMu.Unlock()
+		if err == nil {
 			return // delivered
 		}
-		// Write failed — app likely disconnected; fall through to buffer.
+		// Write failed — app disconnected; clear the dead reference immediately
+		// so subsequent frames go straight to the buffer instead of retrying.
+		cs.detachApp()
 		fmt.Printf("%sPC compat[%s] deliver→app failed (app disconnected?), buffering\n", prefixERR(), keyShort)
 	} else {
 		if cs.maxQ > 0 {
@@ -780,8 +792,13 @@ func (s *pcCompatStore) getOrCreate(key string, getToken func() string, getWSURL
 	if e, ok := s.entries[key]; ok {
 		return e
 	}
+	ks := key
+	if len(ks) > 16 {
+		ks = ks[:8] + "\u2026" + ks[len(ks)-4:]
+	}
 	e := &pcCompatSession{
 		key:      key,
+		keyShort: ks,
 		maxQ:     s.maxQueue,
 		getToken: getToken,
 		getWSURL: getWSURL,
