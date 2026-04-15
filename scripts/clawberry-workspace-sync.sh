@@ -112,6 +112,7 @@ lib/
 config/
 wifi-connect/
 skills/
+clawproxy/
 dashboard.py
 clawberry_bluetooth.py
 clawberry_display.py
@@ -163,16 +164,19 @@ fi
 PIC_ACTIVE=no
 ZC_ACTIVE=no
 PICWEB_ACTIVE=no
+PROXY_ACTIVE=no
 DASHBOARD_CHANGED=no
 if command -v systemctl >/dev/null 2>&1; then
-    if systemctl is-active --quiet picoclaw;     then PIC_ACTIVE=yes;    fi
-    if systemctl is-active --quiet zeroclaw;     then ZC_ACTIVE=yes;     fi
-    if systemctl is-active --quiet picoclaw-web; then PICWEB_ACTIVE=yes; fi
-    if [[ "$PIC_ACTIVE" == "yes" || "$ZC_ACTIVE" == "yes" || "$PICWEB_ACTIVE" == "yes" ]]; then
-        log "Stopping services before file operations: picoclaw=$PIC_ACTIVE zeroclaw=$ZC_ACTIVE picoclaw-web=$PICWEB_ACTIVE"
-        systemctl stop picoclaw-web 2>/dev/null || true
-        systemctl stop picoclaw     2>/dev/null || true
-        systemctl stop zeroclaw     2>/dev/null || true
+    if systemctl is-active --quiet picoclaw;          then PIC_ACTIVE=yes;    fi
+    if systemctl is-active --quiet zeroclaw;          then ZC_ACTIVE=yes;     fi
+    if systemctl is-active --quiet picoclaw-web;      then PICWEB_ACTIVE=yes; fi
+    if systemctl is-active --quiet clawberry-proxy;   then PROXY_ACTIVE=yes;  fi
+    if [[ "$PIC_ACTIVE" == "yes" || "$ZC_ACTIVE" == "yes" || "$PICWEB_ACTIVE" == "yes" || "$PROXY_ACTIVE" == "yes" ]]; then
+        log "Stopping services before file operations: picoclaw=$PIC_ACTIVE zeroclaw=$ZC_ACTIVE picoclaw-web=$PICWEB_ACTIVE clawberry-proxy=$PROXY_ACTIVE"
+        systemctl stop clawberry-proxy 2>/dev/null || true
+        systemctl stop picoclaw-web    2>/dev/null || true
+        systemctl stop picoclaw        2>/dev/null || true
+        systemctl stop zeroclaw        2>/dev/null || true
     fi
 fi
 
@@ -208,6 +212,16 @@ if [[ -f "$WORK_DIR/zeroclaw/zeroclaw" ]]; then
         log "zeroclaw installed to /opt/zeroclaw/zeroclaw"
     else
         log "WARNING: failed to copy zeroclaw binary (permission?)"
+    fi
+fi
+
+if [[ -f "$WORK_DIR/clawproxy/clawproxy-arm64" ]]; then
+    log "Installing clawproxy binary to /usr/local/bin/clawproxy"
+    if cp "$WORK_DIR/clawproxy/clawproxy-arm64" /usr/local/bin/clawproxy 2>/dev/null; then
+        chmod +x /usr/local/bin/clawproxy || true
+        log "clawproxy installed to /usr/local/bin/clawproxy"
+    else
+        log "WARNING: failed to copy clawproxy binary (permission?)"
     fi
 fi
 
@@ -441,6 +455,10 @@ if command -v systemctl >/dev/null 2>&1; then
     if [[ "$PICWEB_ACTIVE" == "yes" ]]; then
         log "Restarting picoclaw-web"
         systemctl restart picoclaw-web 2>/dev/null || true
+    fi
+    if [[ "$PROXY_ACTIVE" == "yes" ]]; then
+        log "Restarting clawberry-proxy"
+        systemctl restart clawberry-proxy 2>/dev/null || true
     fi
     if [[ "$DASHBOARD_CHANGED" == "yes" ]]; then
         log "dashboard.py was updated — restarting clawboard.service"
