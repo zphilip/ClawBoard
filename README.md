@@ -4,11 +4,11 @@ A mobile-friendly web dashboard and device-side toolkit for managing [ZeroClaw](
 
 ## Screenshots
 
-| Dashboard | Providers | Channels |
+| Dashboard | ZeroClaw | PicoClaw |
 |-----------|-----------|---------|
 | ![Dashboard](assets/Screenshot_20260416-093852.jpg) | ![Providers](assets/Screenshot_20260416-093902.jpg) | ![Channels](assets/Screenshot_20260416-093909.jpg) |
 
-| Agent Settings | Security |
+| WIFI Settings | Upgrade |
 |---------------|---------|
 | ![Agent](assets/Screenshot_20260416-093915.jpg) | ![Security](assets/Screenshot_20260416-093922.jpg) |
 
