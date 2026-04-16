@@ -24,7 +24,7 @@ ExecStart=/usr/local/bin/clawproxy \
     --zc \
     --pc \
     --queue-db /var/lib/zero/clawproxy.db \
-    --queue-ttl 3600
+    --queue-ttl 86400
 
 WorkingDirectory=/var/lib/zero
 

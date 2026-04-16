@@ -696,9 +696,9 @@ pcEnable  := flag.Bool("pc",          false,        "enable picoclaw")
 active    := flag.String("active",     "zc",   "default agent in CLI mode: zc|pc")
 proxyMode := flag.Bool("proxy",        false,  "run as proxy server (v2)")
 proxyPort  := flag.Int("proxy-port",   18780, "proxy server listen port")
-	queueDepth := flag.Int("queue-depth",  256,   "offline queue depth per session (0 = disabled)")
+	queueDepth := flag.Int("queue-depth",  1024,  "offline queue depth per session (0 = disabled)")
 	queueDB    := flag.String("queue-db",   "",    "SQLite queue file path ('' = ~/.clawproxy/queue.db, ':memory:' = no persistence)")
-	queueTTL   := flag.Int("queue-ttl",    3600,  "buffered message TTL in seconds (0 = no expiry)")
+	queueTTL   := flag.Int("queue-ttl",    86400, "buffered message TTL in seconds (0 = no expiry)")
 
 flag.Parse()
 
