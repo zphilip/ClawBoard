@@ -349,69 +349,129 @@ def draw_monitor(epd, force_full=False):
     image = Image.new('1', (W, H), 255)
     draw  = ImageDraw.Draw(image)
 
-    f_title = _load_font(_FONT_BOLD, 14)
-    f_label = _load_font(_FONT_BOLD, 12)
-    f_ip    = _load_font(_FONT_REG,  12)
-    f_tiny  = _load_font(_FONT_REG,  11)
-
-    # ── Gather IPs — None means interface is absent / has no address ─────
-    # Priority for QR: WiFi → Ethernet → Bluetooth PAN → USB gadget
-    w_ip = get_ip_address('wlan0')  # None when not connected
-    e_ip = get_ip_address('eth0')   # None when not connected
-    b_ip = get_ip_address('bnep0')  # None when BT tethering is off
-    u_ip = get_ip_address('usb0')   # None when USB gadget not active
-
-    # First non-None IP wins — this is what the QR points to
-    # Priority: WiFi → ETH → USB → BT (bnep0)
+    # Gather IPs
+    w_ip = get_ip_address('wlan0')
+    e_ip = get_ip_address('eth0')
+    b_ip = get_ip_address('bnep0')
+    u_ip = get_ip_address('usb0')
     primary_ip = w_ip or e_ip or u_ip or b_ip
 
-    # ── QR code — left side, vertically centred ───────────────────────────
-    QR_SIZE = 110
-    QR_X    = 2
-    QR_Y    = (H - QR_SIZE) // 2
+    _is_square = (W == H)
 
-    if primary_ip:
-        qr_url = f'http://{primary_ip}:8080'
-        try:
-            qr_img = _generate_qr_image(qr_url, size=QR_SIZE)
-            image.paste(qr_img, (QR_X, QR_Y))
-        except Exception as exc:
-            logging.warning("QR generation failed: %s", exc)
+    if _is_square:
+        # ── Square layout (e.g. 200×200 Radxa 1.54") ─────────────────────
+        # Row 0: title bar (18 px)
+        # Rows 1-end: left = QR (96×96), right = IPs + status
+        # Bottom strip: service status
+        f_title = _load_font(_FONT_BOLD, 15)
+        f_label = _load_font(_FONT_BOLD, 11)
+        f_ip    = _load_font(_FONT_REG,  11)
+        f_tiny  = _load_font(_FONT_REG,  10)
+
+        # Title bar
+        TITLE_H = 18
+        draw.text((4, 2), "ClawBerry", font=f_title, fill=0)
+        draw.line((0, TITLE_H, W, TITLE_H), fill=0)
+
+        # QR — left column, square, below title
+        QR_SIZE = 96
+        QR_X, QR_Y = 2, TITLE_H + 3
+        if primary_ip:
+            qr_url = f'http://{primary_ip}:8080'
+            try:
+                qr_img = _generate_qr_image(qr_url, size=QR_SIZE)
+                image.paste(qr_img, (QR_X, QR_Y))
+            except Exception as exc:
+                logging.warning("QR generation failed: %s", exc)
+                draw.rectangle((QR_X, QR_Y, QR_X + QR_SIZE, QR_Y + QR_SIZE), outline=0, width=1)
+                draw.text((QR_X + 18, QR_Y + 42), "QR err", font=f_ip, fill=0)
+        else:
             draw.rectangle((QR_X, QR_Y, QR_X + QR_SIZE, QR_Y + QR_SIZE), outline=0, width=1)
-            draw.text((QR_X + 14, QR_Y + 44), "QR err", font=f_ip, fill=0)
+            draw.text((QR_X + 22, QR_Y + 42), "No IP", font=f_ip, fill=0)
+
+        # Right panel — IP addresses
+        tx = QR_X + QR_SIZE + 4
+        ty = TITLE_H + 5
+        any_ip = False
+        for iface_label, ip in (('WiFi', w_ip), ('ETH', e_ip), ('USB', u_ip), ('BT', b_ip)):
+            if ip:
+                draw.text((tx, ty), f"{iface_label}:", font=f_label, fill=0)
+                ty += 12
+                # Wrap IP to fit right column (~80px wide)
+                for part in textwrap.wrap(ip, width=13):
+                    draw.text((tx, ty), part, font=f_ip, fill=0)
+                    ty += 11
+                any_ip = True
+        if not any_ip:
+            draw.text((tx, ty), "No net", font=f_ip, fill=0)
+            ty += 11
+
+        # Divider before status
+        ty += 2
+        draw.line((tx, ty, W - 2, ty), fill=0)
+        ty += 4
+
+        s_zc = get_service_status("zeroclaw")
+        s_pc = get_service_status("picoclaw")
+        draw.text((tx, ty), f"ZC:{s_zc[:3]}", font=f_tiny, fill=0); ty += 12
+        draw.text((tx, ty), f"PC:{s_pc[:3]}", font=f_tiny, fill=0)
+
+        # Bottom strip: primary IP in full below QR
+        if primary_ip:
+            f_url = _load_font(_FONT_REG, 10)
+            draw.line((0, TITLE_H + QR_SIZE + 4, W, TITLE_H + QR_SIZE + 4), fill=0)
+            draw.text((2, TITLE_H + QR_SIZE + 6), primary_ip, font=f_url, fill=0)
+
     else:
-        draw.rectangle((QR_X, QR_Y, QR_X + QR_SIZE, QR_Y + QR_SIZE), outline=0, width=1)
-        draw.text((QR_X + 18, QR_Y + 44), "No IP", font=f_ip, fill=0)
+        # ── Landscape layout (original, e.g. 250×122 Waveshare 2.13") ────
+        f_title = _load_font(_FONT_BOLD, 14)
+        f_label = _load_font(_FONT_BOLD, 12)
+        f_ip    = _load_font(_FONT_REG,  12)
+        f_tiny  = _load_font(_FONT_REG,  11)
 
-    # ── Right panel ───────────────────────────────────────────────────────
-    tx = QR_X + QR_SIZE + 5
-    y  = 2
+        QR_SIZE = 110
+        QR_X    = 2
+        QR_Y    = (H - QR_SIZE) // 2
 
-    draw.text((tx, y), "ClawBerry", font=f_title, fill=0)
-    y += 17
-    draw.line((tx, y, W - 2, y), fill=0)
-    y += 4
+        if primary_ip:
+            qr_url = f'http://{primary_ip}:8080'
+            try:
+                qr_img = _generate_qr_image(qr_url, size=QR_SIZE)
+                image.paste(qr_img, (QR_X, QR_Y))
+            except Exception as exc:
+                logging.warning("QR generation failed: %s", exc)
+                draw.rectangle((QR_X, QR_Y, QR_X + QR_SIZE, QR_Y + QR_SIZE), outline=0, width=1)
+                draw.text((QR_X + 14, QR_Y + 44), "QR err", font=f_ip, fill=0)
+        else:
+            draw.rectangle((QR_X, QR_Y, QR_X + QR_SIZE, QR_Y + QR_SIZE), outline=0, width=1)
+            draw.text((QR_X + 18, QR_Y + 44), "No IP", font=f_ip, fill=0)
 
-    # Only show rows for interfaces that actually have an IP
-    any_ip = False
-    for iface_label, ip in (('WiFi', w_ip), ('ETH', e_ip), ('USB', u_ip), ('BT', b_ip)):
-        if ip:   # ip is None when not connected — skip
-            draw.text((tx,      y), f"{iface_label}:", font=f_label, fill=0)
-            draw.text((tx + 32, y), ip,                font=f_ip,    fill=0)
+        tx = QR_X + QR_SIZE + 5
+        y  = 2
+        draw.text((tx, y), "ClawBerry", font=f_title, fill=0)
+        y += 17
+        draw.line((tx, y, W - 2, y), fill=0)
+        y += 4
+
+        any_ip = False
+        for iface_label, ip in (('WiFi', w_ip), ('ETH', e_ip), ('USB', u_ip), ('BT', b_ip)):
+            if ip:
+                draw.text((tx,      y), f"{iface_label}:", font=f_label, fill=0)
+                draw.text((tx + 32, y), ip,                font=f_ip,    fill=0)
+                y += 14
+                any_ip = True
+        if not any_ip:
+            draw.text((tx, y), "No network", font=f_ip, fill=0)
             y += 14
-            any_ip = True
-    if not any_ip:
-        draw.text((tx, y), "No network", font=f_ip, fill=0)
-        y += 14
 
-    y += 3
-    draw.line((tx, y, W - 2, y), fill=0)
-    y += 4
+        y += 3
+        draw.line((tx, y, W - 2, y), fill=0)
+        y += 4
 
-    s_zc = get_service_status("zeroclaw")
-    s_pc = get_service_status("picoclaw")
-    draw.text((tx, y), f"ZC: {s_zc}", font=f_tiny, fill=0); y += 13
-    draw.text((tx, y), f"PC: {s_pc}", font=f_tiny, fill=0)
+        s_zc = get_service_status("zeroclaw")
+        s_pc = get_service_status("picoclaw")
+        draw.text((tx, y), f"ZC: {s_zc}", font=f_tiny, fill=0); y += 13
+        draw.text((tx, y), f"PC: {s_pc}", font=f_tiny, fill=0)
 
     _epd_render(epd, image, force_full=force_full)
 
@@ -422,25 +482,39 @@ def draw_paircode(epd, code):
     image = Image.new('1', (W, H), 255)
     draw  = ImageDraw.Draw(image)
 
-    f_title = _load_font(_FONT_BOLD, 16)
-    f_hint  = _load_font(_FONT_REG,  13)
+    _is_square = (W == H)
+    title_str  = "ZeroClaw" if _is_square else "ZeroClaw Pair Code"
+    title_fsize = 15 if _is_square else 16
+    f_title = _load_font(_FONT_BOLD, title_fsize)
+    f_hint  = _load_font(_FONT_REG,  12 if _is_square else 13)
 
-    draw.text((8, 4), "ZeroClaw Pair Code", font=f_title, fill=0)
-    draw.line((8, 23, W - 8, 23), fill=0)
+    draw.text((8, 4), title_str, font=f_title, fill=0)
+    TITLE_H = 22
+    draw.line((4, TITLE_H, W - 4, TITLE_H), fill=0)
 
-    # Auto-size the code to fit
-    for fsize in (56, 48, 40, 32):
+    # Sub-label
+    if _is_square:
+        f_sub = _load_font(_FONT_REG, 11)
+        draw.text((8, TITLE_H + 2), "Pair Code", font=f_sub, fill=0)
+
+    top = TITLE_H + (14 if _is_square else 4)
+
+    # Auto-size the code to fit width
+    max_sizes = (52, 44, 36, 28) if _is_square else (56, 48, 40, 32)
+    for fsize in max_sizes:
         f_code = _load_font(_FONT_BOLD, fsize)
         bbox = draw.textbbox((0, 0), code, font=f_code)
         tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
         if tw <= W * 0.9:
             break
 
-    draw.text(((W - tw) // 2, 26 + (H - 26 - th) // 2), code, font=f_code, fill=0)
+    hint_h = 18
+    avail  = H - top - hint_h
+    draw.text(((W - tw) // 2, top + (avail - th) // 2), code, font=f_code, fill=0)
 
     hint = "scan / type in app"
     hbbox = draw.textbbox((0, 0), hint, font=f_hint)
-    draw.text(((W - (hbbox[2] - hbbox[0])) // 2, H - 16), hint, font=f_hint, fill=0)
+    draw.text(((W - (hbbox[2] - hbbox[0])) // 2, H - hint_h), hint, font=f_hint, fill=0)
 
     _epd_render(epd, image)
 
@@ -451,28 +525,53 @@ def draw_picoclaw_qr(epd, url, token=''):
     image = Image.new('1', (W, H), 255)
     draw  = ImageDraw.Draw(image)
 
-    f_title = _load_font(_FONT_BOLD, 15)
-    f_small = _load_font(_FONT_REG, 12)
-    f_tiny  = _load_font(_FONT_REG, 10)
+    _is_square = (W == H)
+    f_title = _load_font(_FONT_BOLD, 14 if _is_square else 15)
+    f_small = _load_font(_FONT_REG,  10 if _is_square else 12)
+    f_tiny  = _load_font(_FONT_REG,  9  if _is_square else 10)
 
-    draw.text((8, 4), "PicoClaw Pair QR", font=f_title, fill=0)
-    draw.line((8, 22, W - 8, 22), fill=0)
+    draw.text((8, 3), "PicoClaw Pair QR", font=f_title, fill=0)
+    TITLE_H = 20
+    draw.line((4, TITLE_H, W - 4, TITLE_H), fill=0)
 
-    qr_size = min(H - 34, 88)
-    try:
-        qr_img = _fetch_qr_image(url).resize((qr_size, qr_size))
-        image.paste(qr_img, (8, 28))
-    except Exception as e:
-        logging.warning("Could not fetch QR image: %s", e)
-        draw.rectangle((8, 28, 8 + qr_size, 28 + qr_size), outline=0, width=2)
-        draw.text((26, 62), "QR", font=f_title, fill=0)
+    if _is_square:
+        # Square: large centred QR, URL + token below
+        QR_SIZE = min(W - 16, 140)
+        QR_X    = (W - QR_SIZE) // 2
+        QR_Y    = TITLE_H + 4
+        try:
+            qr_img = _generate_qr_image(url, size=QR_SIZE)
+            image.paste(qr_img, (QR_X, QR_Y))
+        except Exception as e:
+            logging.warning("Could not fetch QR image: %s", e)
+            draw.rectangle((QR_X, QR_Y, QR_X + QR_SIZE, QR_Y + QR_SIZE), outline=0, width=2)
+            draw.text((QR_X + QR_SIZE // 2 - 10, QR_Y + QR_SIZE // 2 - 8), "QR", font=f_title, fill=0)
 
-    text_x = 8 + qr_size + 10
-    for idx, line in enumerate(textwrap.wrap(url, width=22)[:4]):
-        draw.text((text_x, 30 + idx * 13), line, font=f_small, fill=0)
+        ty = QR_Y + QR_SIZE + 4
+        draw.line((4, ty, W - 4, ty), fill=0)
+        ty += 3
+        for line in textwrap.wrap(url, width=28)[:2]:
+            draw.text((4, ty), line, font=f_tiny, fill=0)
+            ty += 11
+        if token and ty < H - 10:
+            tok = f"{token[:20]}..." if len(token) > 20 else token
+            draw.text((4, H - 11), tok, font=f_tiny, fill=0)
+    else:
+        # Landscape: QR left, URL right
+        qr_size = min(H - 34, 88)
+        try:
+            qr_img = _fetch_qr_image(url).resize((qr_size, qr_size))
+            image.paste(qr_img, (8, 28))
+        except Exception as e:
+            logging.warning("Could not fetch QR image: %s", e)
+            draw.rectangle((8, 28, 8 + qr_size, 28 + qr_size), outline=0, width=2)
+            draw.text((26, 62), "QR", font=f_title, fill=0)
 
-    token_line = f"token: {token[:12]}..." if len(token) > 12 else f"token: {token}"
-    draw.text((text_x, H - 20), token_line, font=f_tiny, fill=0)
+        text_x = 8 + qr_size + 10
+        for idx, line in enumerate(textwrap.wrap(url, width=22)[:4]):
+            draw.text((text_x, 30 + idx * 13), line, font=f_small, fill=0)
+        token_line = f"token: {token[:12]}..." if len(token) > 12 else f"token: {token}"
+        draw.text((text_x, H - 20), token_line, font=f_tiny, fill=0)
 
     _epd_render(epd, image, force_full=True)
 
