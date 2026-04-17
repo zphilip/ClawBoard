@@ -1,0 +1,27 @@
+[Unit]
+Description=ClawBerry Display Service (Radxa 1.54" e-paper)
+After=network.target
+
+[Service]
+Type=simple
+User=zero
+WorkingDirectory=/opt/clawboard
+
+# Override any of these to change the wiring:
+#   RADXA_EPD_RST   GPIO line for RST  (default 33  → Pin 11)
+#   RADXA_EPD_DC    GPIO line for DC   (default 110 → Pin 26)
+#   RADXA_EPD_BUSY  GPIO line for BUSY (default 313 → Pin 18)
+#   RADXA_EPD_SPI   SPI device         (default /dev/spidev1.0)
+#   RADXA_EPD_CHIP  GPIO chip device   (default /dev/gpiochip0)
+Environment=RADXA_EPD_RST=33
+Environment=RADXA_EPD_DC=110
+Environment=RADXA_EPD_BUSY=313
+Environment=RADXA_EPD_SPI=/dev/spidev1.0
+Environment=RADXA_EPD_CHIP=/dev/gpiochip0
+
+ExecStart=/opt/clawboard/venv/bin/python3 /opt/clawboard/clawberry_display_radxa.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
