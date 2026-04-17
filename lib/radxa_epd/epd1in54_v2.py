@@ -173,14 +173,24 @@ class EPD_1in54_V2:
         self.display(buf)
 
     def sleep(self) -> None:
-        """Put the display controller into deep sleep and release hardware resources."""
+        """Put the display controller into deep sleep.
+
+        Keeps SPI and GPIO handles open so the display can be woken up again
+        with init() without needing to re-open hardware resources.
+        clawberry_display.py calls sleep() after every render, then init_fast()
+        before the next render — the handles must stay alive between those calls.
+        """
+        self._send_command(0x10); self._send_data(0x01)
+        time.sleep(0.1)
+
+    def Dev_exit(self) -> None:
+        """Full shutdown: deep sleep + close all hardware handles.
+
+        Called by clawberry_display.py _shutdown() when the service stops.
+        """
         self._send_command(0x10); self._send_data(0x01)
         time.sleep(0.1)
         self._release()
-
-    def Dev_exit(self) -> None:
-        """Alias for sleep() — matches the interface used by clawberry_display.py."""
-        self.sleep()
 
     def _release(self) -> None:
         """Close all periphery handles (safe to call multiple times)."""
