@@ -374,23 +374,26 @@ def draw_monitor(epd, force_full=False):
     _is_radxa = (_display_type == 'eink_radxa_1_54')
 
     if _is_radxa:
-        # ── Square layout (e.g. 200×200 Radxa 1.54") ─────────────────────
-        # Row 0: title bar (18 px)
-        # Rows 1-end: left = QR (96×96), right = IPs + status
-        # Bottom strip: service status
-        f_title = _load_font(_FONT_BOLD, 15)
-        f_label = _load_font(_FONT_BOLD, 11)
-        f_ip    = _load_font(_FONT_REG,  11)
-        f_tiny  = _load_font(_FONT_REG,  10)
+        # ── Square layout 200×200 Radxa 1.54" ────────────────────────────
+        # Title bar  (22 px)
+        # Main zone  (100 px): QR left (96×96) | ZC/PC status right
+        # Divider
+        # IP zone    (remaining): all active IPs stacked
 
-        # Title bar
-        TITLE_H = 18
-        draw.text((4, 2), "ClawBerry", font=f_title, fill=0)
+        f_title  = _load_font(_FONT_BOLD, 16)
+        f_svc_lbl= _load_font(_FONT_BOLD, 13)
+        f_svc_val= _load_font(_FONT_BOLD, 15)
+        f_ip_lbl = _load_font(_FONT_BOLD, 13)
+        f_ip_val = _load_font(_FONT_BOLD, 12)
+
+        # ── Title bar ────────────────────────────────────────────────────
+        TITLE_H = 22
+        draw.text((5, 3), "ClawBerry", font=f_title, fill=0)
         draw.line((0, TITLE_H, W, TITLE_H), fill=0)
 
-        # QR — left column, square, below title
+        # ── QR (left) ────────────────────────────────────────────────────
         QR_SIZE = 96
-        QR_X, QR_Y = 2, TITLE_H + 3
+        QR_X, QR_Y = 2, TITLE_H + 2
         if primary_ip:
             qr_url = f'http://{primary_ip}:8080'
             try:
@@ -399,43 +402,42 @@ def draw_monitor(epd, force_full=False):
             except Exception as exc:
                 logging.warning("QR generation failed: %s", exc)
                 draw.rectangle((QR_X, QR_Y, QR_X + QR_SIZE, QR_Y + QR_SIZE), outline=0, width=1)
-                draw.text((QR_X + 18, QR_Y + 42), "QR err", font=f_ip, fill=0)
+                draw.text((QR_X + 18, QR_Y + 42), "QR err", font=f_ip_val, fill=0)
         else:
             draw.rectangle((QR_X, QR_Y, QR_X + QR_SIZE, QR_Y + QR_SIZE), outline=0, width=1)
-            draw.text((QR_X + 22, QR_Y + 42), "No IP", font=f_ip, fill=0)
+            draw.text((QR_X + 22, QR_Y + 42), "No IP", font=f_ip_val, fill=0)
 
-        # Right panel — IP addresses
-        tx = QR_X + QR_SIZE + 4
-        ty = TITLE_H + 5
-        any_ip = False
-        for iface_label, ip in (('WiFi', w_ip), ('ETH', e_ip), ('USB', u_ip), ('BT', b_ip)):
-            if ip:
-                draw.text((tx, ty), f"{iface_label}:", font=f_label, fill=0)
-                ty += 12
-                # Wrap IP to fit right column (~80px wide)
-                for part in textwrap.wrap(ip, width=13):
-                    draw.text((tx, ty), part, font=f_ip, fill=0)
-                    ty += 11
-                any_ip = True
-        if not any_ip:
-            draw.text((tx, ty), "No net", font=f_ip, fill=0)
-            ty += 11
-
-        # Divider before status
-        ty += 2
-        draw.line((tx, ty, W - 2, ty), fill=0)
-        ty += 4
-
+        # ── Service status (right of QR) ──────────────────────────────────
         s_zc = get_service_status("zeroclaw")
         s_pc = get_service_status("picoclaw")
-        draw.text((tx, ty), f"ZC:{s_zc[:3]}", font=f_tiny, fill=0); ty += 12
-        draw.text((tx, ty), f"PC:{s_pc[:3]}", font=f_tiny, fill=0)
+        # Abbreviate: Running→Run  Stopped→Sto  else first 3 chars
+        def _abbr(s):
+            return {'Running': 'Run', 'Stopped': 'Sto'}.get(s, s[:3])
 
-        # Bottom strip: primary IP in full below QR
-        if primary_ip:
-            f_url = _load_font(_FONT_REG, 10)
-            draw.line((0, TITLE_H + QR_SIZE + 4, W, TITLE_H + QR_SIZE + 4), fill=0)
-            draw.text((2, TITLE_H + QR_SIZE + 6), primary_ip, font=f_url, fill=0)
+        tx = QR_X + QR_SIZE + 5
+        ty = TITLE_H + 10
+
+        draw.text((tx, ty), "ZC:", font=f_svc_lbl, fill=0);  ty += 16
+        draw.text((tx, ty), _abbr(s_zc), font=f_svc_val, fill=0); ty += 20
+        draw.line((tx, ty, W - 2, ty), fill=0);  ty += 6
+        draw.text((tx, ty), "PC:", font=f_svc_lbl, fill=0);  ty += 16
+        draw.text((tx, ty), _abbr(s_pc), font=f_svc_val, fill=0)
+
+        # ── Divider below QR / status ─────────────────────────────────────
+        DIV_Y = TITLE_H + QR_SIZE + 4
+        draw.line((0, DIV_Y, W, DIV_Y), fill=0)
+
+        # ── IP addresses below divider ────────────────────────────────────
+        iy = DIV_Y + 4
+        any_ip = False
+        for iface_lbl, ip in (('W', w_ip), ('E', e_ip), ('U', u_ip), ('B', b_ip)):
+            if ip and iy + 14 <= H:
+                draw.text((4,  iy), f"{iface_lbl}:", font=f_ip_lbl, fill=0)
+                draw.text((22, iy), ip,              font=f_ip_val, fill=0)
+                iy += 15
+                any_ip = True
+        if not any_ip and iy + 14 <= H:
+            draw.text((4, iy), "No network", font=f_ip_val, fill=0)
 
     else:
         # ── Landscape layout (original, e.g. 250×122 Waveshare 2.13") ────
