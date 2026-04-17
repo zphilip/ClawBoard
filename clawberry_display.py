@@ -410,9 +410,9 @@ def draw_monitor(epd, force_full=False):
         # ── Service status (right of QR) ──────────────────────────────────
         s_zc = get_service_status("zeroclaw")
         s_pc = get_service_status("picoclaw")
-        # Abbreviate: Running→Run  Stopped→Sto  else first 3 chars
+        # Abbreviate service status to 4 chars max
         def _abbr(s):
-            return {'Running': 'Run', 'Stopped': 'Sto'}.get(s, s[:3])
+            return {'Running': 'Run', 'Stopped': 'Stop', 'Unknown': 'Unk'}.get(s, s[:4])
 
         tx = QR_X + QR_SIZE + 5
         ty = TITLE_H + 10
@@ -430,10 +430,10 @@ def draw_monitor(epd, force_full=False):
         # ── IP addresses below divider ────────────────────────────────────
         iy = DIV_Y + 4
         any_ip = False
-        for iface_lbl, ip in (('W', w_ip), ('E', e_ip), ('U', u_ip), ('B', b_ip)):
+        for iface_lbl, ip in (('WiFi', w_ip), ('Eth', e_ip), ('USB', u_ip), ('BT', b_ip)):
             if ip and iy + 14 <= H:
                 draw.text((4,  iy), f"{iface_lbl}:", font=f_ip_lbl, fill=0)
-                draw.text((22, iy), ip,              font=f_ip_val, fill=0)
+                draw.text((38, iy), ip,               font=f_ip_val, fill=0)
                 iy += 15
                 any_ip = True
         if not any_ip and iy + 14 <= H:
