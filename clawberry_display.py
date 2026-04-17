@@ -209,7 +209,7 @@ def _detect_display():
     # ── 2a. Radxa 1.54" e-ink (direct driver, no waveshare_epd needed) ──────────────
     if _forced == 'eink_radxa_1_54':
         try:
-            from radxa_epd.epd_adapter import EPDAdapter as _RadxaEPD
+            from radxa_epd.epd_adapter import EPD as _RadxaEPD
             _obj = _RadxaEPD()
             _obj.init()
             _obj.sleep()
