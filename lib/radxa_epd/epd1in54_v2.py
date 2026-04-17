@@ -72,11 +72,16 @@ class EPD_1in54_V2:
         self._write_pin(self.dc_gpio, True)
         self.spi.transfer([data])
 
-    def _send_data_bulk(self, data: bytes) -> None:
-        """Send a byte sequence as a single SPI transaction (faster than looping)."""
+    def _send_data_bulk(self, data: bytes, chunk: int = 4096) -> None:
+        """Send a byte sequence as SPI transactions, split into chunks.
+
+        The Linux SPI kernel buffer is typically 4096 bytes; sending more in a
+        single ioctl raises EMSGSIZE (errno 90).  We split into ≤chunk-byte
+        transfers to stay within the limit.
+        """
         self._write_pin(self.dc_gpio, True)
-        # periphery SPI.transfer accepts a list of ints
-        self.spi.transfer(list(data))
+        for i in range(0, len(data), chunk):
+            self.spi.transfer(list(data[i:i + chunk]))
 
     def _wait_busy(self, timeout: float = 5.0) -> None:
         """Block until BUSY pin goes LOW (display ready), or timeout."""
