@@ -206,8 +206,23 @@ def _detect_display():
             except Exception as e:
                 logging.info('LCD 1.69\" not available: %s', e)
 
-    # ── 2. Try e-ink 2.13\" ──────────────────────────────────────────────
-    if _forced not in ('lcd', 'oled'):
+    # ── 2a. Radxa 1.54" e-ink (direct driver, no waveshare_epd needed) ──────────────
+    if _forced == 'eink_radxa_1_54':
+        try:
+            from radxa_epd.epd_adapter import EPDAdapter as _RadxaEPD
+            _obj = _RadxaEPD()
+            _obj.init()
+            _obj.sleep()
+            _eink_mod     = None          # not a waveshare module
+            _disp         = _obj
+            _display_type = 'eink_radxa_1_54'
+            logging.info('Display detected: e-ink Radxa 1.54" (radxa_epd.epd_adapter)')
+            return _obj
+        except Exception as e:
+            logging.info('Radxa 1.54" e-ink not available: %s', e)
+
+    # ── 2b. Try e-ink 2.13" Waveshare ────────────────────────────────────────────
+    if _forced not in ('lcd', 'oled', 'eink_radxa_1_54'):
         try:
             from waveshare_epd import epd2in13_V4 as _em
             _obj = _em.EPD()
@@ -222,7 +237,7 @@ def _detect_display():
             logging.info('E-ink 2.13" not available: %s', e)
 
     # ── 3. Try OLED 0.96" RGB ────────────────────────────────────────────
-    if _forced not in ('lcd', 'eink'):
+    if _forced not in ('lcd', 'eink', 'eink_radxa_1_54'):
         try:
             from waveshare_OLED import OLED_0in96_rgb as _om
             _obj = _om.OLED_0in96_rgb()
