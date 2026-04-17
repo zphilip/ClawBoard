@@ -356,9 +356,9 @@ def draw_monitor(epd, force_full=False):
     u_ip = get_ip_address('usb0')
     primary_ip = w_ip or e_ip or u_ip or b_ip
 
-    _is_square = (W == H)
+    _is_radxa = (_display_type == 'eink_radxa_1_54')
 
-    if _is_square:
+    if _is_radxa:
         # ── Square layout (e.g. 200×200 Radxa 1.54") ─────────────────────
         # Row 0: title bar (18 px)
         # Rows 1-end: left = QR (96×96), right = IPs + status
@@ -424,6 +424,7 @@ def draw_monitor(epd, force_full=False):
 
     else:
         # ── Landscape layout (original, e.g. 250×122 Waveshare 2.13") ────
+        _is_radxa = False   # silence any future references
         f_title = _load_font(_FONT_BOLD, 14)
         f_label = _load_font(_FONT_BOLD, 12)
         f_ip    = _load_font(_FONT_REG,  12)
@@ -482,25 +483,25 @@ def draw_paircode(epd, code):
     image = Image.new('1', (W, H), 255)
     draw  = ImageDraw.Draw(image)
 
-    _is_square = (W == H)
-    title_str  = "ZeroClaw" if _is_square else "ZeroClaw Pair Code"
-    title_fsize = 15 if _is_square else 16
+    _is_radxa = (_display_type == 'eink_radxa_1_54')
+    title_str  = "ZeroClaw" if _is_radxa else "ZeroClaw Pair Code"
+    title_fsize = 15 if _is_radxa else 16
     f_title = _load_font(_FONT_BOLD, title_fsize)
-    f_hint  = _load_font(_FONT_REG,  12 if _is_square else 13)
+    f_hint  = _load_font(_FONT_REG,  12 if _is_radxa else 13)
 
     draw.text((8, 4), title_str, font=f_title, fill=0)
     TITLE_H = 22
     draw.line((4, TITLE_H, W - 4, TITLE_H), fill=0)
 
     # Sub-label
-    if _is_square:
+    if _is_radxa:
         f_sub = _load_font(_FONT_REG, 11)
         draw.text((8, TITLE_H + 2), "Pair Code", font=f_sub, fill=0)
 
-    top = TITLE_H + (14 if _is_square else 4)
+    top = TITLE_H + (14 if _is_radxa else 4)
 
     # Auto-size the code to fit width
-    max_sizes = (52, 44, 36, 28) if _is_square else (56, 48, 40, 32)
+    max_sizes = (52, 44, 36, 28) if _is_radxa else (56, 48, 40, 32)
     for fsize in max_sizes:
         f_code = _load_font(_FONT_BOLD, fsize)
         bbox = draw.textbbox((0, 0), code, font=f_code)
@@ -525,16 +526,16 @@ def draw_picoclaw_qr(epd, url, token=''):
     image = Image.new('1', (W, H), 255)
     draw  = ImageDraw.Draw(image)
 
-    _is_square = (W == H)
-    f_title = _load_font(_FONT_BOLD, 14 if _is_square else 15)
-    f_small = _load_font(_FONT_REG,  10 if _is_square else 12)
-    f_tiny  = _load_font(_FONT_REG,  9  if _is_square else 10)
+    _is_radxa = (_display_type == 'eink_radxa_1_54')
+    f_title = _load_font(_FONT_BOLD, 14 if _is_radxa else 15)
+    f_small = _load_font(_FONT_REG,  10 if _is_radxa else 12)
+    f_tiny  = _load_font(_FONT_REG,  9  if _is_radxa else 10)
 
     draw.text((8, 3), "PicoClaw Pair QR", font=f_title, fill=0)
     TITLE_H = 20
     draw.line((4, TITLE_H, W - 4, TITLE_H), fill=0)
 
-    if _is_square:
+    if _is_radxa:
         # Square: large centred QR, URL + token below
         QR_SIZE = min(W - 16, 140)
         QR_X    = (W - QR_SIZE) // 2

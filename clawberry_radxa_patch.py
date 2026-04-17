@@ -94,7 +94,8 @@ sys.modules['waveshare_epd.epd2in13_V4'] = _fake_module
 sys.modules['waveshare_epd'].epd2in13_V4 = _fake_module  # type: ignore
 
 logger.info(
-    "clawberry_radxa_patch: waveshare_epd.epd2in13_V4 → Radxa EPD_1in54_V2 "
+    "clawberry_radxa_patch: display_type=eink_radxa_1_54, "
+    "waveshare_epd.epd2in13_V4 → Radxa EPD_1in54_V2 "
     "(RST=%d DC=%d BUSY=%d SPI=%s chip=%s)",
     _EPD_KWARGS['rst_line'], _EPD_KWARGS['dc_line'], _EPD_KWARGS['busy_line'],
     _EPD_KWARGS['spi_dev'], _EPD_KWARGS['gpiochip'],

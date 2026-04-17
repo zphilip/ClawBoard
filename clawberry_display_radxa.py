@@ -35,8 +35,8 @@ if not os.path.exists(_OVERRIDE):
     try:
         os.makedirs(os.path.join(_HERE, 'config'), exist_ok=True)
         with open(_OVERRIDE, 'w') as _f:
-            _f.write('eink\n')
-        print(f"[radxa launcher] Created {_OVERRIDE} → eink")
+            _f.write('eink_radxa_1_54\n')
+        print(f"[radxa launcher] Created {_OVERRIDE} → eink_radxa_1_54")
     except Exception as _e:
         print(f"[radxa launcher] Warning: could not write display_type.txt: {_e}")
 
