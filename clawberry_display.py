@@ -159,7 +159,7 @@ def _detect_display():
         _forced = 'lcd'
 
     # ── 1. Try LCD 1.69\" ────────────────────────────────────────────────
-    if _forced not in ('eink', 'oled'):
+    if _forced not in ('eink', 'oled', 'eink_radxa_1_54'):
         import importlib as _il
         # LCD_1inch69.py uses relative imports (from . import ...) so it MUST
         # be loaded as part of a package.  We add the *parent* of the package
