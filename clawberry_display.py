@@ -1032,7 +1032,9 @@ _LCD0_H =  80
 
 
 def draw_monitor_lcd_0in96(disp):
-    """Render the status screen on the 0.96\" 160×80 LCD."""
+    """Render the status screen on the 0.96\" 160×80 LCD.
+    Layout: QR code left (58×58), info panel right.
+    """
     W, H = _LCD0_W, _LCD0_H
     image = Image.new('RGB', (W, H), _C_BG)
     draw  = ImageDraw.Draw(image)
@@ -1048,30 +1050,50 @@ def draw_monitor_lcd_0in96(disp):
     e_ip = get_ip_address('eth0')
     b_ip = get_ip_address('bnep0')
     u_ip = get_ip_address('usb0')
+    primary_ip = w_ip or e_ip or u_ip or b_ip
 
-    y = 21
+    # QR left
+    QR_SIZE = 58
+    QR_X, QR_Y = 2, 20
+    if primary_ip:
+        qr_url = f'http://{primary_ip}:8080'
+        try:
+            qr_img = _generate_qr_image(qr_url, size=QR_SIZE).convert('RGB')
+            image.paste(qr_img, (QR_X, QR_Y))
+        except Exception as exc:
+            logging.warning('LCD0 QR generation failed: %s', exc)
+            draw.rectangle((QR_X, QR_Y, QR_X + QR_SIZE, QR_Y + QR_SIZE),
+                           outline=_C_GREY, width=1)
+            draw.text((QR_X + 4, QR_Y + 22), 'QR err', font=f_small, fill=_C_RED)
+    else:
+        draw.rectangle((QR_X, QR_Y, QR_X + QR_SIZE, QR_Y + QR_SIZE),
+                       outline=_C_GREY, width=1)
+        draw.text((QR_X + 6, QR_Y + 22), 'No IP', font=f_small, fill=_C_GREY)
+
+    # Info panel right
+    tx, y = QR_X + QR_SIZE + 4, 20
     any_ip = False
     for label, ip in (('W', w_ip), ('E', e_ip), ('U', u_ip), ('B', b_ip)):
         if ip:
             col = _IFACE_COL.get(
                 {'W': 'WiFi', 'E': 'ETH', 'U': 'USB', 'B': 'BT'}[label],
                 (80, 80, 80))
-            draw.rectangle((2, y, 14, y + 11), fill=col)
-            draw.text((3, y + 1), label, font=f_small, fill=_C_WHITE)
-            draw.text((17, y + 1), ip,  font=f_small, fill=_C_DARK)
-            y += 13
+            draw.rectangle((tx, y, tx + 10, y + 10), fill=col)
+            draw.text((tx + 1, y + 1), label, font=f_small, fill=_C_WHITE)
+            draw.text((tx + 13, y + 1), ip,   font=f_small, fill=_C_DARK)
+            y += 12
             any_ip = True
     if not any_ip:
-        draw.text((4, y), 'No network', font=f_small, fill=_C_RED)
-        y += 13
+        draw.text((tx, y), 'No net', font=f_small, fill=_C_RED)
+        y += 12
 
     y += 2
     for svc, status in (('ZC', get_service_status('zeroclaw')),
                         ('PC', get_service_status('picoclaw'))):
         col = _C_GREEN if status == 'Running' else _C_RED
-        draw.ellipse((2, y + 1, 10, y + 9), fill=col)
-        draw.text((13, y), f'{svc}: {status}', font=f_small, fill=_C_DARK)
-        y += 12
+        draw.ellipse((tx, y + 1, tx + 8, y + 9), fill=col)
+        draw.text((tx + 11, y), f'{svc}: {status}', font=f_small, fill=_C_DARK)
+        y += 11
 
     disp.ShowImage(image)
 
@@ -1108,7 +1130,7 @@ def draw_paircode_lcd_0in96(disp, code):
 
 def draw_picoclaw_qr_lcd_0in96(disp, url, token=''):
     """Render the PicoClaw pairing QR on the 0.96\" 160×80 LCD.
-    The display is too small for a readable QR, so we show URL text instead.
+    Layout: QR code left (58×58), URL text right.
     """
     W, H = _LCD0_W, _LCD0_H
     image = Image.new('RGB', (W, H), _C_BG)
@@ -1116,17 +1138,31 @@ def draw_picoclaw_qr_lcd_0in96(disp, url, token=''):
 
     f_hdr   = _load_font(_FONT_BOLD, 11)
     f_small = _load_font(_FONT_REG,   9)
+    f_tiny  = _load_font(_FONT_REG,   8)
 
     draw.rectangle((0, 0, W, 18), fill=_C_HDR_PC)
     draw.text((4, 3), 'PicoClaw Pair', font=f_hdr, fill=_C_WHITE)
 
-    y = 21
-    for line in textwrap.wrap(url, width=26)[:4]:
-        draw.text((4, y), line, font=f_small, fill=_C_DARK)
-        y += 12
+    # QR left
+    QR_SIZE = 58
+    QR_X, QR_Y = 2, 20
+    try:
+        qr_img = _fetch_qr_image(url, size=QR_SIZE).convert('RGB')
+        image.paste(qr_img, (QR_X, QR_Y))
+    except Exception as e:
+        logging.warning('LCD0 QR fetch failed: %s', e)
+        draw.rectangle((QR_X, QR_Y, QR_X + QR_SIZE, QR_Y + QR_SIZE),
+                       outline=_C_GREY, width=1)
+        draw.text((QR_X + 14, QR_Y + 22), 'QR', font=f_hdr, fill=_C_GREY)
+
+    # URL text right
+    tx, ty = QR_X + QR_SIZE + 4, 21
+    for line in textwrap.wrap(url, width=14)[:4]:
+        draw.text((tx, ty), line, font=f_small, fill=_C_DARK)
+        ty += 12
     if token:
-        tok = f'tok:{token[:18]}...' if len(token) > 18 else f'tok:{token}'
-        draw.text((4, H - 11), tok, font=f_small, fill=_C_GREY)
+        tok = f'{token[:10]}...' if len(token) > 10 else token
+        draw.text((tx, H - 10), tok, font=f_tiny, fill=_C_GREY)
 
     disp.ShowImage(image)
 
