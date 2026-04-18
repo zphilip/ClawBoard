@@ -20,9 +20,10 @@ if os.path.exists(libdir):
 
 # Display drivers are imported lazily inside _detect_display().
 # Module-level references are set once detection succeeds.
-_eink_mod = None   # waveshare_epd.epd2in13_V4 when e-ink is active
-_lcd_mod  = None   # LCD_1inch69 module when LCD is active
-_oled_mod = None   # waveshare_OLED.OLED_0in96_rgb module when OLED is active
+_eink_mod      = None   # waveshare_epd.epd2in13_V4 when e-ink is active
+_lcd_mod       = None   # LCD_1inch69 module when LCD is active
+_lcd_0in96_mod = None   # waveshare_lcd_rpi.LCD_0inch96 module when 0.96" LCD is active
+_oled_mod      = None   # waveshare_OLED.OLED_0in96_rgb module when OLED is active
 
 logging.basicConfig(level=logging.INFO)
 
@@ -37,8 +38,8 @@ _LCD_TP_RST = 17
 _HERE            = os.path.dirname(os.path.realpath(__file__))
 DISPLAY_REQUEST_FILE      = os.path.join(_HERE, 'config', 'clawberry_paircode.txt')
 DISPLAY_TYPE_OVERRIDE_FILE = os.path.join(_HERE, 'config', 'display_type.txt')
-# Override file: create config/display_type.txt containing 'eink' or 'lcd'
-# to skip auto-detection and force a specific driver.
+# Override file: create config/display_type.txt containing 'eink', 'lcd',
+# 'lcd_0in96', or 'oled' to skip auto-detection and force a specific driver.
 # Fallback hold duration used ONLY when the payload written by clawberry_paircode.py
 # has no 'seconds' field. The primary source of truth is always the 'seconds' value
 # inside clawberry_paircode.txt — change it there, not here.
@@ -51,8 +52,8 @@ _FONT_BOLD = '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf'
 _FONT_REG  = '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf'
 
 # ── Global display handle & type ────────────────────────────────────────
-_disp         = None   # active display object (EPD or LCD_1inch69)
-_display_type = None   # 'eink' | 'lcd'
+_disp         = None   # active display object (EPD, LCD_1inch69, LCD_0inch96, or OLED)
+_display_type = None   # 'eink' | 'lcd' | 'lcd_0in96' | 'oled'
 _qr_cache     = {}     # {(url, size): PIL.Image} — avoid regenerating unchanged QR codes
 _oled_scroll_offset: int = 0   # advances each scroll frame; drives IP text animation
 
@@ -86,7 +87,7 @@ def _epd_render(epd, image, force_full=False):
 def _shutdown(signum=None, frame=None):
     logging.info("Shutdown signal %s — releasing display hardware...", signum)
     if _disp is not None:
-        if _display_type == 'lcd':
+        if _display_type in ('lcd', 'lcd_0in96'):
             try:
                 _disp.module_exit()
             except Exception as e:
@@ -128,16 +129,20 @@ def _detect_display():
     """Probe hardware and initialise the first supported display found.
 
     Detection order (can be overridden by config/display_type.txt):
-      1. LCD  1.69\"  (LCD_1inch69)  — tried first; touch controller init
-                                        fails reliably when hardware absent
-      2. E-ink 2.13\" (epd2in13_V4)  — SPI-only, always succeeds on a Pi
-                                        even without display connected
+      1. LCD  1.69\"  (LCD_1inch69)    — tried first; touch controller init
+                                          fails reliably when hardware absent
+      2. LCD  0.96\"  (LCD_0inch96)    — Waveshare 0.96" 160×80 LCD HAT
+      3. E-ink 2.13\" (epd2in13_V4)   — SPI-only, always succeeds on a Pi
+                                          even without display connected
+      4. OLED 0.96\"  (OLED_0in96_rgb)
 
-    To force a type, create config/display_type.txt with content 'lcd' or 'eink'.
+    To force a type, create config/display_type.txt with one of:
+      'lcd', 'lcd_0in96', 'eink', 'oled', 'eink_radxa_1_54'
     Sets the module globals ``_disp``, ``_display_type``, ``_eink_mod`` /
-    ``_lcd_mod`` and returns the active display object.
+    ``_lcd_mod`` / ``_lcd_0in96_mod`` / ``_oled_mod`` and returns the active
+    display object.
     """
-    global _disp, _display_type, _eink_mod, _lcd_mod, _oled_mod, _LCD_LANDSCAPE
+    global _disp, _display_type, _eink_mod, _lcd_mod, _lcd_0in96_mod, _oled_mod, _LCD_LANDSCAPE
 
     # ── 0. Check for a manual override file ───────────────────────────────
     _forced = None
@@ -159,7 +164,7 @@ def _detect_display():
         _forced = 'lcd'
 
     # ── 1. Try LCD 1.69\" ────────────────────────────────────────────────
-    if _forced not in ('eink', 'oled', 'eink_radxa_1_54'):
+    if _forced not in ('eink', 'oled', 'eink_radxa_1_54', 'lcd_0in96'):
         import importlib as _il
         # LCD_1inch69.py uses relative imports (from . import ...) so it MUST
         # be loaded as part of a package.  We add the *parent* of the package
@@ -205,6 +210,49 @@ def _detect_display():
                 return _obj
             except Exception as e:
                 logging.info('LCD 1.69\" not available: %s', e)
+
+    # ── 1b. Try LCD 0.96" (Waveshare 160×80) ─────────────────────────────
+    if _forced not in ('eink', 'oled', 'eink_radxa_1_54', 'lcd'):
+        import importlib as _il
+        _lcd0_candidates = [
+            (os.path.join(current_dir, 'lib'), 'waveshare_lcd_rpi'),
+            ('/opt/clawboard/lib',             'waveshare_lcd_rpi'),
+        ]
+        _lm0 = None
+        for _parent, _pkg in _lcd0_candidates:
+            _pkg_dir = os.path.join(_parent, _pkg)
+            if not os.path.isdir(_pkg_dir):
+                continue
+            _init_py = os.path.join(_pkg_dir, '__init__.py')
+            if not os.path.exists(_init_py):
+                try:
+                    open(_init_py, 'w').close()
+                except Exception as _ie:
+                    logging.warning('Could not create __init__.py: %s', _ie)
+            if _parent not in sys.path:
+                sys.path.insert(0, _parent)
+            try:
+                _lm0 = _il.import_module(f'{_pkg}.LCD_0inch96')
+                logging.info('Loaded LCD_0inch96 module from %s/%s', _parent, _pkg)
+                break
+            except Exception as _ie:
+                logging.info('Could not load %s.LCD_0inch96: %s', _pkg, _ie)
+        if _lm0 is not None:
+            try:
+                _obj = _lm0.LCD_0inch96(
+                    rst=_LCD_RST, dc=_LCD_DC, bl=_LCD_BL,
+                    bl_freq=1000
+                )
+                _obj.Init()
+                _obj.clear()
+                _obj.bl_DutyCycle(80)
+                _lcd_0in96_mod = _lm0
+                _disp          = _obj
+                _display_type  = 'lcd_0in96'
+                logging.info('Display detected: LCD 0.96" 160×80 (LCD_0inch96)')
+                return _obj
+            except Exception as e:
+                logging.info('LCD 0.96" not available: %s', e)
 
     # ── 2a. Radxa 1.54" e-ink (direct driver, no waveshare_epd needed) ──────────────
     if _forced == 'eink_radxa_1_54':
@@ -975,12 +1023,122 @@ def draw_picoclaw_qr_oled(disp, url, token=''):
     _oled_show(disp, image)
 
 
+# ── LCD 0.96" 160×80 Screens ─────────────────────────────────────────────────
+# Physical canvas is 160×80 (landscape, W×H).  There is no room for a QR code,
+# so the monitor screen shows a compact text layout.
+
+_LCD0_W = 160
+_LCD0_H =  80
+
+
+def draw_monitor_lcd_0in96(disp):
+    """Render the status screen on the 0.96\" 160×80 LCD."""
+    W, H = _LCD0_W, _LCD0_H
+    image = Image.new('RGB', (W, H), _C_BG)
+    draw  = ImageDraw.Draw(image)
+
+    f_hdr   = _load_font(_FONT_BOLD, 11)
+    f_small = _load_font(_FONT_REG,   9)
+
+    # Header bar
+    draw.rectangle((0, 0, W, 18), fill=_C_HDR_ZC)
+    draw.text((4, 3), 'ClawBerry', font=f_hdr, fill=_C_WHITE)
+
+    w_ip = get_ip_address('wlan0')
+    e_ip = get_ip_address('eth0')
+    b_ip = get_ip_address('bnep0')
+    u_ip = get_ip_address('usb0')
+
+    y = 21
+    any_ip = False
+    for label, ip in (('W', w_ip), ('E', e_ip), ('U', u_ip), ('B', b_ip)):
+        if ip:
+            col = _IFACE_COL.get(
+                {'W': 'WiFi', 'E': 'ETH', 'U': 'USB', 'B': 'BT'}[label],
+                (80, 80, 80))
+            draw.rectangle((2, y, 14, y + 11), fill=col)
+            draw.text((3, y + 1), label, font=f_small, fill=_C_WHITE)
+            draw.text((17, y + 1), ip,  font=f_small, fill=_C_DARK)
+            y += 13
+            any_ip = True
+    if not any_ip:
+        draw.text((4, y), 'No network', font=f_small, fill=_C_RED)
+        y += 13
+
+    y += 2
+    for svc, status in (('ZC', get_service_status('zeroclaw')),
+                        ('PC', get_service_status('picoclaw'))):
+        col = _C_GREEN if status == 'Running' else _C_RED
+        draw.ellipse((2, y + 1, 10, y + 9), fill=col)
+        draw.text((13, y), f'{svc}: {status}', font=f_small, fill=_C_DARK)
+        y += 12
+
+    disp.ShowImage(image)
+
+
+def draw_paircode_lcd_0in96(disp, code):
+    """Render the ZeroClaw pair-code screen on the 0.96\" 160×80 LCD."""
+    W, H = _LCD0_W, _LCD0_H
+    image = Image.new('RGB', (W, H), _C_BG)
+    draw  = ImageDraw.Draw(image)
+
+    f_hdr  = _load_font(_FONT_BOLD, 11)
+    f_hint = _load_font(_FONT_REG,   9)
+
+    draw.rectangle((0, 0, W, 18), fill=_C_HDR_ZC)
+    draw.text((4, 3), 'ZeroClaw Pair Code', font=f_hdr, fill=_C_WHITE)
+
+    for fsize in (36, 28, 22, 16):
+        f_code = _load_font(_FONT_BOLD, fsize)
+        bbox   = draw.textbbox((0, 0), code, font=f_code)
+        tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+        if tw <= W - 8:
+            break
+
+    cy = 20 + (H - 20 - 14 - th) // 2
+    draw.text(((W - tw) // 2, cy), code, font=f_code, fill=_C_DARK)
+
+    hint = 'scan / type in app'
+    hbbox = draw.textbbox((0, 0), hint, font=f_hint)
+    draw.text(((W - (hbbox[2] - hbbox[0])) // 2, H - 12),
+              hint, font=f_hint, fill=_C_GREY)
+
+    disp.ShowImage(image)
+
+
+def draw_picoclaw_qr_lcd_0in96(disp, url, token=''):
+    """Render the PicoClaw pairing QR on the 0.96\" 160×80 LCD.
+    The display is too small for a readable QR, so we show URL text instead.
+    """
+    W, H = _LCD0_W, _LCD0_H
+    image = Image.new('RGB', (W, H), _C_BG)
+    draw  = ImageDraw.Draw(image)
+
+    f_hdr   = _load_font(_FONT_BOLD, 11)
+    f_small = _load_font(_FONT_REG,   9)
+
+    draw.rectangle((0, 0, W, 18), fill=_C_HDR_PC)
+    draw.text((4, 3), 'PicoClaw Pair', font=f_hdr, fill=_C_WHITE)
+
+    y = 21
+    for line in textwrap.wrap(url, width=26)[:4]:
+        draw.text((4, y), line, font=f_small, fill=_C_DARK)
+        y += 12
+    if token:
+        tok = f'tok:{token[:18]}...' if len(token) > 18 else f'tok:{token}'
+        draw.text((4, H - 11), tok, font=f_small, fill=_C_GREY)
+
+    disp.ShowImage(image)
+
+
 # ── Dispatch wrappers (route to eink or LCD based on _display_type) ──────────
 def _render_monitor(force_full=False):
     if _disp is None:
         return
     if _display_type == 'lcd':
         draw_monitor_lcd(_disp)
+    elif _display_type == 'lcd_0in96':
+        draw_monitor_lcd_0in96(_disp)
     elif _display_type == 'oled':
         draw_monitor_oled(_disp)
     else:
@@ -992,6 +1150,8 @@ def _render_paircode(code):
         return
     if _display_type == 'lcd':
         draw_paircode_lcd(_disp, code)
+    elif _display_type == 'lcd_0in96':
+        draw_paircode_lcd_0in96(_disp, code)
     elif _display_type == 'oled':
         draw_paircode_oled(_disp, code)
     else:
@@ -1003,6 +1163,8 @@ def _render_picoclaw_qr(url, token=''):
         return
     if _display_type == 'lcd':
         draw_picoclaw_qr_lcd(_disp, url, token)
+    elif _display_type == 'lcd_0in96':
+        draw_picoclaw_qr_lcd_0in96(_disp, url, token)
     elif _display_type == 'oled':
         draw_picoclaw_qr_oled(_disp, url, token)
     else:
