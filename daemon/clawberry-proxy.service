@@ -1,8 +1,8 @@
 [Unit]
 Description=ClawBerry Proxy — transparent WebSocket proxy for zeroclaw / picoclaw
 # Start after both AI backends are up; survive if either is absent.
-After=network-online.target zeroclaw.service picoclaw.service
-Wants=network-online.target
+After=network.target zeroclaw.service picoclaw.service
+Wants=network.target
 # Restart automatically if zeroclaw or picoclaw restarts.
 PartOf=zeroclaw.service
 

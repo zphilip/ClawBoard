@@ -1,8 +1,8 @@
 [Unit]
 Description=PicoClaw Web Service
-# 确保在网络就绪后启动，且在 Gateway 启动后再启动 Web
-After=network-online.target picoclaw.service
-Wants=network-online.target
+# 确保在网络基本准备好后启动，且在 Gateway 启动后再启动 Web
+After=network.target picoclaw.service
+Wants=network.target
 
 [Service]
 Type=simple
