@@ -16,6 +16,13 @@ STRINGS = {
     'tab_security':  'Security',
     'tab_features':  'Features',
     'tab_system':    'System',
+    'oc_dashboard':  '📂 OpenClaw Dashboard',
+    'oc_tab_configuration': 'Configuration',
+    'oc_tab_pair_device': 'Pair Device',
+    'oc_section_gateway': 'Gateway Settings',
+    'oc_pair_title': 'Pair OpenClaw',
+    'oc_pair_qr': 'OpenClaw QR',
+    'oc_gateway_token_qr': 'Gateway Token QR',
     # ── General ──────────────────────────────────────────────────────────────
     'section_api':     'API & Model',
     'lbl_api_key':     'API Key (global default)',
@@ -100,6 +107,14 @@ STRINGS = {
     'notify_op_fail':         '❌ Operation failed: {}',
     'notify_service':         'zeroclaw.service: {}',
     'notify_sudo_required':   'sudo required',
+    # ── OpenClaw ──────────────────────────────────────────────────────────────────
+    'oc_dashboard':            '📂 OpenClaw Dashboard',
+    'oc_tab_configuration':    'Configuration',
+    'oc_tab_pair_device':      'Pair Device',
+    'oc_section_gateway':      'Gateway',
+    'oc_pair_title':           '📱 OpenClaw Pair Device',
+    'oc_pair_qr':              'OpenClaw QR',
+    'oc_gateway_token_qr':     'Gateway Token QR',
     # ── PicoClaw ───────────────────────────────────────────────────────────────────
     'pc_tab_wizard':           'Wizard',
     'pc_tab_general':          'General',

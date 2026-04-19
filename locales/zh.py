@@ -16,6 +16,13 @@ STRINGS = {
     'tab_security':  '安全',
     'tab_features':  '功能',
     'tab_system':    '系统',
+    'oc_dashboard':  '📂 OpenClaw 面板',
+    'oc_tab_configuration': '配置',
+    'oc_tab_pair_device': '配对设备',
+    'oc_section_gateway': '网关设置',
+    'oc_pair_title': '配对 OpenClaw',
+    'oc_pair_qr': 'OpenClaw 二维码',
+    'oc_gateway_token_qr': '网关 Token 二维码',
     # ── General ──────────────────────────────────────────────────────────────
     'section_api':     'API 与模型',
     'lbl_api_key':     'API Key（全局默认）',
@@ -100,6 +107,14 @@ STRINGS = {
     'notify_op_fail':         '❌ 操作失败：{}',
     'notify_service':         'zeroclaw.service：{}',
     'notify_sudo_required':   '需要 sudo 权限',
+    # ── OpenClaw ──────────────────────────────────────────────────────────────────
+    'oc_dashboard':            '📂 OpenClaw 控制台',
+    'oc_tab_configuration':    '配置',
+    'oc_tab_pair_device':      '配对设备',
+    'oc_section_gateway':      '网关 (gateway)',
+    'oc_pair_title':           '📱 OpenClaw 配对设备',
+    'oc_pair_qr':              'OpenClaw QR',
+    'oc_gateway_token_qr':     'Gateway Token QR',
     # ── PicoClaw ───────────────────────────────────────────────────────────────────
     'pc_tab_wizard':           '向导',
     'pc_tab_general':          '通用',

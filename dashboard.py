@@ -17,6 +17,9 @@ PICOCLAW_SECURITY_YML_LOCAL  = os.path.join(SCRIPT_DIR, 'config', 'security.yml'
 PICOCLAW_DEPLOY_CONFIG_PATH  = '/var/lib/picoclaw/.picoclaw/config.json'              # picoclaw live config path
 PICOCLAW_DEPLOY_SECURITY_PATH= '/var/lib/picoclaw/.picoclaw/.security.yml'            # same as PICOCLAW_SECURITY_YML
 
+OPENCLAW_CONFIG_PATH         = os.path.join(SCRIPT_DIR, 'config', 'openclaw.json')
+OPENCLAW_DEPLOY_CONFIG_PATH  = '/root/.openclaw/openclaw.json'
+
 def _sudo_read_file(path: str) -> tuple[str, str]:
     """Read a file that requires elevated privileges via `sudo cat`.
     Returns (content, error_message).  error_message is '' on success.
@@ -94,6 +97,14 @@ def load_picoclaw_config():
     """Load picoclaw config.json; return empty dict on failure."""
     try:
         with open(PICOCLAW_CONFIG_PATH, 'r') as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+def load_openclaw_config():
+    """Load openclaw config; return empty dict on failure."""
+    try:
+        with open(OPENCLAW_CONFIG_PATH, 'r') as f:
             return json.load(f)
     except Exception:
         return {}
@@ -1009,6 +1020,7 @@ def index(request: Request):
         ui.separator()
         btn_zc   = ui.button('🦾 ZeroClaw',    icon='terminal').props('flat align=left color=blue-8').classes('w-full q-mt-xs')
         btn_pc   = ui.button('🐾 PicoClaw',     icon='memory'  ).props('flat align=left color=grey-7').classes('w-full')
+        btn_oc   = ui.button('📂 OpenClaw',     icon='folder'  ).props('flat align=left color=grey-7').classes('w-full')
         btn_wifi    = ui.button(T['btn_wifi'],    icon='wifi'    ).props('flat align=left color=grey-7').classes('w-full')
         btn_upgrade = ui.button(T['btn_upgrade'], icon='system_update_alt').props('flat align=left color=grey-7').classes('w-full')
 
@@ -2670,6 +2682,55 @@ def index(request: Request):
                     else:
                         ui.label(T['pc_pair_missing_token']).classes('text-negative q-mt-sm')
 
+    # ══ OpenClaw Dashboard ════════════════════════════════════════════════════
+    oc_content = ui.column().classes('w-full q-px-sm q-pt-sm')
+    oc_content.set_visibility(False)
+    with oc_content:
+        with ui.row().classes('w-full items-center q-mb-xs'):
+            ui.label(T['oc_dashboard']).classes('text-h6 text-teal-8')
+            ui.button(icon='refresh', on_click=lambda: ui.navigate.reload()) \
+                .props('flat round dense color=teal-8').tooltip(T['tooltip_reload'])
+        with ui.tabs().classes('w-full bg-teal-1') as oc_sub_tabs:
+            t_oc_cfg  = ui.tab(T['oc_tab_configuration'], icon='settings')
+            t_oc_pair = ui.tab(T['oc_tab_pair_device'],   icon='devices')
+
+        with ui.tab_panels(oc_sub_tabs, value=t_oc_cfg).classes('w-full'):
+            # ── OpenClaw › Configuration ───────────────────────────────────
+            with ui.tab_panel(t_oc_cfg):
+                oc_conf = load_openclaw_config()
+                oc_gateway = oc_conf.get('gateway', {})
+                with ui.card().classes('w-full q-pa-md'):
+                    ui.label(T['oc_section_gateway']).classes('text-subtitle2 text-grey-7 q-mt-sm')
+                    ui.input('Gateway Mode', value=str(oc_gateway.get('mode', 'local'))).props('readonly').classes('w-full')
+                    ui.input('Gateway Token', value=str(oc_gateway.get('auth', {}).get('token', ''))).props('readonly').classes('w-full')
+
+            # ── OpenClaw › Pair Device ─────────────────────────────────────
+            with ui.tab_panel(t_oc_pair):
+                oc_conf = load_openclaw_config()
+                oc_gateway = oc_conf.get('gateway', {})
+                oc_token = oc_gateway.get('auth', {}).get('token', '')
+                
+                with ui.card().classes('w-full q-pa-md'):
+                    ui.label(T['oc_pair_title']).classes('text-h6 text-teal-8')
+                    if oc_token:
+                        # OpenClaw QR (token only)
+                        # Gateway Token QR (token only, but maybe with a different label)
+                        with ui.row().classes('w-full items-start gap-4 q-mt-sm'):
+                            with ui.card().classes('q-pa-sm items-center bg-white'):
+                                ui.label(T['oc_pair_qr']).classes('text-caption text-grey-7 q-mb-xs')
+                                oc_qr_url = f'https://quickchart.io/qr?size=260&margin=1&text={quote(oc_token, safe="")}'
+                                ui.image(oc_qr_url).classes('w-56 h-56')
+
+                            with ui.card().classes('q-pa-sm items-center bg-white'):
+                                ui.label(T['oc_gateway_token_qr']).classes('text-caption text-grey-7 q-mb-xs')
+                                # Assuming gateway token QR is the same token for now or as requested
+                                # The user asked for "openclaw qr" and "gateway token"
+                                # We'll use the same token since it's the only one we have in config
+                                oc_gw_qr_url = f'https://quickchart.io/qr?size=260&margin=1&text={quote(oc_token, safe="")}'
+                                ui.image(oc_gw_qr_url).classes('w-56 h-56')
+                    else:
+                        ui.label('No token found in openclaw.json').classes('text-negative q-mt-sm')
+
     # ── Sidebar navigation wiring ──────────────────────────────────────────────
     # ══ WiFi Setup ════════════════════════════════════════════════════════════
     wifi_content = ui.column().classes('w-full q-px-sm q-pt-sm')
@@ -2902,19 +2963,23 @@ def index(request: Request):
     def _switch_dash(name):
         zc_content.set_visibility(name == 'zeroclaw')
         pc_content.set_visibility(name == 'picoclaw')
+        oc_content.set_visibility(name == 'openclaw')
         wifi_content.set_visibility(name == 'wifi')
         upgrade_content.set_visibility(name == 'upgrade')
         btn_zc._props['color']      = 'blue-8'   if name == 'zeroclaw' else 'grey-7'
         btn_pc._props['color']      = 'purple-8' if name == 'picoclaw' else 'grey-7'
+        btn_oc._props['color']      = 'teal-8'   if name == 'openclaw' else 'grey-7'
         btn_wifi._props['color']    = 'teal-8'   if name == 'wifi'     else 'grey-7'
         btn_upgrade._props['color'] = 'orange-9' if name == 'upgrade'  else 'grey-7'
         btn_zc.update()
         btn_pc.update()
+        btn_oc.update()
         btn_wifi.update()
         btn_upgrade.update()
 
     btn_zc.on('click',      lambda: _switch_dash('zeroclaw'))
     btn_pc.on('click',      lambda: _switch_dash('picoclaw'))
+    btn_oc.on('click',      lambda: _switch_dash('openclaw'))
     btn_wifi.on('click',    lambda: _switch_dash('wifi'))
     btn_upgrade.on('click', lambda: _switch_dash('upgrade'))
 
