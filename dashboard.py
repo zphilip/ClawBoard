@@ -344,6 +344,20 @@ def load_pc_provider_hints():
         pass
     return []
 
+def load_oc_provider_hints():
+    """Load OpenClaw-specific provider hints from config/oc_provider_hints.json.
+    Schema: {model_name, model, provider, api_base, primary, api_key_required?}
+    """
+    hints_path = os.path.join(SCRIPT_DIR, 'config', 'oc_provider_hints.json')
+    try:
+        with open(hints_path, 'r') as f:
+            hints = json.load(f)
+            if isinstance(hints, list):
+                return hints
+    except Exception:
+        pass
+    return []
+
 # ── Auth ─────────────────────────────────────────────────────────────────────
 AUTH_FILE      = os.path.join(SCRIPT_DIR, 'config', 'auth.json')
 _invite_tokens = {}  # one-time tokens → expiry_unix
@@ -833,6 +847,23 @@ def index(request: Request):
             _pc_ph_pid_base[_pcpid] = _pch['api_base']
         if _pch.get('model_name'):
             _pc_ph_pid_models.setdefault(_pcpid, []).append(_pch['model_name'])
+
+    # ── OpenClaw provider hints ───────────────────────────────────────────
+    _oc_ph_hints  = load_oc_provider_hints()
+    _oc_ph_map    = {h['model_name']: h for h in _oc_ph_hints if h.get('model_name')}
+    _oc_ph_provs: list[str] = []
+    _oc_ph_pid_base:   dict[str, str]       = {}  # provider → api_base
+    _oc_ph_pid_models: dict[str, list[str]] = {}  # provider → [model_names...]
+    for _och in _oc_ph_hints:
+        _ocpid = _och.get('provider', '')
+        if not _ocpid:
+            continue
+        if _ocpid not in _oc_ph_provs:
+            _oc_ph_provs.append(_ocpid)
+        if _ocpid not in _oc_ph_pid_base and _och.get('api_base'):
+            _oc_ph_pid_base[_ocpid] = _och['api_base']
+        if _och.get('model_name'):
+            _oc_ph_pid_models.setdefault(_ocpid, []).append(_och['model_name'])
 
     # (ZeroClaw hints continued)
     _ph_models = [h['model'] for h in _ph_hints if h.get('model')]
@@ -2922,12 +2953,53 @@ def index(request: Request):
                         with ui.stepper_navigation():
                             ui.button('Next →', on_click=_oc_wiz.next).props('color=teal-8')
 
-                    # ── Step 2: Model ───────────────────────────────────────
-                    with ui.step('oc_wiz_model', title='2  Primary Model', icon='cloud'):
-                        ui.label('Set the primary model used by agents.').classes('text-caption text-grey-6 q-mb-sm')
+                    # ── Step 2: Model & Provider ────────────────────────────
+                    with ui.step('oc_wiz_model', title='2  Provider & Model', icon='cloud'):
+                        ui.label('Pick a provider and model for agents.').classes('text-caption text-grey-6 q-mb-sm')
 
-                        oc_wiz_model_primary = ui.input('agents.defaults.model.primary',
-                            value=str(_oc_wiz_model.get('primary', ''))).classes('w-full q-mb-sm')
+                        # Derive initial values from config
+                        _oc_wiz_init_primary = str(_oc_wiz_model.get('primary', ''))
+                        # primary is "provider/model" — split out provider
+                        _oc_wiz_init_prov_key = _oc_wiz_init_primary.split('/')[0] if '/' in _oc_wiz_init_primary else ''
+                        # Read existing api_key from models.providers.<provider>.apiKey
+                        _oc_wiz_init_api_key = str(
+                            _oc_wiz_conf.get('models', {}).get('providers', {})
+                            .get(_oc_wiz_init_prov_key, {}).get('apiKey', ''))
+
+                        # Build option lists — ensure current values appear
+                        _oc_wiz_prov_opts = list(_oc_ph_provs)
+                        if _oc_wiz_init_prov_key and _oc_wiz_init_prov_key not in _oc_wiz_prov_opts:
+                            _oc_wiz_prov_opts = [_oc_wiz_init_prov_key] + _oc_wiz_prov_opts
+                        _oc_wiz_mname_opts = list(_oc_ph_map.keys())
+
+                        ui.label('⚡ Quick pick').classes('text-caption text-teal-7')
+                        oc_wiz_quick = ui.select(
+                            options=list(_oc_ph_map.keys()),
+                            label='Known model',
+                            value=None,
+                            clearable=True,
+                            with_input=True,
+                        ).classes('w-full q-mb-xs')
+                        ui.separator().classes('q-my-xs')
+
+                        oc_wiz_prov = ui.select(
+                            _oc_wiz_prov_opts or [''],
+                            label='provider',
+                            value=_oc_wiz_init_prov_key if _oc_wiz_init_prov_key in _oc_wiz_prov_opts else (
+                                _oc_wiz_prov_opts[0] if _oc_wiz_prov_opts else ''),
+                            with_input=True,
+                        ).classes('w-full q-mb-sm')
+
+                        oc_wiz_model_primary = ui.input(
+                            'agents.defaults.model.primary  (provider/model)',
+                            value=_oc_wiz_init_primary,
+                        ).classes('w-full q-mb-sm')
+
+                        oc_wiz_api_key = ui.input(
+                            'Provider API Key',
+                            value=_oc_wiz_init_api_key,
+                            password=True, password_toggle_button=True,
+                        ).classes('w-full q-mb-sm')
 
                         oc_wiz_workspace = ui.input('agents.defaults.workspace',
                             value=str(_oc_wiz_ad.get('workspace', '/var/lib/openclaw/.openclaw/workspace'))).classes('w-full q-mb-sm')
@@ -2936,6 +3008,28 @@ def index(request: Request):
                         _oc_wiz_cur_tp  = str(_oc_wiz_tools.get('profile', 'coding'))
                         oc_wiz_tools_profile = ui.select(_oc_wiz_tp_opts, label='tools.profile',
                             value=_oc_wiz_cur_tp if _oc_wiz_cur_tp in _oc_wiz_tp_opts else 'coding').classes('w-full q-mb-sm')
+
+                        # Quick-pick autofill
+                        def _oc_wiz_fill_hint(e):
+                            h = _oc_ph_map.get(e.value) if e.value else None
+                            if not h: return
+                            prov = h.get('provider', '')
+                            if prov in _oc_wiz_prov_opts:
+                                oc_wiz_prov.set_value(prov)
+                            oc_wiz_model_primary.set_value(h.get('primary', h.get('provider', '') + '/' + h.get('model', '')))
+                            if h.get('api_key_required', True) is False:
+                                oc_wiz_api_key.set_value('')
+                        oc_wiz_quick.on_value_change(_oc_wiz_fill_hint)
+
+                        # Provider selection autofill
+                        def _oc_wiz_fill_prov(e):
+                            prov = e.value or ''
+                            if not prov: return
+                            models = _oc_ph_pid_models.get(prov, [])
+                            if models:
+                                first = _oc_ph_map.get(models[0], {})
+                                oc_wiz_model_primary.set_value(first.get('primary', prov + '/' + first.get('model', '')))
+                        oc_wiz_prov.on_value_change(_oc_wiz_fill_prov)
 
                         with ui.stepper_navigation():
                             ui.button('← Back', on_click=_oc_wiz.previous).props('flat color=grey-7')
@@ -2951,7 +3045,9 @@ def index(request: Request):
                                 f'gateway.port:            {int(oc_wiz_port.value or 18789)}\n'
                                 f'gateway.auth.mode:       {oc_wiz_auth_mode.value}\n'
                                 f'gateway.auth.token:      {"(set)" if oc_wiz_token.value else "(empty)"}\n'
+                                f'provider:                {oc_wiz_prov.value or "(unchanged)"}\n'
                                 f'model.primary:           {oc_wiz_model_primary.value or "(unchanged)"}\n'
+                                f'api_key:                 {"(set)" if oc_wiz_api_key.value else "(empty)"}\n'
                                 f'workspace:               {oc_wiz_workspace.value}\n'
                                 f'tools.profile:           {oc_wiz_tools_profile.value}'
                             )
@@ -2976,6 +3072,15 @@ def index(request: Request):
                             if oc_wiz_workspace.value:
                                 ad['workspace'] = oc_wiz_workspace.value
                             data.setdefault('tools', {})['profile'] = oc_wiz_tools_profile.value or 'coding'
+                            # Save provider api_key into models.providers.<provider>.apiKey
+                            _prov = oc_wiz_prov.value or ''
+                            if _prov and oc_wiz_api_key.value:
+                                _hint = _oc_ph_map.get(oc_wiz_quick.value or '') or {}
+                                _base = _hint.get('api_base') or _oc_ph_pid_base.get(_prov, '')
+                                data.setdefault('models', {}).setdefault('providers', {}).setdefault(_prov, {})
+                                if _base:
+                                    data['models']['providers'][_prov]['baseUrl'] = _base
+                                data['models']['providers'][_prov]['apiKey'] = oc_wiz_api_key.value
                             try:
                                 save_openclaw_config(data)
                                 ok_cfg, err_cfg = deploy_openclaw_config()
@@ -3062,10 +3167,73 @@ def index(request: Request):
                     oc_w_workspace = ui.input('agents.defaults.workspace',
                         value=str(oc_agents.get('workspace', '/var/lib/openclaw/.openclaw/workspace'))).classes('w-full')
 
-                    _oc_model_primary = str((oc_agents.get('model') or {}).get('primary', ''))
-                    oc_w_model_primary = ui.input('agents.defaults.model.primary',
-                        value=_oc_model_primary).classes('w-full')
+                    ui.separator().classes('q-my-xs')
+                    ui.label('Provider & Model').classes('text-caption text-grey-6')
 
+                    # Derive current provider from model.primary (format: provider/model)
+                    _oc_model_primary = str((oc_agents.get('model') or {}).get('primary', ''))
+                    _oc_cfg_init_prov = _oc_model_primary.split('/')[0] if '/' in _oc_model_primary else ''
+                    _oc_cfg_prov_opts = list(_oc_ph_provs)
+                    if _oc_cfg_init_prov and _oc_cfg_init_prov not in _oc_cfg_prov_opts:
+                        _oc_cfg_prov_opts = [_oc_cfg_init_prov] + _oc_cfg_prov_opts
+                    _oc_cfg_init_api_key = str(
+                        oc_conf.get('models', {}).get('providers', {})
+                        .get(_oc_cfg_init_prov, {}).get('apiKey', ''))
+
+                    oc_w_cfg_quick = ui.select(
+                        options=list(_oc_ph_map.keys()),
+                        label='⚡ Quick pick model',
+                        value=None,
+                        clearable=True,
+                        with_input=True,
+                    ).classes('w-full q-mb-xs')
+
+                    oc_w_provider = ui.select(
+                        _oc_cfg_prov_opts or [''],
+                        label='provider',
+                        value=_oc_cfg_init_prov if _oc_cfg_init_prov in _oc_cfg_prov_opts else (
+                            _oc_cfg_prov_opts[0] if _oc_cfg_prov_opts else ''),
+                        with_input=True,
+                    ).classes('w-full')
+
+                    oc_w_model_primary = ui.input(
+                        'agents.defaults.model.primary  (provider/model)',
+                        value=_oc_model_primary,
+                    ).classes('w-full')
+
+                    oc_w_api_key = ui.input(
+                        'Provider API Key',
+                        value=_oc_cfg_init_api_key,
+                        password=True, password_toggle_button=True,
+                    ).classes('w-full')
+
+                    # Quick-pick autofill
+                    def _oc_cfg_fill_hint(e):
+                        h = _oc_ph_map.get(e.value) if e.value else None
+                        if not h: return
+                        prov = h.get('provider', '')
+                        if prov in _oc_cfg_prov_opts:
+                            oc_w_provider.set_value(prov)
+                        oc_w_model_primary.set_value(h.get('primary', prov + '/' + h.get('model', '')))
+                        if h.get('api_key_required', True) is False:
+                            oc_w_api_key.set_value('')
+                    oc_w_cfg_quick.on_value_change(_oc_cfg_fill_hint)
+
+                    # Provider selection autofill
+                    def _oc_cfg_fill_prov(e):
+                        prov = e.value or ''
+                        if not prov: return
+                        models = _oc_ph_pid_models.get(prov, [])
+                        if models:
+                            first = _oc_ph_map.get(models[0], {})
+                            oc_w_model_primary.set_value(first.get('primary', prov + '/' + first.get('model', '')))
+                        # Load existing api_key for newly selected provider
+                        existing_key = str(oc_conf.get('models', {}).get('providers', {}).get(prov, {}).get('apiKey', ''))
+                        if existing_key:
+                            oc_w_api_key.set_value(existing_key)
+                    oc_w_provider.on_value_change(_oc_cfg_fill_prov)
+
+                    ui.separator().classes('q-my-xs')
                     _oc_dm_opts = ['per-channel-peer', 'global', 'per-channel']
                     _oc_cur_dm  = str(oc_session.get('dmScope', 'per-channel-peer'))
                     oc_w_dm_scope = ui.select(_oc_dm_opts, label='session.dmScope',
@@ -3106,6 +3274,16 @@ def index(request: Request):
                     data['agents']['defaults']['workspace'] = oc_w_workspace.value or ''
                     data['agents']['defaults'].setdefault('model', {})
                     data['agents']['defaults']['model']['primary'] = oc_w_model_primary.value or ''
+
+                    # Save provider api_key into models.providers.<provider>.apiKey
+                    _cfg_prov = oc_w_provider.value or ''
+                    if _cfg_prov and oc_w_api_key.value:
+                        _cfg_hint = _oc_ph_map.get(oc_w_cfg_quick.value or '') or {}
+                        _cfg_base = _cfg_hint.get('api_base') or _oc_ph_pid_base.get(_cfg_prov, '')
+                        data.setdefault('models', {}).setdefault('providers', {}).setdefault(_cfg_prov, {})
+                        if _cfg_base:
+                            data['models']['providers'][_cfg_prov]['baseUrl'] = _cfg_base
+                        data['models']['providers'][_cfg_prov]['apiKey'] = oc_w_api_key.value
 
                     data['session']['dmScope'] = oc_w_dm_scope.value or 'per-channel-peer'
                     data['tools']['profile']   = oc_w_tools_profile.value or 'coding'

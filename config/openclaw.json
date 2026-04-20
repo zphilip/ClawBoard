@@ -16,7 +16,7 @@
     "mode": "local",
     "auth": {
       "mode": "token",
-      "token": "23bdc0de17a338b9dd2542ed9efe6747422c56edcdf09d47"
+      "token": "your-model-token-here"
     },
     "port": 18789,
     "bind": "lan",
@@ -26,11 +26,10 @@
     },
     "controlUi": {
       "allowInsecureAuth": true,
-      // Must match the *browser address bar* origin exactly.
-      // Examples:
-      // - "http://<public-ip>:18789"
-      // - "https://control.example.com"
-      "allowedOrigins": ["http://radxa-cubie-a7z.local:18789","http://192.168.1.25:18789"],
+      "allowedOrigins": [
+        "http://radxa-cubie-a7z.local:18789",
+        "http://192.168.1.25:18789"
+      ]
     },
     "nodes": {
       "denyCommands": [
@@ -110,13 +109,13 @@
     }
   },
   "wizard": {
-    "lastRunAt": "2026-04-18T02:16:23.067Z",
+    "lastRunAt": "2026-04-20T15:25:09.985Z",
     "lastRunVersion": "2026.4.15",
     "lastRunCommand": "configure",
     "lastRunMode": "local"
   },
   "meta": {
     "lastTouchedVersion": "2026.4.15",
-    "lastTouchedAt": "2026-04-18T02:16:23.469Z"
+    "lastTouchedAt": "2026-04-20T15:25:10.329Z"
   }
 }
