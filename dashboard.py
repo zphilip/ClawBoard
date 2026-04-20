@@ -3177,9 +3177,11 @@ def index(request: Request):
 
                 # ── Device lists ─────────────────────────────────────────
                 def _oc_load_devices():
-                    """Run `openclaw devices list --json` and return parsed dict or None."""
+                    """Run `openclaw devices list --json` as the openclaw system user
+                    (which holds the paired CLI device identity) via sudo."""
                     r = subprocess.run(
-                        ['openclaw', 'devices', 'list', '--json'],
+                        ['sudo', '-u', 'openclaw', '/usr/local/bin/openclaw',
+                         'devices', 'list', '--json'],
                         capture_output=True, text=True
                     )
                     if r.returncode != 0:
@@ -3191,7 +3193,8 @@ def index(request: Request):
 
                 def _oc_approve_device(request_id: str, name_lbl):
                     r = subprocess.run(
-                        ['openclaw', 'devices', 'approve', request_id],
+                        ['sudo', '-u', 'openclaw', '/usr/local/bin/openclaw',
+                         'devices', 'approve', request_id],
                         capture_output=True, text=True
                     )
                     if r.returncode == 0:
