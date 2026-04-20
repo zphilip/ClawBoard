@@ -47,5 +47,18 @@ zero ALL=(root) NOPASSWD: /usr/bin/systemctl restart clawberry-proxy.service
 zero ALL=(root) NOPASSWD: /usr/bin/systemctl stop clawberry-proxy.service
 zero ALL=(root) NOPASSWD: /usr/bin/systemctl start clawberry-proxy.service
 
+# ── OpenClaw service management ─────────────────────────────────────────────
+zero ALL=(root) NOPASSWD: /usr/bin/systemctl restart openclaw.service
+zero ALL=(root) NOPASSWD: /usr/bin/systemctl stop openclaw.service
+zero ALL=(root) NOPASSWD: /usr/bin/systemctl start openclaw.service
+
+# ── OpenClaw runtime files ───────────────────────────────────────────────────
+zero ALL=(root) NOPASSWD: /usr/bin/cat /var/lib/openclaw/.openclaw/openclaw.json
+
+# ── OpenClaw config deploy ───────────────────────────────────────────────────
+zero ALL=(root) NOPASSWD: /usr/bin/tee /var/lib/openclaw/.openclaw/openclaw.json
+zero ALL=(root) NOPASSWD: /usr/bin/chown openclaw\:openclaw /var/lib/openclaw/.openclaw/openclaw.json
+zero ALL=(root) NOPASSWD: /usr/bin/mkdir -p /var/lib/openclaw/.openclaw
+
 # ── Workspace-sync upgrade script ────────────────────────────────────────────
 zero ALL=(root) NOPASSWD: /usr/bin/bash /usr/local/bin/clawberry-workspace-sync.sh

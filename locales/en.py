@@ -17,6 +17,7 @@ STRINGS = {
     'tab_features':  'Features',
     'tab_system':    'System',
     'oc_dashboard':  '📂 OpenClaw Dashboard',
+    'oc_tab_wizard':        'Wizard',
     'oc_tab_configuration': 'Configuration',
     'oc_tab_pair_device': 'Pair Device',
     'oc_section_gateway': 'Gateway Settings',

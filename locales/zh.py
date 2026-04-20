@@ -109,6 +109,7 @@ STRINGS = {
     'notify_sudo_required':   '需要 sudo 权限',
     # ── OpenClaw ──────────────────────────────────────────────────────────────────
     'oc_dashboard':            '📂 OpenClaw 控制台',
+    'oc_tab_wizard':           '向导',
     'oc_tab_configuration':    '配置',
     'oc_tab_pair_device':      '配对设备',
     'oc_section_gateway':      '网关 (gateway)',

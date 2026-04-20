@@ -2760,10 +2760,131 @@ def index(request: Request):
             ui.button(icon='refresh', on_click=lambda: ui.navigate.reload()) \
                 .props('flat round dense color=teal-8').tooltip(T['tooltip_reload'])
         with ui.tabs().classes('w-full bg-teal-1') as oc_sub_tabs:
+            t_oc_wiz  = ui.tab(T['oc_tab_wizard'],        icon='auto_fix_high')
             t_oc_cfg  = ui.tab(T['oc_tab_configuration'], icon='settings')
             t_oc_pair = ui.tab(T['oc_tab_pair_device'],   icon='devices')
 
-        with ui.tab_panels(oc_sub_tabs, value=t_oc_cfg).classes('w-full'):
+        with ui.tab_panels(oc_sub_tabs, value=t_oc_wiz).classes('w-full'):
+
+            # ── OpenClaw › Wizard ──────────────────────────────────────────
+            with ui.tab_panel(t_oc_wiz):
+                ui.label('🧙 Quick Setup Wizard').classes('text-h6 text-teal-8 q-mb-xs')
+                ui.label(
+                    'Configure gateway and primary model in a few steps. '
+                    'Click Apply — then restart OpenClaw to activate.'
+                ).classes('text-caption text-grey-6 q-mb-md')
+
+                _oc_wiz_conf  = load_openclaw_config()
+                _oc_wiz_gw    = _oc_wiz_conf.get('gateway', {})
+                _oc_wiz_auth  = _oc_wiz_gw.get('auth', {})
+                _oc_wiz_ad    = _oc_wiz_conf.get('agents', {}).get('defaults', {})
+                _oc_wiz_model = _oc_wiz_ad.get('model', {})
+                _oc_wiz_tools = _oc_wiz_conf.get('tools', {})
+
+                with ui.stepper(value='oc_wiz_gw').props('vertical animated').classes('w-full') as _oc_wiz:
+
+                    # ── Step 1: Gateway ─────────────────────────────────────
+                    with ui.step('oc_wiz_gw', title='1  Gateway', icon='router'):
+                        ui.label('Set how OpenClaw listens and authenticates.').classes('text-caption text-grey-6 q-mb-sm')
+
+                        _oc_wiz_bind_opts = ['loopback', 'lan', 'tailnet', 'auto']
+                        _oc_wiz_cur_bind  = str(_oc_wiz_gw.get('bind', 'lan'))
+                        oc_wiz_bind = ui.select(_oc_wiz_bind_opts, label='gateway.bind',
+                            value=_oc_wiz_cur_bind if _oc_wiz_cur_bind in _oc_wiz_bind_opts else 'lan').classes('w-full q-mb-sm')
+
+                        oc_wiz_port = ui.number('gateway.port',
+                            value=int(_oc_wiz_gw.get('port', 18789) or 18789),
+                            min=1024, max=65535, step=1).classes('w-full q-mb-sm')
+
+                        _oc_wiz_authmode_opts = ['token', 'password', 'none']
+                        _oc_wiz_cur_am = str(_oc_wiz_auth.get('mode', 'token'))
+                        oc_wiz_auth_mode = ui.select(_oc_wiz_authmode_opts, label='gateway.auth.mode',
+                            value=_oc_wiz_cur_am if _oc_wiz_cur_am in _oc_wiz_authmode_opts else 'token').classes('w-full q-mb-sm')
+
+                        oc_wiz_token = ui.input('gateway.auth.token',
+                            value=str(_oc_wiz_auth.get('token', '')),
+                            password=True, password_toggle_button=True).classes('w-full q-mb-sm')
+
+                        def _oc_wiz_read_live():
+                            tok, err = _read_openclaw_deploy_token()
+                            if tok:
+                                oc_wiz_token.set_value(tok)
+                                ui.notify('✅ Token read from deploy path', type='positive')
+                            else:
+                                ui.notify(f'⚠️ {err or "Token not found"}', type='warning')
+                        ui.button(T['oc_token_live'], on_click=_oc_wiz_read_live).props('outline color=teal-8 size=sm').classes('q-mb-sm')
+
+                        with ui.stepper_navigation():
+                            ui.button('Next →', on_click=_oc_wiz.next).props('color=teal-8')
+
+                    # ── Step 2: Model ───────────────────────────────────────
+                    with ui.step('oc_wiz_model', title='2  Primary Model', icon='cloud'):
+                        ui.label('Set the primary model used by agents.').classes('text-caption text-grey-6 q-mb-sm')
+
+                        oc_wiz_model_primary = ui.input('agents.defaults.model.primary',
+                            value=str(_oc_wiz_model.get('primary', ''))).classes('w-full q-mb-sm')
+
+                        oc_wiz_workspace = ui.input('agents.defaults.workspace',
+                            value=str(_oc_wiz_ad.get('workspace', '/var/lib/openclaw/.openclaw/workspace'))).classes('w-full q-mb-sm')
+
+                        _oc_wiz_tp_opts = ['minimal', 'coding', 'messaging', 'full']
+                        _oc_wiz_cur_tp  = str(_oc_wiz_tools.get('profile', 'coding'))
+                        oc_wiz_tools_profile = ui.select(_oc_wiz_tp_opts, label='tools.profile',
+                            value=_oc_wiz_cur_tp if _oc_wiz_cur_tp in _oc_wiz_tp_opts else 'coding').classes('w-full q-mb-sm')
+
+                        with ui.stepper_navigation():
+                            ui.button('← Back', on_click=_oc_wiz.previous).props('flat color=grey-7')
+                            ui.button('Next →', on_click=_oc_wiz.next).props('color=teal-8')
+
+                    # ── Step 3: Apply ───────────────────────────────────────
+                    with ui.step('oc_wiz_apply', title='3  Apply', icon='check_circle'):
+                        ui.label('Review and apply settings.').classes('text-caption text-grey-6 q-mb-sm')
+
+                        def _oc_wiz_summary():
+                            return (
+                                f'gateway.bind:            {oc_wiz_bind.value}\n'
+                                f'gateway.port:            {int(oc_wiz_port.value or 18789)}\n'
+                                f'gateway.auth.mode:       {oc_wiz_auth_mode.value}\n'
+                                f'gateway.auth.token:      {"(set)" if oc_wiz_token.value else "(empty)"}\n'
+                                f'model.primary:           {oc_wiz_model_primary.value or "(unchanged)"}\n'
+                                f'workspace:               {oc_wiz_workspace.value}\n'
+                                f'tools.profile:           {oc_wiz_tools_profile.value}'
+                            )
+                        oc_wiz_summary_lbl = ui.label('').classes('text-caption text-grey-7 q-mb-sm')
+
+                        def _oc_wiz_refresh_summary():
+                            oc_wiz_summary_lbl.set_text(_oc_wiz_summary())
+                        _oc_wiz.on('transition', lambda _: _oc_wiz_refresh_summary())
+
+                        def _oc_wiz_apply():
+                            data = load_openclaw_config()
+                            data.setdefault('gateway', {}).setdefault('auth', {})
+                            data['gateway']['bind']       = oc_wiz_bind.value or 'lan'
+                            data['gateway']['port']       = int(oc_wiz_port.value or 18789)
+                            data['gateway']['auth']['mode']  = oc_wiz_auth_mode.value or 'token'
+                            if oc_wiz_token.value:
+                                data['gateway']['auth']['token'] = oc_wiz_token.value
+                            ad = data.setdefault('agents', {}).setdefault('defaults', {})
+                            ad.setdefault('model', {})
+                            if oc_wiz_model_primary.value:
+                                ad['model']['primary'] = oc_wiz_model_primary.value
+                            if oc_wiz_workspace.value:
+                                ad['workspace'] = oc_wiz_workspace.value
+                            data.setdefault('tools', {})['profile'] = oc_wiz_tools_profile.value or 'coding'
+                            try:
+                                save_openclaw_config(data)
+                                ok_cfg, err_cfg = deploy_openclaw_config()
+                                if not ok_cfg:
+                                    ui.notify(f'⚠️ Saved locally but deploy failed: {err_cfg}', type='warning')
+                                else:
+                                    ui.notify('✅ OpenClaw config saved & deployed — restart OpenClaw to activate', type='positive')
+                            except Exception as ex:
+                                ui.notify(f'❌ {ex}', type='negative')
+
+                        with ui.stepper_navigation():
+                            ui.button('← Back', on_click=_oc_wiz.previous).props('flat color=grey-7')
+                            ui.button('✅ Apply & Deploy', on_click=_oc_wiz_apply).props('color=teal-8 elevated')
+
             # ── OpenClaw › Configuration ───────────────────────────────────
             with ui.tab_panel(t_oc_cfg):
                 oc_conf    = load_openclaw_config()
