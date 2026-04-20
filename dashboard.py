@@ -36,6 +36,61 @@ def _sudo_read_file(path: str) -> tuple[str, str]:
         return '', err
     return r.stdout, ''
 
+def _get_lan_ip() -> str:
+    """Return the device's primary LAN IPv4 address for use in QR pairing URLs.
+    Prefers the IP of the active WiFi interface (via nmcli), then falls back to
+    the default-route interface, then socket-based detection.
+    Returns an empty string if nothing can be determined."""
+    # 1. nmcli: find connected wifi device, then its IP
+    try:
+        nm = subprocess.run(
+            ['nmcli', '-t', '-f', 'DEVICE,TYPE,STATE', 'dev'],
+            capture_output=True, text=True
+        )
+        for row in nm.stdout.splitlines():
+            parts = row.split(':')
+            if len(parts) >= 3 and parts[1] == 'wifi' and parts[2] == 'connected':
+                iface = parts[0]
+                ip_r = subprocess.run(
+                    ['ip', '-4', 'addr', 'show', iface],
+                    capture_output=True, text=True
+                )
+                for ln in ip_r.stdout.splitlines():
+                    ln = ln.strip()
+                    if ln.startswith('inet '):
+                        return ln.split()[1].split('/')[0]
+    except Exception:
+        pass
+    # 2. default-route interface
+    try:
+        gw_r = subprocess.run(['ip', 'route', 'show', 'default'],
+                              capture_output=True, text=True)
+        for ln in gw_r.stdout.strip().splitlines():
+            parts = ln.split()
+            # "default via <gw> dev <iface> ..."
+            if 'dev' in parts:
+                iface = parts[parts.index('dev') + 1]
+                ip_r = subprocess.run(
+                    ['ip', '-4', 'addr', 'show', iface],
+                    capture_output=True, text=True
+                )
+                for aln in ip_r.stdout.splitlines():
+                    aln = aln.strip()
+                    if aln.startswith('inet '):
+                        return aln.split()[1].split('/')[0]
+    except Exception:
+        pass
+    # 3. socket trick
+    try:
+        import socket as _sock
+        s = _sock.socket(_sock.AF_INET, _sock.SOCK_DGRAM)
+        s.connect(('8.8.8.8', 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        return ''
+
 def _read_picoclaw_pid_token() -> tuple[str, str]:
     """Read the runtime token from the picoclaw PID file using sudo.
     Returns (pid_token, error_message)."""
@@ -2763,7 +2818,7 @@ def index(request: Request):
                     else:
                         pico_token = _sec_tok             # fallback: no pid file
                     pico_port = int(pc_gateway.get('port', 18790) or 18790)
-                    pico_host = request.url.hostname or 'localhost'
+                    pico_host = _get_lan_ip() or request.url.hostname or 'localhost'
                     pico_scheme = request.url.scheme or 'http'
                     pico_url = f'{pico_scheme}://{pico_host}:{pico_port}?token={pico_token}' if pico_token else ''
                     pico_qr_url = f'https://quickchart.io/qr?size=260&margin=1&text={quote(pico_url, safe="")}' if pico_url else ''
@@ -3085,13 +3140,14 @@ def index(request: Request):
             with ui.tab_panel(t_oc_pair):
                 oc_tok, oc_tok_err = _read_openclaw_deploy_token()
                 oc_port = int(load_openclaw_config().get('gateway', {}).get('port', 18789) or 18789)
-                oc_host   = request.url.hostname or 'localhost'
+                oc_host   = _get_lan_ip() or request.url.hostname or 'localhost'
                 oc_scheme = request.url.scheme or 'http'
                 oc_url    = f'{oc_scheme}://{oc_host}:{oc_port}?token={oc_tok}' if oc_tok else ''
                 oc_qr_url = f'https://quickchart.io/qr?size=260&margin=1&text={quote(oc_url, safe="")}' if oc_url else ''
                 oc_tok_qr = f'https://quickchart.io/qr?size=260&margin=1&text={quote(oc_tok, safe="")}' if oc_tok else ''
 
-                with ui.card().classes('w-full q-pa-md'):
+                # ── QR / token card ──────────────────────────────────────
+                with ui.card().classes('w-full q-pa-md q-mb-sm'):
                     ui.label(T['oc_pair_title']).classes('text-h6 text-teal-8')
                     if oc_tok_err:
                         ui.label(f'⚠️ {oc_tok_err}').classes('text-warning text-caption q-mt-xs')
@@ -3118,6 +3174,115 @@ def index(request: Request):
                                     ui.button('📋 Copy URL', on_click=_copy_oc_url).props('outline color=teal-8')
                     else:
                         ui.label(T['oc_pair_missing_token']).classes('text-negative q-mt-sm')
+
+                # ── Device lists ─────────────────────────────────────────
+                def _oc_load_devices():
+                    """Run `openclaw devices list --json` and return parsed dict or None."""
+                    r = subprocess.run(
+                        ['openclaw', 'devices', 'list', '--json'],
+                        capture_output=True, text=True
+                    )
+                    if r.returncode != 0:
+                        return None, r.stderr.strip() or f'exit {r.returncode}'
+                    try:
+                        return json.loads(r.stdout), ''
+                    except Exception as e:
+                        return None, f'Parse error: {e}'
+
+                def _oc_approve_device(request_id: str, name_lbl):
+                    r = subprocess.run(
+                        ['openclaw', 'devices', 'approve', request_id],
+                        capture_output=True, text=True
+                    )
+                    if r.returncode == 0:
+                        ui.notify(f'✅ Approved {request_id[:8]}…', type='positive')
+                        name_lbl.set_text('✅ Approved')
+                    else:
+                        err = r.stderr.strip() or f'exit {r.returncode}'
+                        ui.notify(f'❌ {err}', type='negative')
+
+                def _oc_fmt_ts(ms):
+                    if not ms:
+                        return ''
+                    try:
+                        from datetime import datetime as _dt
+                        return _dt.fromtimestamp(int(ms) / 1000).strftime('%Y-%m-%d %H:%M')
+                    except Exception:
+                        return str(ms)
+
+                # ── Pending approvals ────────────────────────────────────
+                with ui.card().classes('w-full q-pa-md q-mb-sm'):
+                    with ui.row().classes('w-full items-center justify-between q-mb-sm'):
+                        ui.label('⏳ Pending Approval').classes('text-subtitle1 text-bold text-orange-8')
+                        def _oc_refresh_devices():
+                            _pending_col.clear()
+                            _paired_col.clear()
+                            _oc_populate_devices()
+                        ui.button(icon='refresh', on_click=_oc_refresh_devices) \
+                            .props('flat round dense color=teal-8').tooltip('Refresh')
+
+                    _pending_col = ui.column().classes('w-full gap-2')
+
+                # ── Paired devices ───────────────────────────────────────
+                with ui.card().classes('w-full q-pa-md'):
+                    ui.label('📱 Paired Devices').classes('text-subtitle1 text-bold text-teal-8 q-mb-sm')
+                    _paired_col = ui.column().classes('w-full gap-2')
+
+                def _oc_populate_devices():
+                    devs, err = _oc_load_devices()
+
+                    # ── Pending ──────────────────────────────────────────
+                    with _pending_col:
+                        if err and devs is None:
+                            ui.label(f'⚠️ {err}').classes('text-caption text-negative')
+                        else:
+                            pending = (devs or {}).get('pending', [])
+                            if not pending:
+                                ui.label('No pending requests').classes('text-caption text-grey-6')
+                            for dev in pending:
+                                rid   = dev.get('requestId', '')
+                                dname = dev.get('displayName') or dev.get('deviceId', '?')[:16] + '…'
+                                plat  = dev.get('platform', '')
+                                fam   = dev.get('deviceFamily', '')
+                                rip   = dev.get('remoteIp', '')
+                                roles = ', '.join(dev.get('roles') or [])
+                                ts    = _oc_fmt_ts(dev.get('ts'))
+                                with ui.card().classes('w-full q-pa-sm bg-orange-1'):
+                                    with ui.row().classes('w-full items-center justify-between'):
+                                        with ui.column().classes('gap-0'):
+                                            ui.label(f'📲 {dname}').classes('text-bold')
+                                            ui.label(f'{fam or plat}  ·  {rip}  ·  {roles}').classes('text-caption text-grey-7')
+                                            ui.label(f'Request ID: {rid}').classes('text-caption text-mono text-grey-6')
+                                            ui.label(f'Requested: {ts}').classes('text-caption text-grey-6')
+                                        _approve_lbl = ui.label('')
+                                        ui.button(
+                                            '✅ Approve',
+                                            on_click=lambda _rid=rid, _lbl=_approve_lbl: _oc_approve_device(_rid, _lbl)
+                                        ).props('color=teal-8 size=sm')
+
+                    # ── Paired ───────────────────────────────────────────
+                    with _paired_col:
+                        if devs is not None:
+                            paired = devs.get('paired', [])
+                            if not paired:
+                                ui.label('No paired devices').classes('text-caption text-grey-6')
+                            for dev in paired:
+                                dname   = dev.get('displayName') or dev.get('clientId', '?')
+                                plat    = dev.get('platform', '')
+                                fam     = dev.get('deviceFamily', '')
+                                rip     = dev.get('remoteIp', '')
+                                role    = dev.get('role', '')
+                                roles   = ', '.join(dev.get('roles') or [])
+                                created = _oc_fmt_ts(dev.get('createdAtMs'))
+                                mode    = dev.get('clientMode', '')
+                                with ui.card().classes('w-full q-pa-sm bg-teal-1'):
+                                    ui.label(f'📱 {dname}').classes('text-bold')
+                                    ui.label(f'{fam or plat}  ·  {rip}  ·  role: {role}  ·  mode: {mode}').classes('text-caption text-grey-7')
+                                    ui.label(f'Roles: {roles}').classes('text-caption text-grey-6')
+                                    if created:
+                                        ui.label(f'Paired: {created}').classes('text-caption text-grey-6')
+
+                _oc_populate_devices()
 
     # ── Sidebar navigation wiring ──────────────────────────────────────────────
     # ══ WiFi Setup ════════════════════════════════════════════════════════════
