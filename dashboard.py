@@ -18,7 +18,7 @@ PICOCLAW_DEPLOY_CONFIG_PATH  = '/var/lib/picoclaw/.picoclaw/config.json'        
 PICOCLAW_DEPLOY_SECURITY_PATH= '/var/lib/picoclaw/.picoclaw/.security.yml'            # same as PICOCLAW_SECURITY_YML
 
 OPENCLAW_CONFIG_PATH         = os.path.join(SCRIPT_DIR, 'config', 'openclaw.json')
-OPENCLAW_DEPLOY_CONFIG_PATH  = '/root/.openclaw/openclaw.json'
+OPENCLAW_DEPLOY_CONFIG_PATH  = '/var/lib/openclaw/.openclaw/openclaw.json'
 
 def _sudo_read_file(path: str) -> tuple[str, str]:
     """Read a file that requires elevated privileges via `sudo cat`.
@@ -108,6 +108,75 @@ def load_openclaw_config():
             return json.load(f)
     except Exception:
         return {}
+
+def save_openclaw_config(data):
+    os.makedirs(os.path.dirname(OPENCLAW_CONFIG_PATH), exist_ok=True)
+    with open(OPENCLAW_CONFIG_PATH, 'w') as f:
+        json.dump(data, f, indent=2)
+
+def deploy_openclaw_config():
+    """Deploy openclaw.json from local workspace to OPENCLAW_DEPLOY_CONFIG_PATH via sudo tee.
+    Returns (ok: bool, message: str)."""
+    import shutil
+    bak = OPENCLAW_CONFIG_PATH + '.bak'
+    try:
+        shutil.copy2(OPENCLAW_CONFIG_PATH, bak)
+    except Exception as e:
+        return False, f'Backup failed: {e}'
+    try:
+        with open(OPENCLAW_CONFIG_PATH, 'r') as f:
+            content = f.read()
+    except Exception as e:
+        return False, f'Read failed: {e}'
+    subprocess.run(
+        ['sudo', '/usr/bin/mkdir', '-p', os.path.dirname(OPENCLAW_DEPLOY_CONFIG_PATH)],
+        capture_output=True
+    )
+    r = subprocess.run(
+        ['sudo', '/usr/bin/tee', OPENCLAW_DEPLOY_CONFIG_PATH],
+        input=content, capture_output=True, text=True
+    )
+    if r.returncode != 0:
+        err = r.stderr.strip() or f'sudo tee failed (exit {r.returncode})'
+        return False, err
+    subprocess.run(
+        ['sudo', '/usr/bin/chown', 'openclaw:openclaw', OPENCLAW_DEPLOY_CONFIG_PATH],
+        capture_output=True
+    )
+    return True, ''
+
+def restart_openclaw_service():
+    """Restart openclaw.service via sudo systemctl.
+    Returns (ok: bool, stderr: str)."""
+    r = subprocess.run(
+        ['sudo', '/usr/bin/systemctl', 'restart', 'openclaw.service'],
+        capture_output=True, text=True
+    )
+    return r.returncode == 0, r.stderr.strip()
+
+def openclaw_service_status():
+    r = subprocess.run(['systemctl', 'is-active', 'openclaw.service'], capture_output=True, text=True)
+    return r.stdout.strip()
+
+def _read_openclaw_deploy_token() -> tuple[str, str]:
+    """Read gateway.auth.token from the deployed openclaw.json via sudo cat.
+    Falls back to local config/openclaw.json on failure.
+    Returns (token, error_message)."""
+    raw, err = _sudo_read_file(OPENCLAW_DEPLOY_CONFIG_PATH)
+    if not err:
+        try:
+            data = json.loads(raw)
+            tok = str(data.get('gateway', {}).get('auth', {}).get('token', '')).strip()
+            if tok:
+                return tok, ''
+        except Exception as e:
+            err = f'Parse error: {e}'
+    # Fallback to local copy
+    local_conf = load_openclaw_config()
+    tok = str(local_conf.get('gateway', {}).get('auth', {}).get('token', '')).strip()
+    if tok:
+        return tok, f'(local copy — deploy read failed: {err})'
+    return '', err
 
 def save_picoclaw_config(data):
     os.makedirs(os.path.dirname(PICOCLAW_CONFIG_PATH), exist_ok=True)
@@ -2697,39 +2766,187 @@ def index(request: Request):
         with ui.tab_panels(oc_sub_tabs, value=t_oc_cfg).classes('w-full'):
             # ── OpenClaw › Configuration ───────────────────────────────────
             with ui.tab_panel(t_oc_cfg):
-                oc_conf = load_openclaw_config()
+                oc_conf    = load_openclaw_config()
                 oc_gateway = oc_conf.get('gateway', {})
-                with ui.card().classes('w-full q-pa-md'):
+                oc_auth    = oc_gateway.get('auth', {})
+                oc_agents  = oc_conf.get('agents', {}).get('defaults', {})
+                oc_session = oc_conf.get('session', {})
+                oc_tools   = oc_conf.get('tools', {})
+                oc_ctrl_ui = oc_gateway.get('controlUi', {})
+                oc_ts      = oc_gateway.get('tailscale', {})
+
+                # ── Gateway ──────────────────────────────────────────────
+                with ui.card().classes('w-full q-pa-md q-mb-sm'):
                     ui.label(T['oc_section_gateway']).classes('text-subtitle2 text-grey-7 q-mt-sm')
-                    ui.input('Gateway Mode', value=str(oc_gateway.get('mode', 'local'))).props('readonly').classes('w-full')
-                    ui.input('Gateway Token', value=str(oc_gateway.get('auth', {}).get('token', ''))).props('readonly').classes('w-full')
+
+                    _oc_mode_opts = ['local', 'remote']
+                    _oc_cur_mode  = str(oc_gateway.get('mode', 'local'))
+                    oc_w_mode = ui.select(_oc_mode_opts, label='gateway.mode',
+                        value=_oc_cur_mode if _oc_cur_mode in _oc_mode_opts else 'local',
+                        with_input=True).classes('w-full')
+
+                    oc_w_port = ui.number('gateway.port', value=int(oc_gateway.get('port', 18789) or 18789),
+                        min=1024, max=65535, step=1).classes('w-full')
+
+                    _oc_bind_opts = ['loopback', 'lan', 'tailnet', 'auto']
+                    _oc_cur_bind  = str(oc_gateway.get('bind', 'lan'))
+                    oc_w_bind = ui.select(_oc_bind_opts, label='gateway.bind',
+                        value=_oc_cur_bind if _oc_cur_bind in _oc_bind_opts else 'lan',
+                        with_input=True).classes('w-full')
+
+                    ui.separator().classes('q-my-xs')
+                    ui.label('Auth').classes('text-caption text-grey-6')
+
+                    _oc_authmode_opts = ['token', 'password', 'none']
+                    _oc_cur_authmode  = str(oc_auth.get('mode', 'token'))
+                    oc_w_auth_mode = ui.select(_oc_authmode_opts, label='gateway.auth.mode',
+                        value=_oc_cur_authmode if _oc_cur_authmode in _oc_authmode_opts else 'token').classes('w-full')
+
+                    oc_w_auth_token = ui.input('gateway.auth.token',
+                        value=str(oc_auth.get('token', '')),
+                        password=True, password_toggle_button=True).classes('w-full')
+
+                    def _oc_read_live_token():
+                        tok, err = _read_openclaw_deploy_token()
+                        if tok:
+                            oc_w_auth_token.set_value(tok)
+                            ui.notify(f'✅ Token read from deploy path', type='positive')
+                        else:
+                            ui.notify(f'⚠️ {err or "Token not found"}', type='warning')
+                    ui.button(T['oc_token_live'], on_click=_oc_read_live_token).props('outline color=teal-8 size=sm').classes('q-mt-xs')
+
+                    ui.separator().classes('q-my-xs')
+                    ui.label('controlUi.allowedOrigins (one per line)').classes('text-caption text-grey-6')
+                    _oc_origins = oc_ctrl_ui.get('allowedOrigins') or []
+                    oc_w_allowed_origins = ui.textarea(value='\n'.join(_oc_origins)).classes('w-full').props('outlined rows=3')
+
+                    ui.separator().classes('q-my-xs')
+                    ui.label('Tailscale').classes('text-caption text-grey-6')
+                    _oc_ts_opts = ['off', 'serve', 'funnel']
+                    _oc_cur_ts  = str(oc_ts.get('mode', 'off'))
+                    oc_w_ts_mode = ui.select(_oc_ts_opts, label='gateway.tailscale.mode',
+                        value=_oc_cur_ts if _oc_cur_ts in _oc_ts_opts else 'off').classes('w-full')
+                    oc_w_ts_reset = ui.checkbox('gateway.tailscale.resetOnExit',
+                        value=bool(oc_ts.get('resetOnExit', False)))
+
+                # ── Agents & Session ─────────────────────────────────────
+                with ui.card().classes('w-full q-pa-md q-mb-sm'):
+                    ui.label(T['oc_section_agents']).classes('text-subtitle2 text-grey-7')
+
+                    oc_w_workspace = ui.input('agents.defaults.workspace',
+                        value=str(oc_agents.get('workspace', '/var/lib/openclaw/.openclaw/workspace'))).classes('w-full')
+
+                    _oc_model_primary = str((oc_agents.get('model') or {}).get('primary', ''))
+                    oc_w_model_primary = ui.input('agents.defaults.model.primary',
+                        value=_oc_model_primary).classes('w-full')
+
+                    _oc_dm_opts = ['per-channel-peer', 'global', 'per-channel']
+                    _oc_cur_dm  = str(oc_session.get('dmScope', 'per-channel-peer'))
+                    oc_w_dm_scope = ui.select(_oc_dm_opts, label='session.dmScope',
+                        value=_oc_cur_dm if _oc_cur_dm in _oc_dm_opts else 'per-channel-peer').classes('w-full')
+
+                # ── Tools ────────────────────────────────────────────────
+                with ui.card().classes('w-full q-pa-md q-mb-sm'):
+                    ui.label(T['oc_section_tools']).classes('text-subtitle2 text-grey-7')
+
+                    _oc_tp_opts = ['minimal', 'coding', 'messaging', 'full']
+                    _oc_cur_tp  = str(oc_tools.get('profile', 'coding'))
+                    oc_w_tools_profile = ui.select(_oc_tp_opts, label='tools.profile',
+                        value=_oc_cur_tp if _oc_cur_tp in _oc_tp_opts else 'coding',
+                        with_input=True).classes('w-full')
+
+                # ── Action buttons ───────────────────────────────────────
+                def oc_collect_and_save():
+                    """Collect all widget values back into the openclaw config dict and save locally."""
+                    data = load_openclaw_config()
+                    data.setdefault('gateway', {})
+                    data.setdefault('agents', {}).setdefault('defaults', {})
+                    data.setdefault('session', {})
+                    data.setdefault('tools', {})
+
+                    data['gateway']['mode']  = oc_w_mode.value or 'local'
+                    data['gateway']['port']  = int(oc_w_port.value or 18789)
+                    data['gateway']['bind']  = oc_w_bind.value or 'lan'
+                    data['gateway'].setdefault('auth', {})
+                    data['gateway']['auth']['mode']  = oc_w_auth_mode.value or 'token'
+                    data['gateway']['auth']['token'] = oc_w_auth_token.value or ''
+                    data['gateway'].setdefault('controlUi', {})
+                    origins_raw = [l.strip() for l in oc_w_allowed_origins.value.splitlines() if l.strip()]
+                    data['gateway']['controlUi']['allowedOrigins'] = origins_raw
+                    data['gateway'].setdefault('tailscale', {})
+                    data['gateway']['tailscale']['mode']        = oc_w_ts_mode.value or 'off'
+                    data['gateway']['tailscale']['resetOnExit'] = oc_w_ts_reset.value
+
+                    data['agents']['defaults']['workspace'] = oc_w_workspace.value or ''
+                    data['agents']['defaults'].setdefault('model', {})
+                    data['agents']['defaults']['model']['primary'] = oc_w_model_primary.value or ''
+
+                    data['session']['dmScope'] = oc_w_dm_scope.value or 'per-channel-peer'
+                    data['tools']['profile']   = oc_w_tools_profile.value or 'coding'
+
+                    try:
+                        save_openclaw_config(data)
+                        ui.notify(T['oc_notify_saved'], type='positive')
+                        return True
+                    except Exception as e:
+                        ui.notify(T['oc_notify_save_fail'].format(e), type='negative')
+                        return False
+
+                def oc_do_save_restart():
+                    if not oc_collect_and_save():
+                        return
+                    ok_cfg, err_cfg = deploy_openclaw_config()
+                    if not ok_cfg:
+                        ui.notify(f'⚠️ Deploy failed: {err_cfg}', type='warning')
+                        return
+                    ok_svc, svc_err = restart_openclaw_service()
+                    if ok_svc:
+                        ui.notify('✅ OpenClaw deployed & restarted', type='positive')
+                    else:
+                        ui.notify(f'⚠️ Restart failed: {svc_err or T["notify_sudo_required"]}', type='warning')
+
+                ui.separator()
+                with ui.row().classes('w-full gap-2 q-pa-sm'):
+                    ui.button(T['oc_btn_save'],         on_click=oc_collect_and_save).props('elevated').classes('flex-1 bg-teal-8 text-white')
+                    ui.button(T['oc_btn_save_restart'],  on_click=oc_do_save_restart).props('elevated').classes('flex-1 bg-teal-10 text-white')
 
             # ── OpenClaw › Pair Device ─────────────────────────────────────
             with ui.tab_panel(t_oc_pair):
-                oc_conf = load_openclaw_config()
-                oc_gateway = oc_conf.get('gateway', {})
-                oc_token = oc_gateway.get('auth', {}).get('token', '')
-                
+                oc_tok, oc_tok_err = _read_openclaw_deploy_token()
+                oc_port = int(load_openclaw_config().get('gateway', {}).get('port', 18789) or 18789)
+                oc_host   = request.url.hostname or 'localhost'
+                oc_scheme = request.url.scheme or 'http'
+                oc_url    = f'{oc_scheme}://{oc_host}:{oc_port}?token={oc_tok}' if oc_tok else ''
+                oc_qr_url = f'https://quickchart.io/qr?size=260&margin=1&text={quote(oc_url, safe="")}' if oc_url else ''
+                oc_tok_qr = f'https://quickchart.io/qr?size=260&margin=1&text={quote(oc_tok, safe="")}' if oc_tok else ''
+
                 with ui.card().classes('w-full q-pa-md'):
                     ui.label(T['oc_pair_title']).classes('text-h6 text-teal-8')
-                    if oc_token:
-                        # OpenClaw QR (token only)
-                        # Gateway Token QR (token only, but maybe with a different label)
+                    if oc_tok_err:
+                        ui.label(f'⚠️ {oc_tok_err}').classes('text-warning text-caption q-mt-xs')
+                    if oc_tok:
+                        ui.input('gateway.auth.token', value=oc_tok).props('readonly').classes('w-full q-mt-sm')
+                        if oc_url:
+                            ui.input('Pairing URL', value=oc_url).props('readonly').classes('w-full')
+
                         with ui.row().classes('w-full items-start gap-4 q-mt-sm'):
-                            with ui.card().classes('q-pa-sm items-center bg-white'):
-                                ui.label(T['oc_pair_qr']).classes('text-caption text-grey-7 q-mb-xs')
-                                oc_qr_url = f'https://quickchart.io/qr?size=260&margin=1&text={quote(oc_token, safe="")}'
-                                ui.image(oc_qr_url).classes('w-56 h-56')
+                            if oc_qr_url:
+                                with ui.card().classes('q-pa-sm items-center bg-white'):
+                                    ui.label(T['oc_pair_qr']).classes('text-caption text-grey-7 q-mb-xs')
+                                    ui.image(oc_qr_url).classes('w-56 h-56')
 
                             with ui.card().classes('q-pa-sm items-center bg-white'):
                                 ui.label(T['oc_gateway_token_qr']).classes('text-caption text-grey-7 q-mb-xs')
-                                # Assuming gateway token QR is the same token for now or as requested
-                                # The user asked for "openclaw qr" and "gateway token"
-                                # We'll use the same token since it's the only one we have in config
-                                oc_gw_qr_url = f'https://quickchart.io/qr?size=260&margin=1&text={quote(oc_token, safe="")}'
-                                ui.image(oc_gw_qr_url).classes('w-56 h-56')
+                                ui.image(oc_tok_qr).classes('w-56 h-56')
+
+                            with ui.column().classes('gap-2 q-mt-md'):
+                                def _copy_oc_url(url=oc_url):
+                                    ui.clipboard.write(url)
+                                    ui.notify('✅ URL copied', type='positive')
+                                if oc_url:
+                                    ui.button('📋 Copy URL', on_click=_copy_oc_url).props('outline color=teal-8')
                     else:
-                        ui.label('No token found in openclaw.json').classes('text-negative q-mt-sm')
+                        ui.label(T['oc_pair_missing_token']).classes('text-negative q-mt-sm')
 
     # ── Sidebar navigation wiring ──────────────────────────────────────────────
     # ══ WiFi Setup ════════════════════════════════════════════════════════════
