@@ -1,7 +1,7 @@
 {
   "agents": {
     "defaults": {
-      "workspace": "/root/.openclaw/workspace",
+      "workspace": "/var/lib/openclaw/.openclaw/workspace",
       "models": {
         "minimax/MiniMax-M2.7": {
           "alias": "Minimax"

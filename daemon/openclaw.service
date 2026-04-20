@@ -10,7 +10,7 @@ Group=openclaw
 
 ExecStartPre=/usr/bin/test -x /usr/local/bin/openclaw
 
-ExecStart=/usr/local/bin/openclaw gateway run
+ExecStart=/usr/bin/openclaw gateway run
 
 WorkingDirectory=/var/lib/openclaw
 
