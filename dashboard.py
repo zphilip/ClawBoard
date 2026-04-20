@@ -101,11 +101,61 @@ def load_picoclaw_config():
     except Exception:
         return {}
 
+def _parse_json5(text: str):
+    """Parse a JSON5-ish string: strips // and /* */ comments outside strings,
+    removes trailing commas, then delegates to the standard json parser."""
+    import re as _re
+    # State-machine pass: walk character by character to strip comments that
+    # are NOT inside a string literal.  Handles \" escapes inside strings.
+    out = []
+    i = 0
+    n = len(text)
+    in_str = False
+    while i < n:
+        c = text[i]
+        if in_str:
+            out.append(c)
+            if c == '\\' and i + 1 < n:
+                i += 1
+                out.append(text[i])
+            elif c == '"':
+                in_str = False
+        else:
+            if c == '"':
+                in_str = True
+                out.append(c)
+            elif c == '/' and i + 1 < n and text[i + 1] == '/':
+                # Line comment — skip to end of line
+                while i < n and text[i] != '\n':
+                    i += 1
+                continue
+            elif c == '/' and i + 1 < n and text[i + 1] == '*':
+                # Block comment — skip to */
+                i += 2
+                while i < n - 1 and not (text[i] == '*' and text[i + 1] == '/'):
+                    i += 1
+                i += 2  # skip closing */
+                continue
+            else:
+                out.append(c)
+        i += 1
+    stripped = ''.join(out)
+    # Remove trailing commas before ] or }
+    stripped = _re.sub(r',\s*([}\]])', r'\1', stripped)
+    try:
+        return json.loads(stripped)
+    except Exception:
+        try:
+            import json5 as _json5
+            return _json5.loads(text)
+        except ImportError:
+            raise
+
 def load_openclaw_config():
-    """Load openclaw config; return empty dict on failure."""
+    """Load openclaw config (JSON5-tolerant); return empty dict on failure."""
     try:
         with open(OPENCLAW_CONFIG_PATH, 'r') as f:
-            return json.load(f)
+            return _parse_json5(f.read())
     except Exception:
         return {}
 
@@ -165,7 +215,7 @@ def _read_openclaw_deploy_token() -> tuple[str, str]:
     raw, err = _sudo_read_file(OPENCLAW_DEPLOY_CONFIG_PATH)
     if not err:
         try:
-            data = json.loads(raw)
+            data = _parse_json5(raw)
             tok = str(data.get('gateway', {}).get('auth', {}).get('token', '')).strip()
             if tok:
                 return tok, ''
@@ -3083,57 +3133,104 @@ def index(request: Request):
                 def _refresh_wifi_status():
                     import subprocess as _sp
                     lines = []
-                    # Interface + SSID + signal via iwgetid / iw
-                    try:
-                        iface_r = _sp.run(['iwgetid', '-r'], capture_output=True, text=True)
-                        ssid = iface_r.stdout.strip()
-                        iface_n = _sp.run(['iwgetid'], capture_output=True, text=True)
-                        iface = iface_n.stdout.split()[0] if iface_n.stdout.strip() else 'wlan0'
-                    except Exception:
-                        ssid, iface = '', 'wlan0'
 
+                    # ── Primary: nmcli (works with USB WiFi adapters) ────────
+                    ssid = iface = ip4 = gw4 = signal = ''
+                    try:
+                        # nmcli -t -f DEVICE,TYPE,STATE,CONNECTION,SIGNAL dev
+                        nm = _sp.run(
+                            ['nmcli', '-t', '-f', 'DEVICE,TYPE,STATE,CONNECTION,SIGNAL', 'dev'],
+                            capture_output=True, text=True
+                        )
+                        for row in nm.stdout.splitlines():
+                            parts = row.split(':')
+                            if len(parts) >= 3 and parts[1] == 'wifi' and parts[2] == 'connected':
+                                iface  = parts[0]
+                                ssid   = parts[3] if len(parts) > 3 else ''
+                                signal = parts[4].strip() + ' %' if len(parts) > 4 and parts[4].strip() else ''
+                                break
+                    except Exception:
+                        pass
+
+                    # ── Fallback: iwgetid (classic wireless-tools) ───────────
+                    if not ssid:
+                        try:
+                            iface_r = _sp.run(['iwgetid', '-r'], capture_output=True, text=True)
+                            ssid    = iface_r.stdout.strip()
+                            iface_n = _sp.run(['iwgetid'],       capture_output=True, text=True)
+                            iface   = iface_n.stdout.split()[0] if iface_n.stdout.strip() else iface or 'wlan0'
+                        except Exception:
+                            pass
+
+                    # ── Detect any active wifi interface if still unknown ─────
+                    if not iface:
+                        try:
+                            ip_lnk = _sp.run(['ip', '-o', 'link', 'show'],
+                                             capture_output=True, text=True)
+                            for ln in ip_lnk.stdout.splitlines():
+                                if 'wlan' in ln or 'wlp' in ln or 'wlx' in ln:
+                                    iface = ln.split(':')[1].strip().split('@')[0]
+                                    break
+                        except Exception:
+                            iface = 'wlan0'
+
+                    # ── Connected / disconnected banner ──────────────────────
                     if ssid:
                         lines.append(f'🟢 Connected  |  SSID: {ssid}  |  Interface: {iface}')
                     else:
-                        lines.append('🔴 Not connected to any WiFi network')
+                        # Double-check: is there an IP on the wifi iface anyway?
+                        try:
+                            chk = _sp.run(['ip', '-4', 'addr', 'show', iface or 'wlan0'],
+                                          capture_output=True, text=True)
+                            has_ip = any(l.strip().startswith('inet ') for l in chk.stdout.splitlines())
+                        except Exception:
+                            has_ip = False
+                        if has_ip:
+                            lines.append(f'🟡 Connected (SSID unknown)  |  Interface: {iface or "wlan0"}')
+                        else:
+                            lines.append('🔴 Not connected to any WiFi network')
 
-                    # IP address
+                    # ── IP address ───────────────────────────────────────────
                     try:
-                        ip_r = _sp.run(['ip', '-4', 'addr', 'show', iface],
-                                        capture_output=True, text=True)
+                        ip_r = _sp.run(['ip', '-4', 'addr', 'show', iface or 'wlan0'],
+                                       capture_output=True, text=True)
                         for ln in ip_r.stdout.splitlines():
                             ln = ln.strip()
                             if ln.startswith('inet '):
-                                ip = ln.split()[1]   # e.g. 192.168.1.5/24
-                                lines.append(f'   IP Address : {ip}')
+                                ip4 = ln.split()[1]
+                                lines.append(f'   IP Address : {ip4}')
                                 break
                         else:
                             lines.append('   IP Address : (none)')
                     except Exception as exc:
                         lines.append(f'   IP Address : error ({exc})')
 
-                    # Gateway
+                    # ── Default gateway ──────────────────────────────────────
                     try:
                         gw_r = _sp.run(['ip', 'route', 'show', 'default'],
-                                        capture_output=True, text=True)
-                        gw_line = gw_r.stdout.strip().splitlines()
-                        if gw_line:
-                            parts = gw_line[0].split()
-                            gw = parts[2] if len(parts) > 2 else '?'
-                            lines.append(f'   Gateway    : {gw}')
-                    except Exception:
-                        pass
-
-                    # Signal quality via iwconfig (best-effort)
-                    try:
-                        iwc = _sp.run(['iwconfig', iface], capture_output=True, text=True)
-                        for ln in iwc.stdout.splitlines():
-                            if 'Signal level' in ln:
-                                sig = ln.strip().split('Signal level=')[-1].split()[0]
-                                lines.append(f'   Signal     : {sig}')
+                                       capture_output=True, text=True)
+                        for ln in gw_r.stdout.strip().splitlines():
+                            parts = ln.split()
+                            if len(parts) > 2:
+                                lines.append(f'   Gateway    : {parts[2]}')
                                 break
                     except Exception:
                         pass
+
+                    # ── Signal (from nmcli or iwconfig fallback) ─────────────
+                    if signal:
+                        lines.append(f'   Signal     : {signal}')
+                    else:
+                        try:
+                            iwc = _sp.run(['iwconfig', iface or 'wlan0'],
+                                          capture_output=True, text=True)
+                            for ln in iwc.stdout.splitlines():
+                                if 'Signal level' in ln:
+                                    sig = ln.strip().split('Signal level=')[-1].split()[0]
+                                    lines.append(f'   Signal     : {sig}')
+                                    break
+                        except Exception:
+                            pass
 
                     wifi_cur_lbl.set_text('\n'.join(lines))
 
