@@ -3180,7 +3180,7 @@ def index(request: Request):
                     """Run `openclaw devices list --json` as the openclaw system user
                     (which holds the paired CLI device identity) via sudo."""
                     r = subprocess.run(
-                        ['sudo', '-u', 'openclaw', '/usr/local/bin/openclaw',
+                        ['sudo', '-u', 'openclaw', '/usr/bin/openclaw',
                          'devices', 'list', '--json'],
                         capture_output=True, text=True
                     )
@@ -3193,7 +3193,7 @@ def index(request: Request):
 
                 def _oc_approve_device(request_id: str, name_lbl):
                     r = subprocess.run(
-                        ['sudo', '-u', 'openclaw', '/usr/local/bin/openclaw',
+                        ['sudo', '-u', 'openclaw', '/usr/bin/openclaw',
                          'devices', 'approve', request_id],
                         capture_output=True, text=True
                     )
