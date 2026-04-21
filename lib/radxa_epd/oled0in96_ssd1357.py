@@ -32,8 +32,68 @@ SPI speed:   10 MHz  (SSD1357 max = 10 MHz @ 3.3 V)
 
 import time
 import logging
+import glob
+import os
 
 logger = logging.getLogger(__name__)
+
+
+def _resolve_gpio(abs_line: int, preferred_chip: str = "/dev/gpiochip0"):
+    """Map an absolute GPIO line number to (chip_path, offset_within_chip).
+
+    On Raspberry Pi / single-chip boards the mapping is 1:1 (gpiochip0,
+    abs_line).  On Allwinner / Rockchip SBCs each GPIO bank is a separate
+    gpiochip; the absolute line number must be split across chips.
+
+    Algorithm:
+      1. Enumerate /dev/gpiochip* in numeric order.
+      2. Read each chip's line count from
+         /sys/bus/gpio/devices/gpiochip*/ngpio  (or via periphery).
+      3. Subtract cumulatively until we find the chip that owns abs_line.
+
+    Falls back to (preferred_chip, abs_line) if anything goes wrong.
+    """
+    try:
+        # Collect (chip_path, ngpio) sorted by chip index
+        chips = []
+        for chip in sorted(glob.glob("/dev/gpiochip*"),
+                           key=lambda p: int(p.replace("/dev/gpiochip", ""))):
+            ngpio = None
+            # Try sysfs first (no need to open the device)
+            idx = chip.replace("/dev/gpiochip", "")
+            for sysfs in glob.glob(f"/sys/bus/gpio/devices/gpiochip{idx}/ngpio"):
+                try:
+                    ngpio = int(open(sysfs).read().strip())
+                    break
+                except Exception:
+                    pass
+            if ngpio is None:
+                # Fall back: open the chip with periphery and ask
+                try:
+                    from periphery import GPIO
+                    _g = GPIO(chip, 0, "in")
+                    ngpio = _g.chip_size()
+                    _g.close()
+                except Exception:
+                    pass
+            if ngpio is not None:
+                chips.append((chip, ngpio))
+
+        remaining = abs_line
+        for chip_path, ngpio in chips:
+            if remaining < ngpio:
+                if chip_path != preferred_chip or remaining != abs_line:
+                    logger.info(
+                        "GPIO line %d resolved to %s offset %d",
+                        abs_line, chip_path, remaining,
+                    )
+                return chip_path, remaining
+            remaining -= ngpio
+    except Exception as exc:
+        logger.debug("_resolve_gpio auto-detect failed: %s", exc)
+
+    return preferred_chip, abs_line
+
 
 # ── Display geometry ──────────────────────────────────────────────────────────
 OLED_WIDTH  = 64    # columns (portrait)
@@ -66,13 +126,15 @@ class OLED_0in96_SSD1357:
     ):
         from periphery import GPIO, SPI  # deferred — not available on Pi/host
 
+        rst_chip, rst_off = _resolve_gpio(rst_line, gpiochip)
+        dc_chip,  dc_off  = _resolve_gpio(dc_line,  gpiochip)
         logger.info(
-            "Radxa OLED SSD1357: SPI=%s  RST=line%d  DC=line%d",
-            spi_dev, rst_line, dc_line,
+            "Radxa OLED SSD1357: SPI=%s  RST=%s[%d]  DC=%s[%d]",
+            spi_dev, rst_chip, rst_off, dc_chip, dc_off,
         )
         self.spi       = SPI(spi_dev, 0, spi_speed)
-        self.rst_gpio  = GPIO(gpiochip, rst_line, "out")
-        self.dc_gpio   = GPIO(gpiochip, dc_line,  "out")
+        self.rst_gpio  = GPIO(rst_chip, rst_off, "out")
+        self.dc_gpio   = GPIO(dc_chip,  dc_off,  "out")
 
         self.width  = OLED_WIDTH
         self.height = OLED_HEIGHT
