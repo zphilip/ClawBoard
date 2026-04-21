@@ -20,10 +20,11 @@ if os.path.exists(libdir):
 
 # Display drivers are imported lazily inside _detect_display().
 # Module-level references are set once detection succeeds.
-_eink_mod      = None   # waveshare_epd.epd2in13_V4 when e-ink is active
-_lcd_mod       = None   # LCD_1inch69 module when LCD is active
-_lcd_0in96_mod = None   # waveshare_lcd_rpi.LCD_0inch96 module when 0.96" LCD is active
-_oled_mod      = None   # waveshare_OLED.OLED_0in96_rgb module when OLED is active
+_eink_mod        = None   # waveshare_epd.epd2in13_V4 when e-ink is active
+_lcd_mod         = None   # LCD_1inch69 module when LCD is active
+_lcd_0in96_mod   = None   # waveshare_lcd_rpi.LCD_0inch96 module when 0.96" LCD is active
+_oled_mod        = None   # waveshare_OLED.OLED_0in96_rgb module when OLED is active
+_oled_radxa_mod  = None   # radxa_epd.oled_adapter.OLEDRadxa when Radxa 0.96" OLED is active
 
 logging.basicConfig(level=logging.INFO)
 
@@ -92,7 +93,7 @@ def _shutdown(signum=None, frame=None):
                 _disp.module_exit()
             except Exception as e:
                 logging.warning("LCD module_exit failed: %s", e)
-        elif _display_type == 'oled':
+        elif _display_type in ('oled', 'oled_radxa_0_96'):
             try:
                 _disp.module_exit()
             except Exception as e:
@@ -284,8 +285,8 @@ def _detect_display():
         except Exception as e:
             logging.info('E-ink 2.13" not available: %s', e)
 
-    # ── 3. Try OLED 0.96" RGB ────────────────────────────────────────────
-    if _forced not in ('lcd', 'eink', 'eink_radxa_1_54'):
+    # ── 3. Try OLED 0.96" RGB (waveshare) ──────────────────────────────────
+    if _forced not in ('lcd', 'eink', 'eink_radxa_1_54', 'oled_radxa_0_96'):
         try:
             from waveshare_OLED import OLED_0in96_rgb as _om
             _obj = _om.OLED_0in96_rgb()
@@ -297,7 +298,22 @@ def _detect_display():
             logging.info('Display detected: OLED 0.96" RGB (OLED_0in96_rgb)')
             return _obj
         except Exception as e:
-            logging.info('OLED 0.96" not available: %s', e)
+            logging.info('OLED 0.96" waveshare not available: %s', e)
+
+    # ── 4. Try Radxa 0.96" RGB OLED (SSD1357 via periphery) ──────────────────
+    if _forced in ('oled_radxa_0_96', None):
+        try:
+            from radxa_epd.oled_adapter import OLEDRadxa as _OLEDRadxa
+            _obj = _OLEDRadxa()
+            _obj.Init()
+            _obj.clear()
+            _oled_radxa_mod = _OLEDRadxa
+            _disp           = _obj
+            _display_type   = 'oled_radxa_0_96'
+            logging.info('Display detected: Radxa OLED 0.96" RGB SSD1357 (oled_radxa_0_96)')
+            return _obj
+        except Exception as e:
+            logging.info('Radxa OLED 0.96" not available: %s', e)
 
     logging.warning(
         'No supported display detected '
@@ -876,9 +892,16 @@ def _oled_show(disp, image: 'Image.Image') -> None:
     The OLED physical orientation is portrait (width=64, height=128), so the
     128×64 landscape canvas must be rotated 270° (→ 64×128) before handing
     off to getbuffer / ShowImage.
+
+    For the Radxa SSD1357 OLED (_display_type == 'oled_radxa_0_96') the
+    adapter's ShowImage() accepts a PIL image directly; the waveshare OLED
+    requires getbuffer() first.
     """
     rotated = image.rotate(270, expand=True)   # 128×64 → 64×128
-    disp.ShowImage(disp.getbuffer(rotated))
+    if _display_type == 'oled_radxa_0_96':
+        disp.ShowImage(rotated)                # OLEDRadxa takes PIL directly
+    else:
+        disp.ShowImage(disp.getbuffer(rotated))
 
 
 def draw_monitor_oled(disp):
@@ -1175,7 +1198,7 @@ def _render_monitor(force_full=False):
         draw_monitor_lcd(_disp)
     elif _display_type == 'lcd_0in96':
         draw_monitor_lcd_0in96(_disp)
-    elif _display_type == 'oled':
+    elif _display_type in ('oled', 'oled_radxa_0_96'):
         draw_monitor_oled(_disp)
     else:
         draw_monitor(_disp, force_full=force_full)
@@ -1188,7 +1211,7 @@ def _render_paircode(code):
         draw_paircode_lcd(_disp, code)
     elif _display_type == 'lcd_0in96':
         draw_paircode_lcd_0in96(_disp, code)
-    elif _display_type == 'oled':
+    elif _display_type in ('oled', 'oled_radxa_0_96'):
         draw_paircode_oled(_disp, code)
     else:
         draw_paircode(_disp, code)
@@ -1201,7 +1224,7 @@ def _render_picoclaw_qr(url, token=''):
         draw_picoclaw_qr_lcd(_disp, url, token)
     elif _display_type == 'lcd_0in96':
         draw_picoclaw_qr_lcd_0in96(_disp, url, token)
-    elif _display_type == 'oled':
+    elif _display_type in ('oled', 'oled_radxa_0_96'):
         draw_picoclaw_qr_oled(_disp, url, token)
     else:
         draw_picoclaw_qr(_disp, url, token)
@@ -1259,7 +1282,7 @@ hold_until        = 0.0             # monotonic time until temp screen must not 
 was_holding       = False           # True while a temporary screen is being shown
 
 while True:
-    time.sleep(_OLED_SCROLL_INTERVAL if _display_type == 'oled' else POLL_SECONDS)
+    time.sleep(_OLED_SCROLL_INTERVAL if _display_type in ('oled', 'oled_radxa_0_96') else POLL_SECONDS)
     now = time.monotonic()
 
     # ── 1. Check for new / updated pair-code or pico-QR request file ─────
@@ -1290,7 +1313,7 @@ while True:
     # ── 3. OLED: advance scroll offset and redraw every frame ─────────────
     # State changes are picked up each frame; no separate change-detection
     # path is needed because we're already redrawing continuously.
-    if _display_type == 'oled':
+    if _display_type in ('oled', 'oled_radxa_0_96'):
         _oled_scroll_offset = (_oled_scroll_offset + 3) % 100000
         current_state = _get_current_state()
         if current_state != last_state:
