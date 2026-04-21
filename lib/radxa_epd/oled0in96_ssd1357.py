@@ -33,9 +33,21 @@ SPI speed:   10 MHz  (SSD1357 max = 10 MHz @ 3.3 V)
 import time
 import logging
 import glob
-import os
+import struct
+import fcntl
 
 logger = logging.getLogger(__name__)
+
+# GPIO_GET_CHIPINFO_IOCTL = _IOR(0xB4, 0x01, struct gpiochip_info)
+# struct gpiochip_info { char name[32]; char label[32]; __u32 lines; }  → 68 bytes
+_GPIO_GET_CHIPINFO_IOCTL = 0x8044B401
+
+
+def _chip_ngpio(chip_path: str) -> int:
+    """Return the number of GPIO lines on *chip_path* via kernel ioctl."""
+    with open(chip_path, 'rb') as f:
+        buf = fcntl.ioctl(f, _GPIO_GET_CHIPINFO_IOCTL, b'\x00' * 68)
+    return struct.unpack_from('<I', buf, 64)[0]
 
 
 def _resolve_gpio(abs_line: int, preferred_chip: str = "/dev/gpiochip0"):
@@ -45,42 +57,22 @@ def _resolve_gpio(abs_line: int, preferred_chip: str = "/dev/gpiochip0"):
     abs_line).  On Allwinner / Rockchip SBCs each GPIO bank is a separate
     gpiochip; the absolute line number must be split across chips.
 
-    Algorithm:
-      1. Enumerate /dev/gpiochip* in numeric order.
-      2. Read each chip's line count from
-         /sys/bus/gpio/devices/gpiochip*/ngpio  (or via periphery).
-      3. Subtract cumulatively until we find the chip that owns abs_line.
+    Uses GPIO_GET_CHIPINFO_IOCTL to read ngpio directly from each chip
+    device — no sysfs path assumptions, works on all kernel versions.
 
     Falls back to (preferred_chip, abs_line) if anything goes wrong.
     """
     try:
-        # Collect (chip_path, ngpio) sorted by chip index
-        chips = []
-        for chip in sorted(glob.glob("/dev/gpiochip*"),
-                           key=lambda p: int(p.replace("/dev/gpiochip", ""))):
-            ngpio = None
-            # Try sysfs first (no need to open the device)
-            idx = chip.replace("/dev/gpiochip", "")
-            for sysfs in glob.glob(f"/sys/bus/gpio/devices/gpiochip{idx}/ngpio"):
-                try:
-                    ngpio = int(open(sysfs).read().strip())
-                    break
-                except Exception:
-                    pass
-            if ngpio is None:
-                # Fall back: open the chip with periphery and ask
-                try:
-                    from periphery import GPIO
-                    _g = GPIO(chip, 0, "in")
-                    ngpio = _g.chip_size()
-                    _g.close()
-                except Exception:
-                    pass
-            if ngpio is not None:
-                chips.append((chip, ngpio))
-
+        chips = sorted(
+            glob.glob("/dev/gpiochip*"),
+            key=lambda p: int(p.replace("/dev/gpiochip", "")),
+        )
         remaining = abs_line
-        for chip_path, ngpio in chips:
+        for chip_path in chips:
+            try:
+                ngpio = _chip_ngpio(chip_path)
+            except Exception:
+                continue
             if remaining < ngpio:
                 if chip_path != preferred_chip or remaining != abs_line:
                     logger.info(
@@ -100,9 +92,9 @@ OLED_WIDTH  = 64    # columns (portrait)
 OLED_HEIGHT = 128   # rows    (portrait)
 
 # ── Default hardware pins (Radxa Cubie A7Z; override via constructor kwargs) ──
-_DEFAULT_RST_LINE  = 141           # GPIO line on /dev/gpiochip0  → Pin 13
-_DEFAULT_DC_LINE   = 212           # GPIO line on /dev/gpiochip0  → Pin 22
-_DEFAULT_SPI_DEV   = "/dev/spidev1.0"
+_DEFAULT_RST_LINE  = 141           # absolute GPIO line → resolved automatically
+_DEFAULT_DC_LINE   = 212           # absolute GPIO line → resolved automatically
+_DEFAULT_SPI_DEV   = "/dev/spidev0.0"
 _DEFAULT_SPI_SPEED = 10_000_000    # 10 MHz
 _DEFAULT_GPIOCHIP  = "/dev/gpiochip0"
 
