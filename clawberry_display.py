@@ -165,7 +165,7 @@ def _detect_display():
         _forced = 'lcd'
 
     # ── 1. Try LCD 1.69\" ────────────────────────────────────────────────
-    if _forced not in ('eink', 'oled', 'eink_radxa_1_54', 'lcd_0in96'):
+    if _forced not in ('eink', 'oled', 'eink_radxa_1_54', 'lcd_0in96', 'oled_radxa_0_96'):
         import importlib as _il
         # LCD_1inch69.py uses relative imports (from . import ...) so it MUST
         # be loaded as part of a package.  We add the *parent* of the package
@@ -213,7 +213,7 @@ def _detect_display():
                 logging.info('LCD 1.69\" not available: %s', e)
 
     # ── 1b. Try LCD 0.96" (Waveshare 160×80) ─────────────────────────────
-    if _forced not in ('eink', 'oled', 'eink_radxa_1_54', 'lcd'):
+    if _forced not in ('eink', 'oled', 'eink_radxa_1_54', 'lcd', 'oled_radxa_0_96'):
         import importlib as _il
         _lcd0_candidates = [
             (os.path.join(current_dir, 'lib'), 'waveshare_lcd_rpi'),
@@ -271,7 +271,7 @@ def _detect_display():
             logging.info('Radxa 1.54" e-ink not available: %s', e)
 
     # ── 2b. Try e-ink 2.13" Waveshare ────────────────────────────────────────────
-    if _forced not in ('lcd', 'oled', 'eink_radxa_1_54'):
+    if _forced not in ('lcd', 'oled', 'eink_radxa_1_54', 'oled_radxa_0_96'):
         try:
             from waveshare_epd import epd2in13_V4 as _em
             _obj = _em.EPD()
