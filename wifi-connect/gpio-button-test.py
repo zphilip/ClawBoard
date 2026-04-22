@@ -29,8 +29,8 @@ import struct
 import argparse
 
 # ── ioctl helpers (same as wifi-connect-gpio-launch-radxa.py) ────────────────
-_GPIO_GET_CHIPINFO_IOCTL = 0x8044B401
-_GPIO_GET_LINEINFO_IOCTL = 0x8048B402
+_GPIO_GET_CHIPINFO_IOCTL = 0x8044B401   # _IOR(0xB4, 0x01, 68)  gpiochip_info
+_GPIO_GET_LINEINFO_IOCTL = 0xC048B402   # _IOWR(0xB4, 0x02, 72) gpioline_info  ← _IOWR not _IOR
 _GPIOLINE_FLAG_IS_OUT    = 1 << 0
 _GPIOLINE_FLAG_KERNEL    = 1 << 4
 

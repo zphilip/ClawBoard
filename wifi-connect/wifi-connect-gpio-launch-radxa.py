@@ -55,8 +55,8 @@ POLL_INTERVAL = 0.05   # seconds between GPIO reads
 # ── GPIO scan helper ──────────────────────────────────────────────────────────
 
 # ioctl constants for GPIO character device v1 (works on all kernel versions)
-_GPIO_GET_CHIPINFO_IOCTL  = 0x8044B401   # struct gpiochip_info (68 bytes)
-_GPIO_GET_LINEINFO_IOCTL  = 0x8048B402   # struct gpioline_info (72 bytes)
+_GPIO_GET_CHIPINFO_IOCTL  = 0x8044B401   # _IOR(0xB4, 0x01, 68)  gpiochip_info
+_GPIO_GET_LINEINFO_IOCTL  = 0xC048B402   # _IOWR(0xB4, 0x02, 72) gpioline_info  ← _IOWR not _IOR
 
 
 def _chip_info(chip_path):
