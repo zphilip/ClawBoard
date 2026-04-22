@@ -106,18 +106,29 @@ def test_single(chip, line):
     prev       = initial
     press_time = None
 
+    # Show a live reading ticker so you can confirm the line is responding
+    last_tick = time.time()
+
     try:
         while True:
             val = gpio.read()
+
+            # Periodic heartbeat: print current raw value every 2 s so user
+            # can confirm the script is alive and see the raw level
+            now = time.time()
+            if now - last_tick >= 2.0:
+                print(f"  [live] {chip} line {line} = {'HIGH' if val else 'LOW '} "
+                      f"({'pressed' if is_pressed() else 'released'})")
+                last_tick = now
+
             if val != prev:
-                now = time.time()
                 if is_pressed():
                     press_time = now
-                    print(f"  ▼ PRESSED  at {_ts()}")
+                    print(f"  ▼ PRESSED  at {_ts()}  (raw={'HIGH' if val else 'LOW'})")
                 else:
                     if press_time is not None:
                         duration = now - press_time
-                        kind = "LONG press" if duration >= 2.0 else "short press"
+                        kind = "LONG press  ✓" if duration >= 2.0 else "short press"
                         print(f"  ▲ RELEASED at {_ts()}  →  {kind} ({duration:.2f}s)")
                         press_time = None
                 prev = val
@@ -203,8 +214,8 @@ def main():
     parser.add_argument('--chip',       default=os.environ.get('RADXA_BTN_CHIP', '/dev/gpiochip1'),
                         help='GPIO chip device (default: /dev/gpiochip1)')
     parser.add_argument('--line', type=int,
-                        default=int(os.environ.get('RADXA_BTN_LINE', '10')),
-                        help='GPIO line offset within the chip (default: 10)')
+                        default=int(os.environ.get('RADXA_BTN_LINE', '35')),
+                        help='GPIO line offset (default: 35 = PIN_33 on Radxa Cubie A7Z)')
     parser.add_argument('--scan-press', action='store_true',
                         help='Auto-detect button line by watching all free lines')
     args = parser.parse_args()

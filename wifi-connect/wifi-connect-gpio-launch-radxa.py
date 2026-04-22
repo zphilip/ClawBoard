@@ -34,11 +34,11 @@ import struct
 
 # ── Pin configuration ─────────────────────────────────────────────────────────
 # Pin 33 on Radxa Cubie A7Z 40-pin header.
-# Confirmed by gpio-button-test.py --scan-press: gpiochip1 line 10.
+# The scan output shows: gpiochip1 line 35 is labelled 'PIN_33' — the correct line.
 # Override with env vars if your board differs:
-#   RADXA_BTN_CHIP=/dev/gpiochip1  RADXA_BTN_LINE=10  sudo python3 ...
+#   RADXA_BTN_CHIP=/dev/gpiochip1  RADXA_BTN_LINE=35  sudo python3 ...
 BUTTON_CHIP = os.environ.get('RADXA_BTN_CHIP', '/dev/gpiochip1')
-BUTTON_LINE = int(os.environ.get('RADXA_BTN_LINE', '10'))
+BUTTON_LINE = int(os.environ.get('RADXA_BTN_LINE', '35'))
 
 LONG_PRESS_SECONDS = 2
 
