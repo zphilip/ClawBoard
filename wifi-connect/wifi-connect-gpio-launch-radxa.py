@@ -34,12 +34,11 @@ import struct
 
 # ── Pin configuration ─────────────────────────────────────────────────────────
 # Pin 33 on Radxa Cubie A7Z 40-pin header.
-# Run  `sudo python3 wifi-connect-gpio-launch-radxa.py --scan`  on the board
-# to list all free GPIO lines and find the correct chip/line for Pin 33.
-# Then override with env vars:
-#   RADXA_BTN_CHIP=/dev/gpiochip0  RADXA_BTN_LINE=<n>  sudo python3 ...
-BUTTON_CHIP = os.environ.get('RADXA_BTN_CHIP', '/dev/gpiochip0')
-BUTTON_LINE = int(os.environ.get('RADXA_BTN_LINE', '97'))
+# Confirmed by gpio-button-test.py --scan-press: gpiochip1 line 10.
+# Override with env vars if your board differs:
+#   RADXA_BTN_CHIP=/dev/gpiochip1  RADXA_BTN_LINE=10  sudo python3 ...
+BUTTON_CHIP = os.environ.get('RADXA_BTN_CHIP', '/dev/gpiochip1')
+BUTTON_LINE = int(os.environ.get('RADXA_BTN_LINE', '10'))
 
 LONG_PRESS_SECONDS = 2
 
@@ -131,49 +130,30 @@ def _open_button():
         sys.exit(1)
 
 
-def _is_pressed(gpio) -> bool:
-    """Return True when the button is pressed (active-LOW)."""
-    return not gpio.read()
-
-
-# How long the pin must read HIGH at startup before we trust it as a valid
-# pull-up line.  A floating line drifts to a stable level instantly but
-# never toggles; a properly pulled-up line is solidly HIGH until the button
-# is actually pushed.
-_STARTUP_VERIFY_SECONDS = 0.3   # 300 ms of continuous HIGH required
+# _STARTUP_VERIFY_SECONDS and _is_pressed are superseded by polarity
+# auto-detection inside wait_for_long_press(); kept as no-ops for compat.
+_STARTUP_VERIFY_SECONDS = 0.3
 
 
 def wait_for_long_press():
-    """Block until a long press (≥ LONG_PRESS_SECONDS) is detected."""
+    """Block until a long press (≥ LONG_PRESS_SECONDS) is detected.
+
+    Polarity is auto-detected from the baseline (resting) state:
+      baseline LOW  → active-HIGH wiring (pull-down / floating-low)
+      baseline HIGH → active-LOW  wiring (pull-up)
+    """
     print(f"Waiting for long press on {BUTTON_CHIP} line {BUTTON_LINE} "
           f"(≥{LONG_PRESS_SECONDS}s)…")
     btn = _open_button()
     try:
-        # ── Sanity check: pin must read HIGH (released) at startup ────────
-        # If the line is immediately LOW the pin is either wrong, floating, or
-        # the button is being held down before the script started.
-        # Sample for _STARTUP_VERIFY_SECONDS; abort if it never goes HIGH.
-        deadline = time.time() + _STARTUP_VERIFY_SECONDS
-        seen_high = False
-        while time.time() < deadline:
-            if not _is_pressed(btn):
-                seen_high = True
-                break
-            time.sleep(POLL_INTERVAL)
+        # ── Auto-detect polarity ──────────────────────────────────────────
+        baseline  = btn.read()
+        active_high = not baseline   # pressed = opposite of resting state
+        polarity  = 'active-HIGH (resting=LOW)' if active_high else 'active-LOW (resting=HIGH)'
+        print(f"  Polarity auto-detected: {polarity}")
 
-        if not seen_high:
-            print(
-                f"\nERROR: {BUTTON_CHIP} line {BUTTON_LINE} reads LOW immediately.\n"
-                f"  This usually means:\n"
-                f"    • Wrong GPIO line — the line is floating or driven LOW by something else.\n"
-                f"    • No internal/external pull-up is active on this line.\n"
-                f"\nRun the scan to find the correct free line for Pin 33:\n"
-                f"    sudo python3 {os.path.basename(__file__)} --scan\n"
-                f"\nThen override:\n"
-                f"    RADXA_BTN_CHIP=/dev/gpiochipX RADXA_BTN_LINE=N "
-                f"sudo python3 {os.path.basename(__file__)}"
-            )
-            sys.exit(1)
+        def is_pressed():
+            return btn.read() if active_high else not btn.read()
 
         # Ensure NetworkManager has WiFi radio enabled
         try:
@@ -183,13 +163,13 @@ def wait_for_long_press():
             pass
 
         while True:
-            # Wait for button to be pressed (LOW)
-            while not _is_pressed(btn):
+            # Wait for button to be pressed
+            while not is_pressed():
                 time.sleep(POLL_INTERVAL)
 
             # Button pressed — start timing
             press_start = time.time()
-            while _is_pressed(btn):
+            while is_pressed():
                 time.sleep(POLL_INTERVAL)
                 if time.time() - press_start >= LONG_PRESS_SECONDS:
                     print("Long press detected. Launching WiFi Connect…")

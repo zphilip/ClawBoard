@@ -96,9 +96,12 @@ def test_single(chip, line):
         sys.exit(1)
 
     initial = gpio.read()
-    print(f"Initial state: {'HIGH (released)' if initial else 'LOW  (pressed or floating)'}")
-    if not initial:
-        print("WARNING: line reads LOW at startup — may be wrong line or no pull-up.\n")
+    active_high = not initial   # pressed = opposite of resting state
+    polarity = 'active-HIGH (resting=LOW)' if active_high else 'active-LOW (resting=HIGH)'
+    print(f"Initial state: {'HIGH' if initial else 'LOW'} — {polarity}\n")
+
+    def is_pressed():
+        return gpio.read() if active_high else not gpio.read()
 
     prev       = initial
     press_time = None
@@ -108,10 +111,10 @@ def test_single(chip, line):
             val = gpio.read()
             if val != prev:
                 now = time.time()
-                if not val:   # HIGH → LOW : pressed
+                if is_pressed():
                     press_time = now
                     print(f"  ▼ PRESSED  at {_ts()}")
-                else:         # LOW → HIGH : released
+                else:
                     if press_time is not None:
                         duration = now - press_time
                         kind = "LONG press" if duration >= 2.0 else "short press"
@@ -197,11 +200,11 @@ def scan_press():
 def main():
     parser = argparse.ArgumentParser(
         description='GPIO button tester for Radxa / Linux SBC')
-    parser.add_argument('--chip',       default=os.environ.get('RADXA_BTN_CHIP', '/dev/gpiochip0'),
-                        help='GPIO chip device (default: /dev/gpiochip0)')
+    parser.add_argument('--chip',       default=os.environ.get('RADXA_BTN_CHIP', '/dev/gpiochip1'),
+                        help='GPIO chip device (default: /dev/gpiochip1)')
     parser.add_argument('--line', type=int,
-                        default=int(os.environ.get('RADXA_BTN_LINE', '97')),
-                        help='GPIO line offset within the chip (default: 97)')
+                        default=int(os.environ.get('RADXA_BTN_LINE', '10')),
+                        help='GPIO line offset within the chip (default: 10)')
     parser.add_argument('--scan-press', action='store_true',
                         help='Auto-detect button line by watching all free lines')
     args = parser.parse_args()
