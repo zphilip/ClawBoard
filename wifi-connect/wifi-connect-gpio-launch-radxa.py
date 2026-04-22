@@ -136,12 +136,45 @@ def _is_pressed(gpio) -> bool:
     return not gpio.read()
 
 
+# How long the pin must read HIGH at startup before we trust it as a valid
+# pull-up line.  A floating line drifts to a stable level instantly but
+# never toggles; a properly pulled-up line is solidly HIGH until the button
+# is actually pushed.
+_STARTUP_VERIFY_SECONDS = 0.3   # 300 ms of continuous HIGH required
+
+
 def wait_for_long_press():
     """Block until a long press (≥ LONG_PRESS_SECONDS) is detected."""
     print(f"Waiting for long press on {BUTTON_CHIP} line {BUTTON_LINE} "
           f"(≥{LONG_PRESS_SECONDS}s)…")
     btn = _open_button()
     try:
+        # ── Sanity check: pin must read HIGH (released) at startup ────────
+        # If the line is immediately LOW the pin is either wrong, floating, or
+        # the button is being held down before the script started.
+        # Sample for _STARTUP_VERIFY_SECONDS; abort if it never goes HIGH.
+        deadline = time.time() + _STARTUP_VERIFY_SECONDS
+        seen_high = False
+        while time.time() < deadline:
+            if not _is_pressed(btn):
+                seen_high = True
+                break
+            time.sleep(POLL_INTERVAL)
+
+        if not seen_high:
+            print(
+                f"\nERROR: {BUTTON_CHIP} line {BUTTON_LINE} reads LOW immediately.\n"
+                f"  This usually means:\n"
+                f"    • Wrong GPIO line — the line is floating or driven LOW by something else.\n"
+                f"    • No internal/external pull-up is active on this line.\n"
+                f"\nRun the scan to find the correct free line for Pin 33:\n"
+                f"    sudo python3 {os.path.basename(__file__)} --scan\n"
+                f"\nThen override:\n"
+                f"    RADXA_BTN_CHIP=/dev/gpiochipX RADXA_BTN_LINE=N "
+                f"sudo python3 {os.path.basename(__file__)}"
+            )
+            sys.exit(1)
+
         # Ensure NetworkManager has WiFi radio enabled
         try:
             subprocess.run(["nmcli", "radio", "wifi", "on"], check=False,
@@ -150,7 +183,7 @@ def wait_for_long_press():
             pass
 
         while True:
-            # Wait for button to be pressed
+            # Wait for button to be pressed (LOW)
             while not _is_pressed(btn):
                 time.sleep(POLL_INTERVAL)
 
@@ -163,6 +196,8 @@ def wait_for_long_press():
                     return
 
             # Released too soon — ignore and wait again
+            elapsed = time.time() - press_start
+            print(f"Short press ({elapsed:.1f}s) — ignored, keep holding for {LONG_PRESS_SECONDS}s")
     finally:
         btn.close()
 
