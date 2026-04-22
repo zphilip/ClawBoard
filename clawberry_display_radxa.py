@@ -2,20 +2,25 @@
 """
 clawberry_display_radxa.py
 ==========================
-Drop-in launcher for clawberry_display.py on Radxa boards (e.g. Cubie A7Z)
-using a 1.54" e-paper display wired via SPI + periphery GPIO.
+Drop-in launcher for clawberry_display.py on Radxa boards (e.g. Cubie A7Z).
+
+Supports two Radxa display types selected by the RADXA_DISPLAY env var:
+
+  RADXA_DISPLAY=eink   (default) — 1.54" e-paper via periphery SPI/GPIO
+  RADXA_DISPLAY=oled               — 0.96" RGB OLED SSD1357 via periphery SPI/GPIO
 
 This script:
   1. Applies the monkey-patch so clawberry_display.py transparently uses
-     the Radxa EPD_1in54_V2 driver instead of the Waveshare HAT driver.
-  2. Forces the display type to 'eink' so the auto-detection in
-     clawberry_display.py does not waste time trying LCD / OLED.
+     the Radxa EPD_1in54_V2 driver instead of the Waveshare HAT driver
+     (only needed for eink mode; harmless for oled mode).
+  2. Writes config/display_type.txt to skip irrelevant auto-detection.
   3. Runs clawberry_display's main loop unchanged.
 
 Usage:
-    python3 clawberry_display_radxa.py
+    python3 clawberry_display_radxa.py                    # e-ink mode
+    RADXA_DISPLAY=oled python3 clawberry_display_radxa.py # OLED mode
 
-Pin overrides (optional environment variables):
+Pin overrides (optional environment variables for e-ink):
     RADXA_EPD_RST=33   RADXA_EPD_DC=110  RADXA_EPD_BUSY=313
     RADXA_EPD_SPI=/dev/spidev1.0  RADXA_EPD_CHIP=/dev/gpiochip0
 
@@ -28,22 +33,25 @@ import sys
 # ── Step 1: apply the Radxa patch BEFORE clawberry_display is imported ────────
 import clawberry_radxa_patch  # noqa: F401  (side-effect import)
 
-# ── Step 2: force eink mode so detection skips LCD/OLED probes ───────────────
+# ── Step 2: write display_type.txt to skip irrelevant detection ──────────────
 _HERE = os.path.dirname(os.path.realpath(__file__))
 _OVERRIDE = os.path.join(_HERE, 'config', 'display_type.txt')
-if not os.path.exists(_OVERRIDE):
-    try:
-        os.makedirs(os.path.join(_HERE, 'config'), exist_ok=True)
-        with open(_OVERRIDE, 'w') as _f:
-            _f.write('eink_radxa_1_54\n')
-        print(f"[radxa launcher] Created {_OVERRIDE} → eink_radxa_1_54")
-    except Exception as _e:
-        print(f"[radxa launcher] Warning: could not write display_type.txt: {_e}")
+
+_radxa_display = os.environ.get('RADXA_DISPLAY', 'eink').strip().lower()
+if _radxa_display == 'oled':
+    _override_value = 'oled_radxa_0_96'
+else:
+    _override_value = 'eink_radxa_1_54'
+
+try:
+    os.makedirs(os.path.join(_HERE, 'config'), exist_ok=True)
+    with open(_OVERRIDE, 'w') as _f:
+        _f.write(_override_value + '\n')
+    print(f"[radxa launcher] {_OVERRIDE} → {_override_value}")
+except Exception as _e:
+    print(f"[radxa launcher] Warning: could not write display_type.txt: {_e}")
 
 # ── Step 3: hand off to the unmodified display service ───────────────────────
-# We exec the module code directly so it runs in this process (shares the
-# patched sys.modules).  runpy.run_path keeps __file__ accurate for relative
-# path resolution inside clawberry_display.py.
 import runpy
 runpy.run_path(
     os.path.join(_HERE, 'clawberry_display.py'),

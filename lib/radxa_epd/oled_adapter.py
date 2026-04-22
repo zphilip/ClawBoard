@@ -18,7 +18,12 @@ Canvas convention used by clawberry_display.py:
   _OLED_H =  64  (landscape canvas height)
   _oled_show() rotates the 128×64 landscape canvas 270° → 64×128 portrait
   then calls  ShowImage(rotated_image)  — so ShowImage always receives a
-  64×128 portrait PIL image, which is what display_image() expects.
+  64×128 portrait PIL image.
+
+GRAM layout:
+  The SSD1357 GRAM is 128×128.  ShowImage() centres the 64×128 portrait
+  image horizontally (32 px black padding left + right) to fill all 128
+  columns.  This avoids half-screen blank or noise artefacts.
 """
 
 import logging
@@ -50,12 +55,12 @@ class OLEDRadxa:
 
     def __init__(self, **kwargs):
         self._oled = OLED_0in96_SSD1357(**kwargs)
-        # Expose portrait geometry.
-        # clawberry_display.py draws on a 128×64 landscape canvas then
-        # rotates 270° before calling ShowImage(), yielding a 64×128
-        # portrait image — matching these dimensions exactly.
-        self.width  = self._oled.width    # 64   (portrait width)
-        self.height = self._oled.height   # 128  (portrait height)
+        # Expose portrait canvas geometry that clawberry_display.py expects.
+        # The physical GRAM is 128×128, but we tell the display layer that
+        # the usable portrait area is 64×128.  ShowImage() centres the
+        # 64×128 image horizontally in the 128×128 GRAM automatically.
+        self.width  = 64    # portrait canvas width  (not physical GRAM width)
+        self.height = 128   # portrait canvas height = physical GRAM height
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
@@ -84,24 +89,35 @@ class OLEDRadxa:
     def ShowImage(self, pil_image) -> None:
         """Push a PIL RGB image (64×128 portrait) to the OLED panel.
 
-        Internally converts to RGB565 and transfers via SPI.
+        The SSD1357 GRAM is 128×128.  The 64-wide portrait image is centred
+        horizontally: 32 columns of black padding on each side fill the
+        remaining 64 columns so the full GRAM is written cleanly.
         """
-        self._oled.display_image(pil_image)
+        from PIL import Image as _Image
+        img = pil_image.convert('RGB')
+        if img.size != (64, 128):
+            img = img.resize((64, 128))
+        # Build full 128×128 frame: black background, image centred at x=32
+        frame = _Image.new('RGB', (128, 128), (0, 0, 0))
+        frame.paste(img, (32, 0))
+        self._oled.display_image(frame)
 
     def getbuffer(self, pil_image) -> bytes:
-        """Return an RGB565 byte buffer for *pil_image* (compatibility shim).
+        """Return an RGB565 byte buffer for *pil_image* centred in 128×128 GRAM.
 
         Not used in the Radxa OLED path — ShowImage() is called directly —
         but retained so calling code that does ``disp.ShowImage(disp.getbuffer(img))``
-        still works.
+        still works.  Returns 128×128×2 = 32768 bytes.
         """
-        import struct
+        from PIL import Image as _Image
         img = pil_image.convert('RGB')
-        if img.size != (self.width, self.height):
-            img = img.resize((self.width, self.height))
-        buf = bytearray(self.width * self.height * 2)
+        if img.size != (64, 128):
+            img = img.resize((64, 128))
+        frame = _Image.new('RGB', (128, 128), (0, 0, 0))
+        frame.paste(img, (32, 0))
+        buf = bytearray(128 * 128 * 2)
         idx = 0
-        for r, g, b in img.getdata():
+        for r, g, b in frame.getdata():
             rgb565 = ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3)
             buf[idx]     = (rgb565 >> 8) & 0xFF
             buf[idx + 1] =  rgb565       & 0xFF

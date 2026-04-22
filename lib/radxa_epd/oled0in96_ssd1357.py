@@ -2,7 +2,7 @@
 Raw driver for the Waveshare 0.96inch RGB OLED Module on Radxa Cubie A7Z
 (or any Linux SBC that exposes SPI/GPIO via the 'periphery' library).
 
-Hardware:  SSD1357 controller, 64×128 pixels (portrait), 65K colours (RGB565)
+Hardware:  SSD1357 controller, 128×128 pixels, 65K colours (RGB565)
 Interface: 4-wire SPI — DIN, CLK, CS, DC, RST  (no BUSY pin)
 Product:   https://www.waveshare.com/0.96inch-rgb-oled-module.htm
 
@@ -13,21 +13,21 @@ The 1.54" e-ink already occupies SPI1 (/dev/spidev1.0) with GPIO lines
   RST=33 (Pin 11), DC=110 (Pin 26), BUSY=313 (Pin 18).
 Use SPI0 and a separate pair of GPIO lines for this OLED:
 
-  OLED pin  →  Radxa 40-pin header              GPIO line (gpiochip0)
+  OLED pin  →  Radxa 40-pin header              GPIO
   ────────────────────────────────────────────────────────────────────
   VCC       →  Pin  1  (3.3 V) or Pin  2 (5 V)  —
   GND       →  Pin  6  (GND)                     —
-  DIN       →  Pin 19  (SPI0_MOSI)               —  (hardware SPI)
-  CLK       →  Pin 23  (SPI0_SCLK)               —  (hardware SPI)
-  CS        →  Pin 24  (SPI0_CS0)                —  (hardware SPI)  *or* any GPIO
-  DC        →  Pin 22  (GPIO6_B4)                line 212  (default)
-  RST       →  Pin 13  (GPIO4_B5)                line 141  (default)
+  DIN       →  Pin 19  (SPI1_MOSI)               —  (hardware SPI)
+  CLK       →  Pin 23  (SPI1_SCLK)               —  (hardware SPI)
+  CS        →  Pin 24  (SPI1_CS0)                —  (hardware SPI)
+  DC        →  Pin 22  (gpiochip1 line 5)        default
+  RST       →  Pin 15  (gpiochip1 line 7)        default
 
-  ⚠ Run  `gpioinfo gpiochip0 | grep -n ''`  to confirm line numbers
+  ⚠ Run  `gpioinfo gpiochip1 | grep -n ''`  to confirm line numbers
     on YOUR board revision.  Override via constructor kwargs.
 
-SPI device:  /dev/spidev0.0  (SPI bus 0, chip-select 0)
-SPI speed:   10 MHz  (SSD1357 max = 10 MHz @ 3.3 V)
+SPI device:  /dev/spidev1.0
+SPI speed:   2 MHz  (conservative; increase to 10 MHz if signal is clean)
 """
 
 import time
@@ -88,19 +88,22 @@ def _resolve_gpio(abs_line: int, preferred_chip: str = "/dev/gpiochip0"):
 
 
 # ── Display geometry ──────────────────────────────────────────────────────────
-OLED_WIDTH  = 64    # columns (portrait)
-OLED_HEIGHT = 128   # rows    (portrait)
+# The SSD1357 GRAM is 128×128.  The full panel is used.
+OLED_WIDTH  = 128   # columns
+OLED_HEIGHT = 128   # rows
 
 # ── Default hardware pins (Radxa Cubie A7Z; override via constructor kwargs) ──
-_DEFAULT_RST_LINE  = 141           # absolute GPIO line → resolved automatically
-_DEFAULT_DC_LINE   = 212           # absolute GPIO line → resolved automatically
-_DEFAULT_SPI_DEV   = "/dev/spidev0.0"
-_DEFAULT_SPI_SPEED = 10_000_000    # 10 MHz
-_DEFAULT_GPIOCHIP  = "/dev/gpiochip0"
+# RST → Pin 15  (gpiochip1, line 7)
+# DC  → Pin 22  (gpiochip1, line 5)
+_DEFAULT_RST_LINE  = 7             # line within gpiochip1
+_DEFAULT_DC_LINE   = 5             # line within gpiochip1
+_DEFAULT_SPI_DEV   = "/dev/spidev1.0"
+_DEFAULT_SPI_SPEED = 2_000_000     # 2 MHz (conservative; matches confirmed-working test)
+_DEFAULT_GPIOCHIP  = "/dev/gpiochip1"
 
 
 class OLED_0in96_SSD1357:
-    """Low-level SSD1357 driver for the 0.96\" RGB OLED on Radxa / Linux SBC.
+    """Low-level SSD1357 driver for the 0.96\" RGB OLED (128×128) on Radxa / Linux SBC.
 
     Requires the ``periphery`` Python package (pip install python-periphery).
 
@@ -150,10 +153,15 @@ class OLED_0in96_SSD1357:
             self.spi.transfer(list(data[i:i + chunk]))
 
     def _hw_reset(self) -> None:
-        """Hardware reset pulse: HIGH → LOW (≥3 µs) → HIGH."""
+        """Hardware reset pulse: HIGH → LOW (1 s minimum) → HIGH.
+
+        The long LOW phase ensures the SSD1357 fully discharges its internal
+        capacitors on cold boot.  A short pulse (≤10 ms) leaves the controller
+        in an undefined state causing blank / noisy output.
+        """
         self.rst_gpio.write(True);  time.sleep(0.1)
-        self.rst_gpio.write(False); time.sleep(0.01)
-        self.rst_gpio.write(True);  time.sleep(0.1)
+        self.rst_gpio.write(False); time.sleep(1.0)   # ≥1 s — do NOT shorten
+        self.rst_gpio.write(True);  time.sleep(0.5)
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -161,49 +169,48 @@ class OLED_0in96_SSD1357:
         """Full SSD1357 initialisation sequence.
 
         Must be called once after power-on (and after sleep() to wake up).
-        Register values match Waveshare's reference firmware for the
-        0.96\" RGB OLED Module.
+        Register values are derived from the confirmed-working test sequence
+        for the Waveshare 0.96\" RGB OLED on Radxa Cubie A7Z.
         """
         self._hw_reset()
 
         self._cmd(0xFD); self._dat(0x12)   # Unlock all commands
         self._cmd(0xAE)                     # Display OFF
 
-        self._cmd(0xCA); self._dat(0x7F)   # Multiplex ratio = 128 (all rows)
-        self._cmd(0xA2); self._dat(0x00)   # Display offset  = 0
-        self._cmd(0xA1); self._dat(0x00)   # Display start line = 0
+        self._cmd(0xCA); self._dat(0x7F)   # Multiplex ratio = 128 (all rows active)
 
-        # Re-map & colour depth:
-        #   bit 0   = 0 → column address increment left→right
-        #   bit 1   = 1 → column address remapped (physical flip for module)
-        #   bit 2   = 1 → BGR colour order (module is wired BGR)
+        # Re-map & colour depth (0xA0):
+        #   bit 0   = 0 → column address increments left→right
+        #   bit 1   = 1 → column address remapped (SEG 127→0, physical flip)
+        #   bit 2   = 0 → RGB colour order  (NOT BGR — 0x76 caused colour swap)
         #   bit 4   = 1 → COM scan direction reversed
         #   bit 5   = 1 → COM split odd/even enabled
         #   bit 7:6 = 01 → 65K colours (RGB565, 16 bits/pixel)
-        self._cmd(0xA0); self._dat(0x76)
+        # Result: 0b_01_1_1_0_0_1_0 = 0x72
+        # To flip image vertically, change bit4: 0x72 ↔ 0x62
+        self._cmd(0xA0); self._dat(0x72)
 
-        self._cmd(0xB5); self._dat(0x00)   # GPIO pins: HiZ (disabled)
-        self._cmd(0xB3); self._dat(0xF1)   # Clock: divider=2, oscillator freq=0xF
-        self._cmd(0xB1); self._dat(0x32)   # Phase length: phase1=5, phase2=3 DCLKs
-        self._cmd(0xBB); self._dat(0x17)   # Pre-charge voltage
-        self._cmd(0xB4); self._dat(0xA0); self._dat(0xFD)  # Seg low voltage
-        self._cmd(0xBE); self._dat(0x05)   # VCOMH voltage
-        self._cmd(0xBC); self._dat(0x05)   # Pre-charge 2
-        self._cmd(0xB6); self._dat(0x01)   # Second pre-charge period
+        # Full 128×128 GRAM window (must match OLED_WIDTH × OLED_HEIGHT)
+        self._cmd(0x15); self._dat(0x00); self._dat(0x7F)   # columns 0–127
+        self._cmd(0x75); self._dat(0x00); self._dat(0x7F)   # rows    0–127
 
-        # Contrast: R=200, G=128, B=200  (balanced white point)
-        self._cmd(0xC1); self._dat(0xC8); self._dat(0x80); self._dat(0xC8)
+        self._cmd(0xA2); self._dat(0x00)   # Display offset   = 0 (no row shift)
+        self._cmd(0xA1); self._dat(0x00)   # Display start line = 0
+
+        # Contrast: equal R/G/B for a neutral white point
+        self._cmd(0xC1); self._dat(0x8F); self._dat(0x8F); self._dat(0x8F)
         self._cmd(0xC7); self._dat(0x0F)   # Master contrast = max
 
-        self._cmd(0xA4)    # Entire display: normal (not all-on)
-        self._cmd(0xA6)    # Display mode: not inverted
         self._cmd(0xAF)    # Display ON
 
         logger.debug("Radxa OLED SSD1357: init complete")
 
     def set_window(self, x0: int = 0, y0: int = 0,
                    x1: int = OLED_WIDTH - 1, y1: int = OLED_HEIGHT - 1) -> None:
-        """Set the active drawing window (column + row address ranges)."""
+        """Set the active GRAM drawing window (column + row address ranges).
+
+        Defaults cover the full 128×128 panel.
+        """
         self._cmd(0x15); self._dat(x0); self._dat(x1)   # columns
         self._cmd(0x75); self._dat(y0); self._dat(y1)   # rows
 
@@ -214,17 +221,18 @@ class OLED_0in96_SSD1357:
     def display_image_rgb565(self, buf: bytes) -> None:
         """Push a pre-encoded RGB565 frame buffer to the OLED.
 
-        ``buf`` must be exactly ``width × height × 2`` bytes (little-endian
-        RGB565, row-major, top-left origin in portrait orientation).
+        ``buf`` must be exactly ``width × height × 2`` bytes (big-endian
+        RGB565, row-major, top-left origin).  For this 128×128 panel that
+        is 128 × 128 × 2 = 32768 bytes.
         """
         self.set_window(0, 0, self.width - 1, self.height - 1)
         self.write_ram_cmd()
         self._dat_bulk(buf)
 
     def display_image(self, pil_image) -> None:
-        """Convert a PIL RGB image (64×128 portrait) and push it to the display.
+        """Convert a PIL RGB image (128×128) and push it to the display.
 
-        The image is resized to 64×128 if needed, then converted to RGB565.
+        The image is resized to 128×128 if needed, then converted to RGB565.
         Pixel byte order: big-endian per SSD1357 spec (high byte first).
         """
         img = pil_image.convert('RGB')
