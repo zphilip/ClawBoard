@@ -1,7 +1,51 @@
 #!/usr/bin/env python3
-import RPi.GPIO as GPIO
 import time
 import subprocess
+import os
+import sys
+
+
+def _read_dt_compatible() -> str:
+    """Return /proc/device-tree/compatible as a space-joined lowercase string."""
+    try:
+        with open('/proc/device-tree/compatible', 'rb') as f:
+            raw = f.read().replace(b'\x00', b' ').decode(errors='ignore').strip()
+        return raw.lower()
+    except Exception:
+        return ''
+
+
+def _is_radxa_board() -> bool:
+    """Detect Radxa Cubie boards from the device-tree compatible string."""
+    compatible = _read_dt_compatible()
+    if not compatible:
+        return False
+    return (
+        'radxa,cubie-a7z' in compatible
+        or 'radxa' in compatible
+        or 'sun60iw2p1' in compatible
+    )
+
+
+def _maybe_delegate_to_radxa() -> None:
+    """On Radxa boards, replace this process with the Radxa GPIO launcher."""
+    if not _is_radxa_board():
+        return
+
+    here = os.path.dirname(os.path.realpath(__file__))
+    radxa_script = os.path.join(here, 'wifi-connect-gpio-launch-radxa.py')
+    if not os.path.exists(radxa_script):
+        print(f"Radxa board detected, but missing launcher: {radxa_script}")
+        sys.exit(1)
+
+    compatible = _read_dt_compatible()
+    print(f"Radxa board detected ({compatible}) — delegating to {os.path.basename(radxa_script)}")
+    os.execv(sys.executable, [sys.executable, radxa_script, *sys.argv[1:]])
+
+
+_maybe_delegate_to_radxa()
+
+import RPi.GPIO as GPIO
 
 BUTTON_PIN = 13
 LONG_PRESS_SECONDS = 2
