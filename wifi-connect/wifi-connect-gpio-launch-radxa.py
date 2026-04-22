@@ -10,17 +10,15 @@ the character device interface (/dev/gpiochipX).
 
 Hardware wiring
 ---------------
-  Button one leg  →  Pin 33  (GPIO input, pulled up internally)
-  Button other leg →  Pin 39  (GND)
+Button one leg   →  Pin 33  (GPIO input)
+Button other leg →  Pin 30 or Pin 39  (GND)
 
-Pin 33 on the Radxa Cubie A7Z 40-pin header is typically gpiochip1 line 3.
-Run the following on the board to confirm:
-    gpioinfo | grep -n ''
-    # or interactively:
-    gpiodetect && gpioinfo gpiochip1
+Confirmed working on Radxa Cubie A7Z:
+    Pin 33 = /dev/gpiochip1 line 35  (labelled PIN_33)
+    Press logic = active-LOW
 
-Override defaults with environment variables:
-    RADXA_BTN_CHIP=/dev/gpiochip1  RADXA_BTN_LINE=3 \\
+Override defaults with environment variables if your board differs:
+    RADXA_BTN_CHIP=/dev/gpiochip1  RADXA_BTN_LINE=35 \
     python3 wifi-connect-gpio-launch-radxa.py
 """
 
@@ -34,9 +32,8 @@ import struct
 
 # ── Pin configuration ─────────────────────────────────────────────────────────
 # Pin 33 on Radxa Cubie A7Z 40-pin header.
-# The scan output shows: gpiochip1 line 35 is labelled 'PIN_33' — the correct line.
-# Override with env vars if your board differs:
-#   RADXA_BTN_CHIP=/dev/gpiochip1  RADXA_BTN_LINE=35  sudo python3 ...
+# Confirmed: gpiochip1 line 35 is labelled 'PIN_33'.
+# Button is wired active-LOW against GND (Pin 30 or Pin 39).
 BUTTON_CHIP = os.environ.get('RADXA_BTN_CHIP', '/dev/gpiochip1')
 BUTTON_LINE = int(os.environ.get('RADXA_BTN_LINE', '35'))
 
@@ -130,30 +127,28 @@ def _open_button():
         sys.exit(1)
 
 
-# _STARTUP_VERIFY_SECONDS and _is_pressed are superseded by polarity
-# auto-detection inside wait_for_long_press(); kept as no-ops for compat.
-_STARTUP_VERIFY_SECONDS = 0.3
-
-
 def wait_for_long_press():
     """Block until a long press (≥ LONG_PRESS_SECONDS) is detected.
 
-    Polarity is auto-detected from the baseline (resting) state:
-      baseline LOW  → active-HIGH wiring (pull-down / floating-low)
-      baseline HIGH → active-LOW  wiring (pull-up)
+    Confirmed wiring is active-LOW: released=HIGH, pressed=LOW.
     """
     print(f"Waiting for long press on {BUTTON_CHIP} line {BUTTON_LINE} "
           f"(≥{LONG_PRESS_SECONDS}s)…")
     btn = _open_button()
     try:
-        # ── Auto-detect polarity ──────────────────────────────────────────
-        baseline  = btn.read()
-        active_high = not baseline   # pressed = opposite of resting state
-        polarity  = 'active-HIGH (resting=LOW)' if active_high else 'active-LOW (resting=HIGH)'
-        print(f"  Polarity auto-detected: {polarity}")
+        baseline = btn.read()
+        if not baseline:
+            print(
+                f"ERROR: {BUTTON_CHIP} line {BUTTON_LINE} is LOW at startup.\n"
+                f"Expected released state is HIGH for the confirmed active-LOW wiring.\n"
+                f"Check the button, cable, or override RADXA_BTN_CHIP / RADXA_BTN_LINE."
+            )
+            sys.exit(1)
+
+        print("  Polarity: active-LOW (released=HIGH, pressed=LOW)")
 
         def is_pressed():
-            return btn.read() if active_high else not btn.read()
+            return not btn.read()
 
         # Ensure NetworkManager has WiFi radio enabled
         try:
