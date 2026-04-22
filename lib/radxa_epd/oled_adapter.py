@@ -54,6 +54,11 @@ class OLEDRadxa:
     """
 
     def __init__(self, **kwargs):
+        # Inject explicit chip paths unless the caller already overrides them.
+        # This bypasses _resolve_gpio which incorrectly maps gpiochip1 lines
+        # to gpiochip0 when gpiochip0 has a large enough line count.
+        kwargs.setdefault('rst_chip', '/dev/gpiochip1')
+        kwargs.setdefault('dc_chip',  '/dev/gpiochip1')
         self._oled = OLED_0in96_SSD1357(**kwargs)
         # Expose portrait canvas geometry that clawberry_display.py expects.
         # The physical GRAM is 128×128, but we tell the display layer that

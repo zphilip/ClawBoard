@@ -118,18 +118,32 @@ class OLED_0in96_SSD1357:
         spi_dev:   str = _DEFAULT_SPI_DEV,
         spi_speed: int = _DEFAULT_SPI_SPEED,
         gpiochip:  str = _DEFAULT_GPIOCHIP,
+        # Explicit chip overrides — when set, bypass _resolve_gpio entirely.
+        # Use these when the GPIO lines live on a specific chip (e.g. gpiochip1)
+        # and auto-resolution would incorrectly map them to gpiochip0.
+        rst_chip:  str = None,
+        dc_chip:   str = None,
     ):
         from periphery import GPIO, SPI  # deferred — not available on Pi/host
 
-        rst_chip, rst_off = _resolve_gpio(rst_line, gpiochip)
-        dc_chip,  dc_off  = _resolve_gpio(dc_line,  gpiochip)
+        # Use explicit chip paths when provided; otherwise auto-resolve.
+        if rst_chip is not None:
+            _rst_chip, _rst_off = rst_chip, rst_line
+        else:
+            _rst_chip, _rst_off = _resolve_gpio(rst_line, gpiochip)
+
+        if dc_chip is not None:
+            _dc_chip, _dc_off = dc_chip, dc_line
+        else:
+            _dc_chip, _dc_off = _resolve_gpio(dc_line, gpiochip)
+
         logger.info(
             "Radxa OLED SSD1357: SPI=%s  RST=%s[%d]  DC=%s[%d]",
-            spi_dev, rst_chip, rst_off, dc_chip, dc_off,
+            spi_dev, _rst_chip, _rst_off, _dc_chip, _dc_off,
         )
         self.spi       = SPI(spi_dev, 0, spi_speed)
-        self.rst_gpio  = GPIO(rst_chip, rst_off, "out")
-        self.dc_gpio   = GPIO(dc_chip,  dc_off,  "out")
+        self.rst_gpio  = GPIO(_rst_chip, _rst_off, "out")
+        self.dc_gpio   = GPIO(_dc_chip,  _dc_off,  "out")
 
         self.width  = OLED_WIDTH
         self.height = OLED_HEIGHT
