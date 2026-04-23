@@ -7,7 +7,7 @@ Type=simple
 User=root
 # 指向新位置
 WorkingDirectory=/opt/clawboard
-ExecStart=/opt/clawboard/venv/bin/python3 /opt/clawboard/clawberry_display.py
+ExecStart=/usr/bin/python3 /opt/clawboard/clawberry_display.py
 RemainAfterExit=yes
 
 [Install]
