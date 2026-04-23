@@ -1,4 +1,3 @@
-
 import time
 from . import lcdconfig
 
@@ -123,10 +122,10 @@ class LCD_0inch96(lcdconfig.RaspberryPi):
   
     def SetWindows(self, Xstart, Ystart, Xend, Yend):
         #set the X coordinates
-        Xstart=Xstart+1
-        Xend=Xend+1
-        Ystart=Ystart+26
-        Yend=Yend+26
+        Xstart=Xstart+26
+        Xend=Xend+26
+        Ystart=Ystart+1
+        Yend=Yend+1
         self.command(0x2A)
         self.data(0x00)               #Set the horizontal starting point to the high octet
         self.data(Xstart & 0xff)      #Set the horizontal starting point to the low octet
@@ -152,7 +151,7 @@ class LCD_0inch96(lcdconfig.RaspberryPi):
                 ({0}x{1}).' .format(self.height,self.width))
             else:
                 img = self.np.asarray(Image)
-                pix = self.np.zeros((self.width,self.hight,2), dtype = self.np.uint8)
+                pix = self.np.zeros((self.width,self.height,2), dtype = self.np.uint8)
                 pix[...,[0]] = self.np.add(self.np.bitwise_and(img[...,[0]],0xF8), self.np.right_shift(img[...,[1]],5))
                 pix[...,[1]] = self.np.add(self.np.bitwise_and(self.np.left_shift(img[...,[1]],3),0xE0), self.np.right_shift(img[...,[2]],3))               
         else:       
