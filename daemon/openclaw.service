@@ -5,28 +5,12 @@ Wants=network.target
 
 [Service]
 Type=simple
-
-ExecStartPre=/usr/bin/test -x /usr/bin/openclaw
-
 ExecStart=/usr/bin/openclaw gateway run
-
 WorkingDirectory=/var/lib/openclaw
-
 Restart=on-failure
 RestartSec=5
-
 StandardOutput=journal
 StandardError=journal
-
-# Hardening
-NoNewPrivileges=true
-PrivateTmp=true
-ProtectSystem=strict
-ProtectHome=false
-ReadWritePaths=/var/lib/openclaw
-RestrictNamespaces=true
-RestrictRealtime=true
-LockPersonality=true
 
 [Install]
 WantedBy=default.target
