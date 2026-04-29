@@ -16,7 +16,7 @@
     "mode": "local",
     "auth": {
       "mode": "token",
-      "token": "your-model-token-here"
+      "token": "your-gateway-token-here"
     },
     "port": 18789,
     "bind": "lan",
@@ -28,7 +28,7 @@
       "allowInsecureAuth": true,
       "allowedOrigins": [
         "http://radxa-cubie-a7z.local:18789",
-        "http://192.168.1.25:18789"
+        "http://clawberry.local:18789"
       ]
     },
     "nodes": {
