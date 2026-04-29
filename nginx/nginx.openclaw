@@ -1,11 +1,10 @@
 server {
     listen 18443 ssl;
-    listen 80;          # 监听 HTTP
+    listen 80;
     server_name raspberrypi.local;
 
-    # 这里的路径请根据你 ls /app/nginx/ 看到的文件名进行修改
-    ssl_certificate /app/nginx/clawberry.local.pem;
-    ssl_certificate_key /app/nginx/clawberry.local-key.pem;
+    ssl_certificate     /etc/nginx/ssl/clawberry.local.pem;
+    ssl_certificate_key /etc/nginx/ssl/clawberry.local-key.pem;
 
     # 性能与安全基础配置
     ssl_session_cache shared:SSL:1m;
