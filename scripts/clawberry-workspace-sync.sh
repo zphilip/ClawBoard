@@ -117,7 +117,9 @@ nginx/nginx.openclaw
 dashboard.py
 clawberry_bluetooth.py
 clawberry_display.py
+clawberry_display_radxa.py
 clawberry_paircode.py
+clawberry_radxa_patch.py
 publish_services.sh
 scripts/clawberry-workspace-sync.sh
 EOF
@@ -380,21 +382,30 @@ if [[ -f "$SUDOERS_SRC" ]]; then
 fi
 
 # ── Deploy nginx server config ───────────────────────────────────────────────
+# Debian nginx pattern: install to sites-available, enable via symlink in
+# sites-enabled (the main nginx.conf includes sites-enabled/*).
 NGINX_SRC="$WORK_DIR/nginx/nginx.openclaw"
-NGINX_DST="/etc/nginx/conf.d/nginx.openclaw"
+NGINX_AVAIL="/etc/nginx/sites-available/nginx.openclaw"
+NGINX_ENABLED="/etc/nginx/sites-enabled/nginx.openclaw"
 if [[ -f "$NGINX_SRC" ]]; then
-    _nginx_pre=$(sha256sum "$NGINX_DST" 2>/dev/null | cut -d' ' -f1 || echo "none")
-    if cp "$NGINX_SRC" "$NGINX_DST" 2>/dev/null; then
-        chmod 644 "$NGINX_DST" || true
-        _nginx_post=$(sha256sum "$NGINX_DST" | cut -d' ' -f1)
+    _nginx_pre=$(sha256sum "$NGINX_AVAIL" 2>/dev/null | cut -d' ' -f1 || echo "none")
+    if cp "$NGINX_SRC" "$NGINX_AVAIL" 2>/dev/null; then
+        chmod 644 "$NGINX_AVAIL" || true
+        # Ensure the sites-enabled symlink exists
+        if [[ ! -L "$NGINX_ENABLED" ]]; then
+            ln -sf "$NGINX_AVAIL" "$NGINX_ENABLED" 2>/dev/null && \
+                log "  created symlink $NGINX_ENABLED → $NGINX_AVAIL" || \
+                log "WARNING: failed to create sites-enabled symlink"
+        fi
+        _nginx_post=$(sha256sum "$NGINX_AVAIL" | cut -d' ' -f1)
         if [[ "$_nginx_pre" != "$_nginx_post" ]]; then
-            log "  nginx.openclaw updated → $NGINX_DST"
+            log "  nginx.openclaw updated → $NGINX_AVAIL"
             NGINX_CHANGED=yes
         else
             log "  nginx.openclaw already up to date"
         fi
     else
-        log "WARNING: failed to install nginx.openclaw to $NGINX_DST (run as root?)"
+        log "WARNING: failed to install nginx.openclaw to $NGINX_AVAIL (run as root?)"
     fi
 else
     log "WARNING: nginx/nginx.openclaw not found in repo — skipping"
