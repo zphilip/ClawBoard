@@ -3231,16 +3231,6 @@ def index(request: Request):
                     oc_w_allowed_origins = ui.textarea(value='\n'.join(_oc_origins)).classes('w-full').props('outlined rows=3')
 
                     ui.separator().classes('q-my-xs')
-                    ui.label('CLI Connect Timeout').classes('text-caption text-grey-6')
-                    oc_w_connect_timeout = ui.number(
-                        'gateway.connectTimeout (ms)  — default 10000',
-                        value=int(oc_gateway.get('connectTimeout', 30000) or 30000),
-                        min=5000, max=120000, step=5000,
-                    ).classes('w-full')
-                    ui.label('Increase if CLI reports "gateway timeout after 10000ms" on slow hardware.') \
-                        .classes('text-caption text-grey-5 q-mb-xs')
-
-                    ui.separator().classes('q-my-xs')
                     ui.label('Tailscale').classes('text-caption text-grey-6')
                     _oc_ts_opts = ['off', 'serve', 'funnel']
                     _oc_cur_ts  = str(oc_ts.get('mode', 'off'))
@@ -3350,7 +3340,6 @@ def index(request: Request):
                     data['gateway']['mode']  = oc_w_mode.value or 'local'
                     data['gateway']['port']  = int(oc_w_port.value or 18789)
                     data['gateway']['bind']  = oc_w_bind.value or 'lan'
-                    data['gateway']['connectTimeout'] = int(oc_w_connect_timeout.value or 30000)
                     data['gateway'].setdefault('auth', {})
                     data['gateway']['auth']['mode']  = oc_w_auth_mode.value or 'token'
                     data['gateway']['auth']['token'] = oc_w_auth_token.value or ''
@@ -3445,13 +3434,15 @@ def index(request: Request):
 
                 # ── Device lists ─────────────────────────────────────────
                 def _oc_load_devices():
-                    """Run `openclaw devices list --json` as the openclaw system user
-                    (which holds the paired CLI device identity) via sudo with login shell."""
-                    r = subprocess.run(
-                        ['sudo', '-u', 'openclaw', '-i',
-                         'openclaw', 'devices', 'list', '--json'],
-                        capture_output=True, text=True
-                    )
+                    """Run `openclaw devices list --json` as the openclaw system user.
+                    Passes --token and --url so the gateway auth token (operator.read scope)
+                    is used instead of the CLI paired device (operator.pairing scope only)."""
+                    gw_url = f'ws://localhost:{oc_port}'
+                    cmd = ['sudo', '-u', 'openclaw', '-i',
+                           'openclaw', 'devices', 'list', '--json']
+                    if oc_tok:
+                        cmd += ['--url', gw_url, '--token', oc_tok]
+                    r = subprocess.run(cmd, capture_output=True, text=True)
                     if r.returncode != 0:
                         return None, r.stderr.strip() or f'exit {r.returncode}'
                     # The login shell may print banners before AND after the JSON.
@@ -3472,11 +3463,12 @@ def index(request: Request):
                         return None, f'Parse error: {e}  raw={out[start:start+200]}'
 
                 def _oc_approve_device(request_id: str, name_lbl):
-                    r = subprocess.run(
-                        ['sudo', '-u', 'openclaw', '-i',
-                         'openclaw', 'devices', 'approve', request_id],
-                        capture_output=True, text=True
-                    )
+                    gw_url = f'ws://localhost:{oc_port}'
+                    cmd = ['sudo', '-u', 'openclaw', '-i',
+                           'openclaw', 'devices', 'approve', request_id]
+                    if oc_tok:
+                        cmd += ['--url', gw_url, '--token', oc_tok]
+                    r = subprocess.run(cmd, capture_output=True, text=True)
                     if r.returncode == 0:
                         ui.notify(f'✅ Approved {request_id[:8]}…', type='positive')
                         name_lbl.set_text('✅ Approved')
