@@ -113,6 +113,7 @@ config/
 wifi-connect/
 skills/
 clawproxy/
+nginx/nginx.openclaw
 dashboard.py
 clawberry_bluetooth.py
 clawberry_display.py
@@ -166,6 +167,7 @@ ZC_ACTIVE=no
 PICWEB_ACTIVE=no
 PROXY_ACTIVE=no
 DASHBOARD_CHANGED=no
+NGINX_CHANGED=no
 if command -v systemctl >/dev/null 2>&1; then
     if systemctl is-active --quiet picoclaw;          then PIC_ACTIVE=yes;    fi
     if systemctl is-active --quiet zeroclaw;          then ZC_ACTIVE=yes;     fi
@@ -377,6 +379,27 @@ if [[ -f "$SUDOERS_SRC" ]]; then
     fi
 fi
 
+# ── Deploy nginx server config ───────────────────────────────────────────────
+NGINX_SRC="$WORK_DIR/nginx/nginx.openclaw"
+NGINX_DST="/etc/nginx/conf.d/nginx.openclaw"
+if [[ -f "$NGINX_SRC" ]]; then
+    _nginx_pre=$(sha256sum "$NGINX_DST" 2>/dev/null | cut -d' ' -f1 || echo "none")
+    if cp "$NGINX_SRC" "$NGINX_DST" 2>/dev/null; then
+        chmod 644 "$NGINX_DST" || true
+        _nginx_post=$(sha256sum "$NGINX_DST" | cut -d' ' -f1)
+        if [[ "$_nginx_pre" != "$_nginx_post" ]]; then
+            log "  nginx.openclaw updated → $NGINX_DST"
+            NGINX_CHANGED=yes
+        else
+            log "  nginx.openclaw already up to date"
+        fi
+    else
+        log "WARNING: failed to install nginx.openclaw to $NGINX_DST (run as root?)"
+    fi
+else
+    log "WARNING: nginx/nginx.openclaw not found in repo — skipping"
+fi
+
 # Fix ownership
 chown -R "$CLAWBOARD_USER:$CLAWBOARD_USER" "$CLAWBOARD_DST" 2>/dev/null || \
     log "WARNING: chown $CLAWBOARD_USER failed for $CLAWBOARD_DST"
@@ -463,6 +486,15 @@ if command -v systemctl >/dev/null 2>&1; then
     if [[ "$DASHBOARD_CHANGED" == "yes" ]]; then
         log "dashboard.py was updated — restarting clawboard.service"
         systemctl restart clawboard 2>/dev/null || true
+    fi
+    if [[ "$NGINX_CHANGED" == "yes" ]]; then
+        log "nginx.openclaw was updated — testing and reloading nginx"
+        if nginx -t 2>/dev/null; then
+            systemctl reload nginx 2>/dev/null || true
+            log "  nginx reloaded"
+        else
+            log "WARNING: nginx config test failed — NOT reloading nginx"
+        fi
     fi
 fi
 
