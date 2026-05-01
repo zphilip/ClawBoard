@@ -259,29 +259,38 @@ def restart_openclaw_service():
     )
     return r.returncode == 0, r.stderr.strip()
 
-def openclaw_service_status():
-    r = subprocess.run(['systemctl', 'is-active', 'openclaw.service'], capture_output=True, text=True)
-    return r.stdout.strip()
+def _oc_xdg() -> tuple[int, str]:
+    """Return (uid, XDG_RUNTIME_DIR) for the openclaw system user."""
+    import pwd
+    uid = pwd.getpwnam('openclaw').pw_uid
+    return uid, f'/run/user/{uid}'
+
+def openclaw_service_status() -> str:
+    """Return is-active state of openclaw.service as the openclaw user."""
+    try:
+        _, xdg = _oc_xdg()
+        r = subprocess.run(
+            ['sudo', '-u', 'openclaw', f'XDG_RUNTIME_DIR={xdg}',
+             '/usr/bin/systemctl', '--user', 'is-active', 'openclaw.service'],
+            capture_output=True, text=True
+        )
+        return r.stdout.strip()
+    except Exception:
+        # Fallback: system-level check
+        r = subprocess.run(['systemctl', 'is-active', 'openclaw.service'],
+                           capture_output=True, text=True)
+        return r.stdout.strip()
 
 def openclaw_service_is_enabled() -> bool:
-    """Return True if openclaw.service is enabled (system or user-level)."""
-    # Check system service first
-    r = subprocess.run(['systemctl', 'is-enabled', 'openclaw.service'],
-                       capture_output=True, text=True)
-    if r.stdout.strip() in ('enabled', 'static', 'indirect'):
-        return True
-    # Check user service for openclaw user
+    """Return True if openclaw.service is enabled under the openclaw user account."""
     try:
-        import pwd
-        uid = pwd.getpwnam('openclaw').pw_uid
-        xdg = f'/run/user/{uid}'
-        r2 = subprocess.run(
-            ['sudo', '-u', 'openclaw',
-             f'XDG_RUNTIME_DIR={xdg}',
+        _, xdg = _oc_xdg()
+        r = subprocess.run(
+            ['sudo', '-u', 'openclaw', f'XDG_RUNTIME_DIR={xdg}',
              '/usr/bin/systemctl', '--user', 'is-enabled', 'openclaw.service'],
             capture_output=True, text=True
         )
-        if r2.stdout.strip() in ('enabled', 'static', 'indirect'):
+        if r.stdout.strip() in ('enabled', 'static', 'indirect'):
             return True
     except Exception:
         pass
@@ -291,15 +300,11 @@ def enable_openclaw_user_service() -> tuple[bool, str]:
     """Enable and start openclaw.service as the openclaw user via systemctl --user.
     Returns (ok, error_message)."""
     try:
-        import pwd
-        uid = pwd.getpwnam('openclaw').pw_uid
-        xdg = f'/run/user/{uid}'
-        env = {**os.environ, 'XDG_RUNTIME_DIR': xdg,
-               'DBUS_SESSION_BUS_ADDRESS': f'unix:path={xdg}/bus'}
+        _, xdg = _oc_xdg()
         r = subprocess.run(
-            ['sudo', '-u', 'openclaw', '/usr/bin/systemctl',
-             '--user', 'enable', '--now', 'openclaw.service'],
-            capture_output=True, text=True, env=env
+            ['sudo', '-u', 'openclaw', f'XDG_RUNTIME_DIR={xdg}',
+             '/usr/bin/systemctl', '--user', 'enable', '--now', 'openclaw.service'],
+            capture_output=True, text=True
         )
         if r.returncode == 0:
             return True, ''
