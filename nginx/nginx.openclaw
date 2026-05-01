@@ -1,6 +1,6 @@
 server {
     listen 18443 ssl;
-    listen 80;
+    listen 8000;
     server_name raspberrypi.local;
 
     ssl_certificate     /etc/nginx/ssl/clawberry.local.pem;
