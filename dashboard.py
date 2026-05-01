@@ -259,58 +259,38 @@ def restart_openclaw_service():
     )
     return r.returncode == 0, r.stderr.strip()
 
-def _oc_xdg() -> tuple[int, str]:
-    """Return (uid, XDG_RUNTIME_DIR) for the openclaw system user."""
-    import pwd
-    uid = pwd.getpwnam('openclaw').pw_uid
-    return uid, f'/run/user/{uid}'
+# Machine target for openclaw user systemd session (works even without XDG_RUNTIME_DIR)
+_OC_MACHINE = 'openclaw@.host'
 
 def openclaw_service_status() -> str:
-    """Return is-active state of openclaw.service as the openclaw user."""
-    try:
-        _, xdg = _oc_xdg()
-        r = subprocess.run(
-            ['sudo', '-u', 'openclaw', f'XDG_RUNTIME_DIR={xdg}',
-             '/usr/bin/systemctl', '--user', 'is-active', 'openclaw.service'],
-            capture_output=True, text=True
-        )
-        return r.stdout.strip()
-    except Exception:
-        # Fallback: system-level check
-        r = subprocess.run(['systemctl', 'is-active', 'openclaw.service'],
-                           capture_output=True, text=True)
-        return r.stdout.strip()
+    """Return is-active state of openclaw.service via the openclaw user's systemd session."""
+    r = subprocess.run(
+        ['sudo', '/usr/bin/systemctl', f'--machine={_OC_MACHINE}', '--user',
+         'is-active', 'openclaw.service'],
+        capture_output=True, text=True
+    )
+    return r.stdout.strip()
 
 def openclaw_service_is_enabled() -> bool:
-    """Return True if openclaw.service is enabled under the openclaw user account."""
-    try:
-        _, xdg = _oc_xdg()
-        r = subprocess.run(
-            ['sudo', '-u', 'openclaw', f'XDG_RUNTIME_DIR={xdg}',
-             '/usr/bin/systemctl', '--user', 'is-enabled', 'openclaw.service'],
-            capture_output=True, text=True
-        )
-        if r.stdout.strip() in ('enabled', 'static', 'indirect'):
-            return True
-    except Exception:
-        pass
-    return False
+    """Return True if openclaw.service is enabled in the openclaw user's systemd session."""
+    r = subprocess.run(
+        ['sudo', '/usr/bin/systemctl', f'--machine={_OC_MACHINE}', '--user',
+         'is-enabled', 'openclaw.service'],
+        capture_output=True, text=True
+    )
+    return r.stdout.strip() in ('enabled', 'static', 'indirect')
 
 def enable_openclaw_user_service() -> tuple[bool, str]:
-    """Enable and start openclaw.service as the openclaw user via systemctl --user.
+    """Enable and start openclaw.service in the openclaw user's systemd session.
     Returns (ok, error_message)."""
-    try:
-        _, xdg = _oc_xdg()
-        r = subprocess.run(
-            ['sudo', '-u', 'openclaw', f'XDG_RUNTIME_DIR={xdg}',
-             '/usr/bin/systemctl', '--user', 'enable', '--now', 'openclaw.service'],
-            capture_output=True, text=True
-        )
-        if r.returncode == 0:
-            return True, ''
-        return False, r.stderr.strip() or f'exit {r.returncode}'
-    except Exception as e:
-        return False, str(e)
+    r = subprocess.run(
+        ['sudo', '/usr/bin/systemctl', f'--machine={_OC_MACHINE}', '--user',
+         'enable', '--now', 'openclaw.service'],
+        capture_output=True, text=True
+    )
+    if r.returncode == 0:
+        return True, ''
+    return False, r.stderr.strip() or f'exit {r.returncode}'
 
 def _read_openclaw_deploy_token() -> tuple[str, str]:
     """Read gateway.auth.token from the deployed openclaw.json via sudo cat.
