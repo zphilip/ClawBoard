@@ -263,6 +263,50 @@ def openclaw_service_status():
     r = subprocess.run(['systemctl', 'is-active', 'openclaw.service'], capture_output=True, text=True)
     return r.stdout.strip()
 
+def openclaw_service_is_enabled() -> bool:
+    """Return True if openclaw.service is enabled (system or user-level)."""
+    # Check system service first
+    r = subprocess.run(['systemctl', 'is-enabled', 'openclaw.service'],
+                       capture_output=True, text=True)
+    if r.stdout.strip() in ('enabled', 'static', 'indirect'):
+        return True
+    # Check user service for openclaw user
+    try:
+        import pwd
+        uid = pwd.getpwnam('openclaw').pw_uid
+        xdg = f'/run/user/{uid}'
+        r2 = subprocess.run(
+            ['sudo', '-u', 'openclaw',
+             f'XDG_RUNTIME_DIR={xdg}',
+             '/usr/bin/systemctl', '--user', 'is-enabled', 'openclaw.service'],
+            capture_output=True, text=True
+        )
+        if r2.stdout.strip() in ('enabled', 'static', 'indirect'):
+            return True
+    except Exception:
+        pass
+    return False
+
+def enable_openclaw_user_service() -> tuple[bool, str]:
+    """Enable and start openclaw.service as the openclaw user via systemctl --user.
+    Returns (ok, error_message)."""
+    try:
+        import pwd
+        uid = pwd.getpwnam('openclaw').pw_uid
+        xdg = f'/run/user/{uid}'
+        env = {**os.environ, 'XDG_RUNTIME_DIR': xdg,
+               'DBUS_SESSION_BUS_ADDRESS': f'unix:path={xdg}/bus'}
+        r = subprocess.run(
+            ['sudo', '-u', 'openclaw', '/usr/bin/systemctl',
+             '--user', 'enable', '--now', 'openclaw.service'],
+            capture_output=True, text=True, env=env
+        )
+        if r.returncode == 0:
+            return True, ''
+        return False, r.stderr.strip() or f'exit {r.returncode}'
+    except Exception as e:
+        return False, str(e)
+
 def _read_openclaw_deploy_token() -> tuple[str, str]:
     """Read gateway.auth.token from the deployed openclaw.json via sudo cat.
     Falls back to local config/openclaw.json on failure.
@@ -1420,6 +1464,7 @@ def index(request: Request):
                         wiz_summary = ui.label('…').classes(
                             'text-caption text-mono bg-grey-2 q-pa-sm w-full q-mb-sm'
                         ).style('white-space: pre; border-radius: 4px;')
+                        wiz_result_lbl = ui.label('').classes('text-caption w-full q-mb-xs')
 
                         def _wiz_apply():
                             _wiz_refresh_summary()
@@ -1461,17 +1506,29 @@ def index(request: Request):
                             try:
                                 save_config(conf)
                             except Exception as _e:
-                                ui.notify(f'❌ Save failed: {_e}', type='negative')
+                                msg = f'❌ Save failed: {_e}'
+                                ui.notify(msg, type='negative')
+                                wiz_result_lbl.set_text(msg)
+                                wiz_result_lbl.classes(remove='text-positive text-warning', add='text-negative')
                                 return
                             ok_deploy, deploy_err = deploy_config()
                             if not ok_deploy:
-                                ui.notify(f'⚠️ Saved locally but deploy failed: {deploy_err}', type='warning')
+                                msg = f'⚠️ Saved locally but deploy failed: {deploy_err}'
+                                ui.notify(msg, type='warning')
+                                wiz_result_lbl.set_text(msg)
+                                wiz_result_lbl.classes(remove='text-positive text-negative', add='text-warning')
                                 return
                             ok_svc, svc_err = restart_service()
                             if ok_svc:
-                                ui.notify('✅ Wizard applied, deployed & ZeroClaw restarted', type='positive')
+                                msg = '✅ Wizard applied, deployed & ZeroClaw restarted successfully'
+                                ui.notify(msg, type='positive')
+                                wiz_result_lbl.set_text(msg)
+                                wiz_result_lbl.classes(remove='text-warning text-negative', add='text-positive')
                             else:
-                                ui.notify(f'⚠️ Deployed but restart failed: {svc_err or T["notify_sudo_required"]}', type='warning')
+                                msg = f'⚠️ Deployed but service restart failed: {svc_err or T["notify_sudo_required"]}'
+                                ui.notify(msg, type='warning')
+                                wiz_result_lbl.set_text(msg)
+                                wiz_result_lbl.classes(remove='text-positive text-negative', add='text-warning')
 
                         with ui.stepper_navigation():
                             ui.button('← Back', on_click=_wiz.previous).props('flat color=grey-7')
@@ -2895,12 +2952,49 @@ def index(request: Request):
             ui.label(T['oc_dashboard']).classes('text-h6 text-teal-8')
             ui.button(icon='refresh', on_click=lambda: ui.navigate.reload()) \
                 .props('flat round dense color=teal-8').tooltip(T['tooltip_reload'])
+
+        # ── Service disabled banner ──────────────────────────────────────
+        _oc_svc_enabled = openclaw_service_is_enabled()
+        oc_disabled_banner = ui.card().classes('w-full q-pa-md q-mb-sm bg-orange-1')
+        oc_disabled_banner.set_visibility(not _oc_svc_enabled)
+        with oc_disabled_banner:
+            ui.label('⚠️ OpenClaw service is not enabled').classes('text-subtitle2 text-orange-9')
+            ui.label(
+                'The openclaw.service is currently disabled. '
+                'Enable and start it to use the OpenClaw gateway and dashboard.'
+            ).classes('text-caption text-grey-7 q-mb-sm')
+            oc_enable_result = ui.label('').classes('text-caption q-mb-xs')
+
+            def _oc_enable_service():
+                ok, err = enable_openclaw_user_service()
+                if ok:
+                    oc_enable_result.set_text('✅ Service enabled and started — reloading…')
+                    oc_enable_result.classes(remove='text-negative', add='text-positive')
+                    ui.notify('✅ openclaw.service enabled & started', type='positive')
+                    ui.timer(1.5, lambda: ui.navigate.reload(), once=True)
+                else:
+                    msg = f'❌ Enable failed: {err}'
+                    oc_enable_result.set_text(msg)
+                    oc_enable_result.classes(remove='text-positive', add='text-negative')
+                    ui.notify(msg, type='negative')
+
+            ui.button('▶ Enable & Start openclaw.service', on_click=_oc_enable_service) \
+                .props('color=orange-9 elevated')
+
+        # ── Main dashboard tabs (shown only when service is enabled) ─────
         with ui.tabs().classes('w-full bg-teal-1') as oc_sub_tabs:
             t_oc_wiz  = ui.tab(T['oc_tab_wizard'],        icon='auto_fix_high')
             t_oc_cfg  = ui.tab(T['oc_tab_configuration'], icon='settings')
             t_oc_pair = ui.tab(T['oc_tab_pair_device'],   icon='devices')
 
-        with ui.tab_panels(oc_sub_tabs, value=t_oc_wiz).classes('w-full'):
+        oc_sub_tabs.set_visibility(_oc_svc_enabled)
+
+        with ui.tab_panels(oc_sub_tabs, value=t_oc_wiz).classes('w-full') as oc_tab_panels:
+            pass  # populated below
+
+        oc_tab_panels.set_visibility(_oc_svc_enabled)
+
+        with oc_tab_panels:
 
             # ── OpenClaw › Wizard ──────────────────────────────────────────
             with ui.tab_panel(t_oc_wiz):
@@ -3152,6 +3246,16 @@ def index(request: Request):
                     oc_w_allowed_origins = ui.textarea(value='\n'.join(_oc_origins)).classes('w-full').props('outlined rows=3')
 
                     ui.separator().classes('q-my-xs')
+                    ui.label('CLI Connect Timeout').classes('text-caption text-grey-6')
+                    oc_w_connect_timeout = ui.number(
+                        'gateway.connectTimeout (ms)  — default 10000',
+                        value=int(oc_gateway.get('connectTimeout', 30000) or 30000),
+                        min=5000, max=120000, step=5000,
+                    ).classes('w-full')
+                    ui.label('Increase if CLI reports "gateway timeout after 10000ms" on slow hardware.') \
+                        .classes('text-caption text-grey-5 q-mb-xs')
+
+                    ui.separator().classes('q-my-xs')
                     ui.label('Tailscale').classes('text-caption text-grey-6')
                     _oc_ts_opts = ['off', 'serve', 'funnel']
                     _oc_cur_ts  = str(oc_ts.get('mode', 'off'))
@@ -3261,6 +3365,7 @@ def index(request: Request):
                     data['gateway']['mode']  = oc_w_mode.value or 'local'
                     data['gateway']['port']  = int(oc_w_port.value or 18789)
                     data['gateway']['bind']  = oc_w_bind.value or 'lan'
+                    data['gateway']['connectTimeout'] = int(oc_w_connect_timeout.value or 30000)
                     data['gateway'].setdefault('auth', {})
                     data['gateway']['auth']['mode']  = oc_w_auth_mode.value or 'token'
                     data['gateway']['auth']['token'] = oc_w_auth_token.value or ''

@@ -51,6 +51,11 @@ zero ALL=(root) NOPASSWD: /usr/bin/systemctl start clawberry-proxy.service
 zero ALL=(root) NOPASSWD: /usr/bin/systemctl restart openclaw.service
 zero ALL=(root) NOPASSWD: /usr/bin/systemctl stop openclaw.service
 zero ALL=(root) NOPASSWD: /usr/bin/systemctl start openclaw.service
+zero ALL=(root) NOPASSWD: /usr/bin/systemctl enable --now openclaw.service
+
+# ── OpenClaw user-service management (run as openclaw user) ─────────────────
+zero ALL=(openclaw) NOPASSWD: /usr/bin/systemctl --user enable --now openclaw.service
+zero ALL=(openclaw) NOPASSWD: /usr/bin/systemctl --user is-enabled openclaw.service
 
 # ── OpenClaw runtime files ───────────────────────────────────────────────────
 zero ALL=(root) NOPASSWD: /usr/bin/cat /var/lib/openclaw/.openclaw/openclaw.json
