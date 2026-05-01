@@ -17,6 +17,8 @@ KillMode=control-group
 Environment=HOME=/var/lib/openclaw
 Environment=TMPDIR=/tmp
 Environment=PATH=/usr/bin:/var/lib/openclaw/.local/bin:/var/lib/openclaw/.npm-global/bin:/var/lib/openclaw/bin:/var/lib/openclaw/.nix-profile/bin:/usr/local/bin:/bin
+Environment=NODE_COMPILE_CACHE=/var/tmp/openclaw-compile-cache
+Environment=OPENCLAW_NO_RESPAWN=1
 Environment=OPENCLAW_GATEWAY_PORT=18789
 Environment=OPENCLAW_SYSTEMD_UNIT=openclaw.service
 Environment="OPENCLAW_WINDOWS_TASK_NAME=OpenClaw Gateway"
