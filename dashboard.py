@@ -3454,17 +3454,22 @@ def index(request: Request):
                     )
                     if r.returncode != 0:
                         return None, r.stderr.strip() or f'exit {r.returncode}'
-                    # The CLI may print a banner before JSON — find the first '[' or '{'
+                    # The login shell may print banners before AND after the JSON.
+                    # Find the first '{' or '[', then use raw_decode to consume
+                    # exactly one JSON value and ignore any trailing shell output.
                     out = r.stdout
-                    for start_ch in ('[', '{'):
-                        idx = out.find(start_ch)
-                        if idx != -1:
-                            out = out[idx:]
-                            break
+                    start = -1
+                    for ch in ('{', '['):
+                        idx = out.find(ch)
+                        if idx != -1 and (start == -1 or idx < start):
+                            start = idx
+                    if start == -1:
+                        return None, f'No JSON found in output: {out[:200]}'
                     try:
-                        return json.loads(out), ''
+                        obj, _ = json.JSONDecoder().raw_decode(out, start)
+                        return obj, ''
                     except Exception as e:
-                        return None, f'Parse error: {e}  raw={r.stdout[:200]}'
+                        return None, f'Parse error: {e}  raw={out[start:start+200]}'
 
                 def _oc_approve_device(request_id: str, name_lbl):
                     r = subprocess.run(
