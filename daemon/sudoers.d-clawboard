@@ -65,9 +65,10 @@ zero ALL=(root) NOPASSWD: /usr/bin/tee /var/lib/openclaw/.openclaw/openclaw.json
 zero ALL=(root) NOPASSWD: /usr/bin/chown openclaw\:openclaw /var/lib/openclaw/.openclaw/openclaw.json
 zero ALL=(root) NOPASSWD: /usr/bin/mkdir -p /var/lib/openclaw/.openclaw
 
-# ── OpenClaw CLI (run as openclaw user for device identity) ──────────────────
-zero ALL=(openclaw) NOPASSWD: /usr/bin/openclaw devices list --json
-zero ALL=(openclaw) NOPASSWD: /usr/bin/openclaw devices approve *
+# ── OpenClaw CLI (login shell as openclaw user for correct environment) ───────
+# 'sudo -u openclaw -i openclaw ...' runs /bin/bash on behalf of openclaw;
+# the login shell is required so HOME, PATH and the CLI config are loaded.
+zero ALL=(openclaw) NOPASSWD: /bin/bash
 
 # ── Workspace-sync upgrade script ────────────────────────────────────────────
 zero ALL=(root) NOPASSWD: /usr/bin/bash /usr/local/bin/clawberry-workspace-sync.sh

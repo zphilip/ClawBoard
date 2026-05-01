@@ -3446,30 +3446,37 @@ def index(request: Request):
                 # ── Device lists ─────────────────────────────────────────
                 def _oc_load_devices():
                     """Run `openclaw devices list --json` as the openclaw system user
-                    (which holds the paired CLI device identity) via sudo."""
+                    (which holds the paired CLI device identity) via sudo with login shell."""
                     r = subprocess.run(
-                        ['sudo', '-u', 'openclaw', '/usr/bin/openclaw',
-                         'devices', 'list', '--json'],
+                        ['sudo', '-u', 'openclaw', '-i',
+                         'openclaw', 'devices', 'list', '--json'],
                         capture_output=True, text=True
                     )
                     if r.returncode != 0:
                         return None, r.stderr.strip() or f'exit {r.returncode}'
+                    # The CLI may print a banner before JSON — find the first '[' or '{'
+                    out = r.stdout
+                    for start_ch in ('[', '{'):
+                        idx = out.find(start_ch)
+                        if idx != -1:
+                            out = out[idx:]
+                            break
                     try:
-                        return json.loads(r.stdout), ''
+                        return json.loads(out), ''
                     except Exception as e:
-                        return None, f'Parse error: {e}'
+                        return None, f'Parse error: {e}  raw={r.stdout[:200]}'
 
                 def _oc_approve_device(request_id: str, name_lbl):
                     r = subprocess.run(
-                        ['sudo', '-u', 'openclaw', '/usr/bin/openclaw',
-                         'devices', 'approve', request_id],
+                        ['sudo', '-u', 'openclaw', '-i',
+                         'openclaw', 'devices', 'approve', request_id],
                         capture_output=True, text=True
                     )
                     if r.returncode == 0:
                         ui.notify(f'✅ Approved {request_id[:8]}…', type='positive')
                         name_lbl.set_text('✅ Approved')
                     else:
-                        err = r.stderr.strip() or f'exit {r.returncode}'
+                        err = r.stderr.strip() or r.stdout.strip() or f'exit {r.returncode}'
                         ui.notify(f'❌ {err}', type='negative')
 
                 def _oc_fmt_ts(ms):
