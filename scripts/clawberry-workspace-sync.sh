@@ -385,8 +385,8 @@ fi
 # Debian nginx pattern: install to sites-available, enable via symlink in
 # sites-enabled (the main nginx.conf includes sites-enabled/*).
 NGINX_SRC="$WORK_DIR/nginx/nginx.openclaw"
-NGINX_AVAIL="/etc/nginx/sites-available/nginx.openclaw"
-NGINX_ENABLED="/etc/nginx/sites-enabled/nginx.openclaw"
+NGINX_AVAIL="/etc/nginx/sites-available/openclaw"
+NGINX_ENABLED="/etc/nginx/sites-enabled/openclaw"
 if [[ -f "$NGINX_SRC" ]]; then
     _nginx_pre=$(sha256sum "$NGINX_AVAIL" 2>/dev/null | cut -d' ' -f1 || echo "none")
     if cp "$NGINX_SRC" "$NGINX_AVAIL" 2>/dev/null; then
