@@ -8,8 +8,8 @@ Before=zeroclaw.service picoclaw.service clawboard.service
 Type=simple
 User=root
 ExecStart=/opt/wifi-connect/wifi-connect-gpio-launch.sh
-Restart=on-failure
-RestartSec=10
+Restart=always
+RestartSec=5
 StandardOutput=journal
 StandardError=journal
 
