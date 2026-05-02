@@ -20,6 +20,7 @@ STRINGS = {
     'oc_tab_wizard':        'Wizard',
     'oc_tab_configuration': 'Configuration',
     'oc_tab_pair_device': 'Pair Device',
+    'oc_tab_doctor':      'Doctor',
     'oc_section_gateway': 'Gateway Settings',
     'oc_section_agents':  'Agents & Session',
     'oc_section_tools':   'Tools',

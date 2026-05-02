@@ -2968,9 +2968,10 @@ def index(request: Request):
 
         # ── Main dashboard tabs (shown only when service is enabled) ─────
         with ui.tabs().classes('w-full bg-teal-1') as oc_sub_tabs:
-            t_oc_wiz  = ui.tab(T['oc_tab_wizard'],        icon='auto_fix_high')
-            t_oc_cfg  = ui.tab(T['oc_tab_configuration'], icon='settings')
-            t_oc_pair = ui.tab(T['oc_tab_pair_device'],   icon='devices')
+            t_oc_wiz    = ui.tab(T['oc_tab_wizard'],        icon='auto_fix_high')
+            t_oc_cfg    = ui.tab(T['oc_tab_configuration'], icon='settings')
+            t_oc_pair   = ui.tab(T['oc_tab_pair_device'],   icon='devices')
+            t_oc_doctor = ui.tab(T['oc_tab_doctor'],         icon='medical_services')
 
         oc_sub_tabs.set_visibility(_oc_svc_enabled)
 
@@ -3576,6 +3577,120 @@ def index(request: Request):
                                         ui.label(f'Paired: {created}').classes('text-caption text-grey-6')
 
                 _oc_populate_devices()
+
+            # ── OpenClaw › Doctor ──────────────────────────────────────────
+            with ui.tab_panel(t_oc_doctor):
+                import asyncio as _asyncio_dr
+
+                async def _oc_run_cmd_async(cmd):
+                    try:
+                        return await _asyncio_dr.to_thread(
+                            subprocess.run, cmd,
+                            capture_output=True, text=True, timeout=60
+                        )
+                    except subprocess.TimeoutExpired:
+                        return None
+
+                # ── Status card ──────────────────────────────────────────
+                with ui.card().classes('w-full q-pa-md q-mb-sm'):
+                    with ui.row().classes('w-full items-center justify-between q-mb-sm'):
+                        ui.label('📊 OpenClaw Status').classes('text-subtitle1 text-bold text-teal-8')
+                        _status_btn = ui.button('▶ Run openclaw status', icon='play_arrow').props('color=teal-8 elevated size=sm')
+
+                    _status_out = ui.column().classes('w-full gap-1')
+
+                    async def _oc_run_status(_btn=_status_btn, _out=_status_out):
+                        _btn.disable()
+                        _out.clear()
+                        with _out:
+                            ui.spinner('dots', size='sm').classes('text-teal-8')
+                        oc_tok_s, _ = _read_openclaw_deploy_token()
+                        oc_port_s = int(load_openclaw_config().get('gateway', {}).get('port', 18789) or 18789)
+                        cmd = ['sudo', '-u', 'openclaw', '-i', 'openclaw', 'status', '--json']
+                        if oc_tok_s:
+                            cmd += ['--url', f'ws://localhost:{oc_port_s}', '--token', oc_tok_s]
+                        r = await _oc_run_cmd_async(cmd)
+                        _out.clear()
+                        with _out:
+                            if r is None:
+                                ui.label('❌ Timed out').classes('text-negative text-caption')
+                                _btn.enable()
+                                return
+                            if r.returncode != 0:
+                                err = r.stderr.strip() or r.stdout.strip() or f'exit {r.returncode}'
+                                ui.label(f'❌ {err}').classes('text-negative text-caption')
+                                _btn.enable()
+                                return
+                            # Parse JSON output
+                            raw = r.stdout
+                            start = -1
+                            for ch in ('{', '['):
+                                idx = raw.find(ch)
+                                if idx != -1 and (start == -1 or idx < start):
+                                    start = idx
+                            if start == -1:
+                                ui.label(raw or '(no output)').classes('text-caption text-mono')
+                                _btn.enable()
+                                return
+                            try:
+                                obj, _ = json.JSONDecoder().raw_decode(raw, start)
+                            except Exception:
+                                ui.label(raw).classes('text-caption text-mono')
+                                _btn.enable()
+                                return
+                            # Render parsed status fields
+                            if isinstance(obj, dict):
+                                for k, v in obj.items():
+                                    color = 'text-positive' if str(v).lower() in ('true', 'active', 'ok', 'running', 'online') \
+                                            else 'text-negative' if str(v).lower() in ('false', 'inactive', 'error', 'failed', 'offline') \
+                                            else 'text-grey-8'
+                                    with ui.row().classes('gap-2 items-center'):
+                                        ui.label(f'{k}:').classes('text-caption text-grey-6 text-bold')
+                                        ui.label(str(v)).classes(f'text-caption {color}')
+                            else:
+                                ui.label(str(obj)).classes('text-caption text-mono')
+                            _btn.enable()
+
+                    _status_btn.on_click(_oc_run_status)
+
+                # ── Doctor card ───────────────────────────────────────────
+                with ui.card().classes('w-full q-pa-md'):
+                    with ui.row().classes('w-full items-center justify-between q-mb-sm'):
+                        ui.label('🩺 OpenClaw Doctor').classes('text-subtitle1 text-bold text-teal-8')
+                        _doctor_btn = ui.button('▶ Run openclaw doctor --fix', icon='build').props('color=orange-8 elevated size=sm')
+
+                    ui.label('Checks and auto-fixes missing dependencies, config issues, and service health.') \
+                        .classes('text-caption text-grey-7 q-mb-sm')
+
+                    _doctor_out = ui.log(max_lines=200).classes('w-full').style(
+                        'height:320px; font-size:12px; background:#1e1e1e; color:#d4d4d4; border-radius:4px;'
+                    )
+
+                    async def _oc_run_doctor(_btn=_doctor_btn, _log=_doctor_out):
+                        _btn.disable()
+                        _log.clear()
+                        oc_tok_d, _ = _read_openclaw_deploy_token()
+                        oc_port_d = int(load_openclaw_config().get('gateway', {}).get('port', 18789) or 18789)
+                        cmd = ['sudo', '-u', 'openclaw', '-i', 'openclaw', 'doctor', '--fix']
+                        if oc_tok_d:
+                            cmd += ['--url', f'ws://localhost:{oc_port_d}', '--token', oc_tok_d]
+                        _log.push('$ ' + ' '.join(cmd))
+                        r = await _oc_run_cmd_async(cmd)
+                        if r is None:
+                            _log.push('❌ Timed out after 60 s')
+                            ui.notify('❌ Doctor timed out', type='negative')
+                            _btn.enable()
+                            return
+                        output = (r.stdout or '') + (r.stderr or '')
+                        for line in output.splitlines():
+                            _log.push(line)
+                        if r.returncode == 0:
+                            ui.notify('✅ Doctor finished', type='positive')
+                        else:
+                            ui.notify(f'⚠️ Doctor exited {r.returncode}', type='warning')
+                        _btn.enable()
+
+                    _doctor_btn.on_click(_oc_run_doctor)
 
     # ── Sidebar navigation wiring ──────────────────────────────────────────────
     # ══ WiFi Setup ════════════════════════════════════════════════════════════

@@ -112,6 +112,7 @@ STRINGS = {
     'oc_tab_wizard':           '向导',
     'oc_tab_configuration':    '配置',
     'oc_tab_pair_device':      '配对设备',
+    'oc_tab_doctor':           '诊断',
     'oc_section_gateway':      '网关 (gateway)',
     'oc_section_agents':       '智能体与会话',
     'oc_section_tools':        '工具',
