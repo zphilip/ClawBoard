@@ -23,10 +23,10 @@ ExecStart=/usr/local/bin/clawproxy \
     --proxy-port 18780 \
     --zc \
     --pc \
-    --queue-db /var/lib/zero/clawproxy.db \
+    --queue-db /opt/clawproxy/clawproxy.db \
     --queue-ttl 86400
 
-WorkingDirectory=/var/lib/zero
+WorkingDirectory=/opt/clawproxy/
 
 Restart=on-failure
 RestartSec=10
@@ -39,8 +39,8 @@ StandardError=journal
 PrivateTmp=false
 ProtectSystem=strict
 ProtectHome=false
-ReadWritePaths=/var/lib/zero /home/zero
-ReadOnlyPaths=/var/lib/picoclaw/.picoclaw
+ReadWritePaths=/opt/clawproxy /home/zero
+ReadOnlyPaths=/var/lib/picoclaw/.picoclaw /var/lib/zeroclaw/.zerooclaw
 RestrictNamespaces=true
 RestrictRealtime=true
 LockPersonality=true
