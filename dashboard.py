@@ -3669,21 +3669,48 @@ def index(request: Request):
                     async def _oc_run_doctor(_btn=_doctor_btn, _log=_doctor_out):
                         _btn.disable()
                         _log.clear()
+
+                        async def _svc(action: str) -> bool:
+                            cmd = ['sudo', '-u', 'openclaw', '-i',
+                                   'systemctl', '--user', action, 'openclaw']
+                            _log.push('$ ' + ' '.join(cmd))
+                            r = await _oc_run_cmd_async(cmd)
+                            if r is None:
+                                _log.push(f'❌ systemctl {action} timed out')
+                                return False
+                            out = (r.stdout or '').strip() + (r.stderr or '').strip()
+                            if out:
+                                _log.push(out)
+                            if r.returncode != 0:
+                                _log.push(f'❌ systemctl {action} failed (exit {r.returncode})')
+                                return False
+                            _log.push(f'✅ openclaw service {action}ped')
+                            return True
+
+                        # 1. Stop service
+                        if not await _svc('stop'):
+                            ui.notify('❌ Could not stop openclaw service', type='negative')
+                            _btn.enable()
+                            return
+
+                        # 2. Run doctor --fix
                         cmd = ['sudo', '-u', 'openclaw', '-i', 'openclaw', 'doctor', '--fix']
                         _log.push('$ ' + ' '.join(cmd))
                         r = await _oc_run_cmd_async(cmd)
                         if r is None:
                             _log.push('❌ Timed out after 60 s')
                             ui.notify('❌ Doctor timed out', type='negative')
-                            _btn.enable()
-                            return
-                        output = (r.stdout or '') + (r.stderr or '')
-                        for line in output.splitlines():
-                            _log.push(line)
-                        if r.returncode == 0:
-                            ui.notify('✅ Doctor finished', type='positive')
                         else:
-                            ui.notify(f'⚠️ Doctor exited {r.returncode}', type='warning')
+                            output = (r.stdout or '') + (r.stderr or '')
+                            for line in output.splitlines():
+                                _log.push(line)
+                            if r.returncode == 0:
+                                ui.notify('✅ Doctor finished', type='positive')
+                            else:
+                                ui.notify(f'⚠️ Doctor exited {r.returncode}', type='warning')
+
+                        # 3. Restart service regardless of doctor outcome
+                        await _svc('start')
                         _btn.enable()
 
                     _doctor_btn.on_click(_oc_run_doctor)
