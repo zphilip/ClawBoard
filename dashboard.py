@@ -3462,13 +3462,16 @@ def index(request: Request):
                     except Exception as e:
                         return None, f'Parse error: {e}  raw={out[start:start+200]}'
 
-                def _oc_approve_device(request_id: str, name_lbl):
+                async def _oc_approve_device(request_id: str, name_lbl):
                     gw_url = f'ws://localhost:{oc_port}'
                     cmd = ['sudo', '-u', 'openclaw', '-i',
                            'openclaw', 'devices', 'approve', request_id]
                     if oc_tok:
                         cmd += ['--url', gw_url, '--token', oc_tok]
-                    r = subprocess.run(cmd, capture_output=True, text=True)
+                    import asyncio as _asyncio
+                    r = await _asyncio.to_thread(
+                        subprocess.run, cmd, capture_output=True, text=True
+                    )
                     if r.returncode == 0:
                         ui.notify(f'✅ Approved {request_id[:8]}…', type='positive')
                         name_lbl.set_text('✅ Approved')
