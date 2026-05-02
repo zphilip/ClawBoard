@@ -3669,11 +3669,7 @@ def index(request: Request):
                     async def _oc_run_doctor(_btn=_doctor_btn, _log=_doctor_out):
                         _btn.disable()
                         _log.clear()
-                        oc_tok_d, _ = _read_openclaw_deploy_token()
-                        oc_port_d = int(load_openclaw_config().get('gateway', {}).get('port', 18789) or 18789)
                         cmd = ['sudo', '-u', 'openclaw', '-i', 'openclaw', 'doctor', '--fix']
-                        if oc_tok_d:
-                            cmd += ['--url', f'ws://localhost:{oc_port_d}', '--token', oc_tok_d]
                         _log.push('$ ' + ' '.join(cmd))
                         r = await _oc_run_cmd_async(cmd)
                         if r is None:
