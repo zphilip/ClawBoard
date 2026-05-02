@@ -9,6 +9,7 @@ import (
 "net/http"
 "os"
 "os/exec"
+"regexp"
 "strings"
 "sync"
 "sync/atomic"
@@ -80,6 +81,78 @@ token    string
 pairCode string
 }
 
+// ── zeroclaw pair-code helpers ────────────────────────────────────────────────
+
+// pairCodeRe matches the code inside the box printed by `zeroclaw gateway get-paircode`:
+//   │  156155  │
+var pairCodeRe = regexp.MustCompile(`│\s*(\d{4,8})\s*│`)
+
+// getPairCodeFromCLI runs `zeroclaw gateway get-paircode` (and --new if needed)
+// and returns the numeric pair code, or an empty string if it cannot be obtained.
+func getPairCodeFromCLI() string {
+	tryGet := func(args ...string) string {
+		cmd := exec.Command("zeroclaw", args...)
+		out, _ := cmd.CombinedOutput()
+		outStr := string(out)
+		if m := pairCodeRe.FindStringSubmatch(outStr); len(m) == 2 {
+			return strings.TrimSpace(m[1])
+		}
+		// Fallback: bare 4-8 digit line
+		for _, line := range strings.Split(outStr, "\n") {
+			if t := strings.TrimSpace(line); regexp.MustCompile(`^\d{4,8}$`).MatchString(t) {
+				return t
+			}
+		}
+		return ""
+	}
+
+	// First try: existing active code
+	if code := tryGet("gateway", "get-paircode"); code != "" {
+		fmt.Printf("%sAuto-fetched pair code from CLI: %s%s%s\n", prefixZC(), colYellow, code, colReset)
+		return code
+	}
+	// Second try: generate a new one
+	fmt.Printf("%sNo active pair code — generating new one via --new …\n", prefixZC())
+	if code := tryGet("gateway", "get-paircode", "--new"); code != "" {
+		fmt.Printf("%sGenerated new pair code: %s%s%s\n", prefixZC(), colYellow, code, colReset)
+		return code
+	}
+	fmt.Printf("%sCould not auto-fetch pair code from zeroclaw CLI\n", prefixZC())
+	return ""
+}
+
+// acquireToken obtains a zeroclaw bearer token by auto-fetching the pair code
+// from the CLI, falling back to an interactive prompt.
+// The base URL is the HTTP gateway base (e.g. http://127.0.0.1:42617).
+func (z *zcAuth) acquireToken(base string) error {
+	code := z.pairCode
+	if code == "" {
+		code = getPairCodeFromCLI()
+	}
+	if code == "" {
+		// Last resort: interactive prompt
+		fmt.Printf("%sRun manually:  %szeroclaw gateway get-paircode --new%s\n", prefixZC(), colYellow, colReset)
+		fmt.Print(prefixZC() + "Pairing code: ")
+		fmt.Scanln(&code)
+		code = strings.TrimSpace(code)
+	}
+	if code == "" {
+		return fmt.Errorf("pairing code required")
+	}
+	data, err := httpPost(base+"/pair", map[string]string{"X-Pairing-Code": code})
+	if err != nil {
+		return fmt.Errorf("pairing failed: %w", err)
+	}
+	tok, ok := data["token"].(string)
+	if !ok || tok == "" {
+		return fmt.Errorf("pair response missing token: %v", data)
+	}
+	z.token = tok
+	saveToken("zc_token", tok)
+	fmt.Printf("%sPaired!  token saved to ~/.clawproxy/zc_token\n", prefixZC())
+	return nil
+}
+
 func (z *zcAuth) setup() error {
 	base := fmt.Sprintf("http://%s:%d", z.host, z.port)
 
@@ -101,29 +174,8 @@ func (z *zcAuth) setup() error {
 		return nil
 	}
 
-	// need to pair
-	code := z.pairCode
-	if code == "" {
-		fmt.Printf("%sGet pair code:  %szeroclaw gateway get-paircode%s\n", prefixZC(), colYellow, colReset)
-		fmt.Print(prefixZC() + "Pairing code: ")
-		fmt.Scanln(&code)
-		code = strings.TrimSpace(code)
-	}
-	if code == "" {
-		return fmt.Errorf("pairing code required")
-	}
-	data, err := httpPost(base+"/pair", map[string]string{"X-Pairing-Code": code})
-	if err != nil {
-		return fmt.Errorf("pairing failed: %w", err)
-	}
-	tok, ok := data["token"].(string)
-	if !ok || tok == "" {
-		return fmt.Errorf("pair response missing token: %v", data)
-	}
-	z.token = tok
-	saveToken("zc_token", tok)
-	fmt.Printf("%sPaired!  token saved to ~/.clawproxy/zc_token\n", prefixZC())
-	return nil
+	// need to pair — auto-fetch pair code from CLI
+	return z.acquireToken(base)
 }
 
 func (z *zcAuth) wsURL(sessionID string) string {
@@ -388,6 +440,8 @@ wsURL     string
 token     string
 sessionID string
 
+zcaRef *zcAuth // non-nil for ZC conns; used for re-pair on 401/403
+
 mu        sync.Mutex
 conn      *websocket.Conn
 connected atomic.Bool
@@ -476,6 +530,29 @@ return
 if !a.connected.Load() {
 fmt.Printf("%s%s reconnecting...\n", prefixSYS(), a.kind)
 if err := a.dial(); err != nil {
+			// On ZC auth rejection, try to re-pair before the next retry.
+			if a.kind == kindZC && a.zcaRef != nil &&
+				(a.lastDialHTTPStatus == http.StatusUnauthorized || a.lastDialHTTPStatus == http.StatusForbidden) {
+				fmt.Printf("%sZC dial auth error (HTTP %d) — clearing token, re-pairing\n",
+					prefixSYS(), a.lastDialHTTPStatus)
+				deleteToken("zc_token")
+				a.zcaRef.token = ""
+				base := fmt.Sprintf("http://%s:%d", a.zcaRef.host, a.zcaRef.port)
+				if pErr := a.zcaRef.acquireToken(base); pErr != nil {
+					fmt.Printf("%sZC re-pair failed: %v — retry in 15s\n", prefixERR(), pErr)
+					if a.sleepOrStop(15 * time.Second) {
+						return
+					}
+					continue
+				}
+				// Update connection token + wsURL with fresh token.
+				a.mu.Lock()
+				a.token = a.zcaRef.token
+				a.wsURL = a.zcaRef.wsURL(a.sessionID)
+				a.mu.Unlock()
+				fmt.Printf("%sZC re-paired, retrying connection\n", prefixSYS())
+				continue
+			}
 fmt.Printf("%s%s connect failed: %v — retry in 5s\n", prefixERR(), a.kind, err)
 if a.sleepOrStop(5 * time.Second) {
 return
@@ -785,7 +862,7 @@ os.Exit(1)
 
 var zc *agentConn
 if zca != nil {
-zc = &agentConn{kind: kindZC, wsURL: zca.wsURL(*zcSID), token: zca.token, sessionID: *zcSID}
+zc = &agentConn{kind: kindZC, wsURL: zca.wsURL(*zcSID), token: zca.token, sessionID: *zcSID, zcaRef: zca}
 fmt.Printf("%sConnecting: %s\n", prefixZC(), zc.wsURL)
 if err := zc.dial(); err != nil {
 fmt.Printf("%szeroclaw connect failed: %v\n", prefixERR(), err)

@@ -151,6 +151,21 @@ func (s *proxyServer) probeAll() {
 	if s.zcAuth != nil {
 		sid := fmt.Sprintf("probe-%d", time.Now().UnixMilli())
 		status := dialProbe(s.zcAuth.wsURL(sid), s.zcAuth.token, []string{"zeroclaw.v1"})
+		if status == "auth_error" {
+			// Token rejected — clear it and try to re-pair automatically.
+			fmt.Printf("%sZC probe: auth_error — clearing token, re-pairing\n", prefixSYS())
+			deleteToken("zc_token")
+			s.zcAuth.token = ""
+			base := fmt.Sprintf("http://%s:%d", s.zcAuth.host, s.zcAuth.port)
+			if pErr := s.zcAuth.acquireToken(base); pErr != nil {
+				fmt.Printf("%sZC re-pair failed: %v\n", prefixERR(), pErr)
+			} else {
+				// Re-probe with the fresh token.
+				sid2 := fmt.Sprintf("probe2-%d", time.Now().UnixMilli())
+				status = dialProbe(s.zcAuth.wsURL(sid2), s.zcAuth.token, []string{"zeroclaw.v1"})
+				fmt.Printf("%sZC re-probe after re-pair: %s\n", prefixSYS(), status)
+			}
+		}
 		s.setHealth("zc", status)
 		fmt.Printf("%sZC probe: %s\n", prefixSYS(), status)
 	}
