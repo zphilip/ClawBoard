@@ -3462,22 +3462,32 @@ def index(request: Request):
                     except Exception as e:
                         return None, f'Parse error: {e}  raw={out[start:start+200]}'
 
-                async def _oc_approve_device(request_id: str, name_lbl):
+                async def _oc_approve_device(request_id: str, name_lbl, btn=None):
+                    if btn:
+                        btn.disable()
                     gw_url = f'ws://localhost:{oc_port}'
                     cmd = ['sudo', '-u', 'openclaw', '-i',
                            'openclaw', 'devices', 'approve', request_id]
                     if oc_tok:
                         cmd += ['--url', gw_url, '--token', oc_tok]
                     import asyncio as _asyncio
-                    r = await _asyncio.to_thread(
-                        subprocess.run, cmd, capture_output=True, text=True
-                    )
+                    try:
+                        r = await _asyncio.to_thread(
+                            subprocess.run, cmd, capture_output=True, text=True, timeout=30
+                        )
+                    except subprocess.TimeoutExpired:
+                        ui.notify('❌ Timed out waiting for approval response', type='negative')
+                        if btn:
+                            btn.enable()
+                        return
                     if r.returncode == 0:
                         ui.notify(f'✅ Approved {request_id[:8]}…', type='positive')
                         name_lbl.set_text('✅ Approved')
                     else:
                         err = r.stderr.strip() or r.stdout.strip() or f'exit {r.returncode}'
                         ui.notify(f'❌ {err}', type='negative')
+                        if btn:
+                            btn.enable()
 
                 def _oc_fmt_ts(ms):
                     if not ms:
@@ -3533,10 +3543,8 @@ def index(request: Request):
                                             ui.label(f'Request ID: {rid}').classes('text-caption text-mono text-grey-6')
                                             ui.label(f'Requested: {ts}').classes('text-caption text-grey-6')
                                         _approve_lbl = ui.label('')
-                                        ui.button(
-                                            '✅ Approve',
-                                            on_click=lambda _rid=rid, _lbl=_approve_lbl: _oc_approve_device(_rid, _lbl)
-                                        ).props('color=teal-8 size=sm')
+                                        _approve_btn = ui.button('✅ Approve').props('color=teal-8 size=sm')
+                                        _approve_btn.on_click(lambda _rid=rid, _lbl=_approve_lbl, _btn=_approve_btn: _oc_approve_device(_rid, _lbl, _btn))
 
                     # ── Paired ───────────────────────────────────────────
                     with _paired_col:
