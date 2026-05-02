@@ -3480,6 +3480,11 @@ def index(request: Request):
                         if btn:
                             btn.enable()
                         return
+                    except Exception as exc:
+                        ui.notify(f'❌ Unexpected error: {exc}', type='negative')
+                        if btn:
+                            btn.enable()
+                        return
                     if r.returncode == 0:
                         ui.notify(f'✅ Approved {request_id[:8]}…', type='positive')
                         name_lbl.set_text('✅ Approved')
@@ -3544,7 +3549,9 @@ def index(request: Request):
                                             ui.label(f'Requested: {ts}').classes('text-caption text-grey-6')
                                         _approve_lbl = ui.label('')
                                         _approve_btn = ui.button('✅ Approve').props('color=teal-8 size=sm')
-                                        _approve_btn.on_click(lambda _rid=rid, _lbl=_approve_lbl, _btn=_approve_btn: _oc_approve_device(_rid, _lbl, _btn))
+                                        async def _on_approve(_rid=rid, _lbl=_approve_lbl, _btn=_approve_btn):
+                                            await _oc_approve_device(_rid, _lbl, _btn)
+                                        _approve_btn.on_click(_on_approve)
 
                     # ── Paired ───────────────────────────────────────────
                     with _paired_col:
