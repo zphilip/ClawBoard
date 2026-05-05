@@ -1,162 +1,100 @@
 # ClawBoard
 
-A mobile-friendly web dashboard and device-side toolkit for managing [ZeroClaw](https://github.com/zeroclaw-labs/zeroclaw) and [PicoClaw](https://github.com/zeroclaw-labs/picoclaw) on a Raspberry Pi — built with [NiceGUI](https://nicegui.io).
+ClawBoard is a simple configuration and service manager for a **Clawberry Host** — a small local machine (Raspberry Pi Zero 2W, Radxa Cubie A7Z/A7A, or any localhost) that runs one or more Claw agents: [ZeroClaw](https://github.com/zeroclaw-labs/zeroclaw), [PicoClaw](https://github.com/zeroclaw-labs/picoclaw), or [OpenClaw](https://github.com/zeroclaw-labs/openclaw).
+
+The client app is [ClawBerry](https://github.com/zphilip/clawBerry).
+
+## Hardware
+
+| Radxa Cubie A7Z / A7A |
+|-----------------------|
+| ![Radxa Cubie](assets/微信图片_20260427202512.jpg) |
 
 ## Screenshots
 
 | Dashboard | ZeroClaw | PicoClaw |
-|-----------|-----------|---------|
+|-----------|----------|----------|
 | ![Dashboard](assets/Screenshot_20260416-093852.jpg) | ![Providers](assets/Screenshot_20260416-093902.jpg) | ![Channels](assets/Screenshot_20260416-093909.jpg) |
 
 | WIFI Settings | Upgrade |
 |---------------|---------|
-| ![Agent](assets/Screenshot_20260416-093915.jpg) | ![Security](assets/Screenshot_20260416-093922.jpg) |
+| ![WiFi](assets/Screenshot_20260416-093915.jpg) | ![Upgrade](assets/Screenshot_20260416-093922.jpg) |
 
-## Features
+## What it does
 
-- **10-tab layout** covering every section of `config.toml`:
-  | Tab | Covers |
-  |-----|--------|
-  | 通用 | `api_key`, `default_provider` (dropdown), `default_model`, `default_temperature` |
-  | Providers | Dynamic `[model_providers.*]` cards — add / remove any number of provider aliases |
-  | 自主 | `[autonomy]` — level, risk controls, allowed commands, forbidden paths |
-  | Agent | `[agent]`, `[observability]` — tool iterations, history, tracing |
-  | 记忆 | `[memory]` — backend, hygiene, retention, embedding settings |
-  | 通信 | `[gateway]`, `[tunnel]`, global `[channels_config]` |
-  | Channels | Dynamic `[channels_config.*]` cards — add / remove from 18 channel types |
-  | 安全 | `[security.resources]`, `[reliability]`, `[scheduler]` |
-  | 功能 | `[web_fetch]`, `[web_search]`, `[browser]`, `[cost]` |
-  | 系统 | `[transcription]`, `[heartbeat]`, `[cron]`, service log viewer |
+1. **Web configuration UI** — a NiceGUI-based dashboard to configure the running ZeroClaw (`config.toml`), PicoClaw(`config.json`), or OpenClaw agent (`openclaw.json`) from any browser or phone.
 
-- **Dynamic Providers tab** — each `[model_providers.<alias>]` entry gets its own card with a provider-id dropdown (37 known providers from the official reference), base_url override, `requires_openai_auth`, and per-provider `api_key`
-- **Dynamic Channels tab** — supports all 18 channel types (Telegram, Discord, Slack, Mattermost, Matrix, Signal, WhatsApp, DingTalk, QQ, Lark/Feishu, Email, IRC, Webhook, Nostr, Nextcloud Talk, Linq, iMessage) with full per-channel field schemas
-- **💾 Save** and **🔄 Save & Restart** buttons — writes `config.toml` and optionally restarts `zeroclaw.service` via `sudo systemctl`
-- Fully mobile-friendly (Quasar/Material UI via NiceGUI)
+2. **System services** — systemd service templates for running everything on the host:
+   - **WiFi Connect** — captive-portal based WiFi setup
+   - **Service Publish** — mDNS/network broadcast so the ClawBerry app can discover the host
+   - **Claw agent services** — ZeroClaw, PicoClaw, OpenClaw
+   - **Upgrade service** — online over-the-air upgrade
+   - **Proxy service** — ClawBerry proxy (see below)
 
-## Requirements
+3. **ClawBerry Proxy** — a WebSocket proxy that lets the [ClawBerry](https://github.com/zphilip/clawBerry) client app connect to a single endpoint and reach whichever Claw backend(s) are running. No per-device API pairing or token management needed — all backends register to the proxy and the client talks to the proxy.
 
-```
-pip install nicegui toml
-```
+   ```
+   ClawBerry app
+       │
+       ▼
+   clawproxy :18780
+       ├──► ZeroClaw  :42617/ws/chat
+       ├──► PicoClaw  :18790/ws
+       └──► OpenClaw  (configured port)
+   ```
 
-## Usage
+4. **Upgrade script** — pull the latest release and restart services in one step.
 
-```bash
-cd ClawBoard
-python3 dashboard.py
-```
+> Security is intentionally minimal — this is a local-only host, not exposed to the internet.
 
-Open `http://<host>:8080` in your browser (or phone).
+## Setup
 
-## Config file location
-
-The dashboard looks for `config.toml` in the same directory as `dashboard.py`, then falls back to the current working directory.
-
-## Restart service
-
-The **Save & Restart** button runs:
+The easiest way to install or upgrade everything on the host is the sync script — it fetches the latest release, deploys binaries, installs systemd services, and restarts affected services automatically:
 
 ```bash
-sudo systemctl restart zeroclaw.service
+sudo bash /usr/local/bin/clawberry-workspace-sync.sh
 ```
 
-Make sure the user running the dashboard has passwordless sudo for that command, or run the dashboard as root.
-
-## Security note
-
-`config.toml` may contain sensitive credentials (API keys, channel secrets). The included `config.toml` uses ZeroClaw's `enc2:` encrypted key format for the global `api_key`. Do **not** commit plain-text secrets to a public repository.
-
----
-
-## clawproxy — WebSocket Proxy
-
-`clawproxy` is a standalone Go binary that ships with ClawBoard. It acts as a local WebSocket proxy between mobile/web apps and the ZeroClaw / PicoClaw agent gateways.
-
-### Why a proxy?
-
-On a Raspberry Pi setup, both ZeroClaw and PicoClaw may be running locally. `clawproxy` lets a single app connect to one endpoint and reach either agent — with offline queuing so messages are not lost when the app is momentarily offline.
-
-### Architecture
-
-```
-App (mobile/web)
-    │
-    ▼
-clawproxy :18780
-    ├─ /proxy/ws          — unified WebSocket endpoint (v4, persistent sessions)
-    ├─ /zc/ws             — ZeroClaw compat relay (transparent pass-through)
-    └─ /pc/ws             — PicoClaw compat relay (transparent pass-through)
-    │
-    ├──► ZeroClaw  :42617/ws/chat
-    └──► PicoClaw  :18790/ws
-```
-
-### Offline Queue (v4)
-
-Messages sent while the upstream agent is unreachable are buffered in a local SQLite database (`/var/lib/zero/clawproxy.db`). When the connection is restored the queue is drained automatically.
-
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `--queue-db` | `~/.clawproxy/queue.db` | SQLite file path (`:memory:` = no persistence) |
-| `--queue-ttl` | `3600` | Buffered message TTL in seconds |
-| `--queue-depth` | `256` | Max frames buffered per session |
-
-### Running the proxy
+On first install (before the script is on the device), bootstrap it from the repo:
 
 ```bash
-clawproxy \
-  --proxy \
-  --proxy-port 18780 \
-  --zc \
-  --pc \
-  --queue-db /var/lib/zero/clawproxy.db \
-  --queue-ttl 3600
+curl -fsSL https://raw.githubusercontent.com/zphilip/ClawBoard/main/scripts/clawberry-workspace-sync.sh \
+  | sudo bash
 ```
 
-Or enable the included systemd unit:
+After sync, the dashboard is available at `http://<host>:8080`.
+
+### Sync options
 
 ```bash
-sudo cp daemon/clawberry-proxy.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now clawberry-proxy
+# Also reset config files from repo defaults
+sudo clawberry-workspace-sync.sh -config all
+
+# Reset without configuration files
+sudo clawberry-workspace-sync.sh 
 ```
+Notes: those claw agent is installed at /var/lib/xxxclaw, so if you install in different place , you need modify those in the daemon service files and related scripts
 
-### Proxy Version History
+### Services installed
 
-| Version | Description |
+| Service | Description |
 |---------|-------------|
-| v1 | CLI client, dual-agent, interactive terminal prompt |
-| v2 | Proxy mode: app connects to clawproxy; clawproxy relays to both agents |
-| v3 | Offline queue: buffer messages when app is offline, drain on reconnect |
-| v4 | ✅ **Current** — Persistent SQLite store, TTL eviction, per-session delivery queue |
-
-### Building from source
-
-```bash
-cd ClawBoard/clawproxy
-go build -o clawproxy .
-
-# Cross-compile for Raspberry Pi (ARM64)
-GOOS=linux GOARCH=arm64 go build -o clawproxy-arm64 .
-```
-
----
+| `clawboard` | Web configuration dashboard (port 8080) |
+| `clawberry-proxy` | WebSocket proxy for ClawBerry app (port 18780) |
+| `zeroclaw` | ZeroClaw agent |
+| `picoclaw` | PicoClaw agent |
+| `picoclaw-web` | PicoClaw web launcher |
+| `clawberry-wifi-connect` | Captive-portal WiFi setup |
+| `clawberry-publish` | mDNS service broadcast |
 
 ## Related
 
-- [ZeroClaw](https://github.com/zeroclaw-labs/zeroclaw) — the AI agent runtime this configures
-- [PicoClaw](https://github.com/zeroclaw-labs/picoclaw) — lightweight mobile-optimised agent gateway
-- [NiceGUI docs](https://nicegui.io/documentation) — Python web UI framework used for this dashboard
-- [ZeroClaw config reference](https://github.com/zeroclaw-labs/zeroclaw/blob/master/docs/reference/api/config-reference.md)
-
----
+- [ClawBerry](https://github.com/zphilip/clawBerry) — mobile client app
+- [ZeroClaw](https://github.com/zeroclaw-labs/zeroclaw) — AI agent (Raspberry Pi / localhost)
+- [PicoClaw](https://github.com/zeroclaw-labs/picoclaw) — lightweight agent gateway
+- [OpenClaw](https://github.com/zeroclaw-labs/openclaw) — agent for Radxa / more capable hardware
+- [NiceGUI](https://nicegui.io) — Python web UI framework
 
 ## License
 
-Copyright © 2025-2026 ClawBoard Contributors.
-
-This project is licensed under the **GNU General Public License v3.0 (GPL-3.0)**.
-
-You are free to use, modify, and distribute this software under the terms of the GPL v3.0. Any derivative work must also be distributed under the same license.
-
-See the full license text at <https://www.gnu.org/licenses/gpl-3.0.html>.
+Copyright © 2025-2026 ClawBoard Contributors — [GPL-3.0](https://www.gnu.org/licenses/gpl-3.0.html)
