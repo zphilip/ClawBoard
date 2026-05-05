@@ -47,6 +47,8 @@ The client app is [ClawBerry](https://github.com/zphilip/clawBerry).
 
 > Security is intentionally minimal — this is a local-only host, not exposed to the internet.
 
+Note: the user creation steps is still missed in the sync script.. I do it in image genereation.. so it might have some problem on the script run, I use zeroclaw/picoclaw/openclaw user for each service。 It will be added later release.
+
 ## Setup
 
 The easiest way to install or upgrade everything on the host is the sync script — it fetches the latest release, deploys binaries, installs systemd services, and restarts affected services automatically:
