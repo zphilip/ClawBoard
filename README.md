@@ -6,7 +6,7 @@ The client app is [ClawBerry](https://github.com/zphilip/clawBerry).
 
 ## Hardware
 
-| Radxa Cubie A7Z / A7A |
+| Raspberry Pi Zero2W/ Radxa Cubie A7Z / A7A |
 |-----------------------|
 | ![Radxa Cubie](assets/微信图片_20260427202512.jpg) |
 
