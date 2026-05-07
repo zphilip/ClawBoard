@@ -27,12 +27,25 @@ metadata:
               "label": "Install ADB (brew)",
               "os": ["darwin"],
             },
+            {
+              "id": "python-deps",
+              "kind": "shell",
+              "label": "Install Python dependencies into ClawBoard venv",
+              "script": "/opt/clawboard/venv/bin/pip install qwen_agent qwen_vl_utils numpy && /opt/clawboard/venv/bin/pip install torch==2.11.0 torchvision==0.26.0 torchaudio==2.11.0 --index-url https://download.pytorch.org/whl/cpu",
+              "os": ["linux"],
+            },
           ],
       },
   }
 ---
 
 # mobileAgent — Android Phone Control via GUI-Owl
+
+> **ClawBerry / pi-gen images**: `android-tools-adb`, `qwen_agent`, `qwen_vl_utils`,
+> `numpy`, and CPU PyTorch are pre-installed by `stage3/00-clawberry/01-run.sh`.
+> No manual installation needed on ClawBerry OS.
+>
+> **Other Linux / macOS hosts**: install manually (see Pre-flight section below).
 
 Controls an ADB-connected Android device using the local `gui-owl-llamacpp` multimodal model
 (running on `http://localhost:8810/v1`). The agent takes a screenshot, reasons about the UI,

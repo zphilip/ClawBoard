@@ -20,7 +20,6 @@ import numpy as np
 from io import BytesIO
 from openai import OpenAI
 from typing import Any, Optional
-from qwen_vl_utils import smart_resize
 
 from PIL import Image, ImageDraw
 
