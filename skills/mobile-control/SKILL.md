@@ -31,7 +31,7 @@ metadata:
               "id": "python-deps",
               "kind": "shell",
               "label": "Install Python dependencies into ClawBoard venv",
-              "script": "/opt/clawboard/venv/bin/pip install qwen_agent qwen_vl_utils numpy && /opt/clawboard/venv/bin/pip install torch==2.11.0 torchvision==0.26.0 torchaudio==2.11.0 --index-url https://download.pytorch.org/whl/cpu",
+              "script": "/opt/clawboard/venv/bin/pip install qwen_agent numpy",
               "os": ["linux"],
             },
           ],
@@ -41,8 +41,8 @@ metadata:
 
 # mobileAgent — Android Phone Control via GUI-Owl
 
-> **ClawBerry / pi-gen images**: `android-tools-adb`, `qwen_agent`, `qwen_vl_utils`,
-> `numpy`, and CPU PyTorch are pre-installed by `stage3/00-clawberry/01-run.sh`.
+> **ClawBerry / pi-gen images**: `android-tools-adb`, `qwen_agent`, and `numpy`
+> are pre-installed by `stage3/00-clawberry/01-run.sh`.
 > No manual installation needed on ClawBerry OS.
 >
 > **Other Linux / macOS hosts**: install manually (see Pre-flight section below).
