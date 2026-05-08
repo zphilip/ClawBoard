@@ -1256,6 +1256,7 @@ def index(request: Request):
         btn_pc   = ui.button('🐾 PicoClaw',     icon='memory'  ).props('flat align=left color=grey-7').classes('w-full')
         btn_oc   = ui.button('📂 OpenClaw',     icon='folder'  ).props('flat align=left color=grey-7').classes('w-full')
         btn_wifi    = ui.button(T['btn_wifi'],    icon='wifi'    ).props('flat align=left color=grey-7').classes('w-full')
+        btn_proxy   = ui.button(T['btn_proxy'],   icon='swap_horiz').props('flat align=left color=grey-7').classes('w-full')
         btn_upgrade = ui.button(T['btn_upgrade'], icon='system_update_alt').props('flat align=left color=grey-7').classes('w-full')
 
     # ══ ZeroClaw Dashboard ════════════════════════════════════════════════════
@@ -3914,6 +3915,61 @@ def index(request: Request):
                 ).props('outline color=negative disabled')
 
     # ══ Upgrade ═══════════════════════════════════════════════════════════════
+    # ══ ClawBerry Proxy Panel ════════════════════════════════════════════════
+    proxy_content = ui.column().classes('w-full q-px-sm q-pt-sm')
+    proxy_content.set_visibility(False)
+    with proxy_content:
+        ui.label(T['proxy_title']).classes('text-h6 text-indigo-9 q-mb-xs')
+        with ui.card().classes('w-full q-pa-md'):
+            ui.label(T['proxy_card_title']).classes('text-subtitle1 text-bold q-mb-xs')
+            ui.label(T['proxy_hint']).classes('text-caption text-grey-6 q-mb-sm')
+
+            proxy_status_lbl  = ui.label('').classes('text-body2 q-mb-sm')
+            proxy_enabled_lbl = ui.label('').classes('text-caption text-grey-7 q-mb-sm')
+
+            def _proxy_get_status():
+                active  = subprocess.run(['systemctl', 'is-active',  'clawberry-proxy.service'],
+                                         capture_output=True, text=True).stdout.strip()
+                enabled = subprocess.run(['systemctl', 'is-enabled', 'clawberry-proxy.service'],
+                                         capture_output=True, text=True).stdout.strip()
+                return active, enabled
+
+            def _proxy_refresh():
+                active, enabled = _proxy_get_status()
+                status_txt  = T['proxy_active']   if active  == 'active'  else T['proxy_inactive']
+                enabled_txt = T['proxy_enabled']  if enabled == 'enabled' else T['proxy_disabled']
+                proxy_status_lbl.set_text(f"{T['proxy_status_lbl']}: {status_txt}  |  {enabled_txt}")
+
+            def _proxy_enable():
+                subprocess.run(['sudo', '/usr/bin/systemctl', 'enable', '--now', 'clawberry-proxy.service'],
+                               capture_output=True)
+                _proxy_refresh()
+                ui.notify('clawberry-proxy enabled & started', color='positive')
+
+            def _proxy_disable():
+                subprocess.run(['sudo', '/usr/bin/systemctl', 'disable', '--now', 'clawberry-proxy.service'],
+                               capture_output=True)
+                _proxy_refresh()
+                ui.notify('clawberry-proxy disabled & stopped', color='warning')
+
+            def _proxy_restart():
+                subprocess.run(['sudo', '/usr/bin/systemctl', 'restart', 'clawberry-proxy.service'],
+                               capture_output=True)
+                _proxy_refresh()
+                ui.notify('clawberry-proxy restarted', color='positive')
+
+            _proxy_refresh()
+
+            with ui.row().classes('gap-2 q-mt-sm'):
+                ui.button(T['proxy_btn_enable'],  on_click=_proxy_enable) \
+                    .props('elevated color=positive')
+                ui.button(T['proxy_btn_disable'], on_click=_proxy_disable) \
+                    .props('elevated color=warning')
+                ui.button(T['proxy_btn_restart'], on_click=_proxy_restart) \
+                    .props('elevated color=indigo-7')
+                ui.button(T['proxy_btn_refresh'], on_click=_proxy_refresh) \
+                    .props('flat color=grey-7')
+
     upgrade_content = ui.column().classes('w-full q-px-sm q-pt-sm')
     upgrade_content.set_visibility(False)
     with upgrade_content:
@@ -3996,22 +4052,26 @@ def index(request: Request):
         pc_content.set_visibility(name == 'picoclaw')
         oc_content.set_visibility(name == 'openclaw')
         wifi_content.set_visibility(name == 'wifi')
+        proxy_content.set_visibility(name == 'proxy')
         upgrade_content.set_visibility(name == 'upgrade')
         btn_zc._props['color']      = 'blue-8'   if name == 'zeroclaw' else 'grey-7'
         btn_pc._props['color']      = 'purple-8' if name == 'picoclaw' else 'grey-7'
         btn_oc._props['color']      = 'teal-8'   if name == 'openclaw' else 'grey-7'
         btn_wifi._props['color']    = 'teal-8'   if name == 'wifi'     else 'grey-7'
+        btn_proxy._props['color']   = 'indigo-7' if name == 'proxy'    else 'grey-7'
         btn_upgrade._props['color'] = 'orange-9' if name == 'upgrade'  else 'grey-7'
         btn_zc.update()
         btn_pc.update()
         btn_oc.update()
         btn_wifi.update()
+        btn_proxy.update()
         btn_upgrade.update()
 
     btn_zc.on('click',      lambda: _switch_dash('zeroclaw'))
     btn_pc.on('click',      lambda: _switch_dash('picoclaw'))
     btn_oc.on('click',      lambda: _switch_dash('openclaw'))
     btn_wifi.on('click',    lambda: _switch_dash('wifi'))
+    btn_proxy.on('click',   lambda: (_proxy_refresh(), _switch_dash('proxy')))
     btn_upgrade.on('click', lambda: _switch_dash('upgrade'))
 
 

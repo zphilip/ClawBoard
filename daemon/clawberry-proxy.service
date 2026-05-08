@@ -11,6 +11,8 @@ Type=simple
 User=zero
 Group=zero
 
+ExecStartPre=/bin/mkdir -p /opt/clawproxy
+ExecStartPre=/bin/chown zero:zero /opt/clawproxy
 ExecStartPre=/usr/bin/test -x /usr/local/bin/clawproxy
 
 # --proxy        : enable proxy server mode (listen on --proxy-port)

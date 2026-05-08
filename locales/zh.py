@@ -165,6 +165,7 @@ STRINGS = {
     'pc_pair_queue_ok':        '✅ PicoClaw 二维码已加入显示服务队列',
     'pc_pair_copy_ok':         '✅ 配对链接已复制到剪贴板',    # ── 侧边栏导航 ──────────────────────────────────────────────────────────────
     'btn_wifi':    '📶 WiFi 设置',
+    'btn_proxy':   '🔀 代理',
     'btn_upgrade': '⬆ 升级',
     # ── 控制台标题 ──────────────────────────────────────────────────────────────
     'zc_dashboard':   '🦾 ZeroClaw 控制台',
@@ -210,4 +211,17 @@ STRINGS = {
     'upgrade_chk_pc_cfg':   'PicoClaw 配置 (config.json)',
     'upgrade_chk_pc_sec':   'PicoClaw 密钥 (.security.yml)',
     'upgrade_chk_zc_cfg':   'ZeroClaw 配置 (config.toml)',
-    'upgrade_btn_run':      '▶ 执行升级',}
+    'upgrade_btn_run':      '▶ 执行升级',
+    # ── 代理 ────────────────────────────────────────────────────────────────────
+    'proxy_title':          '🔀 ClawBerry 代理',
+    'proxy_card_title':     'clawberry-proxy 服务',
+    'proxy_hint':           'ClawBerry 代理将 ClawBerry 客户端通过单一 WebSocket 端口（18780）连接到所有运行中的 Claw 后端（ZeroClaw、PicoClaw、OpenClaw）。',
+    'proxy_status_lbl':     '状态',
+    'proxy_btn_enable':     '✅ 启用并启动',
+    'proxy_btn_disable':    '⛔ 禁用并停止',
+    'proxy_btn_restart':    '🔄 重启',
+    'proxy_btn_refresh':    '↺ 刷新',
+    'proxy_enabled':        '已启用',
+    'proxy_disabled':       '已禁用',
+    'proxy_active':         '🟢 运行中',
+    'proxy_inactive':       '🔴 已停止',}

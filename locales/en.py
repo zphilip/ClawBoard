@@ -165,6 +165,7 @@ STRINGS = {
     'pc_pair_queue_ok':        '✅ PicoClaw QR queued for the display service',
     'pc_pair_copy_ok':         '✅ Pairing URL copied to clipboard',    # ── Sidebar navigation ────────────────────────────────────────────────────
     'btn_wifi':    '📶 WiFi Setup',
+    'btn_proxy':   '🔀 Proxy',
     'btn_upgrade': '⬆ Upgrade',
     # ── Dashboard section headers ─────────────────────────────────────────────
     'zc_dashboard':   '🦾 ZeroClaw Dashboard',
@@ -210,4 +211,17 @@ STRINGS = {
     'upgrade_chk_pc_cfg':   'PicoClaw config  (config.json)',
     'upgrade_chk_pc_sec':   'PicoClaw secrets  (.security.yml)',
     'upgrade_chk_zc_cfg':   'ZeroClaw config  (config.toml)',
-    'upgrade_btn_run':      '▶ Run Upgrade',}
+    'upgrade_btn_run':      '▶ Run Upgrade',
+    # ── Proxy ─────────────────────────────────────────────────────────────────
+    'proxy_title':          '🔀 ClawBerry Proxy',
+    'proxy_card_title':     'clawberry-proxy Service',
+    'proxy_hint':           'The ClawBerry proxy connects the ClawBerry app to all running Claw backends (ZeroClaw, PicoClaw, OpenClaw) through a single WebSocket endpoint on port 18780.',
+    'proxy_status_lbl':     'Status',
+    'proxy_btn_enable':     '✅ Enable & Start',
+    'proxy_btn_disable':    '⛔ Disable & Stop',
+    'proxy_btn_restart':    '🔄 Restart',
+    'proxy_btn_refresh':    '↺ Refresh',
+    'proxy_enabled':        'enabled',
+    'proxy_disabled':       'disabled',
+    'proxy_active':         '🟢 running',
+    'proxy_inactive':       '🔴 stopped',}

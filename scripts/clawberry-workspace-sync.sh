@@ -221,6 +221,8 @@ fi
 
 if [[ -f "$WORK_DIR/clawproxy/clawproxy-arm64" ]]; then
     log "Installing clawproxy binary to /usr/local/bin/clawproxy"
+    mkdir -p /opt/clawproxy
+    chown zero:zero /opt/clawproxy 2>/dev/null || true
     if cp "$WORK_DIR/clawproxy/clawproxy-arm64" /usr/local/bin/clawproxy 2>/dev/null; then
         chmod +x /usr/local/bin/clawproxy || true
         log "clawproxy installed to /usr/local/bin/clawproxy"
