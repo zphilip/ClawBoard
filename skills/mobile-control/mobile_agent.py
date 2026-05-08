@@ -102,9 +102,17 @@ def _emit(obj: dict) -> None:
     print(json.dumps(obj, ensure_ascii=False), flush=True)
 
 
+def _emit_progress(step: int, action: str, message: str, screenshot: Optional[str] = None) -> None:
+    """Emit a JSONL progress line so the agent can narrate live updates to the user."""
+    obj: dict = {"type": "progress", "step": step, "action": action, "message": message}
+    if screenshot:
+        obj["screenshot"] = screenshot
+    _emit(obj)
+
+
 def _log(msg: str) -> None:
     """Status update on stderr (not captured by OpenClaw's JSON parser)."""
-    print(f"[mobileAgent] {msg}", file=sys.stderr, flush=True)
+    print(f"[mobile-control] {msg}", file=sys.stderr, flush=True)
 
 
 # ---------------------------------------------------------------------------
@@ -257,6 +265,35 @@ def _find_runner_script() -> Optional[str]:
     return None
 
 
+SCREENSHOTS_DIR = Path(__file__).parent / "screenshots"
+
+
+def _take_screenshot(adb_path: str, device: Optional[str], dest: Path) -> bool:
+    """
+    Capture a screenshot from the device via ADB and save to dest.
+    Returns True on success.
+    """
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    rc, _, _ = _adb(
+        ["exec-out", "screencap", "-p"],
+        adb_path=adb_path, device=device, timeout=15,
+    )
+    # exec-out with capture_output — re-run raw to write binary
+    import subprocess as _sp
+    cmd = [adb_path]
+    if device:
+        cmd += ["-s", device]
+    cmd += ["exec-out", "screencap", "-p"]
+    try:
+        result = _sp.run(cmd, capture_output=True, timeout=15)
+        if result.returncode == 0 and result.stdout:
+            dest.write_bytes(result.stdout)
+            return True
+    except Exception as e:
+        _log(f"Screenshot failed: {e}")
+    return False
+
+
 def _extract_action_summary(line: str) -> Optional[str]:
     """
     Parse a [MODEL OUTPUT] action line into a short human-readable summary.
@@ -311,6 +348,10 @@ def run_agent(
     ]
 
     _log(f"Launching: {' '.join(cmd)}")
+
+    # Prepare screenshots output directory
+    screenshots_dir = SCREENSHOTS_DIR
+    screenshots_dir.mkdir(parents=True, exist_ok=True)
 
     start = time.time()
     actions: list[str] = []
@@ -372,6 +413,20 @@ def run_agent(
                 last_action = action_summary
                 actions.append(action_summary)
 
+                # Capture verification screenshot after the action settles
+                time.sleep(1.2)
+                action_slug = re.sub(r'[^\w]+', '_', action_summary)[:40]
+                shot_path = screenshots_dir / f"step_{step:03d}_{action_slug}.png"
+                shot_ok = _take_screenshot(adb_path, device, shot_path)
+                shot_rel = str(shot_path) if shot_ok else None
+
+                # Emit live progress so the agent can narrate to the user
+                _emit_progress(
+                    step, action_summary,
+                    f"Step {step}: {action_summary}",
+                    screenshot=shot_rel,
+                )
+
                 # Loop detection
                 coord_m = re.search(r"\[(\d+),\s*(\d+)\]", action_summary)
                 if coord_m:
@@ -397,6 +452,13 @@ def run_agent(
                 if re.search(pat, line, re.IGNORECASE):
                     proc.terminate()
                     status = "success"
+                    shot_path = screenshots_dir / f"step_{step:03d}_finish.png"
+                    shot_ok = _take_screenshot(adb_path, device, shot_path)
+                    _emit_progress(
+                        step, "finish",
+                        f"Step {step}: Task finished ✓",
+                        screenshot=str(shot_path) if shot_ok else None,
+                    )
                     break
             if status == "success":
                 break
@@ -433,6 +495,7 @@ def run_agent(
         message += " (Loop detected — agent was retrying the same position.)"
 
     return {
+        "type": "result",
         "status": status,
         "steps": step,
         "last_action": last_action,
