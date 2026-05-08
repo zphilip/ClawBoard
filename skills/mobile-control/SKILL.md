@@ -1,5 +1,5 @@
 ---
-name: mobile-control
+name: mobileAgent
 description: "Control an Android phone via ADB + local GUI-Owl multimodal model. Use when: user says 'open [app]', 'on my phone', 'send a message', 'set alarm', 'navigate to', 'search in [app]', or any hands-free phone operation. Requires ADB-connected Android device and local llama.cpp GUI-Owl server on port 8810. NOT for: iOS devices, SMS via computer SMS bridges, or tasks that can be done without touching the phone."
 homepage: https://github.com/mPLUG-org/GUI-Owl
 metadata:
@@ -31,7 +31,7 @@ metadata:
               "id": "python-deps",
               "kind": "shell",
               "label": "Install Python dependencies into ClawBoard venv",
-              "script": "/opt/clawboard/venv/bin/pip install qwen_agent numpy",
+              "script": "/opt/clawboard/venv/bin/pip install openai Pillow numpy",
               "os": ["linux"],
             },
           ],
@@ -39,10 +39,9 @@ metadata:
   }
 ---
 
-# mobile-control — Android Phone Control via GUI-Owl
+# mobileAgent — Android Phone Control via GUI-Owl
 
-> **ClawBerry / pi-gen images**: `android-tools-adb`, `qwen_agent`, and `numpy`
-> are pre-installed by `stage3/00-clawberry/01-run.sh`.
+> **ClawBerry / pi-gen images**: `android-tools-adb`, `openai`, `Pillow`, `numpy` are pre-installed by `stage3/00-clawberry/01-run.sh`.
 > No manual installation needed on ClawBerry OS.
 >
 > **Other Linux / macOS hosts**: install manually (see Pre-flight section below).
@@ -73,8 +72,30 @@ and executes tap/swipe/type actions in a loop until the task is done or the step
 
 ## Pre-flight Checks (always run before invoking)
 
+On ClawBerry OS the ADB server is managed by `adb-server.service` and starts
+automatically on boot. Enable it once:
+
 ```bash
-# 1. Confirm device is connected
+sudo systemctl enable --now adb-server
+```
+
+Check status:
+
+```bash
+systemctl status adb-server
+```
+
+If you are not using the service (or need a manual reset):
+
+```bash
+# Kill any stale server and start fresh
+sudo adb kill-server && sudo adb start-server
+```
+
+Then:
+
+```bash
+# 1. Confirm device is connected (should show a device serial)
 adb devices
 
 # 2. Wake screen if off
@@ -140,39 +161,19 @@ python3 mobile_agent.py \
 
 ## Output Format
 
-The script emits **newline-delimited JSON (JSONL)** to stdout. There are two line types:
-
-### Progress lines (one per step)
-
-Emitted in real time as each step executes. After each action the wrapper waits ~1 second and
-captures a **verification screenshot** via `adb exec-out screencap -p`, saving it to
-`mobile-control/screenshots/step_NNN_<action>.png`. **Narrate these to the user** so they can
-follow along:
-
-```json
-{"type": "progress", "step": 3, "action": "click [160, 376]", "message": "Step 3: click [160, 376]", "screenshot": "/path/to/skills/mobile-control/screenshots/step_003_click_160_376_.png"}
-{"type": "progress", "step": 4, "action": "type \"搜索\"", "message": "Step 4: type \"搜索\"", "screenshot": "/path/to/skills/mobile-control/screenshots/step_004_type___搜索___.png"}
-{"type": "progress", "step": 5, "action": "finish", "message": "Step 5: Task finished ✓", "screenshot": "/path/to/skills/mobile-control/screenshots/step_005_finish.png"}
-```
-
-**How to narrate:** After each progress line, tell the user what the agent just did.  
-Example: _"Step 3 — tapped [160, 376]. Step 4 — typed '搜索'. Done!"_  
-If a `screenshot` path is present, the agent can display it to confirm the result visually.
-
-### Result line (final, always last)
+The script prints JSON to stdout on exit:
 
 ```json
 {
-  "type": "result",
   "status": "success|timeout|error|clarify",
   "steps": 7,
   "last_action": "click [160, 376]",
-  "message": "Task completed in 7 steps.",
+  "message": "Task completed in 7 steps",
   "actions": ["open 百度地图", "click [160,376]", "swipe ..."]
 }
 ```
 
-Parse with: `python3 mobile_agent.py ... | grep '"type":"result"' | python3 -c "import sys,json; r=json.load(sys.stdin); print(r['message'])"`
+Parse with: `python3 mobile_agent.py ... | python3 -c "import sys,json; r=json.load(sys.stdin); print(r['message'])"`
 
 ## Clarification Logic
 
@@ -223,8 +224,10 @@ grep -i "allow\|允许\|grant" /tmp/ui.xml
 ## Troubleshooting
 
 ```bash
-# Device not found?
-adb kill-server && adb start-server && adb devices
+# Device not found? Restart the ADB server service:
+sudo systemctl restart adb-server && adb devices
+# Or manually:
+sudo adb kill-server && sudo adb start-server && adb devices
 
 # ADB keyboard not working?
 adb shell ime list -a | grep -i adb

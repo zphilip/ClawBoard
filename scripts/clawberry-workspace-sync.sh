@@ -269,6 +269,23 @@ fi
 if [[ "$SVC_CHANGED" == "yes" ]] && command -v systemctl >/dev/null 2>&1; then
     log "Running systemctl daemon-reload ..."
     systemctl daemon-reload 2>/dev/null || true
+
+    # Auto-enable services that should always be on but are not yet enabled.
+    # Add to this list whenever a new always-on service is introduced.
+    for _auto_enable in adb-server.service; do
+        if [[ -f "/etc/systemd/system/$_auto_enable" ]]; then
+            if ! systemctl is-enabled --quiet "$_auto_enable" 2>/dev/null; then
+                log "Enabling $_auto_enable (first install) ..."
+                systemctl enable "$_auto_enable" 2>/dev/null || \
+                    log "WARNING: failed to enable $_auto_enable"
+            fi
+            if ! systemctl is-active --quiet "$_auto_enable" 2>/dev/null; then
+                log "Starting $_auto_enable ..."
+                systemctl start "$_auto_enable" 2>/dev/null || \
+                    log "WARNING: failed to start $_auto_enable"
+            fi
+        fi
+    done
 fi
 
 # ── Deploy ClawBoard dashboard to /opt/clawboard ─────────────────────────────
