@@ -1,0 +1,25 @@
+[Unit]
+Description=Android Debug Bridge (ADB) server
+# ADB must be up before any skill or service that calls `adb`
+After=local-fs.target
+Before=clawboard.service
+
+[Service]
+Type=forking
+# Run as root — required to bind port 5037 and access USB device nodes
+User=root
+Group=root
+
+# Kill any stale server first, then start fresh
+ExecStartPre=/usr/bin/adb kill-server
+ExecStart=/usr/bin/adb start-server
+
+# If the daemon dies, restart after 5 s
+Restart=on-failure
+RestartSec=5
+
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
