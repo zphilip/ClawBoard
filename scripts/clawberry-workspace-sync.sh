@@ -50,9 +50,12 @@ CLAWBOARD_USER="zero"
 PICOCLAW_WORKSPACE_DST="/var/lib/picoclaw/.picoclaw/workspace"
 ZEROCLAW_WORKSPACE_DST="/var/lib/zeroclaw/.zeroclaw/workspace"
 PICOCLAW_SKILLS_DST="/var/lib/picoclaw/.picoclaw/workspace/skills"
+ZEROCLAW_SKILLS_DST="/var/lib/zeroclaw/.zeroclaw/workspace/skills"
+OPENCLAW_SKILLS_DST="/var/lib/openclaw/.openclaw/workspace/skills"
 
 PICOCLAW_USER="picoclaw"
 ZEROCLAW_USER="zeroclaw"
+OPENCLAW_USER="openclaw"
 
 log() { echo "[workspace-sync] $*"; }
 die() { echo "[workspace-sync] ERROR: $*" >&2; exit 1; }
@@ -480,14 +483,29 @@ sync_workspace() {
 # ── Sync both workspaces ─────────────────────────────────────────────────────
 sync_workspace "$PICOCLAW_WORKSPACE_SRC" "$PICOCLAW_WORKSPACE_DST" "$PICOCLAW_USER"
 sync_workspace "$ZEROCLAW_WORKSPACE_SRC" "$ZEROCLAW_WORKSPACE_DST" "$ZEROCLAW_USER"
-# ── Sync skills into picoclaw workspace ───────────────────────────────────────
+# ── Sync skills into agent workspaces (picoclaw, zeroclaw, openclaw) ──────────
 if [[ -d "$WORK_DIR/skills" ]]; then
-    log "Syncing skills/  →  $PICOCLAW_SKILLS_DST"
-    mkdir -p "$PICOCLAW_SKILLS_DST"
-    rsync --archive --update --times "$WORK_DIR/skills/" "$PICOCLAW_SKILLS_DST/"
-    chown -R "$PICOCLAW_USER:$PICOCLAW_USER" "$PICOCLAW_SKILLS_DST" 2>/dev/null || \
-        log "WARNING: chown $PICOCLAW_USER failed for $PICOCLAW_SKILLS_DST (running as non-root?)"
-    log "Done: $PICOCLAW_SKILLS_DST"
+    for _skills_entry in \
+        "$PICOCLAW_SKILLS_DST:$PICOCLAW_USER:/var/lib/picoclaw/.picoclaw/workspace" \
+        "$ZEROCLAW_SKILLS_DST:$ZEROCLAW_USER:/var/lib/zeroclaw/.zeroclaw/workspace" \
+        "$OPENCLAW_SKILLS_DST:$OPENCLAW_USER:/var/lib/openclaw/.openclaw/workspace"
+    do
+        _dst="${_skills_entry%%:*}"
+        _rest="${_skills_entry#*:}"
+        _owner="${_rest%%:*}"
+        _ws_dir="${_rest#*:}"
+        # Only deploy if the parent workspace directory exists (agent is installed)
+        if [[ -d "$_ws_dir" ]]; then
+            log "Syncing skills/  →  $_dst"
+            mkdir -p "$_dst"
+            rsync --archive --update --times "$WORK_DIR/skills/" "$_dst/"
+            chown -R "$_owner:$_owner" "$_dst" 2>/dev/null || \
+                log "WARNING: chown $_owner failed for $_dst (running as non-root?)"
+            log "Done: $_dst"
+        else
+            log "Skipping skills for $_owner (workspace $_ws_dir not present)"
+        fi
+    done
 else
     log "WARNING: skills/ not found in repo — skipping"
 fi
