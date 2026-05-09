@@ -163,6 +163,21 @@ else
     log "WARNING: sync script not found in repo at $REPO_SCRIPT_PATH — skipping self-update"
 fi
 
+# ── Bootstrap clawboard group (idempotent) ──────────────────────────────────
+groupadd --system clawboard 2>/dev/null || true
+for _u in zero zeroclaw picoclaw openclaw; do
+    id -u "$_u" >/dev/null 2>&1 && usermod -aG clawboard "$_u" 2>/dev/null || true
+done
+mkdir -p /opt/clawproxy
+chown zero:zero /opt/clawproxy 2>/dev/null || true
+if [ -d /opt/clawboard/venv ]; then
+    chgrp -R clawboard /opt/clawboard/venv 2>/dev/null || true
+    find /opt/clawboard/venv -type d -exec chmod g+rwx {} + 2>/dev/null || true
+    find /opt/clawboard/venv -type f ! -path "*/bin/*" -exec chmod g+rw {} + 2>/dev/null || true
+    find /opt/clawboard/venv/bin -type f -exec chmod g+rwx {} + 2>/dev/null || true
+fi
+log "clawboard group bootstrapped."
+
 # Record service states and stop services to allow binary replacement
 PIC_ACTIVE=no
 ZC_ACTIVE=no
