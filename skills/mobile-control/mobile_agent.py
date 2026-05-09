@@ -44,7 +44,7 @@ _DEBUG = False
 # Constants
 # ---------------------------------------------------------------------------
 
-DEFAULT_BASE_URL = "http://apicn.aiworm.cn:8810/v1"
+DEFAULT_BASE_URL = "http://apicn.aiworm.cn:8809/v1"
 DEFAULT_MODEL = "gui-owl"
 DEFAULT_API_KEY = "not-needed"
 DEFAULT_MAX_STEPS = 20

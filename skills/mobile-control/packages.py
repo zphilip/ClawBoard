@@ -49,14 +49,14 @@ com.anjuke.android.app	安居客
 com.hexin.plat.android	同花顺				
 com.miHoYo.hkrpg	星穹铁道	崩坏			
 com.papegames.lysk.cn	恋与深空				
-com.android.settings	settings	androidsystemsettings			
-com.android.soundrecorder	audiorecorder				
+com.android.settings	settings	androidsystemsettings	设置	系统设置
+com.android.soundrecorder	audiorecorder	录音机	录音
 com.rammigsoftware.bluecoins	bluecoins				
 com.flauschcode.broccoli	broccoli				
 com.booking	booking				
-com.android.chrome	谷歌浏览器	googlechrome	chrome		
-com.android.deskclock	时钟	闹钟	clock		
-com.android.contacts	contacts				
+com.android.chrome	谷歌浏览器	googlechrome	chrome	浏览器
+com.android.deskclock	时钟	闹钟	clock	alarms
+com.android.contacts	contacts	联系人	通讯录
 com.duolingo	duolingo	多邻国			
 com.expedia.bookings	expedia				
 com.android.fileexplorer	files	filemanager			
@@ -110,7 +110,7 @@ cn.damai	大麦	大麦网
 com.ss.android.auto	懂车帝				
 com.cubic.autohome	汽车之家				
 com.wuba	58同城	五八同城			
-com.android.calendar	日历				
+com.android.calendar	日历	calendar
 com.alibaba.android.rimet	钉钉				
 com.meituan.retail.v.android	小象超市				
 com.aliyun.tongyi	通义	千问	通义千问		

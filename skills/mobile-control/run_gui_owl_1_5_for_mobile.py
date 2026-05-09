@@ -182,8 +182,8 @@ def handle_open_action(
             adb_tools.open_app(pkg)
             return True
 
-    # App not found — ask user to install
-    input(f"[ACTION REQUIRED] Please install the app: {display_name}")
+    # App not found — log and continue the agent loop (do NOT block on input)
+    print(f"[APP NOT FOUND] Could not resolve app: {display_name!r}. Continuing loop.")
     return False
 
 
@@ -236,7 +236,13 @@ def main():
         print(f"[MODEL OUTPUT]\n{output_text}")
 
         # 3. Parse the action
-        action = parse_action(output_text)
+        try:
+            action = parse_action(output_text)
+        except ValueError as e:
+            print(f"[WARN] Could not parse action: {e} — skipping step")
+            history.append({"output": output_text, "image": screenshot_path})
+            time.sleep(1)
+            continue
         action_parameter = action["arguments"]
 
         # 4. Rescale coordinates from 1000x1000 to actual resolution
@@ -311,8 +317,9 @@ def main():
 
         elif action_type in ("call_user", "calluser", "interact"):
             user_prompt = action_parameter.get("text", "the required action")
-            input(f"[ACTION REQUIRED] Please complete: {user_prompt}")
-            print("[INFO] User action completed. Resuming...")
+            # Do not block on input() — print and continue so the loop can proceed
+            print(f"[ACTION REQUIRED] {user_prompt}")
+            print("[INFO] Skipping interactive prompt (non-interactive mode). Resuming...")
 
         else:
             print(f"[WARN] Unsupported action type: {action_type}")
