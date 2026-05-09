@@ -498,7 +498,9 @@ if [[ -d "$WORK_DIR/skills" ]]; then
         if [[ -d "$_ws_dir" ]]; then
             log "Syncing skills/  →  $_dst"
             mkdir -p "$_dst"
-            rsync --archive --update --times "$WORK_DIR/skills/" "$_dst/"
+            # No --update: skills are always overwritten from the repo.
+            # --update would skip files edited locally on the device (newer mtime).
+            rsync --archive --checksum "$WORK_DIR/skills/" "$_dst/"
             chown -R "$_owner:$_owner" "$_dst" 2>/dev/null || \
                 log "WARNING: chown $_owner failed for $_dst (running as non-root?)"
             log "Done: $_dst"
