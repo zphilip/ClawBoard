@@ -72,3 +72,18 @@ zero ALL=(openclaw) NOPASSWD: /bin/bash
 
 # ── Workspace-sync upgrade script ────────────────────────────────────────────
 zero ALL=(root) NOPASSWD: /usr/bin/bash /usr/local/bin/clawberry-workspace-sync.sh
+
+# ── ClawBoard venv — skill package management ────────────────────────────────
+# All service accounts (zero, zeroclaw, picoclaw, openclaw) are in the
+# `clawboard` group and the venv is group-writable, so they can run
+#   /opt/clawboard/venv/bin/pip install <pkg>
+# directly without sudo.  The sudo rules below are kept as a fallback for
+# scripts that explicitly call sudo pip (e.g. skill install hooks).
+zero      ALL=(root) NOPASSWD: /opt/clawboard/venv/bin/pip install *
+zero      ALL=(root) NOPASSWD: /opt/clawboard/venv/bin/pip uninstall *
+zeroclaw  ALL=(root) NOPASSWD: /opt/clawboard/venv/bin/pip install *
+zeroclaw  ALL=(root) NOPASSWD: /opt/clawboard/venv/bin/pip uninstall *
+picoclaw  ALL=(root) NOPASSWD: /opt/clawboard/venv/bin/pip install *
+picoclaw  ALL=(root) NOPASSWD: /opt/clawboard/venv/bin/pip uninstall *
+openclaw  ALL=(root) NOPASSWD: /opt/clawboard/venv/bin/pip install *
+openclaw  ALL=(root) NOPASSWD: /opt/clawboard/venv/bin/pip uninstall *

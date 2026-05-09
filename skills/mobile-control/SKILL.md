@@ -1,6 +1,17 @@
 ---
-name: mobileAgent
-description: "Control an Android phone via ADB + local GUI-Owl multimodal model. Use when: user says 'open [app]', 'on my phone', 'send a message', 'set alarm', 'navigate to', 'search in [app]', or any hands-free phone operation. Requires ADB-connected Android device and local llama.cpp GUI-Owl server on port 8810. NOT for: iOS devices, SMS via computer SMS bridges, or tasks that can be done without touching the phone."
+name: mobile-control
+description: |
+  Controls a PHYSICAL ANDROID PHONE connected via USB — NOT the PC, NOT the desktop, NOT a web browser.
+  This skill operates the phone screen step-by-step: it takes a screenshot, sends it to a local VLM
+  (GUI-Owl on port 8810), gets back one action (tap/swipe/type/scroll), executes it via ADB, then
+  repeats. Each step emits a progress JSON line that you MUST narrate to the user in real time.
+
+  USE when: user says "on my phone", "open [app]", "send WeChat message", "set alarm", "navigate home",
+  "search in [app]", "play music on phone", "take a screenshot of my phone", or any task that requires
+  physically interacting with Android UI.
+
+  DO NOT USE for: PC/desktop tasks, web browsing on the host machine, iOS (iPhone/iPad), file transfers
+  (use adb pull/push), anything that doesn't require tapping the phone screen.
 homepage: https://github.com/mPLUG-org/GUI-Owl
 metadata:
   {
@@ -39,16 +50,26 @@ metadata:
   }
 ---
 
-# mobileAgent — Android Phone Control via GUI-Owl
+# mobile-control — Android Phone Control via GUI-Owl
 
-> **ClawBerry / pi-gen images**: `android-tools-adb`, `openai`, `Pillow`, `numpy` are pre-installed by `stage3/00-clawberry/01-run.sh`.
+> **THIS SKILL CONTROLS A PHYSICAL ANDROID PHONE, NOT THE PC.**  
+> It works by taking a phone screenshot → asking a local VLM what to tap → executing the tap via ADB → repeating.
+> The task takes **multiple steps** (typically 5–30). After each step a progress JSON is emitted — **narrate
+> each step to the user so they know what the agent is doing on their phone.**
+
+> **ClawBerry / pi-gen images**: `android-tools-adb`, `openai`, `Pillow`, `numpy` are pre-installed.
 > No manual installation needed on ClawBerry OS.
 >
 > **Other Linux / macOS hosts**: install manually (see Pre-flight section below).
 
-Controls an ADB-connected Android device using the local `gui-owl-llamacpp` multimodal model
-(running on `http://localhost:8810/v1`). The agent takes a screenshot, reasons about the UI,
-and executes tap/swipe/type actions in a loop until the task is done or the step limit is hit.
+The agent loop:
+1. Takes a screenshot of the phone via ADB
+2. Sends screenshot + instruction to GUI-Owl VLM (local llama.cpp, port 8810)
+3. VLM returns one action: `click`, `swipe`, `type`, `scroll`, `open`, `finish`, etc.
+4. Action is executed via ADB
+5. Emits a `{"type":"progress", ...}` JSON line — **you must narrate this to the user**
+6. Repeat until `finish` action or step limit reached
+7. Emits a final `{"type":"result", ...}` JSON line
 
 ## When to Use
 
@@ -132,6 +153,15 @@ python3 mobile_agent.py \
 python3 mobile_agent.py \
     --instruction "dummy" \
     --dry_run
+
+# Debug mode — writes full log to /tmp/mobile_agent.log
+python3 mobile_agent.py \
+    --instruction "打开设置" \
+    --debug \
+    --log-file /tmp/mobile_agent.log
+
+# Watch the log live in another terminal
+tail -f /tmp/mobile_agent.log
 ```
 
 ### CLI Parameters
@@ -148,6 +178,8 @@ python3 mobile_agent.py \
 | `--timeout`     | `120`                         | Seconds before the whole run is killed                   |
 | `--add_info`    | `""`                          | Extra context injected into the instruction              |
 | `--dry_run`     | `false`                       | Only run pre-checks, skip model inference                |
+| `--debug`       | `false`                       | Print full model input/output to log                     |
+| `--log-file`    | `""` (stderr only)            | Also write all `[mobile-control]` logs to this file      |
 
 ### Exit Codes
 
@@ -159,21 +191,58 @@ python3 mobile_agent.py \
 | `3`  | Timeout or step limit reached             |
 | `4`  | ADB device not found                      |
 
+## Agent Narration Guide
+
+**This is a multi-step skill. You MUST narrate each step to the user as it happens.**
+
+For every `{"type": "progress", ...}` line received:
+- Tell the user what action was taken: _"Step 3 — tapped the WeChat icon"_
+- If a screenshot path is included, mention you can show it
+- Do NOT wait for the final result before talking to the user
+
+For the final `{"type": "result", ...}` line:
+- Report the outcome: success / timeout / error
+- List key actions taken from the `actions` array
+- If status is `clarify`, ask the user for more details
+
+Example narration:
+> "I've started controlling your phone. Step 1 — opened the home screen. Step 2 — tapped the WeChat icon. Step 3 — tapped the search bar. Step 4 — typed '妈妈'. Step 5 — tapped the contact. Step 6 — typed the message. Step 7 — tapped Send. Task complete in 7 steps."
+
 ## Output Format
 
-The script prints JSON to stdout on exit:
+The script emits **newline-delimited JSON (JSONL)** to stdout. There are two line types:
+
+### Progress lines (one per step)
+
+Emitted in real time as each step executes. After each action the wrapper waits ~1 second and
+captures a **verification screenshot** via `adb exec-out screencap -p`, saving it to
+`mobile-control/screenshots/step_NNN_<action>.png`. **Narrate these to the user** so they can
+follow along:
+
+```json
+{"type": "progress", "step": 3, "action": "click [160, 376]", "message": "Step 3: click [160, 376]", "screenshot": "/path/to/skills/mobile-control/screenshots/step_003_click_160_376_.png"}
+{"type": "progress", "step": 4, "action": "type \"搜索\"", "message": "Step 4: type \"搜索\"", "screenshot": "/path/to/skills/mobile-control/screenshots/step_004_type___搜索___.png"}
+{"type": "progress", "step": 5, "action": "finish", "message": "Step 5: Task finished ✓", "screenshot": "/path/to/skills/mobile-control/screenshots/step_005_finish.png"}
+```
+
+**How to narrate:** After each progress line, tell the user what the agent just did.  
+Example: _"Step 3 — tapped [160, 376]. Step 4 — typed '搜索'. Done!"_  
+If a `screenshot` path is present, the agent can display it to confirm the result visually.
+
+### Result line (final, always last)
 
 ```json
 {
+  "type": "result",
   "status": "success|timeout|error|clarify",
   "steps": 7,
   "last_action": "click [160, 376]",
-  "message": "Task completed in 7 steps",
+  "message": "Task completed in 7 steps.",
   "actions": ["open 百度地图", "click [160,376]", "swipe ..."]
 }
 ```
 
-Parse with: `python3 mobile_agent.py ... | python3 -c "import sys,json; r=json.load(sys.stdin); print(r['message'])"`
+Parse with: `python3 mobile_agent.py ... | grep '"type":"result"' | python3 -c "import sys,json; r=json.load(sys.stdin); print(r['message'])"`
 
 ## Clarification Logic
 
@@ -228,6 +297,14 @@ grep -i "allow\|允许\|grant" /tmp/ui.xml
 sudo systemctl restart adb-server && adb devices
 # Or manually:
 sudo adb kill-server && sudo adb start-server && adb devices
+
+# See full execution log:
+cat /tmp/mobile_agent.log
+# Or watch live:
+tail -f /tmp/mobile_agent.log
+
+# See systemd logs for the skill run:
+sudo journalctl -u openclaw -n 50 --no-pager | grep mobile
 
 # ADB keyboard not working?
 adb shell ime list -a | grep -i adb

@@ -7,6 +7,7 @@ Wants=network.target
 Type=simple
 User=picoclaw
 Group=picoclaw
+SupplementaryGroups=clawboard
 
 ExecStartPre=/usr/bin/test -x /usr/local/bin/picoclaw
 
@@ -26,6 +27,7 @@ PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
 ReadWritePaths=/var/lib/picoclaw
+ReadOnlyPaths=/opt/clawboard/venv
 RestrictNamespaces=true
 RestrictRealtime=true
 LockPersonality=true

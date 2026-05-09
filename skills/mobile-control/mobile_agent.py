@@ -35,6 +35,12 @@ from pathlib import Path
 from typing import Optional
 
 # ---------------------------------------------------------------------------
+# Global log file handle (set in main)
+# ---------------------------------------------------------------------------
+_LOG_FILE = None
+_DEBUG = False
+
+# ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 
@@ -111,8 +117,21 @@ def _emit_progress(step: int, action: str, message: str, screenshot: Optional[st
 
 
 def _log(msg: str) -> None:
-    """Status update on stderr (not captured by OpenClaw's JSON parser)."""
-    print(f"[mobile-control] {msg}", file=sys.stderr, flush=True)
+    """Status update on stderr (not captured by OpenClaw's JSON parser) and optional log file."""
+    line = f"[mobile-control] {msg}"
+    print(line, file=sys.stderr, flush=True)
+    if _LOG_FILE:
+        try:
+            _LOG_FILE.write(line + "\n")
+            _LOG_FILE.flush()
+        except Exception:
+            pass
+
+
+def _debug(msg: str) -> None:
+    """Only emitted when --debug is set."""
+    if _DEBUG:
+        _log(f"[DEBUG] {msg}")
 
 
 # ---------------------------------------------------------------------------
@@ -393,6 +412,12 @@ def run_agent(
 
             # Forward line to stderr for live visibility
             print(line, file=sys.stderr)
+            if _LOG_FILE:
+                try:
+                    _LOG_FILE.write(line + "\n")
+                    _LOG_FILE.flush()
+                except Exception:
+                    pass
 
             # Step counter
             if re.match(r"^={10,}$", line):
@@ -426,6 +451,7 @@ def run_agent(
                     f"Step {step}: {action_summary}",
                     screenshot=shot_rel,
                 )
+                _debug(f"action parsed: {action_summary}")
 
                 # Loop detection
                 coord_m = re.search(r"\[(\d+),\s*(\d+)\]", action_summary)
@@ -532,11 +558,25 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--add_info", default="")
     p.add_argument("--dry_run", action="store_true",
                    help="Only run pre-checks, skip model inference")
+    p.add_argument("--debug", action="store_true",
+                   help="Print full model input/output to log")
+    p.add_argument("--log-file", default="", dest="log_file",
+                   help="Also write all [mobile-control] logs to this file")
     return p.parse_args()
 
 
 def main() -> int:
+    global _LOG_FILE, _DEBUG
     args = parse_args()
+
+    _DEBUG = args.debug
+    if args.log_file:
+        try:
+            _LOG_FILE = open(args.log_file, "a", encoding="utf-8")
+            _log(f"=== mobile-control session start ===  instruction={args.instruction!r}")
+        except OSError as e:
+            print(f"[mobile-control] WARNING: cannot open log file {args.log_file}: {e}",
+                  file=sys.stderr)
 
     # 1. Clarification check
     if needs_clarification(args.instruction):

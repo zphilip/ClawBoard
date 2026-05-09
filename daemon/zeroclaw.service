@@ -7,6 +7,7 @@ Wants=network.target
 Type=simple
 User=zeroclaw
 Group=zeroclaw
+SupplementaryGroups=clawboard
 
 ExecStartPre=/usr/bin/test -x /usr/local/bin/zeroclaw
 
@@ -26,6 +27,7 @@ PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
 ReadWritePaths=/var/lib/zeroclaw
+ReadOnlyPaths=/opt/clawboard/venv
 RestrictNamespaces=true
 RestrictRealtime=true
 LockPersonality=true
