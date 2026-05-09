@@ -145,15 +145,21 @@ def handle_open_action(
     Handle the 'open' action: resolve app name to package and launch it.
 
     Returns:
-        True if the app was successfully opened (or user was prompted),
-        False if iteration should continue (e.g., app not found).
+        True if the app was successfully opened,
+        False if the app was not found (loop continues).
     """
+    from packages import normalize_package_name
     app_name = action_parameter.get("text", "")
-    package_candidates = NAME_PACKAGE_DICT.get(app_name, [])
-    installed_packages = adb_tools.get_package_name()
+    # Normalize so '设置' matches the dict key 'settings' won't help, but
+    # '设置' added to packages.py normalizes to '设置' and matches directly.
+    app_name_key = normalize_package_name(app_name)
+
+    # Include system packages (e.g. com.android.settings) not just third-party
+    installed_packages = adb_tools.get_package_name(all_packages=True)
     display_name = app_name
 
     # First attempt: direct lookup
+    package_candidates = NAME_PACKAGE_DICT.get(app_name_key, [])
     for pkg in package_candidates:
         if pkg in installed_packages:
             adb_tools.open_app(pkg)
@@ -176,13 +182,14 @@ def handle_open_action(
     if resolved_name:
         display_name = resolved_name
 
-    resolved_packages = NAME_PACKAGE_DICT.get(resolved_name, [])
+    resolved_key = normalize_package_name(resolved_name) if resolved_name else ""
+    resolved_packages = NAME_PACKAGE_DICT.get(resolved_key, [])
     for pkg in resolved_packages:
         if pkg in installed_packages:
             adb_tools.open_app(pkg)
             return True
 
-    # App not found — log and continue the agent loop (do NOT block on input)
+    # App not found — do NOT block on input(), just log and let the loop continue
     print(f"[APP NOT FOUND] Could not resolve app: {display_name!r}. Continuing loop.")
     return False
 
@@ -317,9 +324,8 @@ def main():
 
         elif action_type in ("call_user", "calluser", "interact"):
             user_prompt = action_parameter.get("text", "the required action")
-            # Do not block on input() — print and continue so the loop can proceed
-            print(f"[ACTION REQUIRED] {user_prompt}")
-            print("[INFO] Skipping interactive prompt (non-interactive mode). Resuming...")
+            print(f"[ACTION REQUIRED] Please complete: {user_prompt}")
+            print("[INFO] User action noted. Resuming...")
 
         else:
             print(f"[WARN] Unsupported action type: {action_type}")

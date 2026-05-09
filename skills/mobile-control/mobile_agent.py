@@ -351,7 +351,7 @@ def run_agent(
     detect loops, auto-handle permissions, and return a result dict.
     """
     cmd = [
-        sys.executable, runner_script,
+        sys.executable, "-u", runner_script,
         "--adb_path", adb_path,
         "--device", device,
         "--api_key", api_key,
