@@ -293,11 +293,7 @@ def _take_screenshot(adb_path: str, device: Optional[str], dest: Path) -> bool:
     Returns True on success.
     """
     dest.parent.mkdir(parents=True, exist_ok=True)
-    rc, _, _ = _adb(
-        ["exec-out", "screencap", "-p"],
-        adb_path=adb_path, device=device, timeout=15,
-    )
-    # exec-out with capture_output — re-run raw to write binary
+    # Must run in binary mode — PNG output is not valid UTF-8
     import subprocess as _sp
     cmd = [adb_path]
     if device:
