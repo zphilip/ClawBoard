@@ -322,6 +322,12 @@
       "api_base": "https://api.avian.io/v1"
     },
     {
+      "model_name": "minimax-tts-voice",
+      "provider": "openai",
+      "model": "speech-2.8-hd",
+      "api_base": "minimax.chat"
+    },    
+    {
       "model_name": "MiniMax-M2.5",
       "model": "minimax/MiniMax-M2.5",
       "api_base": "https://api.minimaxi.com/v1",
@@ -513,6 +519,7 @@
     "monitor_usb": true
   },
   "voice": {
+    "model_name": "minimax-tts-voice",
     "echo_transcription": false
   },
   "build_info": {

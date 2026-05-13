@@ -13,7 +13,7 @@ Group=picoclaw
 # Then use: python3 chat_picoclaw.py --launcher-token <your-token>
 EnvironmentFile=-/etc/clawberry/picoclaw-web.env
 
-ExecStart=/opt/picoclaw/picoclaw-web -public /var/lib/picoclaw/.picoclaw/config.json
+ExecStart=/opt/picoclaw/picoclaw-launcher -public /var/lib/picoclaw/.picoclaw/config.json
 
 WorkingDirectory=/var/lib/picoclaw
 
