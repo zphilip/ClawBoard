@@ -2107,9 +2107,17 @@ def index(request: Request):
                 _pc_wiz_prov_opts  = list(_pc_ph_provs)
                 if _pc_wiz_init_prov and _pc_wiz_init_prov not in _pc_wiz_prov_opts:
                     _pc_wiz_prov_opts = [_pc_wiz_init_prov] + _pc_wiz_prov_opts
+                if not _pc_wiz_prov_opts:
+                    _pc_wiz_prov_opts = [PROVIDER_IDS[0]]
+                if _pc_wiz_init_prov not in _pc_wiz_prov_opts:
+                    _pc_wiz_init_prov = _pc_wiz_prov_opts[0]
                 _pc_wiz_mname_opts = list(_pc_ph_map.keys())
                 if _pc_wiz_init_mname and _pc_wiz_init_mname not in _pc_wiz_mname_opts:
                     _pc_wiz_mname_opts = [_pc_wiz_init_mname] + _pc_wiz_mname_opts
+                if not _pc_wiz_mname_opts:
+                    _pc_wiz_mname_opts = ['']
+                if _pc_wiz_init_mname not in _pc_wiz_mname_opts:
+                    _pc_wiz_init_mname = _pc_wiz_mname_opts[0]
 
                 with ui.stepper(value='pc_wiz_prov').props('vertical animated').classes('w-full') as _pc_wiz:
 
@@ -2127,7 +2135,7 @@ def index(request: Request):
                         ).classes('w-full q-mb-xs')
                         ui.separator().classes('q-my-xs')
 
-                        pc_wiz_prov      = ui.select(_pc_wiz_prov_opts or [''], label='provider',
+                        pc_wiz_prov      = ui.select(_pc_wiz_prov_opts, label='provider',
                             value=_pc_wiz_init_prov).classes('w-full q-mb-sm')
                         pc_wiz_model_name= ui.select(
                             options=_pc_wiz_mname_opts,
