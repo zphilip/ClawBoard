@@ -1,13 +1,4 @@
-default_provider = "openrouter"
-default_model = "anthropic/claude-sonnet-4.6"
-default_temperature = 0.7
-provider_timeout_secs = 120
-model_routes = []
-embedding_routes = []
-
-[model_providers]
-
-[extra_headers]
+schema_version = 2
 
 [observability]
 backend = "none"
@@ -17,8 +8,10 @@ runtime_trace_max_entries = 200
 
 [autonomy]
 level = "supervised"
-workspace_only = true
+workspace_only = false
 allowed_commands = [
+    "uv",
+    "curl",
     "git",
     "npm",
     "cargo",
@@ -32,10 +25,8 @@ allowed_commands = [
     "head",
     "tail",
     "date",
-    "python",
     "python3",
-    "pip",
-    "node",
+    "echo",
 ]
 forbidden_paths = [
     "/etc",
@@ -59,12 +50,13 @@ forbidden_paths = [
 ]
 max_actions_per_hour = 200
 max_cost_per_day_cents = 500
-require_approval_for_medium_risk = true
+require_approval_for_medium_risk = false
 block_high_risk_commands = true
 shell_env_passthrough = []
 auto_approve = [
     "file_read",
     "memory_recall",
+    "shell",
     "web_search_tool",
     "web_fetch",
     "calculator",
@@ -76,6 +68,7 @@ auto_approve = [
 always_ask = []
 allowed_roots = []
 non_cli_excluded_tools = []
+shell_timeout_secs = 60
 
 [trust]
 initial_score = 0.8
@@ -206,7 +199,7 @@ max_tasks = 64
 max_concurrent = 4
 
 [agent]
-compact_context = true
+compact_context = false
 max_tool_iterations = 30
 max_history_messages = 50
 max_context_tokens = 32000
@@ -245,6 +238,11 @@ timeout_secs = 60
 identifier_policy = "strict"
 tool_result_retrim_chars = 2000
 tool_result_trim_exempt = []
+
+[agent.tool_receipts]
+enabled = false
+inject_system_prompt = true
+show_in_response = false
 
 [pacing]
 loop_ignore_tools = []
@@ -285,6 +283,7 @@ max_interval_minutes = 120
 deadman_timeout_minutes = 0
 max_run_history = 100
 load_session_context = false
+task_timeout_secs = 600
 
 [cron]
 enabled = true
@@ -292,15 +291,38 @@ catch_up_on_startup = true
 max_run_history = 50
 jobs = []
 
-[channels_config]
+[channels]
 cli = true
 message_timeout_secs = 300
 ack_reactions = true
-show_tool_calls = false
+show_tool_calls = true
 session_persistence = true
 session_backend = "sqlite"
 session_ttl_hours = 0
 debounce_ms = 0
+
+[channels.dingtalk]
+client_id = "dingdosmrhurugkpzsug"
+client_secret = "enc2:13197be478be9f657a554bdaa1f3540836ab0e72360eed1c3d9e3ce66bbf5924930dd73f9e967d440f203b438a04381fd48ff68a7f879b49614a007a5f4a59da923775ce906bacd5d246f05f63bf059782afb31a107a2097a51c009c"
+allowed_users = ["*"]
+enabled = false
+
+[escalation]
+alert_channels = []
+
+[onboard_state]
+completed_sections = []
+
+[providers]
+fallback = "minimax-cn"
+
+[providers.models]
+
+[providers.models.minimax-cn]
+api_key = "enc2:2d9c2ef2e18a481a102237f35ebe2464ca300752ac70ceb43d120ac0197a2d04c395211affa7bd1b41acde163106cf25d09d8f71da1a385328fc9d40e6bc02e49adcec47f10b437e574186084c1c689f149331e438bbd63b8b35e7a6b84e2d8e2ac1c9ed1e3201d707b0d7e2711aba9d81ee76371f96a1c22f2ab60533062bfff4f869cd668b1dfa3a0fa303a4cc5fe7d153ba577e9a6b0f3f"
+model = "MiniMax-M2.7"
+temperature = 0.7
+timeout_secs = 120
 
 [memory]
 backend = "sqlite"
@@ -348,6 +370,10 @@ read_only_namespaces = []
 [memory.qdrant]
 collection = "zeroclaw_memories"
 
+[memory.postgres]
+vector_dimensions = 1536
+vector_enabled = false
+
 [storage.provider.config]
 provider = ""
 schema = "public"
@@ -360,8 +386,8 @@ provider = "none"
 port = 42617
 host = "0.0.0.0"
 require_pairing = true
-allow_public_bind = false
-paired_tokens = [""]
+allow_public_bind = true
+paired_tokens = []
 pair_rate_limit_per_minute = 10
 webhook_rate_limit_per_minute = 60
 trust_forwarded_headers = false
@@ -392,8 +418,8 @@ token_cache_encrypted = true
 encrypt = true
 
 [browser]
-enabled = true
-allowed_domains = ["*"]
+enabled = false
+allowed_domains = []
 backend = "agent_browser"
 native_headless = true
 native_webdriver_url = "http://127.0.0.1:9515"
@@ -413,8 +439,8 @@ blocked_domains = []
 task_timeout_secs = 120
 
 [http_request]
-enabled = true
-allowed_domains = ["*"]
+enabled = false
+allowed_domains = []
 max_response_size = 1000000
 timeout_secs = 30
 allow_private_hosts = false
@@ -471,7 +497,7 @@ include_jira_data = false
 enabled = false
 allowed_services = []
 allowed_operations = []
-rate_limit_per_minute = 20
+rate_limit_per_minute = 60
 timeout_secs = 30
 audit_log = false
 
@@ -491,17 +517,17 @@ monthly_limit_usd = 100.0
 warn_at_percent = 80
 allow_override = false
 
-[cost.prices."google/gemini-2.0-flash"]
-input = 0.1
-output = 0.4
+[cost.prices."anthropic/claude-3-haiku"]
+input = 0.25
+output = 1.25
 
 [cost.prices."openai/gpt-4o"]
 input = 5.0
 output = 15.0
 
-[cost.prices."anthropic/claude-opus-4-20250514"]
-input = 15.0
-output = 75.0
+[cost.prices."google/gemini-2.0-flash"]
+input = 0.1
+output = 0.4
 
 [cost.prices."openai/gpt-4o-mini"]
 input = 0.15
@@ -515,17 +541,17 @@ output = 60.0
 input = 3.0
 output = 15.0
 
+[cost.prices."google/gemini-1.5-pro"]
+input = 1.25
+output = 5.0
+
 [cost.prices."anthropic/claude-sonnet-4-20250514"]
 input = 3.0
 output = 15.0
 
-[cost.prices."anthropic/claude-3-haiku"]
-input = 0.25
-output = 1.25
-
-[cost.prices."google/gemini-1.5-pro"]
-input = 1.25
-output = 5.0
+[cost.prices."anthropic/claude-opus-4-20250514"]
+input = 15.0
+output = 75.0
 
 [cost.enforcement]
 mode = "warn"
@@ -539,7 +565,13 @@ boards = []
 timeout_secs = 120
 agentic_timeout_secs = 300
 
-[agents]
+[agents.zeroclaw]
+provider = "minimax"
+model = "MiniMax-M2.7"
+max_depth = 3
+agentic = false
+allowed_tools = []
+max_iterations = 50
 
 [swarms]
 

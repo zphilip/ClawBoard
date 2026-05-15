@@ -12,7 +12,7 @@ package main
 //      WS   /ws/chat?session_id=...  → raw relay → zeroclaw :42617
 //
 //    chat_picoclaw.py (picoclaw client):
-//      GET  /api/pico/token          → {"token":"<internal>","ws_url":"ws://.../pico/ws","enabled":true}
+//      GET  /api/pico/info           → {"ws_url":"ws://.../pico/ws","enabled":true}
 //      WS   /pico/ws?session_id=...  → raw relay → picoclaw :18790
 //
 // 2. PROXY endpoint — multi-agent unified protocol:
@@ -222,8 +222,8 @@ mux.HandleFunc("/pair",      s.handlePair)
 mux.HandleFunc("/ws/chat",   s.handleZCCompat)
 
 // ── compat: picoclaw (chat_picoclaw.py) ────────────────────────
-mux.HandleFunc("/api/pico/token", s.handlePicoToken)
-mux.HandleFunc("/pico/ws",        s.handlePCCompat)
+mux.HandleFunc("/api/pico/info",   s.handlePicoToken)
+mux.HandleFunc("/pico/ws",         s.handlePCCompat)
 
 // ── unified proxy endpoint ──────────────────────────────────────
 mux.HandleFunc("/proxy/ws",     s.handleWS)
@@ -232,7 +232,7 @@ mux.HandleFunc("/proxy/status", s.handleStatus)
 addr := fmt.Sprintf(":%d", port)
 fmt.Printf("\n%s%sClawProxy v3%s — proxy mode\n", prefixSYS(), colBold, colReset)
 fmt.Printf("%s  ZC compat  ←  GET /health · POST /pair · WS /ws/chat\n", prefixSYS())
-fmt.Printf("%s  PC compat  ←  GET /api/pico/token · WS /pico/ws\n", prefixSYS())
+fmt.Printf("%s  PC compat  \u2190  GET /api/pico/info · WS /pico/ws\n", prefixSYS())
 fmt.Printf("%s  Unified    ←  WS /proxy/ws?client_id=<id>\n", prefixSYS())
 fmt.Printf("%s  Status     ←  GET /proxy/status\n", prefixSYS())
 zcOK := colGreen + "✓" + colReset

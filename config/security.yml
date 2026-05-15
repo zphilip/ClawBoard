@@ -1,16 +1,74 @@
+# Channel Tokens
 channels:
-  telegram: {}
-  qq: {}
-  matrix: {}
-  line: {}
-  onebot: {}
-  wecom: {}
-  weixin: {}
-  pico: 
+  telegram:
+    token: "your-telegram-bot-token"
+  feishu:
+    app_secret: "your-feishu-app-secret"
+    encrypt_key: "your-feishu-encrypt-key"
+    verification_token: "your-feishu-verification-token"
+  discord:
+    token: "your-discord-bot-token"
+  weixin:
+    token: "your-weixin-token"
+  qq:
+    app_secret: "your-qq-app-secret"
+  dingtalk:
+    client_secret: "your-dingtalk-client-secret"
+  slack:
+    bot_token: "your-slack-bot-token"
+    app_token: "your-slack-app-token"
+  matrix:
+    access_token: "your-matrix-access-token"
+  line:
+    channel_secret: "your-line-channel-secret"
+    channel_access_token: "your-line-channel-access-token"
+  onebot:
+    access_token: "your-onebot-access-token"
+  wecom:
+    token: "your-wecom-token"
+    encoding_aes_key: "your-wecom-encoding-aes-key"
+  pico:
     token: "picoclaw"
+  irc:
+    password: "your-irc-password"
+    nickserv_password: "your-irc-nickserv-password"
+    sasl_password: "your-irc-sasl-password"
+channel_list:
+  dingtalk:
+    settings: {}
+  discord:
+    settings: {}
+  feishu:
+    settings: {}
+  irc:
+    settings: {}
+  line:
+    settings: {}
+  maixcam:
+    settings: {}
+  matrix:
+    settings: {}
+  onebot:
+    settings: {}
+  pico:
+    settings: {}
+  qq:
+    settings: {}
+  slack:
+    settings: {}
+  telegram:
+    settings: {}
+  wecom:
+    settings: {}
+  weixin:
+    settings: {}
+  whatsapp:
+    settings: {}
+  pico: 
+    settings: {}
 model_list:
   LongCat-Flash-Thinking:0: {}
-  MiniMax-M2.5:0: 
+  MiniMax-M2.7:0:
     api_keys:
       - ""
   ark-code-latest:0: {}

@@ -107,46 +107,74 @@ def _read_picoclaw_pid_token() -> tuple[str, str]:
         return '', f'PID file parse error: {_e}'
 
 def _read_security_yml_token(section: str = 'pico_client') -> tuple[str, str]:
-    """Read channels.<section>.token from .security.yml using sudo.
-    Returns (token, error_message).  error_message is '' on success."""
+    """Read channel_list.<section>.settings.token from .security.yml via sudo.
+
+    Returns (token, error_message). error_message is '' on success.
+    """
     raw, err = _sudo_read_file(PICOCLAW_SECURITY_YML)
     if err:
         return '', err
     try:
         import yaml as _yaml
         data = _yaml.safe_load(raw)
-        tok = (data or {}).get('channels', {}).get(section, {}).get('token', '')
-        return str(tok).strip(), ''
+        root = data or {}
+        # Canonical picoclaw path: channel_list.<section>.settings.token
+        tok = (((root.get('channel_list') or {}).get(section) or {}).get('settings') or {}).get('token', '')
+        if tok:
+            return str(tok).strip(), ''
+        # Backward compatibility for older layouts
+        tok = (((root.get('channels') or {}).get(section) or {}).get('settings') or {}).get('token', '')
+        if tok:
+            return str(tok).strip(), ''
+        tok = ((root.get('channels') or {}).get(section) or {}).get('token', '')
+        if tok:
+            return str(tok).strip(), ''
     except ImportError:
         pass
-    # Fallback: simple line-by-line parser for the known structure
-    in_channels = False
+    # Fallback: simple line-by-line parser for known structures.
+    in_channel_list = False
     in_section  = False
+    in_settings = False
     indent_ch   = None   # indent of channel keys (e.g. 2)
     indent_sec  = None   # indent of section sub-keys
+    indent_set  = None   # indent of settings sub-keys
     for line in raw.splitlines():
         stripped = line.lstrip()
         indent   = len(line) - len(stripped)
-        if stripped.startswith('channels:'):
-            in_channels = True
+        if stripped.startswith('channel_list:') or stripped.startswith('channels:'):
+            in_channel_list = True
             indent_ch   = None
+            in_section = False
+            in_settings = False
             continue
-        if not in_channels:
+        if not in_channel_list:
             continue
         if indent_ch is None and stripped and not stripped.startswith('#'):
             indent_ch = indent
         if indent_ch is not None and indent == indent_ch:
             in_section = stripped.startswith(f'{section}:')
             indent_sec = None
+            in_settings = False
+            indent_set = None
             continue
         if in_section:
             if indent_sec is None and stripped and not stripped.startswith('#'):
                 indent_sec = indent
             if indent_sec is not None and indent == indent_sec:
+                if stripped.startswith('settings:'):
+                    in_settings = True
+                    indent_set = None
+                    continue
                 if stripped.startswith('token:'):
                     tok = stripped[len('token:'):].strip().strip('"\'')
                     return tok, ''
-    return '', f'channels.{section}.token not found in {PICOCLAW_SECURITY_YML}'
+            if in_settings:
+                if indent_set is None and stripped and not stripped.startswith('#'):
+                    indent_set = indent
+                if indent_set is not None and indent == indent_set and stripped.startswith('token:'):
+                    tok = stripped[len('token:'):].strip().strip('"\'')
+                    return tok, ''
+    return '', f'channel_list.{section}.settings.token not found in {PICOCLAW_SECURITY_YML}'
 
 def load_picoclaw_config():
     """Load picoclaw config.json; return empty dict on failure."""
@@ -2878,31 +2906,22 @@ def index(request: Request):
                 with ui.card().classes('w-full q-pa-md'):
                     ui.label(T['pc_pair_title']).classes('text-h6 text-purple-8')
                     ui.label(T['pc_pair_hint']).classes('text-caption text-grey-6 q-mt-xs')
-                    # Compose runtime token: "pico-" + pid.Token + security.yml pico.token
-                    _pid_tok  = ''
-                    _pid_err  = ''
+                    # Pico auth token comes directly from .security.yml.
                     _sec_tok  = ''
                     _sec_err  = ''
-                    _pid_tok, _pid_err = _read_picoclaw_pid_token()
                     _sec_tok, _sec_err = _read_security_yml_token('pico')
-                    if _pid_tok and _sec_tok:
-                        pico_token = f'pico-{_pid_tok}{_sec_tok}'
-                    elif _pid_tok:
-                        pico_token = f'pico-{_pid_tok}'  # fallback: no config token
-                    else:
-                        pico_token = _sec_tok             # fallback: no pid file
+                    pico_token = _sec_tok
                     pico_port = int(pc_gateway.get('port', 18790) or 18790)
                     pico_host = _get_lan_ip() or request.url.hostname or 'localhost'
                     pico_scheme = request.url.scheme or 'http'
                     pico_url = f'{pico_scheme}://{pico_host}:{pico_port}?token={pico_token}' if pico_token else ''
                     pico_qr_url = f'https://quickchart.io/qr?size=260&margin=1&text={quote(pico_url, safe="")}' if pico_url else ''
 
-                    if _pid_err:
-                        ui.label(f'⚠️ {_pid_err}').classes('text-warning text-caption q-mt-xs')
                     if _sec_err:
                         ui.label(f'⚠️ {_sec_err}').classes('text-warning text-caption q-mt-xs')
+                        ui.label('Run pico setup first, then restart/reload picoclaw.').classes('text-warning text-caption')
                     if pico_token:
-                        ui.input('Runtime token  (pico- + pid.Token + pico.token)', value=pico_token).props('readonly').classes('w-full q-mt-sm')
+                        ui.input('Pico token  (.security.yml: channel_list.pico.settings.token)', value=pico_token).props('readonly').classes('w-full q-mt-sm')
                         ui.input(T['pc_pair_url'], value=pico_url).props('readonly').classes('w-full')
 
                         with ui.row().classes('w-full items-start gap-4 q-mt-sm'):
