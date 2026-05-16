@@ -884,8 +884,15 @@ def restart_picoclaw_service():
     )
     return r.returncode == 0, r.stderr.strip()
 
-def _http_json(url: str, method: str = 'GET', timeout: int = 10) -> dict[str, Any]:
+def _http_json(
+    url: str,
+    method: str = 'GET',
+    timeout: int = 10,
+    headers: dict[str, str] | None = None,
+) -> dict[str, Any]:
     req = urllib.request.Request(url, method=method)
+    for k, v in (headers or {}).items():
+        req.add_header(k, v)
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         raw = resp.read().decode('utf-8')
         return json.loads(raw) if raw else {}
@@ -899,21 +906,36 @@ def setup_pico_channel_token() -> tuple[bool, str]:
     Then waits briefly for channel_list.pico.settings.token to appear.
     """
     base_http = 'http://127.0.0.1:18800'
+    web_err = ''
     try:
         _http_json(f'{base_http}/api/pico/setup', method='POST', timeout=12)
-    except urllib.error.HTTPError as e:
-        body = e.read().decode('utf-8', errors='replace')
-        return False, f'/api/pico/setup failed ({e.code}): {body}'
-    except Exception as e:
-        return False, f'/api/pico/setup failed: {e}'
-
-    try:
         _http_json(f'{base_http}/api/gateway/restart', method='POST', timeout=12)
     except urllib.error.HTTPError as e:
         body = e.read().decode('utf-8', errors='replace')
-        return False, f'/api/gateway/restart failed ({e.code}): {body}'
+        web_err = f'/api/pico/setup failed ({e.code}): {body}'
     except Exception as e:
-        return False, f'/api/gateway/restart failed: {e}'
+        web_err = f'/api/pico/setup failed: {e}'
+
+    # Fallback path for 401/blocked web backend: direct gateway reload.
+    if web_err:
+        pid_token, pid_err = _read_picoclaw_pid_token()
+        if pid_token:
+            try:
+                _http_json(
+                    'http://127.0.0.1:18790/reload',
+                    method='POST',
+                    timeout=12,
+                    headers={'Authorization': f'Bearer {pid_token}'},
+                )
+            except Exception as e:
+                # Last fallback: restart service so EnsurePicoChannel can regenerate token.
+                ok_svc, svc_err = restart_picoclaw_service()
+                if not ok_svc:
+                    return False, f'{web_err}; /reload failed: {e}; restart failed: {svc_err or "unknown"}'
+        else:
+            ok_svc, svc_err = restart_picoclaw_service()
+            if not ok_svc:
+                return False, f'{web_err}; PID token unavailable: {pid_err}; restart failed: {svc_err or "unknown"}'
 
     # Wait up to ~10s for token write-back into .security.yml.
     last_err = ''
@@ -923,6 +945,8 @@ def setup_pico_channel_token() -> tuple[bool, str]:
             return True, ''
         last_err = err
         _time.sleep(0.5)
+    if web_err:
+        return False, f'{web_err}; fallback ran but token still missing: {last_err or "unknown"}'
     return False, last_err or 'channel_list.pico.settings.token still missing after setup'
 
 def picoclaw_service_status():
