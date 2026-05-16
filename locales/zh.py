@@ -161,7 +161,10 @@ STRINGS = {
     'pc_pair_qr':              '配对二维码',
     'pc_pair_copy_url':        '📋 复制链接',
     'pc_pair_show_display':    '🖥️ 在屏幕显示二维码',
-    'pc_pair_missing_token':   'channels.pico.token 中缺少 PicoClaw token。',
+    'pc_pair_missing_token':   'channel_list.pico.settings.token 中缺少 PicoClaw token。',
+    'pc_pair_btn_setup':       '🛠️ 一键 Setup Pico Token',
+    'pc_pair_setup_ok':        '✅ Pico token 已生成，正在刷新页面',
+    'pc_pair_setup_fail':      '⚠️ Pico token setup 失败',
     'pc_pair_queue_ok':        '✅ PicoClaw 二维码已加入显示服务队列',
     'pc_pair_copy_ok':         '✅ 配对链接已复制到剪贴板',    # ── 侧边栏导航 ──────────────────────────────────────────────────────────────
     'btn_wifi':    '📶 WiFi 设置',

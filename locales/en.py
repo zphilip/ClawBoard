@@ -161,7 +161,10 @@ STRINGS = {
     'pc_pair_qr':              'Pairing QR',
     'pc_pair_copy_url':        '📋 Copy URL',
     'pc_pair_show_display':    '🖥️ Show QR on display',
-    'pc_pair_missing_token':   'PicoClaw token is missing in channels.pico.token.',
+    'pc_pair_missing_token':   'PicoClaw token is missing in channel_list.pico.settings.token.',
+    'pc_pair_btn_setup':       '🛠️ Setup Pico Token',
+    'pc_pair_setup_ok':        '✅ Pico token generated, reloading page',
+    'pc_pair_setup_fail':      '⚠️ Pico token setup failed',
     'pc_pair_queue_ok':        '✅ PicoClaw QR queued for the display service',
     'pc_pair_copy_ok':         '✅ Pairing URL copied to clipboard',    # ── Sidebar navigation ────────────────────────────────────────────────────
     'btn_wifi':    '📶 WiFi Setup',

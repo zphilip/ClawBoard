@@ -147,7 +147,7 @@
       }
     },
     "pico": {
-      "enabled": false,
+      "enabled": true,
       "type": "pico",
       "reasoning_channel_id": "",
       "group_trigger": {},

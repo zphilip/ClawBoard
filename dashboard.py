@@ -2,6 +2,8 @@ from nicegui import ui, app
 from fastapi import Request
 import tomlkit, os, sys, subprocess, hashlib, hmac, secrets, json, re, time as _time
 from typing import Any
+import urllib.error
+import urllib.request
 from datetime import datetime
 from urllib.parse import quote
 import locales.zh as zh_strings
@@ -881,6 +883,47 @@ def restart_picoclaw_service():
         capture_output=True, text=True
     )
     return r.returncode == 0, r.stderr.strip()
+
+def _http_json(url: str, method: str = 'GET', timeout: int = 10) -> dict[str, Any]:
+    req = urllib.request.Request(url, method=method)
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        raw = resp.read().decode('utf-8')
+        return json.loads(raw) if raw else {}
+
+def setup_pico_channel_token() -> tuple[bool, str]:
+    """Enable pico channel via picoclaw-web and trigger gateway restart.
+
+    Mirrors the flow used by chat_picoclaw.py:
+      POST /api/pico/setup
+      POST /api/gateway/restart
+    Then waits briefly for channel_list.pico.settings.token to appear.
+    """
+    base_http = 'http://127.0.0.1:18800'
+    try:
+        _http_json(f'{base_http}/api/pico/setup', method='POST', timeout=12)
+    except urllib.error.HTTPError as e:
+        body = e.read().decode('utf-8', errors='replace')
+        return False, f'/api/pico/setup failed ({e.code}): {body}'
+    except Exception as e:
+        return False, f'/api/pico/setup failed: {e}'
+
+    try:
+        _http_json(f'{base_http}/api/gateway/restart', method='POST', timeout=12)
+    except urllib.error.HTTPError as e:
+        body = e.read().decode('utf-8', errors='replace')
+        return False, f'/api/gateway/restart failed ({e.code}): {body}'
+    except Exception as e:
+        return False, f'/api/gateway/restart failed: {e}'
+
+    # Wait up to ~10s for token write-back into .security.yml.
+    last_err = ''
+    for _ in range(20):
+        tok, err = _read_security_yml_token('pico')
+        if tok:
+            return True, ''
+        last_err = err
+        _time.sleep(0.5)
+    return False, last_err or 'channel_list.pico.settings.token still missing after setup'
 
 def picoclaw_service_status():
     r = subprocess.run(['systemctl', 'is-active', 'picoclaw.service'], capture_output=True, text=True)
@@ -2937,6 +2980,15 @@ def index(request: Request):
                 with ui.card().classes('w-full q-pa-md'):
                     ui.label(T['pc_pair_title']).classes('text-h6 text-purple-8')
                     ui.label(T['pc_pair_hint']).classes('text-caption text-grey-6 q-mt-xs')
+
+                    def _run_pico_setup_for_pair():
+                        ok, msg = setup_pico_channel_token()
+                        if ok:
+                            ui.notify(T['pc_pair_setup_ok'], type='positive')
+                            ui.timer(0.8, lambda: ui.navigate.reload(), once=True)
+                        else:
+                            ui.notify(f"{T['pc_pair_setup_fail']}: {msg}", type='warning')
+
                     # Pico auth token comes directly from .security.yml.
                     _sec_tok  = ''
                     _sec_err  = ''
@@ -2950,7 +3002,7 @@ def index(request: Request):
 
                     if _sec_err:
                         ui.label(f'⚠️ {_sec_err}').classes('text-warning text-caption q-mt-xs')
-                        ui.label('Run pico setup first, then restart/reload picoclaw.').classes('text-warning text-caption')
+                        ui.label('Run pico setup to generate token, then reload this page.').classes('text-warning text-caption')
                     if pico_token:
                         ui.input('Pico token  (.security.yml: channel_list.pico.settings.token)', value=pico_token).props('readonly').classes('w-full q-mt-sm')
                         ui.input(T['pc_pair_url'], value=pico_url).props('readonly').classes('w-full')
@@ -2979,6 +3031,7 @@ def index(request: Request):
                                 ui.button(T['pc_pair_show_display'], on_click=_show_pico_qr).props('elevated color=purple-8')
                     else:
                         ui.label(T['pc_pair_missing_token']).classes('text-negative q-mt-sm')
+                        ui.button(T['pc_pair_btn_setup'], on_click=_run_pico_setup_for_pair).props('elevated color=purple-8').classes('q-mt-sm')
 
     # ══ OpenClaw Dashboard ════════════════════════════════════════════════════
     oc_content = ui.column().classes('w-full q-px-sm q-pt-sm')
