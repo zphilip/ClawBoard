@@ -171,7 +171,7 @@ groupadd --system clawboard 2>/dev/null || true
 for _u in zero zeroclaw picoclaw openclaw; do
     id -u "$_u" >/dev/null 2>&1 && usermod -aG clawboard "$_u" 2>/dev/null || true
 done
-mkdir -p /opt/clawproxy
+mkdir -p /opt/clawproxy /opt/picoclaw /opt/zeroclaw
 chown zero:zero /opt/clawproxy 2>/dev/null || true
 if [ -d /opt/clawboard/venv ]; then
     chgrp -R clawboard /opt/clawboard/venv 2>/dev/null || true
@@ -229,11 +229,19 @@ fi
 if [[ -f "$WORK_DIR/zeroclaw/zeroclaw" ]]; then
     log "Installing zeroclaw binary to /opt/zeroclaw/zeroclaw"
     mkdir -p /opt/zeroclaw
-    if cp "$WORK_DIR/zeroclaw/zeroclaw" /opt/zeroclaw/zeroclaw 2>/dev/null; then
+    if cp "$WORK_DIR/zeroclaw/zeroclaw" /opt/zeroclaw/zeroclaw 2>&1; then
         chmod +x /opt/zeroclaw/zeroclaw || true
         log "zeroclaw installed to /opt/zeroclaw/zeroclaw"
+        
+        # Run config migration as zeroclaw user
+        log "Running zeroclaw config migrate as zeroclaw user..."
+        if sudo -u zeroclaw /opt/zeroclaw/zeroclaw config migrate 2>&1; then
+            log "zeroclaw config migration completed successfully"
+        else
+            log "WARNING: zeroclaw config migration failed — check logs"
+        fi
     else
-        log "WARNING: failed to copy zeroclaw binary (permission?)"
+        log "WARNING: failed to copy zeroclaw binary — check /opt/zeroclaw permissions"
     fi
 fi
 
