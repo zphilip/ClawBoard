@@ -229,26 +229,34 @@ fi
 if [[ -f "$WORK_DIR/zeroclaw/zeroclaw" ]]; then
     log "Installing zeroclaw binary to /opt/zeroclaw/zeroclaw"
     mkdir -p /opt/zeroclaw
-    # Ensure zeroclaw is fully stopped before replacing binary
-    if pgrep -f "/opt/zeroclaw/zeroclaw" >/dev/null 2>&1; then
+    _zc_dst="/opt/zeroclaw/zeroclaw"
+    _zc_tmp="/opt/zeroclaw/zeroclaw.new"
+
+    # Ensure zeroclaw is fully stopped before replacing binary.
+    if command -v systemctl >/dev/null 2>&1; then
+        systemctl stop zeroclaw 2>/dev/null || true
+    fi
+    if pgrep -x zeroclaw >/dev/null 2>&1 || pgrep -f "/opt/zeroclaw/zeroclaw" >/dev/null 2>&1; then
         log "zeroclaw process still running, killing it..."
+        pkill -9 -x zeroclaw 2>/dev/null || true
         pkill -9 -f "/opt/zeroclaw/zeroclaw" 2>/dev/null || true
-        sleep 1  # Allow file handles to be released
     fi
 
-    if cp "$WORK_DIR/zeroclaw/zeroclaw" /opt/zeroclaw/zeroclaw 2>&1; then
-        chmod +x /opt/zeroclaw/zeroclaw || true
+    # Write to a temp file first, then atomically swap into place.
+    if cp "$WORK_DIR/zeroclaw/zeroclaw" "$_zc_tmp" 2>&1 && mv -f "$_zc_tmp" "$_zc_dst" 2>&1; then
+        chmod +x "$_zc_dst" || true
         log "zeroclaw installed to /opt/zeroclaw/zeroclaw"
         
         # Run config migration as zeroclaw user
         log "Running zeroclaw config migrate as zeroclaw user..."
-        if sudo -u zeroclaw /opt/zeroclaw/zeroclaw config migrate 2>&1; then
+        if id -u zeroclaw >/dev/null 2>&1 && sudo -u zeroclaw /opt/zeroclaw/zeroclaw config migrate 2>&1; then
             log "zeroclaw config migration completed successfully"
         else
-            log "WARNING: zeroclaw config migration failed — check logs"
+            log "WARNING: zeroclaw config migration failed or zeroclaw user missing — check logs"
         fi
     else
-        log "WARNING: failed to copy zeroclaw binary — check /opt/zeroclaw permissions"
+        rm -f "$_zc_tmp" 2>/dev/null || true
+        log "WARNING: failed to install zeroclaw binary — check process locks and /opt/zeroclaw permissions"
     fi
 fi
 
