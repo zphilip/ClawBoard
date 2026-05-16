@@ -229,6 +229,13 @@ fi
 if [[ -f "$WORK_DIR/zeroclaw/zeroclaw" ]]; then
     log "Installing zeroclaw binary to /opt/zeroclaw/zeroclaw"
     mkdir -p /opt/zeroclaw
+    # Ensure zeroclaw is fully stopped before replacing binary
+    if pgrep -f "/opt/zeroclaw/zeroclaw" >/dev/null 2>&1; then
+        log "zeroclaw process still running, killing it..."
+        pkill -9 -f "/opt/zeroclaw/zeroclaw" 2>/dev/null || true
+        sleep 1  # Allow file handles to be released
+    fi
+
     if cp "$WORK_DIR/zeroclaw/zeroclaw" /opt/zeroclaw/zeroclaw 2>&1; then
         chmod +x /opt/zeroclaw/zeroclaw || true
         log "zeroclaw installed to /opt/zeroclaw/zeroclaw"
