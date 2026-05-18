@@ -2496,17 +2496,20 @@ def index(request: Request):
                     data = load_picoclaw_config()
                     sec  = load_picoclaw_security()
 
-                    # session
-                    data.setdefault('session', {})['dm_scope'] = pc_w_dm_scope.value
+                    # ── Remove V3-invalid legacy keys that may be in the file ──
+                    data.get('agents', {}).get('defaults', {}).pop('model', None)
+                    data.get('session', {}).pop('dm_scope', None)
 
-                    # agents.defaults
+                    # session  (dm_scope is removed in V3; do not re-write it)
+                    # (no session fields currently saved from the General tab)
+
+                    # agents.defaults  (note: 'model' is V0-legacy — not written)
                     ad = data.setdefault('agents', {}).setdefault('defaults', {})
                     ad['workspace']                  = pc_w_workspace.value
                     ad['restrict_to_workspace']      = pc_w_restrict.value
                     ad['allow_read_outside_workspace']= pc_w_allow_read_outside.value
                     ad['provider']                   = pc_w_provider.value
                     ad['model_name']                 = pc_w_model_name.value
-                    ad['model']                      = pc_w_model.value
                     ad['max_tokens']                 = to_int(pc_w_max_tokens.value, 8192)
                     ad['max_tool_iterations']        = to_int(pc_w_max_iter.value, 50)
                     ad['summarize_message_threshold']= to_int(pc_w_sum_threshold.value, 20)
@@ -2699,6 +2702,15 @@ def index(request: Request):
                         ui.notify('✅ PicoClaw deployed & restarted', type='positive')
                     else:
                         ui.notify(f'⚠️ Restart failed: {svc_err or T["notify_sudo_required"]}', type='warning')
+
+                # ── Config version badge ───────────────────────────────────
+                _pc_cfg_ver = pc_conf.get('version', 0)
+                _pc_bld_ver = pc_build.get('version', '')
+                with ui.row().classes('items-center gap-2 q-px-sm q-pt-xs q-pb-none'):
+                    _badge_color = 'green-7' if _pc_cfg_ver >= 3 else 'orange-7'
+                    ui.badge(f'config v{_pc_cfg_ver}', color=_badge_color).props('outline')
+                    if _pc_bld_ver:
+                        ui.label(f'build {_pc_bld_ver}').classes('text-caption text-grey-5')
 
                 with ui.tabs().classes('w-full bg-purple-1') as pc_cfg_tabs:
                     t_pc_gen   = ui.tab(T['pc_tab_general'],  icon='tune')

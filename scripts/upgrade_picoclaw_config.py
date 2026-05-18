@@ -357,6 +357,43 @@ def migrate_v2_to_v3(m: dict, verbose: bool = False) -> None:
         print(f"  → version = {CURRENT_VERSION}")
 
 
+def sanitize_v3(m: dict, verbose: bool = False) -> bool:
+    """Remove fields that are NOT present in the V3 Config struct but may linger in
+    configs written by old dashboard versions or picoclaw itself during a partial upgrade.
+    Returns True if any key was removed.
+    Called for ALL configs, including those already at version 3.
+    """
+    changed = False
+
+    # agents.defaults.model — legacy V0 key renamed to model_name in V0→V1 migration.
+    # Not in V3 AgentDefaults struct; picoclaw's strict decoder rejects it.
+    defaults = m.get("agents", {}).get("defaults")
+    if isinstance(defaults, dict) and "model" in defaults:
+        if "model_name" not in defaults:
+            # Salvage: promote to model_name before dropping
+            defaults["model_name"] = defaults["model"]
+            if verbose:
+                print(f"  sanitize: agents.defaults.model → model_name = {defaults['model_name']!r}")
+        else:
+            if verbose:
+                print(f"  sanitize: remove agents.defaults.model (model_name already set)")
+        del defaults["model"]
+        changed = True
+
+    # session.dm_scope — replaced by session.dimensions in a later refactor.
+    # Not in V3 SessionConfig struct; picoclaw's strict decoder rejects it.
+    session = m.get("session")
+    if isinstance(session, dict) and "dm_scope" in session:
+        del session["dm_scope"]
+        if verbose:
+            print("  sanitize: remove session.dm_scope (replaced by session.dimensions)")
+        if not session:
+            del m["session"]
+        changed = True
+
+    return changed
+
+
 def migrate_security_yml(sec: dict, verbose: bool = False) -> bool:
     """Rename 'channels' → 'channel_list' in security.yml dict.  Returns True if changed."""
     if "channels" in sec and "channel_list" not in sec:
@@ -397,8 +434,8 @@ def upgrade_config(config_path: str, dry_run: bool = False, verbose: bool = Fals
         return False
 
     if version == CURRENT_VERSION:
-        print(f"config.json is already version {CURRENT_VERSION}. No migration needed.")
-        # Still check security.yml
+        print(f"config.json is already version {CURRENT_VERSION}. Checking for stale fields.")
+        # Still check security.yml and run field sanitizer
     else:
         print(f"Migrating config.json: version {version} → {CURRENT_VERSION}")
 
@@ -432,7 +469,15 @@ def upgrade_config(config_path: str, dry_run: bool = False, verbose: bool = Fals
         print(f"Error during migration: {e}", file=sys.stderr)
         return False
 
-    cfg_changed = (version != CURRENT_VERSION)
+    # Always sanitize stale fields that are not in the V3 struct — catches configs
+    # that were already version 3 but written by older dashboard/migration code.
+    if verbose:
+        print("Sanitize:")
+    sanitize_changed = sanitize_v3(new_cfg, verbose)
+    if not sanitize_changed and version == CURRENT_VERSION and verbose:
+        print("  (no stale fields found)")
+
+    cfg_changed = (version != CURRENT_VERSION) or sanitize_changed
 
     # ── Security YAML ──
     config_dir = os.path.dirname(config_path)
