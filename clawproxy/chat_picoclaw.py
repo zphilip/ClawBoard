@@ -57,6 +57,7 @@ import argparse
 import asyncio
 import json
 import sys
+import subprocess
 import time
 import uuid
 import urllib.error
@@ -137,29 +138,123 @@ def _wait_for_gateway(gw_http: str, timeout: float = 15.0, interval: float = 0.5
     return False
 
 
-def maybe_setup(base_http: str, config_path: str = "", gw_host: str = "127.0.0.1", gw_port: int = DEFAULT_GATEWAY_PORT) -> None:
-    """Enable pico channel and reload the gateway config.
+def _local_pico_setup(config_path: str, gw_host: str = "127.0.0.1", gw_port: int = DEFAULT_GATEWAY_PORT) -> None:
+    """Mirrors EnsurePicoChannel() from picoclaw web backend — pure Python, no HTTP.
 
-    Strategy:
-      1. Try POST /api/pico/setup + POST /api/gateway/restart via web backend (:18800).
-      2. If web backend is unreachable, fall back to direct gateway approach:
-         a. Ensure .security.yml has a pico channel token (generate if missing).
-         b. POST /reload on the gateway (:18790) with the PID token for auth.
+    Steps:
+      1. Check for an existing token (idempotent).
+      2. Generate a 32-char hex token with secrets.token_hex(16).
+      3. Enable channel_list.pico in config.json.
+      4. Write token to .security.yml under channel_list.pico.settings.token.
+      5. Restart picoclaw via sudo systemctl restart picoclaw.
+      6. Wait for the gateway to come up on port 18790.
     """
-    # ── Try web backend first ──────────────────────────────────────────────
+    import os
+    import secrets
+    try:
+        import yaml
+    except ImportError:
+        print("[error] PyYAML not available — install with: pip install pyyaml")
+        return
+
+    if not config_path:
+        config_path = os.path.expanduser("~/.picoclaw/config.json")
+    config_path = os.path.abspath(config_path)
+    config_dir = os.path.dirname(config_path)
+    security_path = os.path.join(config_dir, ".security.yml")
+
+    # ── 1. Idempotency check ───────────────────────────────────────────────
+    existing = _ensure_security_yml_token(config_path)
+    if existing:
+        print(f"[info] pico token already exists in {security_path}")
+        return
+
+    # ── 2. Generate token (mirrors generateSecureToken in Go) ─────────────
+    token = secrets.token_hex(16)  # 16 bytes → 32-char hex string
+    print(f"[info] generated pico token: {token[:8]}…")
+
+    # ── 3. Enable pico channel in config.json (key: channel_list) ─────────
+    try:
+        with open(config_path) as f:
+            cfg = json.load(f)
+    except FileNotFoundError:
+        cfg = {}
+    pico_ch = cfg.setdefault("channel_list", {}).setdefault("pico", {})
+    if not pico_ch.get("enabled"):
+        pico_ch["enabled"] = True
+        print(f"[info] enabled pico channel in {config_path}")
+    with open(config_path, "w") as f:
+        json.dump(cfg, f, indent=2, ensure_ascii=False)
+        f.write("\n")
+    print(f"[info] config.json saved")
+
+    # ── 4. Write token to .security.yml ───────────────────────────────────
+    try:
+        with open(security_path) as f:
+            sec_data = yaml.safe_load(f) or {}
+    except FileNotFoundError:
+        sec_data = {}
+    ch = sec_data.setdefault("channel_list", {})
+    ch.setdefault("pico", {}).setdefault("settings", {})["token"] = token
+    with open(security_path, "w") as f:
+        yaml.dump(sec_data, f, default_flow_style=False, allow_unicode=True, indent=2)
+    print(f"[info] token written to {security_path}")
+
+    # ── 5. Restart picoclaw service ────────────────────────────────────────
+    print(f"[info] restarting picoclaw service…")
+    try:
+        result = subprocess.run(
+            ["sudo", "systemctl", "restart", "picoclaw"],
+            capture_output=True, text=True, timeout=20,
+        )
+        if result.returncode == 0:
+            print(f"[info] picoclaw restarted")
+        else:
+            print(f"[warn] systemctl restart picoclaw failed (rc={result.returncode}): {result.stderr.strip()}")
+            print(f"  Run manually: sudo systemctl restart picoclaw")
+    except Exception as e:
+        print(f"[warn] could not restart picoclaw: {e}")
+        print(f"  Run manually: sudo systemctl restart picoclaw")
+
+    # ── 6. Wait for gateway ────────────────────────────────────────────────
+    gw_http = f"http://{gw_host}:{gw_port}"
+    print(f"[info] waiting for gateway at {gw_http} (up to 15 s)…")
+    if _wait_for_gateway(gw_http):
+        print(f"[info] gateway is up")
+    else:
+        print(f"[warn] gateway did not respond within 15 s — proceeding anyway")
+
+
+def maybe_setup(base_http: str, config_path: str = "", gw_host: str = "127.0.0.1", gw_port: int = DEFAULT_GATEWAY_PORT, direct: bool = False) -> None:
+    """Enable pico channel and ensure the pico token exists.
+
+    direct=True  (--direct --setup):
+      Generate token locally using _local_pico_setup() — no web backend contact.
+      Mirrors EnsurePicoChannel() from picoclaw-web: generates token, writes
+      config.json + .security.yml, restarts picoclaw.service.
+
+    direct=False (mode-1 --setup):
+      1. Try POST /api/pico/setup on web backend (:18800) — server-side token gen.
+      2. On any failure (401, unreachable…): fall back to _local_pico_setup().
+    """
+    if direct:
+        print(f"[info] direct setup — generating pico token locally (no web backend)")
+        _local_pico_setup(config_path, gw_host=gw_host, gw_port=gw_port)
+        return
+
+    # ── Web-backend path ───────────────────────────────────────────────────
     web_ok = False
     try:
         data = http_json(f"{base_http}/api/pico/setup", method="POST")
         changed = bool(data.get("changed", False))
-        print(f"[info] pico setup complete (changed={changed})")
+        print(f"[info] pico setup complete via web backend (changed={changed})")
         web_ok = True
         if changed:
             print(f"[info] config changed — restarting gateway to activate pico channel…")
             try:
                 http_json(f"{base_http}/api/gateway/restart", method="POST")
                 print(f"[info] gateway restart requested — waiting for it to come up (up to 15 s)…")
-                gw_http = f"http://{gw_host}:{gw_port}"
-                if _wait_for_gateway(gw_http):
+                if _wait_for_gateway(f"http://{gw_host}:{gw_port}"):
                     print(f"[info] gateway is up")
                 else:
                     print(f"[warn] gateway did not respond within 15 s — proceeding anyway")
@@ -167,48 +262,13 @@ def maybe_setup(base_http: str, config_path: str = "", gw_host: str = "127.0.0.1
                 print(f"[warn] gateway restart request failed: {re}")
                 print(f"  Restart picoclaw manually, then re-run without --setup")
     except Exception as e:
-        print(f"[warn] web backend unreachable ({e}) — trying direct gateway reload")
+        print(f"[warn] web backend /api/pico/setup failed ({e}) — falling back to local token generation")
 
     if web_ok:
         return
 
-    # ── Fallback: direct gateway reload ───────────────────────────────────
-    # Picoclaw's EnsurePicoChannel() runs at gateway start and generates the token
-    # itself into channel_list.pico.settings.token in .security.yml.
-    # We just need to trigger a reload; picoclaw handles token generation.
-
-    # Reload the gateway config via POST /reload (uses PID token for auth).
-    gw_http = f"http://{gw_host}:{gw_port}"
-    pid_token = _read_pid_token(config_path)
-    try:
-        req = urllib.request.Request(f"{gw_http}/reload", method="POST")
-        if pid_token:
-            req.add_header("Authorization", f"Bearer {pid_token}")
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            result = json.loads(resp.read().decode("utf-8"))
-        print(f"[info] gateway reload: {result.get('status', result)}")
-        print(f"[info] waiting for gateway to come back up (up to 15 s)…")
-        gw_http_check = f"http://{gw_host}:{gw_port}"
-        if _wait_for_gateway(gw_http_check):
-            print(f"[info] gateway is up")
-            # Token is now written by picoclaw's EnsurePicoChannel into .security.yml
-            tok = _ensure_security_yml_token(config_path)
-            if tok:
-                print(f"[info] pico token ready in .security.yml")
-            else:
-                print(f"[warn] pico token not yet visible in .security.yml — will retry at connect time")
-        else:
-            print(f"[warn] gateway did not respond within 15 s — proceeding anyway")
-    except urllib.error.HTTPError as e:
-        body = e.read().decode("utf-8", errors="replace")
-        if e.code == 401:
-            print(f"[warn] /reload auth failed (401) — PID token mismatch or gateway requires auth")
-            print(f"  Restart picoclaw manually to pick up the new config.")
-        else:
-            print(f"[warn] /reload failed ({e.code}): {body}")
-    except Exception as e:
-        print(f"[warn] /reload request failed: {e}")
-        print(f"  Make sure picoclaw gateway is running on {gw_http}")
+    # Fallback: generate token locally (same as --direct --setup)
+    _local_pico_setup(config_path, gw_host=gw_host, gw_port=gw_port)
 
 
 def get_pico_info(base_http: str) -> dict[str, Any]:
@@ -521,9 +581,8 @@ EXAMPLES:
         # endpoint first (which enables the channel and generates the token),
         # then connect directly to the gateway.
         if args.setup:
-            web_base = f"http://{args.host}:{args.port}"
-            print(f"[info] running setup via web backend at {web_base}")
-            maybe_setup(web_base, config_path=args.config or "", gw_host=args.host, gw_port=gw_port)
+            print(f"[info] running setup in direct mode (generating token locally)")
+            maybe_setup("", config_path=args.config or "", gw_host=args.host, gw_port=gw_port, direct=True)
 
         token = args.token
         if not token:
