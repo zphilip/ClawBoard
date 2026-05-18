@@ -2341,7 +2341,6 @@ def index(request: Request):
                             ad = data.setdefault('agents', {}).setdefault('defaults', {})
                             if pc_wiz_prov.value:       ad['provider']    = pc_wiz_prov.value
                             if pc_wiz_model_name.value: ad['model_name']  = pc_wiz_model_name.value
-                            if pc_wiz_model.value:      ad['model']       = pc_wiz_model.value
                             # security
                             ad['restrict_to_workspace']        = pc_wiz_sec_restrict.value
                             ad['allow_read_outside_workspace'] = pc_wiz_sec_allow_read.value
