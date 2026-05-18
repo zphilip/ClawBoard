@@ -125,6 +125,7 @@ clawberry_paircode.py
 clawberry_radxa_patch.py
 publish_services.sh
 scripts/clawberry-workspace-sync.sh
+scripts/upgrade_picoclaw_config.py
 EOF
 
 # GIT_TERMINAL_PROMPT=0 prevents git from hanging asking for credentials.
@@ -411,6 +412,47 @@ if [[ -d "$WORK_DIR/config" ]]; then
         fi
     else
         log "  .security.yml: skipped (use -config security.yml or -config all to sync)"
+    fi
+fi
+
+# ── Deploy upgrade_picoclaw_config.py helper ─────────────────────────────────
+UPGRADE_SCRIPT_SRC="$WORK_DIR/scripts/upgrade_picoclaw_config.py"
+UPGRADE_SCRIPT_DST="$CLAWBOARD_DST/scripts/upgrade_picoclaw_config.py"
+if [[ -f "$UPGRADE_SCRIPT_SRC" ]]; then
+    mkdir -p "$CLAWBOARD_DST/scripts"
+    if cp "$UPGRADE_SCRIPT_SRC" "$UPGRADE_SCRIPT_DST" 2>/dev/null; then
+        chmod 755 "$UPGRADE_SCRIPT_DST" || true
+        log "  installed upgrade_picoclaw_config.py"
+    else
+        log "WARNING: failed to install upgrade_picoclaw_config.py"
+    fi
+fi
+
+# ── Auto-upgrade local picoclaw config.json if repo schema version is newer ──
+# The repo config/config.json carries the canonical schema version for this
+# ClawBoard release.  When the local working copy is older, run the upgrade
+# script to bring it up to date.  picoclaw auto-migrates its own live copy
+# (/var/lib/picoclaw/.picoclaw/config.json) on startup; we only need to upgrade
+# the dashboard's local copy here.
+REPO_CFG="$WORK_DIR/config/config.json"
+LOCAL_CFG="$CLAWBOARD_DST/config/config.json"
+if [[ -f "$REPO_CFG" && -f "$LOCAL_CFG" ]] && command -v python3 >/dev/null 2>&1; then
+    _repo_ver=$(python3 -c "import json; print(json.load(open('$REPO_CFG')).get('version',0))" 2>/dev/null || echo 0)
+    _local_ver=$(python3 -c "import json; print(json.load(open('$LOCAL_CFG')).get('version',0))" 2>/dev/null || echo 0)
+    if [[ "$_repo_ver" -gt "$_local_ver" ]]; then
+        log "Config schema upgrade needed: local v$_local_ver → repo v$_repo_ver"
+        if [[ -f "$UPGRADE_SCRIPT_DST" ]]; then
+            log "  Running upgrade_picoclaw_config.py on $LOCAL_CFG ..."
+            if python3 "$UPGRADE_SCRIPT_DST" "$LOCAL_CFG"; then
+                log "✅ Config upgraded to v$_repo_ver"
+            else
+                log "WARNING: config upgrade failed — $LOCAL_CFG may need manual review"
+            fi
+        else
+            log "WARNING: upgrade script not found at $UPGRADE_SCRIPT_DST — cannot auto-upgrade config"
+        fi
+    else
+        log "  Config schema is current (local v$_local_ver, repo v$_repo_ver) — no upgrade needed"
     fi
 fi
 

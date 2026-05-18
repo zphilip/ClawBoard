@@ -2388,7 +2388,7 @@ def index(request: Request):
                 # shortcuts
                 pc_session   = pc_conf.get('session',   {})
                 pc_agents    = pc_conf.get('agents',    {}).get('defaults', {})
-                pc_channels  = pc_conf.get('channels',  {})
+                pc_channels  = pc_conf.get('channel_list', {}) or pc_conf.get('channels', {})
                 pc_model_list= pc_conf.get('model_list', [])
                 pc_gateway   = pc_conf.get('gateway',   {})
                 pc_tools     = pc_conf.get('tools',     {})
@@ -2400,7 +2400,7 @@ def index(request: Request):
 
                 # security.yml shortcuts
                 pc_sec_models   = pc_sec.get('model_list', {})
-                pc_sec_channels = pc_sec.get('channels',   {})
+                pc_sec_channels = pc_sec.get('channel_list', {}) or pc_sec.get('channels', {})
                 pc_sec_web      = pc_sec.get('web',        {})
                 pc_sec_skills   = pc_sec.get('skills',     {})
 
@@ -2552,8 +2552,10 @@ def index(request: Request):
                     data['gateway']['port']                 = to_int(pc_w_gw_port.value, 18790)
 
                     # channels – enable flags + non-secret fields → config.json; secrets → security.yml
-                    ch     = data.setdefault('channels', {})
-                    sec_ch = sec.setdefault('channels', {})
+                    data.pop('channels', None)   # remove legacy key
+                    sec.pop('channels', None)    # remove legacy key
+                    ch     = data.setdefault('channel_list', {})
+                    sec_ch = sec.setdefault('channel_list', {})
                     def _ch_cfg(name, **kw):
                         ch.setdefault(name, {}).update(kw)
                     def _ch_sec(name, **kw):
