@@ -898,61 +898,59 @@ def _http_json(
         return json.loads(raw) if raw else {}
 
 def setup_pico_channel_token() -> tuple[bool, str]:
-    """Enable pico channel via picoclaw-web and trigger gateway restart.
+    """Ensure the pico channel token exists — mirrors EnsurePicoChannel() locally.
 
-    Mirrors the flow used by chat_picoclaw.py:
-      POST /api/pico/setup
-      POST /api/gateway/restart
-    Then waits briefly for channel_list.pico.settings.token to appear.
+    Does NOT contact port 18800 (picoclaw-web), which requires browser auth.
+    Steps (same logic as _local_pico_setup in chat_picoclaw.py):
+      1. Idempotency: if token already in live .security.yml, return immediately.
+      2. Enable channel_list.pico in local config.json, deploy to live path.
+      3. Generate secrets.token_hex(16) (Go: generateSecureToken = 16 rand bytes → hex).
+      4. Write token into local security.yml, deploy to live path.
+      5. Restart picoclaw service.
+      6. Poll up to 15 s for channel_list.pico.settings.token in live .security.yml.
     """
-    base_http = 'http://127.0.0.1:18800'
-    web_err = ''
+    import secrets as _secrets
+
+    # ── 1. Idempotency ────────────────────────────────────────────────────────
+    tok, _ = _read_security_yml_token('pico')
+    if tok:
+        return True, ''
+
+    # ── 2. Enable channel_list.pico in config.json ────────────────────────────
     try:
-        _http_json(f'{base_http}/api/pico/setup', method='POST', timeout=12)
-        _http_json(f'{base_http}/api/gateway/restart', method='POST', timeout=12)
-    except urllib.error.HTTPError as e:
-        body = e.read().decode('utf-8', errors='replace')
-        web_err = f'/api/pico/setup failed ({e.code}): {body}'
+        _pc = load_picoclaw_config() or {}
+        _pc.setdefault('channel_list', {}).setdefault('pico', {})['enabled'] = True
+        save_picoclaw_config(_pc)
+        ok_cfg, err_cfg = deploy_picoclaw_config()
+        if not ok_cfg:
+            return False, f'deploy_picoclaw_config failed: {err_cfg}'
     except Exception as e:
-        web_err = f'/api/pico/setup failed: {e}'
+        return False, f'failed to enable channel_list.pico in config: {e}'
 
-    # Fallback path for 401/blocked web backend:
-    #   1) Ensure channel_list.pico.enabled=true in config.json
-    #   2) Generate token ourselves (mirrors EnsurePicoChannel in picoclaw-web startup)
-    #   3) Deploy config + security, restart picoclaw
-    if web_err:
-        try:
-            import secrets as _secrets
-            # Fix config: channel_list is the correct JSON key (not 'channels')
-            _pc = load_picoclaw_config() or {}
-            _pc.setdefault('channel_list', {}).setdefault('pico', {})['enabled'] = True
-            save_picoclaw_config(_pc)
-            ok_cfg, err_cfg = deploy_picoclaw_config()
-            if not ok_cfg:
-                return False, f'{web_err}; deploy_picoclaw_config failed: {err_cfg}'
-            # Generate token (mirrors generateSecureToken + EnsurePicoChannel in picoclaw-web)
-            _sec = load_picoclaw_security()
-            _sec_settings = (
-                _sec
-                .setdefault('channel_list', {})
-                .setdefault('pico', {})
-                .setdefault('settings', {})
-            )
-            if not _sec_settings.get('token'):
-                _sec_settings['token'] = _secrets.token_hex(16)
-                save_picoclaw_security(_sec)
-            ok_sec, err_sec = deploy_picoclaw_security()
-            if not ok_sec:
-                return False, f'{web_err}; deploy_picoclaw_security failed: {err_sec}'
-        except Exception as e:
-            return False, f'{web_err}; failed to setup channel_list.pico: {e}'
+    # ── 3 + 4. Generate token, write + deploy security.yml ────────────────────
+    try:
+        _sec = load_picoclaw_security()
+        _sec_settings = (
+            _sec
+            .setdefault('channel_list', {})
+            .setdefault('pico', {})
+            .setdefault('settings', {})
+        )
+        if not _sec_settings.get('token'):
+            _sec_settings['token'] = _secrets.token_hex(16)
+        save_picoclaw_security(_sec)
+        ok_sec, err_sec = deploy_picoclaw_security()
+        if not ok_sec:
+            return False, f'deploy_picoclaw_security failed: {err_sec}'
+    except Exception as e:
+        return False, f'failed to write token to security.yml: {e}'
 
-        # Restart picoclaw to pick up config + security changes.
-        ok_svc, svc_err = restart_picoclaw_service()
-        if not ok_svc:
-            return False, f'{web_err}; restart failed: {svc_err or "unknown"}'
+    # ── 5. Restart picoclaw ───────────────────────────────────────────────────
+    ok_svc, svc_err = restart_picoclaw_service()
+    if not ok_svc:
+        return False, f'restart failed: {svc_err or "unknown"}'
 
-    # Wait up to ~15s for token write-back into .security.yml.
+    # ── 6. Poll for token in live .security.yml (up to 15 s) ─────────────────
     last_err = ''
     for _ in range(30):
         tok, err = _read_security_yml_token('pico')
@@ -960,8 +958,6 @@ def setup_pico_channel_token() -> tuple[bool, str]:
             return True, ''
         last_err = err
         _time.sleep(0.5)
-    if web_err:
-        return False, f'{web_err}; fallback ran but token still missing: {last_err or "unknown"}'
     return False, last_err or 'channel_list.pico.settings.token still missing after setup'
 
 def picoclaw_service_status():
