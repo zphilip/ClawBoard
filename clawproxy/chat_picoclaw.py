@@ -86,12 +86,26 @@ def http_json(url: str, method: str = "GET") -> dict[str, Any]:
         return json.loads(raw)
 
 
+def _resolve_config_path(config_path: str) -> str:
+    """Return the canonical config.json path.
+
+    Accepts either the config.json path or the .security.yml path (user mistake);
+    in the latter case the directory is reused and config.json is substituted.
+    """
+    import os
+    if not config_path:
+        return os.path.expanduser("~/.picoclaw/config.json")
+    p = os.path.abspath(config_path)
+    if os.path.basename(p) in (".security.yml", ".security.yaml", "security.yml"):
+        p = os.path.join(os.path.dirname(p), "config.json")
+        print(f"[info] --config pointed to security file; using {p}")
+    return p
+
+
 def _read_pid_token(config_path: str) -> str:
     """Read the gateway auth token from .picoclaw.pid (used for /reload auth)."""
     import os
-    if not config_path:
-        config_path = os.path.expanduser("~/.picoclaw/config.json")
-    config_dir = os.path.dirname(os.path.abspath(config_path))
+    config_dir = os.path.dirname(_resolve_config_path(config_path))
     pid_path = os.path.join(config_dir, ".picoclaw.pid")
     try:
         with open(pid_path) as f:
@@ -109,9 +123,7 @@ def _ensure_security_yml_token(config_path: str) -> str:
     it; token generation is left entirely to picoclaw.
     """
     import os
-    if not config_path:
-        config_path = os.path.expanduser("~/.picoclaw/config.json")
-    config_dir = os.path.dirname(os.path.abspath(config_path))
+    config_dir = os.path.dirname(_resolve_config_path(config_path))
     security_path = os.path.join(config_dir, ".security.yml")
     try:
         with open(security_path) as f:
@@ -157,9 +169,7 @@ def _local_pico_setup(config_path: str, gw_host: str = "127.0.0.1", gw_port: int
         print("[error] PyYAML not available — install with: pip install pyyaml")
         return
 
-    if not config_path:
-        config_path = os.path.expanduser("~/.picoclaw/config.json")
-    config_path = os.path.abspath(config_path)
+    config_path = _resolve_config_path(config_path)
     config_dir = os.path.dirname(config_path)
     security_path = os.path.join(config_dir, ".security.yml")
 
@@ -297,9 +307,7 @@ def read_token_from_config(config_path: str) -> str:
     [NOT_HERE] in JSON).
     """
     import os
-    if not config_path:
-        config_path = os.path.expanduser("~/.picoclaw/config.json")
-    config_dir = os.path.dirname(os.path.abspath(config_path))
+    config_dir = os.path.dirname(_resolve_config_path(config_path))
     security_path = os.path.join(config_dir, ".security.yml")
 
     try:
