@@ -8,6 +8,7 @@ V0 → V1:
   - agents.defaults.model  →  agents.defaults.model_name
   - providers map          →  model_list array
   - model_list api_key     →  api_keys (deduplicated)
+  - remove providers key   (not in V3 Config struct)
   - version = 1
 
 V1 → V2:
@@ -18,6 +19,7 @@ V1 → V2:
 
 V2 → V3:
   - remove bindings key
+  - remove session.dm_scope (replaced by session.dimensions; not in V3 struct)
   - agents.defaults.model  →  agents.defaults.model_name
   - channels               →  channel_list
   - each channel: group_trigger_prefix  →  group_trigger.prefixes
@@ -237,6 +239,13 @@ def migrate_v0_to_v1(m: dict, verbose: bool = False) -> None:
                 entry["api_keys"] = merged
                 entry.pop("api_key", None)
 
+    # Remove the legacy providers key — the V3 Config struct has no providers
+    # field and picoclaw's JSON decoder rejects unknown keys.
+    if "providers" in m:
+        if verbose:
+            print("  Step: remove providers key (migrated to model_list)")
+        del m["providers"]
+
     m["version"] = 1
     if verbose:
         print("  → version = 1")
@@ -294,6 +303,16 @@ def migrate_v2_to_v3(m: dict, verbose: bool = False) -> None:
         if verbose:
             print("  Step: remove bindings key")
         del m["bindings"]
+
+    # Remove session.dm_scope — replaced by session.dimensions in V3; the V3
+    # Config struct has no dm_scope field and picoclaw's JSON decoder is strict.
+    session = m.get("session")
+    if isinstance(session, dict) and "dm_scope" in session:
+        del session["dm_scope"]
+        if verbose:
+            print("  Step: remove session.dm_scope (deprecated, replaced by dimensions)")
+        if not session:  # drop empty session block
+            del m["session"]
 
     _migrate_agent_defaults_model(m, verbose)
 
