@@ -2712,6 +2712,41 @@ def index(request: Request):
                     if _pc_bld_ver:
                         ui.label(f'build {_pc_bld_ver}').classes('text-caption text-grey-5')
 
+                # ── Upgrade banner (shown when config is below current version) ──
+                if _pc_cfg_ver < 3:
+                    _UPGRADE_SCRIPT = os.path.join(SCRIPT_DIR, 'scripts', 'upgrade_picoclaw_config.py')
+                    with ui.card().classes('w-full q-pa-sm q-mb-sm bg-orange-1'):
+                        with ui.row().classes('items-center gap-2'):
+                            ui.icon('warning', color='orange-8').classes('text-h6')
+                            ui.label(
+                                f'Config is version {_pc_cfg_ver} — PicoClaw requires version 3. '
+                                'Upgrade the local config file before saving.'
+                            ).classes('text-caption text-orange-9')
+                        _upg_log = ui.textarea('Upgrade output').classes('w-full text-caption').props(
+                            'outlined readonly rows=4').set_visibility(False)
+
+                        def _run_pc_cfg_upgrade(_script=_UPGRADE_SCRIPT, _path=PICOCLAW_CONFIG_PATH):
+                            import subprocess as _sp
+                            _upg_log.set_visibility(True)
+                            _upg_log.set_value('Running…')
+                            try:
+                                r = _sp.run(
+                                    ['python3', _script, _path, '--verbose'],
+                                    capture_output=True, text=True, timeout=30,
+                                )
+                                _upg_log.set_value((r.stdout or '') + (r.stderr or ''))
+                                if r.returncode == 0:
+                                    ui.notify('✅ Config upgraded — reloading…', type='positive')
+                                    ui.navigate.reload()
+                                else:
+                                    ui.notify('⚠️ Upgrade script returned an error', type='warning')
+                            except Exception as _ex:
+                                _upg_log.set_value(str(_ex))
+                                ui.notify(f'❌ {_ex}', type='negative')
+
+                        ui.button('Upgrade config to v3', icon='upgrade',
+                                  on_click=_run_pc_cfg_upgrade).props('color=orange-8 size=sm')
+
                 with ui.tabs().classes('w-full bg-purple-1') as pc_cfg_tabs:
                     t_pc_gen   = ui.tab(T['pc_tab_general'],  icon='tune')
                     t_pc_models= ui.tab(T['pc_tab_models'],   icon='cloud')
@@ -2723,14 +2758,7 @@ def index(request: Request):
 
                     # ── General ──────────────────────────────────────────────
                     with ui.tab_panel(t_pc_gen):
-                        ui.label(T['pc_section_session']).classes('text-subtitle2 text-grey-7 q-mt-sm')
-                        dm_opts = ['per-channel-peer', 'global', 'per-channel']
-                        cur_dm  = pc_session.get('dm_scope', 'per-channel-peer')
-                        pc_w_dm_scope = ui.select(dm_opts, label='session.dm_scope',
-                            value=cur_dm if cur_dm in dm_opts else dm_opts[0]).classes('w-full')
-
-                        ui.separator().classes('q-my-sm')
-                        ui.label(T['pc_section_agent_def']).classes('text-subtitle2 text-grey-7')
+                        ui.label(T['pc_section_agent_def']).classes('text-subtitle2 text-grey-7 q-mt-sm')
                         pc_w_workspace          = ui.input('workspace', value=str(pc_agents.get('workspace','/var/lib/picoclaw/.picoclaw/workspace'))).classes('w-full')
                         pc_w_restrict           = ui.checkbox('restrict_to_workspace',       value=bool(pc_agents.get('restrict_to_workspace', False)))
                         pc_w_allow_read_outside = ui.checkbox('allow_read_outside_workspace', value=bool(pc_agents.get('allow_read_outside_workspace', False)))
@@ -2759,26 +2787,14 @@ def index(request: Request):
                             new_value_mode='add-unique',
                         ).classes('w-full')
 
-                        _pc_cur_model = str(pc_agents.get('model', 'qwen3.5-plus'))
-                        pc_w_model = ui.input('model  (actual model id sent to provider)',
-                            value=_pc_cur_model).classes('w-full')
-
-                        # Auto-fill: provider change → update model_name list + api_base hint label
+                        # Auto-fill: provider change → update model_name list
                         def _pc_gen_prov_change(e):
                             prov = e.value or ''
                             mnames = _pc_ph_pid_models.get(prov, list(_pc_ph_map.keys()))
                             cur = pc_w_model_name.value
                             new_val = cur if cur in mnames else (mnames[0] if mnames else cur)
                             pc_w_model_name.set_options(list(mnames), value=new_val)
-                            h = _pc_ph_map.get(new_val, {})
-                            if h.get('model'): pc_w_model.set_value(h['model'])
                         pc_w_provider.on_value_change(_pc_gen_prov_change)
-
-                        # Auto-fill: model_name change → update model field
-                        def _pc_gen_mname_change(e):
-                            h = _pc_ph_map.get(e.value) if e.value else None
-                            if h and h.get('model'): pc_w_model.set_value(h['model'])
-                        pc_w_model_name.on_value_change(_pc_gen_mname_change)
                         pc_w_max_tokens         = ui.number('max_tokens',                 value=pc_agents.get('max_tokens', 8192),  min=256,  step=512).classes('w-full')
                         pc_w_max_iter           = ui.number('max_tool_iterations',         value=pc_agents.get('max_tool_iterations', 50), min=1, step=5).classes('w-full')
                         pc_w_sum_threshold      = ui.number('summarize_message_threshold', value=pc_agents.get('summarize_message_threshold', 20), min=1, step=1).classes('w-full')
