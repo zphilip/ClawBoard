@@ -2727,44 +2727,41 @@ def index(request: Request):
                             'outlined readonly rows=6 label="Upgrade output"')
                         _upg_log.set_visibility(False)
 
-                        def _run_pc_cfg_upgrade(_script=_UPGRADE_SCRIPT,
-                                                _path=PICOCLAW_CONFIG_PATH):
-                            import subprocess as _sp, threading as _th
+                        async def _run_pc_cfg_upgrade(_script=_UPGRADE_SCRIPT,
+                                                      _path=PICOCLAW_CONFIG_PATH):
+                            import asyncio as _aio
                             _upg_log.set_visibility(True)
                             _upg_log.set_value('⏳ Running upgrade script…\n')
                             _upg_btn.props('disabled loading')
-
-                            def _worker(_script=_script, _path=_path):
-                                try:
-                                    proc = _sp.Popen(
-                                        ['python3', _script, _path, '--verbose'],
-                                        stdout=_sp.PIPE, stderr=_sp.STDOUT,
-                                        text=True,
+                            try:
+                                proc = await _aio.create_subprocess_exec(
+                                    'python3', _script, _path, '--verbose',
+                                    stdout=_aio.subprocess.PIPE,
+                                    stderr=_aio.subprocess.STDOUT,
+                                )
+                                buf = '⏳ Running upgrade script…\n'
+                                async for line in proc.stdout:
+                                    buf += line.decode(errors='replace')
+                                    _upg_log.set_value(buf)
+                                await proc.wait()
+                                if proc.returncode == 0:
+                                    _upg_log.set_value(
+                                        buf + f'\n✅ Done.\n'
+                                              f'   Upgraded : {_path}\n'
+                                              f'   Backup   : {_path}.bak.<timestamp>'
                                     )
-                                    buf = '⏳ Running upgrade script…\n'
-                                    for line in proc.stdout:
-                                        buf += line
-                                        _upg_log.set_value(buf)
-                                    proc.wait()
-                                    if proc.returncode == 0:
-                                        _upg_log.set_value(
-                                            buf + f'\n✅ Done.  Upgraded file: {_path}\n'
-                                                  f'   Backup: {_path}.bak.<timestamp>'
-                                        )
-                                        ui.notify('✅ Config upgraded — reloading page…',
-                                                  type='positive')
-                                        ui.navigate.reload()
-                                    else:
-                                        _upg_log.set_value(buf + '\n⚠️ Script exited with error.')
-                                        ui.notify('⚠️ Upgrade script returned an error',
-                                                  type='warning')
-                                except Exception as _ex:
-                                    _upg_log.set_value(f'❌ {_ex}')
-                                    ui.notify(f'❌ {_ex}', type='negative')
-                                finally:
-                                    _upg_btn.props(remove='disabled loading')
-
-                            _th.Thread(target=_worker, daemon=True).start()
+                                    ui.notify('✅ Config upgraded — reloading page…',
+                                              type='positive')
+                                    ui.navigate.reload()
+                                else:
+                                    _upg_log.set_value(buf + '\n⚠️ Script exited with error.')
+                                    ui.notify('⚠️ Upgrade script returned an error',
+                                              type='warning')
+                            except Exception as _ex:
+                                _upg_log.set_value(f'❌ {_ex}')
+                                ui.notify(f'❌ {_ex}', type='negative')
+                            finally:
+                                _upg_btn.props(remove='disabled loading')
 
                         _upg_btn = ui.button(
                             'Upgrade config to v3', icon='upgrade',
