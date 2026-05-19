@@ -2720,32 +2720,56 @@ def index(request: Request):
                             ui.icon('warning', color='orange-8').classes('text-h6')
                             ui.label(
                                 f'Config is version {_pc_cfg_ver} — PicoClaw requires version 3. '
-                                'Upgrade the local config file before saving.'
+                                'Click Upgrade to convert the local config file in-place '
+                                '(a timestamped .bak copy is kept automatically).'
                             ).classes('text-caption text-orange-9')
-                        _upg_log = ui.textarea('Upgrade output').classes('w-full text-caption').props(
-                            'outlined readonly rows=4').set_visibility(False)
+                        _upg_log = ui.textarea('').classes('w-full text-caption font-mono').props(
+                            'outlined readonly rows=6 label="Upgrade output"')
+                        _upg_log.set_visibility(False)
 
-                        def _run_pc_cfg_upgrade(_script=_UPGRADE_SCRIPT, _path=PICOCLAW_CONFIG_PATH):
-                            import subprocess as _sp
+                        def _run_pc_cfg_upgrade(_script=_UPGRADE_SCRIPT,
+                                                _path=PICOCLAW_CONFIG_PATH):
+                            import subprocess as _sp, threading as _th
                             _upg_log.set_visibility(True)
-                            _upg_log.set_value('Running…')
-                            try:
-                                r = _sp.run(
-                                    ['python3', _script, _path, '--verbose'],
-                                    capture_output=True, text=True, timeout=30,
-                                )
-                                _upg_log.set_value((r.stdout or '') + (r.stderr or ''))
-                                if r.returncode == 0:
-                                    ui.notify('✅ Config upgraded — reloading…', type='positive')
-                                    ui.navigate.reload()
-                                else:
-                                    ui.notify('⚠️ Upgrade script returned an error', type='warning')
-                            except Exception as _ex:
-                                _upg_log.set_value(str(_ex))
-                                ui.notify(f'❌ {_ex}', type='negative')
+                            _upg_log.set_value('⏳ Running upgrade script…\n')
+                            _upg_btn.props('disabled loading')
 
-                        ui.button('Upgrade config to v3', icon='upgrade',
-                                  on_click=_run_pc_cfg_upgrade).props('color=orange-8 size=sm')
+                            def _worker(_script=_script, _path=_path):
+                                try:
+                                    proc = _sp.Popen(
+                                        ['python3', _script, _path, '--verbose'],
+                                        stdout=_sp.PIPE, stderr=_sp.STDOUT,
+                                        text=True,
+                                    )
+                                    buf = '⏳ Running upgrade script…\n'
+                                    for line in proc.stdout:
+                                        buf += line
+                                        _upg_log.set_value(buf)
+                                    proc.wait()
+                                    if proc.returncode == 0:
+                                        _upg_log.set_value(
+                                            buf + f'\n✅ Done.  Upgraded file: {_path}\n'
+                                                  f'   Backup: {_path}.bak.<timestamp>'
+                                        )
+                                        ui.notify('✅ Config upgraded — reloading page…',
+                                                  type='positive')
+                                        ui.navigate.reload()
+                                    else:
+                                        _upg_log.set_value(buf + '\n⚠️ Script exited with error.')
+                                        ui.notify('⚠️ Upgrade script returned an error',
+                                                  type='warning')
+                                except Exception as _ex:
+                                    _upg_log.set_value(f'❌ {_ex}')
+                                    ui.notify(f'❌ {_ex}', type='negative')
+                                finally:
+                                    _upg_btn.props(remove='disabled loading')
+
+                            _th.Thread(target=_worker, daemon=True).start()
+
+                        _upg_btn = ui.button(
+                            'Upgrade config to v3', icon='upgrade',
+                            on_click=_run_pc_cfg_upgrade,
+                        ).props('color=orange-8 size=sm')
 
                 with ui.tabs().classes('w-full bg-purple-1') as pc_cfg_tabs:
                     t_pc_gen   = ui.tab(T['pc_tab_general'],  icon='tune')
