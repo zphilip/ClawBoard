@@ -14,6 +14,9 @@ zero ALL=(root) NOPASSWD: /usr/bin/systemctl restart zeroclaw.service
 zero ALL=(root) NOPASSWD: /usr/bin/systemctl stop zeroclaw.service
 zero ALL=(root) NOPASSWD: /usr/bin/systemctl start zeroclaw.service
 
+# ── ZeroClaw config migration (run as zeroclaw account) ──────────────────────
+zero ALL=(zeroclaw) NOPASSWD: /opt/zeroclaw/zeroclaw config migrate
+
 # ── ZeroClaw config deploy (dashboard writes config.toml as zeroclaw user) ───
 zero ALL=(root) NOPASSWD: /usr/bin/tee /var/lib/zeroclaw/.zeroclaw/config.toml
 zero ALL=(root) NOPASSWD: /usr/bin/mkdir -p /var/lib/zeroclaw/.zeroclaw

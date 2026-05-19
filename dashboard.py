@@ -1678,7 +1678,7 @@ def index(request: Request):
                             _zc_upg_btn.props('disabled loading')
                             try:
                                 proc = await _aio.create_subprocess_exec(
-                                    'sudo', '-u', 'zeroclaw', 'zeroclaw', 'config', 'migrate',
+                                    'sudo', '-u', 'zeroclaw', '/opt/zeroclaw/zeroclaw', 'config', 'migrate',
                                     stdout=_aio.subprocess.PIPE,
                                     stderr=_aio.subprocess.STDOUT,
                                 )
