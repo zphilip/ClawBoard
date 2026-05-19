@@ -1651,6 +1651,60 @@ def index(request: Request):
 
             # ── ZeroClaw › Configuration ───────────────────────────────────
             with ui.tab_panel(t_zc_cfg):
+
+                # ── Schema version badge ───────────────────────────────────
+                _zc_schema_ver = int(conf.get('schema_version', 0))
+                with ui.row().classes('items-center gap-2 q-px-sm q-pt-xs q-pb-none'):
+                    _zc_badge_color = 'green-7' if _zc_schema_ver >= 2 else 'orange-7'
+                    ui.badge(f'schema v{_zc_schema_ver}', color=_zc_badge_color).props('outline')
+
+                # ── Upgrade banner (shown when schema is below current version) ──
+                if _zc_schema_ver < 2:
+                    with ui.card().classes('w-full q-pa-sm q-mb-sm bg-orange-1'):
+                        with ui.row().classes('items-center gap-2'):
+                            ui.icon('warning', color='orange-8').classes('text-h6')
+                            ui.label(
+                                f'Config schema is version {_zc_schema_ver} — ZeroClaw requires version 2. '
+                                'Click Migrate to run the built-in migration as the zeroclaw account.'
+                            ).classes('text-caption text-orange-9')
+                        _zc_upg_log = ui.textarea('').classes('w-full text-caption font-mono').props(
+                            'outlined readonly rows=6 label="Migration output"')
+                        _zc_upg_log.set_visibility(False)
+
+                        async def _run_zc_cfg_migrate():
+                            import asyncio as _aio
+                            _zc_upg_log.set_visibility(True)
+                            _zc_upg_log.set_value('⏳ Running zeroclaw config migrate…\n')
+                            _zc_upg_btn.props('disabled loading')
+                            try:
+                                proc = await _aio.create_subprocess_exec(
+                                    'sudo', '-u', 'zeroclaw', 'zeroclaw', 'config', 'migrate',
+                                    stdout=_aio.subprocess.PIPE,
+                                    stderr=_aio.subprocess.STDOUT,
+                                )
+                                buf = '⏳ Running zeroclaw config migrate…\n'
+                                async for line in proc.stdout:
+                                    buf += line.decode(errors='replace')
+                                    _zc_upg_log.set_value(buf)
+                                await proc.wait()
+                                if proc.returncode == 0:
+                                    _zc_upg_log.set_value(buf + '\n✅ Migration complete.')
+                                    ui.notify('✅ Schema migrated — reloading page…', type='positive')
+                                    ui.navigate.reload()
+                                else:
+                                    _zc_upg_log.set_value(buf + '\n⚠️ Migration exited with error.')
+                                    ui.notify('⚠️ Migration returned an error', type='warning')
+                            except Exception as _ex:
+                                _zc_upg_log.set_value(f'❌ {_ex}')
+                                ui.notify(f'❌ {_ex}', type='negative')
+                            finally:
+                                _zc_upg_btn.props(remove='disabled loading')
+
+                        _zc_upg_btn = ui.button(
+                            'Migrate schema to v2', icon='upgrade',
+                            on_click=_run_zc_cfg_migrate,
+                        ).props('color=orange-8 size=sm')
+
                 with ui.tabs().classes('w-full bg-blue-1') as tabs:
                     t_gen   = ui.tab(T['tab_general'],   icon='tune')
                     t_prov  = ui.tab(T['tab_providers'],  icon='cloud')
