@@ -172,7 +172,7 @@ func initTtsConfig(provider, voice, format, apiKey, model, piperURL, edgeBin,
 // skipping any field already set by a CLI flag or env var (non-empty string).
 func applyFileTtsConfig(cfg *TtsConfig, fc *fileTtsSection) {
 	if cfg.Provider == "" && fc.DefaultProvider != "" {
-		cfg.Provider = fc.DefaultProvider
+		cfg.Provider = canonicalProvider(fc.DefaultProvider)
 	}
 	if cfg.Voice == "" && fc.DefaultVoice != "" {
 		cfg.Voice = fc.DefaultVoice
@@ -216,8 +216,41 @@ func applyFileTtsConfig(cfg *TtsConfig, fc *fileTtsSection) {
 	}
 }
 
+// canonicalProvider normalises a provider name or alias to the internal
+// canonical identifier used in switch statements.
+//
+//	MiniMax:    "minimax-cn", "minimaxi", "minimax-io", … → "minimax"
+//	OpenAI:     "gpt", "openai-compat", "gpt-4o", …      → "openai"
+//	ElevenLabs: "elevenlabs-v2", …                        → "elevenlabs"
+//	Google:     "google-cloud", "google-tts", …           → "google"
+//	Edge:       "edge-tts"                                → "edge"
+//	Piper:      "piper-tts"                               → "piper"
+func canonicalProvider(name string) string {
+	name = strings.ToLower(strings.TrimSpace(name))
+	if isMiniMaxAlias(name) {
+		return "minimax"
+	}
+	switch name {
+	case "gpt", "openai-compat":
+		return "openai"
+	case "google-tts", "google-cloud", "google-cloud-tts", "gcloud":
+		return "google"
+	case "edge-tts":
+		return "edge"
+	case "piper-tts":
+		return "piper"
+	}
+	if strings.HasPrefix(name, "openai-") || strings.HasPrefix(name, "gpt-") {
+		return "openai"
+	}
+	if name == "elevenlabs" || strings.HasPrefix(name, "elevenlabs-") {
+		return "elevenlabs"
+	}
+	return name
+}
+
 func defaultVoiceFor(provider string) string {
-	switch provider {
+	switch canonicalProvider(provider) {
 	case "openai":
 		return "alloy"
 	case "elevenlabs":
@@ -297,7 +330,7 @@ func handleTTS(cfg *TtsConfig) http.HandlerFunc {
 		}
 
 		// Resolve effective provider/voice/format (request overrides config default)
-		provider := req.Provider
+			provider := canonicalProvider(req.Provider)
 		if provider == "" {
 			provider = cfg.Provider
 		}
@@ -307,7 +340,7 @@ func handleTTS(cfg *TtsConfig) http.HandlerFunc {
 		}
 		// If the default voice was set for a different provider, use the
 		// per-provider default instead.
-		if req.Voice == "" && req.Provider != "" && req.Provider != cfg.Provider {
+		if req.Voice == "" && req.Provider != "" && canonicalProvider(req.Provider) != cfg.Provider {
 			voice = defaultVoiceFor(req.Provider)
 		}
 		format := req.Format
@@ -446,7 +479,7 @@ func audioMIME(format string) string {
 // synthesize converts text to audio using the named provider.
 // Returns: raw audio bytes, actual format string, error.
 func synthesize(text, provider, voice, format string, cfg *TtsConfig) ([]byte, string, error) {
-	switch provider {
+	switch canonicalProvider(provider) {
 	case "openai":
 		return synthOpenAI(text, voice, format, cfg)
 	case "elevenlabs":

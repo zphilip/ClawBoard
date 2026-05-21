@@ -31,7 +31,21 @@ import (
 // fileConfig is the top-level shape of the TOML file. Only the sections
 // clawproxy cares about are decoded; everything else is silently ignored.
 type fileConfig struct {
-	Tts fileTtsSection `toml:"tts"`
+	Tts       fileTtsSection  `toml:"tts"`
+	Providers fileProviders   `toml:"providers"`
+}
+
+// fileProviders mirrors zeroclaw's [providers] table.
+// We only read [providers.models] to borrow API keys for TTS providers
+// that share the same key (e.g. MiniMax uses the same key for LLM and TTS).
+type fileProviders struct {
+	Models map[string]fileModelProvider `toml:"models"`
+}
+
+// fileModelProvider holds the minimal fields clawproxy needs from a
+// [providers.models.<alias>] entry.
+type fileModelProvider struct {
+	APIKey string `toml:"api_key"`
 }
 
 // fileTtsSection mirrors zeroclaw's [tts] table.
@@ -121,6 +135,12 @@ func discoverConfigPath() string {
 // loadFileConfig parses a TOML config file and returns its [tts] section with
 // API keys decrypted using zeroclaw's secret store (key file at
 // <config_dir>/.secret_key).
+//
+// When a [tts.<provider>] api_key is absent, clawproxy also looks in
+// [providers.models.*] for a matching provider alias and borrows its key —
+// this is how MiniMax (and OpenAI) work: the same API key is used for both
+// LLM chat and TTS synthesis.
+//
 // Returns nil (no error) when the file does not exist so callers can treat a
 // missing config as "use defaults".
 func loadFileConfig(path string) (*fileTtsSection, error) {
@@ -139,12 +159,181 @@ func loadFileConfig(path string) (*fileTtsSection, error) {
 		return nil, err
 	}
 
-	// Decrypt any enc2:/enc: prefixed API keys using the secret key stored
-	// alongside the config file (same algorithm as zeroclaw's SecretStore).
 	keyFile := filepath.Join(filepath.Dir(path), ".secret_key")
+
+	// Decrypt secrets in [tts.*] sections.
 	decryptSecretsInTtsConfig(&fc.Tts, keyFile)
 
+	// Scan [tts.*] sub-tables by alias name.
+	// The fixed struct only captures exact keys ("minimax", "openai", …);
+	// users may write [tts.minimax-cn] or [tts.minimaxi] which go unmatched.
+	scanTtsAliases(&fc.Tts, data, keyFile)
+
+	// Decrypt secrets in [providers.models.*] and borrow keys into [tts.*]
+	// for providers that share the same key (e.g. MiniMax uses the same key for LLM and TTS).
+	borrowModelProviderKeys(&fc.Tts, fc.Providers.Models, keyFile)
+
+	// Normalize default_provider to its canonical name (e.g. "minimax-cn" → "minimax").
+	fc.Tts.DefaultProvider = canonicalProvider(fc.Tts.DefaultProvider)
+
 	return &fc.Tts, nil
+}
+
+// scanTtsAliases performs a raw-map decode of the full TOML file and looks for
+// any [tts.<alias>] sub-table whose name resolves to a known provider.  This
+// supplements the fixed-struct decode which only matches exact TOML keys.
+func scanTtsAliases(tts *fileTtsSection, raw []byte, keyFile string) {
+	var m map[string]interface{}
+	if _, err := toml.Decode(string(raw), &m); err != nil {
+		return
+	}
+	ttsMap, _ := m["tts"].(map[string]interface{})
+	for alias, val := range ttsMap {
+		sub, ok := val.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		getStr := func(key string) string {
+			v, _ := sub[key].(string)
+			return v
+		}
+		switch canonicalProvider(strings.ToLower(alias)) {
+		case "minimax":
+			if tts.MiniMax == nil {
+				tts.MiniMax = &fileTtsMiniMax{}
+			}
+			if tts.MiniMax.APIKey == "" {
+				tts.MiniMax.APIKey = decryptSecret(getStr("api_key"), keyFile)
+			}
+			if tts.MiniMax.Model == "" {
+				tts.MiniMax.Model = getStr("model")
+			}
+			if tts.MiniMax.BaseURL == "" {
+				tts.MiniMax.BaseURL = getStr("base_url")
+			}
+		case "openai":
+			if tts.OpenAI == nil {
+				tts.OpenAI = &fileTtsOpenAI{}
+			}
+			if tts.OpenAI.APIKey == "" {
+				tts.OpenAI.APIKey = decryptSecret(getStr("api_key"), keyFile)
+			}
+			if tts.OpenAI.Model == "" {
+				tts.OpenAI.Model = getStr("model")
+			}
+		case "elevenlabs":
+			if tts.ElevenLabs == nil {
+				tts.ElevenLabs = &fileTtsElevenLabs{}
+			}
+			if tts.ElevenLabs.APIKey == "" {
+				tts.ElevenLabs.APIKey = decryptSecret(getStr("api_key"), keyFile)
+			}
+		case "google":
+			if tts.Google == nil {
+				tts.Google = &fileTtsGoogle{}
+			}
+			if tts.Google.APIKey == "" {
+				tts.Google.APIKey = decryptSecret(getStr("api_key"), keyFile)
+			}
+			if tts.Google.LanguageCode == "" {
+				tts.Google.LanguageCode = getStr("language_code")
+			}
+		case "edge":
+			if tts.Edge == nil {
+				tts.Edge = &fileTtsEdge{}
+			}
+			if tts.Edge.BinaryPath == "" {
+				tts.Edge.BinaryPath = getStr("binary_path")
+			}
+		case "piper":
+			if tts.Piper == nil {
+				tts.Piper = &fileTtsPiper{}
+			}
+			if tts.Piper.APIURL == "" {
+				tts.Piper.APIURL = getStr("api_url")
+			}
+		}
+	}
+}
+
+// borrowModelProviderKeys looks through [providers.models.*] entries and
+// copies API keys into the [tts.*] sections when those sections either don't
+// exist or have no key set.  This handles the common case where the user has
+// configured e.g. [providers.models.minimax] for LLM use and expects the same
+// key to be picked up for TTS without a separate [tts.minimax] block.
+func borrowModelProviderKeys(tts *fileTtsSection, models map[string]fileModelProvider, keyFile string) {
+	for alias, mp := range models {
+		if mp.APIKey == "" {
+			continue
+		}
+		key := decryptSecret(mp.APIKey, keyFile)
+		lower := strings.ToLower(alias)
+
+		switch {
+		case isMiniMaxAlias(lower):
+			if tts.MiniMax == nil {
+				tts.MiniMax = &fileTtsMiniMax{}
+			}
+			if tts.MiniMax.APIKey == "" {
+				tts.MiniMax.APIKey = key
+			}
+		case isOpenAIAlias(lower):
+			if tts.OpenAI == nil {
+				tts.OpenAI = &fileTtsOpenAI{}
+			}
+			if tts.OpenAI.APIKey == "" {
+				tts.OpenAI.APIKey = key
+			}
+		case isElevenLabsAlias(lower):
+			if tts.ElevenLabs == nil {
+				tts.ElevenLabs = &fileTtsElevenLabs{}
+			}
+			if tts.ElevenLabs.APIKey == "" {
+				tts.ElevenLabs.APIKey = key
+			}
+		case isGoogleAlias(lower):
+			if tts.Google == nil {
+				tts.Google = &fileTtsGoogle{}
+			}
+			if tts.Google.APIKey == "" {
+				tts.Google.APIKey = key
+			}
+		}
+	}
+}
+
+// isMiniMaxAlias mirrors zeroclaw's is_minimax_alias() in provider_aliases.rs.
+func isMiniMaxAlias(name string) bool {
+	switch name {
+	case "minimax", "minimax-intl", "minimax-io", "minimax-global",
+		"minimax-oauth", "minimax-portal", "minimax-oauth-global", "minimax-portal-global",
+		"minimax-cn", "minimaxi", "minimax-oauth-cn", "minimax-portal-cn":
+		return true
+	}
+	return false
+}
+
+// isOpenAIAlias returns true for common zeroclaw OpenAI model alias names.
+func isOpenAIAlias(name string) bool {
+	switch name {
+	case "openai", "gpt", "openai-compat":
+		return true
+	}
+	return strings.HasPrefix(name, "openai-") || strings.HasPrefix(name, "gpt-")
+}
+
+// isGoogleAlias returns true for common Google TTS / Gemini alias names.
+func isGoogleAlias(name string) bool {
+	switch name {
+	case "google", "google-tts", "google-cloud", "google-cloud-tts", "gemini", "gcloud":
+		return true
+	}
+	return strings.HasPrefix(name, "google-") || strings.HasPrefix(name, "gemini-")
+}
+
+// isElevenLabsAlias returns true for common ElevenLabs alias names.
+func isElevenLabsAlias(name string) bool {
+	return name == "elevenlabs" || strings.HasPrefix(name, "elevenlabs-")
 }
 
 // ── Secret decryption (mirrors zeroclaw's SecretStore) ────────────────────────
