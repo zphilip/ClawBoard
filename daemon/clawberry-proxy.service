@@ -26,7 +26,9 @@ ExecStart=/usr/local/bin/clawproxy \
     --zc \
     --pc \
     --queue-db /opt/clawproxy/clawproxy.db \
-    --queue-ttl 86400
+    --queue-ttl 86400 \
+    --config /var/lib/zeroclaw/.zeroclaw/config.toml \
+    --picoclaw-config /var/lib/picoclaw/.picoclaw/config.json
 
 WorkingDirectory=/opt/clawproxy/
 
@@ -42,7 +44,7 @@ PrivateTmp=false
 ProtectSystem=strict
 ProtectHome=false
 ReadWritePaths=/opt/clawproxy /home/zero
-ReadOnlyPaths=/var/lib/picoclaw/.picoclaw /var/lib/zeroclaw/.zerooclaw
+ReadOnlyPaths=/var/lib/picoclaw/.picoclaw /var/lib/zeroclaw/.zeroclaw
 RestrictNamespaces=true
 RestrictRealtime=true
 LockPersonality=true
