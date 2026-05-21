@@ -57,9 +57,10 @@ type proxyServer struct {
 	healthMu      sync.RWMutex
 	zcHealth      string // "not_configured"|"unknown"|"online"|"offline"|"auth_error"
 	pcHealth      string
+	ttsCfg        *TtsConfig // server-wide TTS config (shared with /tts/synthesize)
 }
 
-func newProxyServer(zca *zcAuth, pca *pcAuth, port int, db *queueStore, sessionTTL time.Duration) *proxyServer {
+func newProxyServer(zca *zcAuth, pca *pcAuth, port int, db *queueStore, sessionTTL time.Duration, ttsCfg *TtsConfig) *proxyServer {
 zcH, pcH := "not_configured", "not_configured"
 if zca != nil {
 zcH = "unknown"
@@ -78,6 +79,7 @@ return &proxyServer{
 		zcCompat:      newZCCompatStore(db),
 		zcHealth:      zcH,
 		pcHealth:      pcH,
+		ttsCfg:        ttsCfg,
 		upgrader: websocket.Upgrader{
 			CheckOrigin: func(r *http.Request) bool { return true },
 		},
@@ -213,7 +215,7 @@ if err != nil {
 fmt.Printf("%scannot open queue DB %q: %v — falling back to in-memory\n", prefixERR(), dbPath, err)
 db, _ = openQueueStore(":memory:", maxQueue, ttl)
 }
-s := newProxyServer(zca, pca, port, db, 24*time.Hour)
+s := newProxyServer(zca, pca, port, db, 24*time.Hour, ttsCfg)
 mux := http.NewServeMux()
 
 // ── compat: zeroclaw (chat.py) ──────────────────────────────────
@@ -233,6 +235,12 @@ mux.HandleFunc("/proxy/status", s.handleStatus)
 mux.HandleFunc("/tts/synthesize", handleTTS(ttsCfg))
 mux.HandleFunc("/tts/info",       handleTTSInfo(ttsCfg))
 
+// ── Streaming TTS WebSocket endpoints ─────────────────────────
+// Like /ws/chat and /pico/ws but with per-sentence audio synthesis.
+// Add ?tts_provider=X&tts_voice=Y&tts_format=Z to override defaults.
+mux.HandleFunc("/ws/chat/tts",  s.handleZCTTSStream)
+mux.HandleFunc("/pico/ws/tts",  s.handlePCTTSStream)
+
 addr := fmt.Sprintf(":%d", port)
 fmt.Printf("\n%s%sClawProxy v3%s — proxy mode\n", prefixSYS(), colBold, colReset)
 fmt.Printf("%s  ZC compat  ←  GET /health · POST /pair · WS /ws/chat\n", prefixSYS())
@@ -240,6 +248,7 @@ fmt.Printf("%s  PC compat  \u2190  GET /api/pico/info · WS /pico/ws\n", prefixS
 fmt.Printf("%s  Unified    ←  WS /proxy/ws?client_id=<id>\n", prefixSYS())
 fmt.Printf("%s  Status     ←  GET /proxy/status\n", prefixSYS())
 fmt.Printf("%s  TTS        ←  POST /tts/synthesize · GET /tts/info  (provider=%s)\n", prefixSYS(), ttsCfg.Provider)
+fmt.Printf("%s  TTS-stream ←  WS /ws/chat/tts · WS /pico/ws/tts  (?tts_provider=X&tts_voice=Y)\n", prefixSYS())
 zcOK := colGreen + "✓" + colReset
 if zca == nil {
 zcOK = colRed + "✗ unavailable" + colReset
@@ -347,6 +356,8 @@ func (s *proxyServer) handleZCCompat(w http.ResponseWriter, r *http.Request) {
 		func(sid string) string { return s.zcAuth.wsURL(sid) },
 	)
 	keyShort := cs.keyShort
+	// Apply TTS options for this connection (updated on every reconnect).
+	cs.setTtsOpts(parseTtsConnOpts(r, s.ttsCfg), s.ttsCfg)
 	cs.start() // no-op if already running
 
 	// Attach the new app connection; drain any buffered upstream messages.
@@ -532,6 +543,8 @@ func (s *proxyServer) handlePCCompat(w http.ResponseWriter, r *http.Request) {
 		func(sid string) string { return appendSessionID(s.pcAuth.wsURL, sid) },
 	)
 	keyShort = cs.keyShort // use the one stored in the session (consistent across all log lines)
+	// Apply TTS options for this connection (updated on every reconnect).
+	cs.setTtsOpts(parseTtsConnOpts(r, s.ttsCfg), s.ttsCfg)
 	cs.start()             // no-op if already running
 
 	// Attach the new app connection; drain any buffered upstream messages.
@@ -697,11 +710,30 @@ type pcCompatSession struct {
 	pendingCh  chan struct{} // closed/replaced when a response frame arrives
 	pendingReq bool
 
+	// TTS options for the currently-attached app (nil = TTS disabled).
+	// Updated on every app reconnect via setTtsOpts().
+	ttsOptsMu sync.Mutex
+	ttsOpts   *ttsConnOpts
+	ttsCfg    *TtsConfig
+
 	getToken func() string           // reads current token from proxyServer
 	getWSURL func(sid string) string // builds upstream wsURL
 
 	startOnce sync.Once
 	stopCh    chan struct{}
+}
+
+func (cs *pcCompatSession) setTtsOpts(opts *ttsConnOpts, cfg *TtsConfig) {
+	cs.ttsOptsMu.Lock()
+	cs.ttsOpts = opts
+	cs.ttsCfg = cfg
+	cs.ttsOptsMu.Unlock()
+}
+
+func (cs *pcCompatSession) getTtsState() (*ttsConnOpts, *TtsConfig) {
+	cs.ttsOptsMu.Lock()
+	defer cs.ttsOptsMu.Unlock()
+	return cs.ttsOpts, cs.ttsCfg
 }
 
 func (cs *pcCompatSession) start() {
@@ -801,12 +833,23 @@ func (cs *pcCompatSession) deliverOrBuffer(data []byte, keyShort string) {
 	}
 	cs.pendingMu.Unlock()
 
+	// Build an optional TTS audio frame for final text responses (message.create).
+	var ttsFrame []byte
+	if opts, cfg := cs.getTtsState(); opts != nil && cfg != nil {
+		if text, ok := extractPCFinalText(data); ok && text != "" {
+			ttsFrame = buildTtsAudioFrame(text, opts.provider, opts.voice, opts.format, cfg)
+		}
+	}
+
 	cs.appMu.RLock()
 	app := cs.app
 	cs.appMu.RUnlock()
 	if app != nil {
 		cs.appWrMu.Lock()
 		err := app.WriteMessage(websocket.TextMessage, data)
+		if err == nil && ttsFrame != nil {
+			err = app.WriteMessage(websocket.TextMessage, ttsFrame)
+		}
 		cs.appWrMu.Unlock()
 		if err == nil {
 			return // delivered
@@ -821,6 +864,9 @@ func (cs *pcCompatSession) deliverOrBuffer(data []byte, keyShort string) {
 		return
 	}
 	cs.db.push(cs.key, "", "", data)
+	if ttsFrame != nil {
+		cs.db.push(cs.key, "", "", ttsFrame)
+	}
 	fmt.Printf("%sPC compat[%s] buffered (%d B), queue=%d\n", prefixSYS(), keyShort, len(data), cs.db.count(cs.key))
 }
 
@@ -913,11 +959,30 @@ type zcCompatSession struct {
 	pendingCh  chan struct{} // closed/replaced when a response frame arrives
 	pendingReq bool
 
+	// TTS options for the currently-attached app (nil = TTS disabled).
+	// Updated on every app reconnect via setTtsOpts().
+	ttsOptsMu sync.Mutex
+	ttsOpts   *ttsConnOpts
+	ttsCfg    *TtsConfig
+
 	getToken func() string           // reads current ZC token from proxyServer
 	getWSURL func(sid string) string // builds upstream zeroclaw wsURL
 
 	startOnce sync.Once
 	stopCh    chan struct{}
+}
+
+func (cs *zcCompatSession) setTtsOpts(opts *ttsConnOpts, cfg *TtsConfig) {
+	cs.ttsOptsMu.Lock()
+	cs.ttsOpts = opts
+	cs.ttsCfg = cfg
+	cs.ttsOptsMu.Unlock()
+}
+
+func (cs *zcCompatSession) getTtsState() (*ttsConnOpts, *TtsConfig) {
+	cs.ttsOptsMu.Lock()
+	defer cs.ttsOptsMu.Unlock()
+	return cs.ttsOpts, cs.ttsCfg
 }
 
 func (cs *zcCompatSession) start() {
@@ -1017,12 +1082,24 @@ func (cs *zcCompatSession) deliverOrBuffer(data []byte, keyShort string) {
 	}
 	cs.pendingMu.Unlock()
 
+	// Build an optional TTS audio frame for final text responses.
+	// Synthesis is done inline (blocking) — only triggers on "done"/"message" frames.
+	var ttsFrame []byte
+	if opts, cfg := cs.getTtsState(); opts != nil && cfg != nil {
+		if text, ok := extractZCFinalText(data); ok && text != "" {
+			ttsFrame = buildTtsAudioFrame(text, opts.provider, opts.voice, opts.format, cfg)
+		}
+	}
+
 	cs.appMu.RLock()
 	app := cs.app
 	cs.appMu.RUnlock()
 	if app != nil {
 		cs.appWrMu.Lock()
 		err := app.WriteMessage(websocket.TextMessage, data)
+		if err == nil && ttsFrame != nil {
+			err = app.WriteMessage(websocket.TextMessage, ttsFrame)
+		}
 		cs.appWrMu.Unlock()
 		if err == nil {
 			return // delivered
@@ -1037,6 +1114,9 @@ func (cs *zcCompatSession) deliverOrBuffer(data []byte, keyShort string) {
 		return
 	}
 	cs.db.push(cs.key, "", "", data)
+	if ttsFrame != nil {
+		cs.db.push(cs.key, "", "", ttsFrame)
+	}
 	fmt.Printf("%sZC compat[%s] buffered (%d B), queue=%d\n", prefixSYS(), keyShort, len(data), cs.db.count(cs.key))
 }
 
