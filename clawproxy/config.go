@@ -20,12 +20,34 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
 	"github.com/BurntSushi/toml"
 	"golang.org/x/crypto/chacha20poly1305"
 )
+
+// readConfigFile reads path directly, falling back to "sudo cat <path>" on
+// permission denied.  This lets clawproxy (running as user "zero") read config
+// files owned by the zeroclaw / picoclaw / openclaw service accounts when the
+// appropriate NOPASSWD rules are installed via daemon/sudoers.d-clawboard.
+func readConfigFile(path string) ([]byte, error) {
+	data, err := os.ReadFile(path) //nolint:gosec
+	if err == nil {
+		return data, nil
+	}
+	if !os.IsPermission(err) {
+		return nil, err
+	}
+	// Permission denied — try "sudo cat" (requires NOPASSWD sudoers rule).
+	out, sudoErr := exec.Command("sudo", "cat", path).Output() //nolint:gosec
+	if sudoErr != nil {
+		// Return the original permission error with a hint.
+		return nil, fmt.Errorf("%w\n  hint: add to /etc/sudoers.d/clawboard:\n    zero ALL=(root) NOPASSWD: /usr/bin/cat %s", err, path)
+	}
+	return out, nil
+}
 
 // ── TOML schema (mirrors zeroclaw's [tts] section) ────────────────────────────
 
@@ -178,7 +200,7 @@ func loadFileConfig(path string) (*fileTtsSection, error) {
 	if path == "" {
 		return nil, nil
 	}
-	data, err := os.ReadFile(path) //nolint:gosec
+	data, err := readConfigFile(path)
 	if os.IsNotExist(err) {
 		return nil, nil
 	}
@@ -405,7 +427,7 @@ func decryptSecret(value, keyFile string) string {
 
 // loadSecretKey reads the 32-byte key from a hex-encoded key file.
 func loadSecretKey(keyFile string) ([]byte, error) {
-	raw, err := os.ReadFile(keyFile) //nolint:gosec
+	raw, err := readConfigFile(keyFile)
 	if err != nil {
 		return nil, fmt.Errorf("read secret key %s: %w", keyFile, err)
 	}
@@ -534,7 +556,7 @@ func loadPicoClawTtsKeys(path string) map[string]string {
 	if path == "" {
 		return nil
 	}
-	data, err := os.ReadFile(path) //nolint:gosec
+	data, err := readConfigFile(path)
 	if os.IsNotExist(err) {
 		return nil
 	}
@@ -653,7 +675,7 @@ func loadOpenClawTtsKeys(path string) map[string]string {
 	if path == "" {
 		return nil
 	}
-	data, err := os.ReadFile(path) //nolint:gosec
+	data, err := readConfigFile(path)
 	if os.IsNotExist(err) {
 		return nil
 	}
