@@ -1,0 +1,766 @@
+package main
+
+// tts.go — Text-to-Speech synthesis endpoints for clawproxy.
+//
+// Mirrors the provider set from zeroclaw-channels/src/tts.rs so that any
+// agent text reply can be converted to audio on demand without requiring a
+// full channel integration.
+//
+// ── New HTTP endpoints (registered by runProxy) ───────────────────────────────
+//
+//   POST /tts/synthesize
+//     Request body (JSON):
+//       {
+//         "text":     "Hello world",   // required, max 4096 chars by default
+//         "provider": "openai",        // optional — openai|elevenlabs|google|edge|piper
+//         "voice":    "alloy",         // optional, provider-specific voice ID/name
+//         "format":   "mp3"            // optional, provider-specific output format
+//       }
+//     Response (JSON, default):
+//       {
+//         "text":      "Hello world",
+//         "audio_b64": "<base64 audio>",
+//         "format":    "mp3",
+//         "provider":  "openai",
+//         "voice":     "alloy"
+//       }
+//     Response (raw audio, when Accept: audio/* or application/octet-stream):
+//       Content-Type: audio/mpeg
+//       X-Tts-Text, X-Tts-Provider, X-Tts-Voice headers
+//       <raw audio bytes>
+//
+//   GET /tts/info
+//     Returns configured provider, default voice/format, and per-provider defaults.
+//
+// ── Provider configuration ────────────────────────────────────────────────────
+//
+//   API keys are read from environment variables (same as zeroclaw):
+//     OPENAI_API_KEY        — OpenAI TTS
+//     ELEVENLABS_API_KEY    — ElevenLabs TTS
+//     GOOGLE_TTS_API_KEY    — Google Cloud TTS
+//
+//   Or via clawproxy flags (see main.go):
+//     --tts-provider  openai|elevenlabs|google|edge|piper  (default: openai)
+//     --tts-voice     provider voice ID                     (default: alloy)
+//     --tts-format    mp3|opus|wav|…                        (default: mp3)
+//     --tts-api-key   override API key for the default provider
+//     --tts-model     openai model name                     (default: tts-1)
+//     --tts-piper-url Piper TTS server URL                  (default: http://127.0.0.1:5000/v1/audio/speech)
+//     --tts-edge-bin  edge-tts binary name                  (default: edge-tts)
+
+import (
+	"bytes"
+	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"regexp"
+	"strings"
+	"time"
+)
+
+// ── Config ────────────────────────────────────────────────────────────────────
+
+// TtsConfig holds runtime TTS settings populated from flags + env vars.
+type TtsConfig struct {
+	Provider    string // default provider: openai|elevenlabs|google|edge|piper|minimax
+	Voice       string // default voice ID
+	Format      string // default output format
+	MaxTextLen  int    // character limit (0 → 4096)
+	OpenAIKey   string
+	OpenAIModel string // default: tts-1
+	ElevenKey   string
+	GoogleKey   string
+	PiperURL    string // default: http://127.0.0.1:5000/v1/audio/speech
+	EdgeBin     string // default: edge-tts
+	// MiniMax TTS (https://platform.minimaxi.com/docs/api-reference/speech-t2a-http)
+	MiniMaxKey     string
+	MiniMaxModel   string // default: speech-2.8-hd
+	MiniMaxBaseURL string // default: https://api.minimaxi.com/v1/t2a_v2
+}
+
+// initTtsConfig builds a TtsConfig from CLI flags, falling back to env vars.
+// This is called once from main() before runProxy().
+func initTtsConfig(provider, voice, format, apiKey, model, piperURL, edgeBin,
+	mmKey, mmModel, mmBaseURL string) *TtsConfig {
+	cfg := &TtsConfig{
+		Provider:       provider,
+		Voice:          voice,
+		Format:         format,
+		OpenAIKey:      apiKey,
+		OpenAIModel:    model,
+		PiperURL:       piperURL,
+		EdgeBin:        edgeBin,
+		MiniMaxKey:     mmKey,
+		MiniMaxModel:   mmModel,
+		MiniMaxBaseURL: mmBaseURL,
+	}
+
+	// Env var fallbacks (same names as zeroclaw uses)
+	if cfg.OpenAIKey == "" {
+		cfg.OpenAIKey = os.Getenv("OPENAI_API_KEY")
+	}
+	if cfg.ElevenKey == "" {
+		cfg.ElevenKey = os.Getenv("ELEVENLABS_API_KEY")
+	}
+	if cfg.GoogleKey == "" {
+		cfg.GoogleKey = os.Getenv("GOOGLE_TTS_API_KEY")
+	}
+	if cfg.MiniMaxKey == "" {
+		cfg.MiniMaxKey = os.Getenv("MINIMAX_API_KEY")
+	}
+
+	// Defaults
+	if cfg.Provider == "" {
+		cfg.Provider = "openai"
+	}
+	if cfg.Voice == "" {
+		cfg.Voice = defaultVoiceFor(cfg.Provider)
+	}
+	if cfg.Format == "" {
+		cfg.Format = "mp3"
+	}
+	if cfg.OpenAIModel == "" {
+		cfg.OpenAIModel = "tts-1"
+	}
+	if cfg.PiperURL == "" {
+		cfg.PiperURL = "http://127.0.0.1:5000/v1/audio/speech"
+	}
+	if cfg.EdgeBin == "" {
+		cfg.EdgeBin = "edge-tts"
+	}
+	if cfg.MiniMaxModel == "" {
+		cfg.MiniMaxModel = "speech-2.8-hd"
+	}
+	if cfg.MiniMaxBaseURL == "" {
+		cfg.MiniMaxBaseURL = "https://api.minimaxi.com/v1/t2a_v2"
+	}
+	cfg.MaxTextLen = 4096
+	return cfg
+}
+
+func defaultVoiceFor(provider string) string {
+	switch provider {
+	case "openai":
+		return "alloy"
+	case "elevenlabs":
+		return "21m00Tcm4TlvDq8ikWAM" // ElevenLabs default voice ID
+	case "google":
+		return "en-US-Standard-A"
+	case "edge":
+		return "en-US-AriaNeural"
+	case "piper":
+		return "en_US-lessac-medium"
+	case "minimax":
+		return "male-qn-qingse" // MiniMax default; see voice list in platform docs
+	default:
+		return "alloy"
+	}
+}
+
+// ── Request / Response types ──────────────────────────────────────────────────
+
+type ttsRequest struct {
+	Text     string `json:"text"`
+	Provider string `json:"provider"`
+	Voice    string `json:"voice"`
+	Format   string `json:"format"`
+}
+
+type ttsResponse struct {
+	Text     string `json:"text"`
+	AudioB64 string `json:"audio_b64"`
+	Format   string `json:"format"`
+	Provider string `json:"provider"`
+	Voice    string `json:"voice"`
+}
+
+type ttsInfoResponse struct {
+	DefaultProvider string            `json:"default_provider"`
+	DefaultVoice    string            `json:"default_voice"`
+	DefaultFormat   string            `json:"default_format"`
+	MaxTextLength   int               `json:"max_text_length"`
+	Providers       map[string]any    `json:"providers"`
+}
+
+// ── HTTP handlers ─────────────────────────────────────────────────────────────
+
+// POST /tts/synthesize — convert text to audio using a configured TTS provider.
+func handleTTS(cfg *TtsConfig) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			jsonError(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		body, err := io.ReadAll(io.LimitReader(r.Body, 128*1024))
+		if err != nil {
+			jsonError(w, "cannot read request body", http.StatusBadRequest)
+			return
+		}
+
+		var req ttsRequest
+		if err := json.Unmarshal(body, &req); err != nil {
+			jsonError(w, "invalid JSON body", http.StatusBadRequest)
+			return
+		}
+
+		text := strings.TrimSpace(req.Text)
+		if text == "" {
+			jsonError(w, "text is required", http.StatusBadRequest)
+			return
+		}
+		maxLen := cfg.MaxTextLen
+		if maxLen <= 0 {
+			maxLen = 4096
+		}
+		if len([]rune(text)) > maxLen {
+			jsonError(w, fmt.Sprintf("text too long (%d chars, max %d)", len([]rune(text)), maxLen), http.StatusBadRequest)
+			return
+		}
+
+		// Resolve effective provider/voice/format (request overrides config default)
+		provider := req.Provider
+		if provider == "" {
+			provider = cfg.Provider
+		}
+		voice := req.Voice
+		if voice == "" {
+			voice = cfg.Voice
+		}
+		// If the default voice was set for a different provider, use the
+		// per-provider default instead.
+		if req.Voice == "" && req.Provider != "" && req.Provider != cfg.Provider {
+			voice = defaultVoiceFor(req.Provider)
+		}
+		format := req.Format
+		if format == "" {
+			format = cfg.Format
+		}
+
+		fmt.Printf("%sTTS synthesize  provider=%s  voice=%s  format=%s  len=%d\n",
+			prefixSYS(), provider, voice, format, len([]rune(text)))
+
+		audio, outFormat, err := synthesize(text, provider, voice, format, cfg)
+		if err != nil {
+			fmt.Printf("%sTTS error: %v\n", prefixERR(), err)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadGateway)
+			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()}) //nolint:errcheck
+			return
+		}
+
+		// If client explicitly wants raw audio, stream bytes.
+		accept := r.Header.Get("Accept")
+		if strings.HasPrefix(accept, "audio/") || accept == "application/octet-stream" {
+			w.Header().Set("Content-Type", audioMIME(outFormat))
+			w.Header().Set("X-Tts-Text", text)
+			w.Header().Set("X-Tts-Provider", provider)
+			w.Header().Set("X-Tts-Voice", voice)
+			w.Header().Set("X-Tts-Format", outFormat)
+			w.Write(audio) //nolint:errcheck
+			return
+		}
+
+		// Default: JSON envelope with base64 audio.
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(ttsResponse{ //nolint:errcheck
+			Text:     text,
+			AudioB64: base64.StdEncoding.EncodeToString(audio),
+			Format:   outFormat,
+			Provider: provider,
+			Voice:    voice,
+		})
+	}
+}
+
+// GET /tts/info — describe the configured TTS setup.
+func handleTTSInfo(cfg *TtsConfig) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			jsonError(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		providers := map[string]any{
+			"openai": map[string]any{
+				"configured": cfg.OpenAIKey != "",
+				"model":      cfg.OpenAIModel,
+				"voices":     []string{"alloy", "echo", "fable", "onyx", "nova", "shimmer"},
+				"formats":    []string{"mp3", "opus", "aac", "flac", "wav", "pcm"},
+			},
+			"elevenlabs": map[string]any{
+				"configured": cfg.ElevenKey != "",
+				"voices":     []string{"(dynamic — use ElevenLabs voice IDs)"},
+				"formats":    []string{"mp3", "pcm", "ulaw"},
+			},
+			"google": map[string]any{
+				"configured": cfg.GoogleKey != "",
+				"voices":     []string{"en-US-Standard-A", "en-US-Standard-B", "en-US-Standard-C", "en-US-Standard-D"},
+				"formats":    []string{"mp3", "wav", "ogg"},
+			},
+			"edge": map[string]any{
+				"configured": true, // subprocess, no key required
+				"binary":     cfg.EdgeBin,
+				"voices":     []string{"en-US-AriaNeural", "en-US-GuyNeural", "en-US-JennyNeural", "en-GB-SoniaNeural"},
+				"formats":    []string{"mp3"},
+			},
+			"piper": map[string]any{
+				"configured": true, // local server, no key required
+				"api_url":    cfg.PiperURL,
+				"voices":     []string{"(dynamic — depends on installed Piper models)"},
+				"formats":    []string{"mp3", "wav", "opus"},
+			},
+			"minimax": map[string]any{
+				"configured": cfg.MiniMaxKey != "",
+				"model":      cfg.MiniMaxModel,
+				"base_url":   cfg.MiniMaxBaseURL,
+				// Common built-in voices; custom cloned voices are account-specific.
+				"voices": []string{
+					"male-qn-qingse", "female-shaonv", "male-qn-jingying",
+					"audiobook_male_1", "audiobook_female_1",
+					"English_Ethan", "English_Olivia",
+				},
+				"formats": []string{"mp3", "wav", "flac"},
+				"note":    "audio returned as hex-encoded string in data.audio field (decoded automatically)",
+			},
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(ttsInfoResponse{ //nolint:errcheck
+			DefaultProvider: cfg.Provider,
+			DefaultVoice:    cfg.Voice,
+			DefaultFormat:   cfg.Format,
+			MaxTextLength:   cfg.MaxTextLen,
+			Providers:       providers,
+		})
+	}
+}
+
+// jsonError writes a JSON {"error":"..."} response.
+func jsonError(w http.ResponseWriter, msg string, code int) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	json.NewEncoder(w).Encode(map[string]string{"error": msg}) //nolint:errcheck
+}
+
+// audioMIME maps a format name to its MIME type.
+func audioMIME(format string) string {
+	switch format {
+	case "mp3":
+		return "audio/mpeg"
+	case "opus":
+		return "audio/ogg; codecs=opus"
+	case "aac":
+		return "audio/aac"
+	case "flac":
+		return "audio/flac"
+	case "wav":
+		return "audio/wav"
+	case "pcm":
+		return "audio/pcm"
+	default:
+		return "audio/mpeg"
+	}
+}
+
+// ── Synthesis dispatcher ──────────────────────────────────────────────────────
+
+// synthesize converts text to audio using the named provider.
+// Returns: raw audio bytes, actual format string, error.
+func synthesize(text, provider, voice, format string, cfg *TtsConfig) ([]byte, string, error) {
+	switch provider {
+	case "openai":
+		return synthOpenAI(text, voice, format, cfg)
+	case "elevenlabs":
+		return synthElevenLabs(text, voice, cfg)
+	case "google":
+		return synthGoogle(text, voice, cfg)
+	case "edge":
+		return synthEdge(text, voice, cfg)
+	case "piper":
+		return synthPiper(text, voice, cfg)
+	case "minimax":
+		return synthMiniMax(text, voice, format, cfg)
+	default:
+		return nil, "", fmt.Errorf("unknown TTS provider %q (valid: openai, elevenlabs, google, edge, piper, minimax)", provider)
+	}
+}
+
+// ── OpenAI TTS ────────────────────────────────────────────────────────────────
+// Mirrors: zeroclaw-channels/src/tts.rs OpenAiTtsProvider::synthesize
+// Endpoint: POST https://api.openai.com/v1/audio/speech
+
+func synthOpenAI(text, voice, format string, cfg *TtsConfig) ([]byte, string, error) {
+	if cfg.OpenAIKey == "" {
+		return nil, "", fmt.Errorf("OpenAI TTS: no API key — set OPENAI_API_KEY or --tts-api-key")
+	}
+	if voice == "" {
+		voice = "alloy"
+	}
+	if format == "" {
+		format = "mp3"
+	}
+
+	payload := map[string]any{
+		"model":           cfg.OpenAIModel,
+		"input":           text,
+		"voice":           voice,
+		"response_format": format,
+		"speed":           1.0,
+	}
+	bodyJSON, _ := json.Marshal(payload)
+
+	req, err := http.NewRequest(http.MethodPost, "https://api.openai.com/v1/audio/speech", bytes.NewReader(bodyJSON))
+	if err != nil {
+		return nil, "", fmt.Errorf("OpenAI TTS: build request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+cfg.OpenAIKey)
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 60 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, "", fmt.Errorf("OpenAI TTS: request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	audio, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		var errBody map[string]any
+		json.Unmarshal(audio, &errBody) //nolint:errcheck
+		msg := "unknown"
+		if e, ok := errBody["error"].(map[string]any); ok {
+			if m, ok := e["message"].(string); ok {
+				msg = m
+			}
+		}
+		return nil, "", fmt.Errorf("OpenAI TTS error (%d): %s", resp.StatusCode, msg)
+	}
+	return audio, format, nil
+}
+
+// ── ElevenLabs TTS ────────────────────────────────────────────────────────────
+// Mirrors: zeroclaw-channels/src/tts.rs ElevenLabsTtsProvider::synthesize
+// Endpoint: POST https://api.elevenlabs.io/v1/text-to-speech/{voice_id}
+
+// elevenLabsVoiceRe validates ElevenLabs voice IDs (same rule as the Rust code).
+var elevenLabsVoiceRe = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
+
+func synthElevenLabs(text, voice string, cfg *TtsConfig) ([]byte, string, error) {
+	if cfg.ElevenKey == "" {
+		return nil, "", fmt.Errorf("ElevenLabs TTS: no API key — set ELEVENLABS_API_KEY or --tts-api-key")
+	}
+	if voice == "" {
+		voice = "21m00Tcm4TlvDq8ikWAM"
+	}
+	if !elevenLabsVoiceRe.MatchString(voice) {
+		return nil, "", fmt.Errorf("ElevenLabs TTS: voice ID contains invalid characters: %s", voice)
+	}
+
+	url := fmt.Sprintf("https://api.elevenlabs.io/v1/text-to-speech/%s", voice)
+	payload := map[string]any{
+		"text":     text,
+		"model_id": "eleven_monolingual_v1",
+		"voice_settings": map[string]any{
+			"stability":        0.5,
+			"similarity_boost": 0.5,
+		},
+	}
+	bodyJSON, _ := json.Marshal(payload)
+
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(bodyJSON))
+	if err != nil {
+		return nil, "", fmt.Errorf("ElevenLabs TTS: build request: %w", err)
+	}
+	req.Header.Set("xi-api-key", cfg.ElevenKey)
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 60 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, "", fmt.Errorf("ElevenLabs TTS: request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	audio, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		var errBody map[string]any
+		json.Unmarshal(audio, &errBody) //nolint:errcheck
+		msg := "unknown"
+		if d, ok := errBody["detail"].(map[string]any); ok {
+			if m, ok := d["message"].(string); ok {
+				msg = m
+			}
+		} else if m, ok := errBody["detail"].(string); ok {
+			msg = m
+		}
+		return nil, "", fmt.Errorf("ElevenLabs TTS error (%d): %s", resp.StatusCode, msg)
+	}
+	return audio, "mp3", nil
+}
+
+// ── Google Cloud TTS ──────────────────────────────────────────────────────────
+// Mirrors: zeroclaw-channels/src/tts.rs GoogleTtsProvider::synthesize
+// Endpoint: POST https://texttospeech.googleapis.com/v1/text:synthesize
+// Note: Google returns base64-encoded audio in the response body — we decode it.
+
+func synthGoogle(text, voice string, cfg *TtsConfig) ([]byte, string, error) {
+	if cfg.GoogleKey == "" {
+		return nil, "", fmt.Errorf("Google TTS: no API key — set GOOGLE_TTS_API_KEY or --tts-api-key")
+	}
+	if voice == "" {
+		voice = "en-US-Standard-A"
+	}
+
+	// Infer language code from voice name (e.g. "en-US-Standard-A" → "en-US")
+	langCode := "en-US"
+	parts := strings.SplitN(voice, "-", 3)
+	if len(parts) >= 2 {
+		langCode = parts[0] + "-" + parts[1]
+	}
+
+	payload := map[string]any{
+		"input": map[string]any{"text": text},
+		"voice": map[string]any{
+			"languageCode": langCode,
+			"name":         voice,
+		},
+		"audioConfig": map[string]any{
+			"audioEncoding": "MP3",
+		},
+	}
+	bodyJSON, _ := json.Marshal(payload)
+
+	req, err := http.NewRequest(http.MethodPost, "https://texttospeech.googleapis.com/v1/text:synthesize", bytes.NewReader(bodyJSON))
+	if err != nil {
+		return nil, "", fmt.Errorf("Google TTS: build request: %w", err)
+	}
+	req.Header.Set("x-goog-api-key", cfg.GoogleKey)
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 60 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, "", fmt.Errorf("Google TTS: request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	var respBody map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&respBody); err != nil {
+		return nil, "", fmt.Errorf("Google TTS: invalid response JSON")
+	}
+	if resp.StatusCode >= 400 {
+		msg := "unknown"
+		if e, ok := respBody["error"].(map[string]any); ok {
+			if m, ok := e["message"].(string); ok {
+				msg = m
+			}
+		}
+		return nil, "", fmt.Errorf("Google TTS error (%d): %s", resp.StatusCode, msg)
+	}
+
+	// Google returns base64-encoded audio in "audioContent" field.
+	b64, ok := respBody["audioContent"].(string)
+	if !ok {
+		return nil, "", fmt.Errorf("Google TTS: response missing 'audioContent' field")
+	}
+	audio, err := base64.StdEncoding.DecodeString(b64)
+	if err != nil {
+		return nil, "", fmt.Errorf("Google TTS: base64 decode: %w", err)
+	}
+	return audio, "mp3", nil
+}
+
+// ── Edge TTS (subprocess) ─────────────────────────────────────────────────────
+// Mirrors: zeroclaw-channels/src/tts.rs EdgeTtsProvider::synthesize
+// Uses the `edge-tts` CLI subprocess; writes audio to a temp file then reads it.
+
+// edgeTTSAllowedBinaries matches the allowlist in the Rust source.
+var edgeTTSAllowedBinaries = map[string]bool{
+	"edge-tts":      true,
+	"edge-playback": true,
+}
+
+func synthEdge(text, voice string, cfg *TtsConfig) ([]byte, string, error) {
+	bin := cfg.EdgeBin
+	if bin == "" {
+		bin = "edge-tts"
+	}
+	// Security: only allow bare command names matching the allowlist
+	// (prevents path traversal like /tmp/malicious/edge-tts passing the check).
+	if strings.ContainsAny(bin, "/\\") {
+		return nil, "", fmt.Errorf("edge-tts: binary path must not contain path separators, got: %s", bin)
+	}
+	if !edgeTTSAllowedBinaries[bin] {
+		return nil, "", fmt.Errorf("edge-tts: binary must be 'edge-tts' or 'edge-playback', got: %s", bin)
+	}
+	if voice == "" {
+		voice = "en-US-AriaNeural"
+	}
+
+	tmpFile := filepath.Join(os.TempDir(), fmt.Sprintf("clawproxy_tts_%d.mp3", time.Now().UnixNano()))
+	defer os.Remove(tmpFile) //nolint:errcheck
+
+	cmd := exec.Command(bin, "--text", text, "--voice", voice, "--write-media", tmpFile)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return nil, "", fmt.Errorf("edge-tts error: %s", strings.TrimSpace(string(out)))
+	}
+
+	audio, err := os.ReadFile(tmpFile)
+	if err != nil {
+		return nil, "", fmt.Errorf("edge-tts: cannot read output file: %w", err)
+	}
+	return audio, "mp3", nil
+}
+
+// ── Piper TTS (local, OpenAI-compatible) ──────────────────────────────────────
+// Mirrors: zeroclaw-channels/src/tts.rs PiperTtsProvider::synthesize
+// Piper runs a local HTTP server with the OpenAI /v1/audio/speech endpoint.
+
+func synthPiper(text, voice string, cfg *TtsConfig) ([]byte, string, error) {
+	url := cfg.PiperURL
+	if url == "" {
+		url = "http://127.0.0.1:5000/v1/audio/speech"
+	}
+	payload := map[string]any{
+		"model": "tts-1",
+		"input": text,
+		"voice": voice,
+	}
+	bodyJSON, _ := json.Marshal(payload)
+
+	client := &http.Client{Timeout: 60 * time.Second}
+	resp, err := client.Post(url, "application/json", bytes.NewReader(bodyJSON)) //nolint:gosec
+	if err != nil {
+		return nil, "", fmt.Errorf("Piper TTS: request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	audio, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		return nil, "", fmt.Errorf("Piper TTS error (%d)", resp.StatusCode)
+	}
+	return audio, "wav", nil
+}
+
+// ── MiniMax TTS ───────────────────────────────────────────────────────────────
+// API docs: https://platform.minimaxi.com/docs/api-reference/speech-t2a-http
+//
+// Key differences from other providers that require custom handling:
+//
+//   1. Audio encoding: response body is JSON; audio lives in data.audio as a
+//      HEX string (not raw bytes, not base64) — must be decoded with hex.DecodeString.
+//
+//   2. Voice field: not a top-level parameter; lives in voice_setting.voice_id.
+//
+//   3. Format field: not top-level; lives in audio_setting.format.
+//
+//   4. Model: required field, unlike other providers.
+//
+//   5. Errors: indicated by base_resp.status_code (non-zero = error), not HTTP status.
+//
+//   6. Dual base URL:
+//        Primary: https://api.minimaxi.com/v1/t2a_v2
+//        Backup:  https://api-bj.minimaxi.com/v1/t2a_v2
+//      We use the primary; override with --tts-minimax-url or MINIMAX_BASE_URL.
+
+func synthMiniMax(text, voice, format string, cfg *TtsConfig) ([]byte, string, error) {
+	if cfg.MiniMaxKey == "" {
+		return nil, "", fmt.Errorf("MiniMax TTS: no API key — set MINIMAX_API_KEY or --tts-minimax-key")
+	}
+	if voice == "" {
+		voice = "male-qn-qingse"
+	}
+	if format == "" {
+		format = "mp3"
+	}
+	// MiniMax only supports mp3, wav, flac for non-streaming.
+	switch format {
+	case "mp3", "wav", "flac":
+		// ok
+	default:
+		return nil, "", fmt.Errorf("MiniMax TTS: unsupported format %q (valid: mp3, wav, flac)", format)
+	}
+
+	model := cfg.MiniMaxModel
+	if model == "" {
+		model = "speech-2.8-hd"
+	}
+	baseURL := cfg.MiniMaxBaseURL
+	if baseURL == "" {
+		baseURL = "https://api.minimaxi.com/v1/t2a_v2"
+	}
+
+	payload := map[string]any{
+		"model":         model,
+		"text":          text,
+		"stream":        false,
+		"output_format": "hex", // always hex so we get raw bytes in JSON
+		"voice_setting": map[string]any{
+			"voice_id": voice,
+			"speed":    1,
+			"vol":      1,
+			"pitch":    0,
+		},
+		"audio_setting": map[string]any{
+			"format":  format,
+			"channel": 1,
+		},
+	}
+	bodyJSON, _ := json.Marshal(payload)
+
+	req, err := http.NewRequest(http.MethodPost, baseURL, bytes.NewReader(bodyJSON))
+	if err != nil {
+		return nil, "", fmt.Errorf("MiniMax TTS: build request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+cfg.MiniMaxKey)
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 120 * time.Second} // MiniMax can be slower
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, "", fmt.Errorf("MiniMax TTS: request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	var respBody map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&respBody); err != nil {
+		return nil, "", fmt.Errorf("MiniMax TTS: invalid response JSON")
+	}
+
+	// Check HTTP-level errors first.
+	if resp.StatusCode >= 400 {
+		return nil, "", fmt.Errorf("MiniMax TTS: HTTP %d", resp.StatusCode)
+	}
+
+	// Check MiniMax application-level errors (base_resp.status_code != 0).
+	if br, ok := respBody["base_resp"].(map[string]any); ok {
+		if code, _ := br["status_code"].(float64); code != 0 {
+			msg, _ := br["status_msg"].(string)
+			return nil, "", fmt.Errorf("MiniMax TTS error (code %d): %s", int(code), msg)
+		}
+	}
+
+	// Extract hex-encoded audio from data.audio.
+	dataObj, ok := respBody["data"].(map[string]any)
+	if !ok {
+		return nil, "", fmt.Errorf("MiniMax TTS: response missing 'data' field")
+	}
+	audioHex, ok := dataObj["audio"].(string)
+	if !ok || audioHex == "" {
+		return nil, "", fmt.Errorf("MiniMax TTS: response missing 'data.audio' field")
+	}
+
+	// Decode hex → raw audio bytes.
+	audio, err := hex.DecodeString(audioHex)
+	if err != nil {
+		return nil, "", fmt.Errorf("MiniMax TTS: hex decode failed: %w", err)
+	}
+	return audio, format, nil
+}

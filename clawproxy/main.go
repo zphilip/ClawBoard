@@ -868,7 +868,7 @@ func main() {
 	ttsEdgeBin  := flag.String("tts-edge-bin", "edge-tts", "edge-tts binary name (edge-tts or edge-playback)")
 	// MiniMax TTS flags (env var: MINIMAX_API_KEY)
 	ttsMMKey     := flag.String("tts-minimax-key", "", "MiniMax TTS API key (overrides MINIMAX_API_KEY)")
-	ttsMMModel   := flag.String("tts-minimax-model", "speech-02-turbo", "MiniMax TTS model (speech-2.8-hd, speech-02-turbo, …)")
+	ttsMMModel   := flag.String("tts-minimax-model", "speech-2.8-hd", "MiniMax TTS model (speech-2.8-hd, speech-02-turbo, …)")
 	ttsMMBaseURL := flag.String("tts-minimax-url", "", "MiniMax TTS base URL (default: https://api.minimaxi.com/v1/t2a_v2; backup: https://api-bj.minimaxi.com/v1/t2a_v2)")
 
 	flag.Parse()
