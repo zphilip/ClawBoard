@@ -859,23 +859,25 @@ func main() {
 	queueTTL := flag.Int("queue-ttl", 86400, "buffered message TTL in seconds (0 = no expiry)")
 
 	// TTS flags (proxy mode only — registers /tts/synthesize and /tts/info)
-	ttsProvider := flag.String("tts-provider", "openai", "default TTS provider: openai|elevenlabs|google|edge|piper|minimax")
+	ttsProvider := flag.String("tts-provider", "", "default TTS provider: openai|elevenlabs|google|edge|piper|minimax (default from config or openai)")
 	ttsVoice    := flag.String("tts-voice", "", "default TTS voice ID (provider-specific)")
-	ttsFormat   := flag.String("tts-format", "mp3", "default TTS output format (mp3|opus|wav|…)")
+	ttsFormat   := flag.String("tts-format", "", "default TTS output format (mp3|opus|wav|…, default from config or mp3)")
 	ttsAPIKey   := flag.String("tts-api-key", "", "TTS API key (overrides OPENAI_API_KEY / ELEVENLABS_API_KEY / GOOGLE_TTS_API_KEY)")
-	ttsModel    := flag.String("tts-model", "tts-1", "OpenAI TTS model name")
+	ttsModel    := flag.String("tts-model", "", "OpenAI TTS model name (default from config or tts-1)")
 	ttsPiperURL := flag.String("tts-piper-url", "", "Piper TTS server URL (default: http://127.0.0.1:5000/v1/audio/speech)")
-	ttsEdgeBin  := flag.String("tts-edge-bin", "edge-tts", "edge-tts binary name (edge-tts or edge-playback)")
+	ttsEdgeBin  := flag.String("tts-edge-bin", "", "edge-tts binary name (default: edge-tts)")
 	// MiniMax TTS flags (env var: MINIMAX_API_KEY)
 	ttsMMKey     := flag.String("tts-minimax-key", "", "MiniMax TTS API key (overrides MINIMAX_API_KEY)")
-	ttsMMModel   := flag.String("tts-minimax-model", "speech-2.8-hd", "MiniMax TTS model (speech-2.8-hd, speech-02-turbo, …)")
-	ttsMMBaseURL := flag.String("tts-minimax-url", "", "MiniMax TTS base URL (default: https://api.minimaxi.com/v1/t2a_v2; backup: https://api-bj.minimaxi.com/v1/t2a_v2)")
+	ttsMMModel   := flag.String("tts-minimax-model", "", "MiniMax TTS model (default from config or speech-2.8-hd)")
+	ttsMMBaseURL := flag.String("tts-minimax-url", "", "MiniMax TTS base URL (default: https://api.minimaxi.com/v1/t2a_v2)")
+	// Config file flag — mirrors zeroclaw's config.toml path discovery
+	configPath   := flag.String("config", "", "path to TOML config file (default: auto-discover ~/.zeroclaw/config.toml; use '-' to disable)")
 
 	flag.Parse()
 
-	// Initialise TTS config (reads env vars for API keys; used by proxy routes).
+	// Initialise TTS config (config file → env vars → CLI flags → built-in defaults).
 	ttsCfg := initTtsConfig(*ttsProvider, *ttsVoice, *ttsFormat, *ttsAPIKey, *ttsModel, *ttsPiperURL, *ttsEdgeBin,
-		*ttsMMKey, *ttsMMModel, *ttsMMBaseURL)
+		*ttsMMKey, *ttsMMModel, *ttsMMBaseURL, *configPath)
 
 	// auto-enable based on supplied flags
 	if *zcToken != "" || *zcPairCode != "" {

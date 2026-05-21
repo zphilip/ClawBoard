@@ -84,10 +84,19 @@ type TtsConfig struct {
 	MiniMaxBaseURL string // default: https://api.minimaxi.com/v1/t2a_v2
 }
 
-// initTtsConfig builds a TtsConfig from CLI flags, falling back to env vars.
-// This is called once from main() before runProxy().
+// initTtsConfig builds a TtsConfig from CLI flags, env vars, and optionally a
+// TOML config file (same path as zeroclaw's config.toml).
+//
+// Priority (highest → lowest):
+//   1. CLI flags  (non-empty string passed in)
+//   2. Env vars   (OPENAI_API_KEY, ELEVENLABS_API_KEY, …)
+//   3. Config file (~/.zeroclaw/config.toml [tts] section)
+//   4. Built-in defaults
+//
+// configPath="" means auto-discover via discoverConfigPath().
+// Pass configPath="-" to disable config file loading entirely.
 func initTtsConfig(provider, voice, format, apiKey, model, piperURL, edgeBin,
-	mmKey, mmModel, mmBaseURL string) *TtsConfig {
+	mmKey, mmModel, mmBaseURL, configPath string) *TtsConfig {
 	cfg := &TtsConfig{
 		Provider:       provider,
 		Voice:          voice,
@@ -101,7 +110,7 @@ func initTtsConfig(provider, voice, format, apiKey, model, piperURL, edgeBin,
 		MiniMaxBaseURL: mmBaseURL,
 	}
 
-	// Env var fallbacks (same names as zeroclaw uses)
+	// Env var fallbacks (same names as zeroclaw uses).
 	if cfg.OpenAIKey == "" {
 		cfg.OpenAIKey = os.Getenv("OPENAI_API_KEY")
 	}
@@ -115,7 +124,22 @@ func initTtsConfig(provider, voice, format, apiKey, model, piperURL, edgeBin,
 		cfg.MiniMaxKey = os.Getenv("MINIMAX_API_KEY")
 	}
 
-	// Defaults
+	// Config file fallback.
+	if configPath != "-" {
+		if configPath == "" {
+			configPath = discoverConfigPath()
+		}
+		if fc, err := loadFileConfig(configPath); err != nil {
+			fmt.Fprintf(os.Stderr, "[clawproxy] warning: could not read config %s: %v\n", configPath, err)
+		} else if fc != nil {
+			applyFileTtsConfig(cfg, fc)
+			if configPath != "" {
+				fmt.Printf("%sLoaded TTS config from %s\n", prefixSYS(), configPath)
+			}
+		}
+	}
+
+	// Built-in defaults (lowest priority).
 	if cfg.Provider == "" {
 		cfg.Provider = "openai"
 	}
@@ -142,6 +166,54 @@ func initTtsConfig(provider, voice, format, apiKey, model, piperURL, edgeBin,
 	}
 	cfg.MaxTextLen = 4096
 	return cfg
+}
+
+// applyFileTtsConfig applies values from a parsed TOML [tts] section into cfg,
+// skipping any field already set by a CLI flag or env var (non-empty string).
+func applyFileTtsConfig(cfg *TtsConfig, fc *fileTtsSection) {
+	if cfg.Provider == "" && fc.DefaultProvider != "" {
+		cfg.Provider = fc.DefaultProvider
+	}
+	if cfg.Voice == "" && fc.DefaultVoice != "" {
+		cfg.Voice = fc.DefaultVoice
+	}
+	if cfg.Format == "" && fc.DefaultFormat != "" {
+		cfg.Format = fc.DefaultFormat
+	}
+	if fc.MaxTextLength > 0 && cfg.MaxTextLen == 0 {
+		cfg.MaxTextLen = fc.MaxTextLength
+	}
+	if fc.OpenAI != nil {
+		if cfg.OpenAIKey == "" {
+			cfg.OpenAIKey = fc.OpenAI.APIKey
+		}
+		if cfg.OpenAIModel == "" {
+			cfg.OpenAIModel = fc.OpenAI.Model
+		}
+	}
+	if fc.ElevenLabs != nil && cfg.ElevenKey == "" {
+		cfg.ElevenKey = fc.ElevenLabs.APIKey
+	}
+	if fc.Google != nil && cfg.GoogleKey == "" {
+		cfg.GoogleKey = fc.Google.APIKey
+	}
+	if fc.Edge != nil && cfg.EdgeBin == "" && fc.Edge.BinaryPath != "" {
+		cfg.EdgeBin = fc.Edge.BinaryPath
+	}
+	if fc.Piper != nil && cfg.PiperURL == "" && fc.Piper.APIURL != "" {
+		cfg.PiperURL = fc.Piper.APIURL
+	}
+	if fc.MiniMax != nil {
+		if cfg.MiniMaxKey == "" {
+			cfg.MiniMaxKey = fc.MiniMax.APIKey
+		}
+		if cfg.MiniMaxModel == "" {
+			cfg.MiniMaxModel = fc.MiniMax.Model
+		}
+		if cfg.MiniMaxBaseURL == "" {
+			cfg.MiniMaxBaseURL = fc.MiniMax.BaseURL
+		}
+	}
 }
 
 func defaultVoiceFor(provider string) string {
