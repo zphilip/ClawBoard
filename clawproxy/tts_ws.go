@@ -201,6 +201,32 @@ func buildTtsChunkFrame(text string, seq int, isFinal bool, opts *ttsConnOpts, c
 // or standalone Chinese/Japanese full-stop punctuation.
 var sentenceRe = regexp.MustCompile(`[.!?]+[\s\n]+|[。！？]`)
 
+// stripThink removes <think>…</think> blocks that may span multiple calls.
+// inThink tracks whether we are currently inside a think block.
+// Returns (cleaned text, updated inThink state).
+func stripThink(s string, inThink bool) (string, bool) {
+	var out strings.Builder
+	for {
+		if inThink {
+			end := strings.Index(s, "</think>")
+			if end == -1 {
+				return out.String(), true // still inside block
+			}
+			s = s[end+len("</think>"):]
+			inThink = false
+		} else {
+			start := strings.Index(s, "<think>")
+			if start == -1 {
+				out.WriteString(s)
+				return out.String(), false
+			}
+			out.WriteString(s[:start])
+			s = s[start+len("<think>"):]
+			inThink = true
+		}
+	}
+}
+
 // splitSentences splits buf on sentence boundaries.
 // Returns the list of complete sentences and the trailing partial (may be empty).
 func splitSentences(buf string) (sentences []string, remainder string) {
@@ -359,6 +385,7 @@ func (s *proxyServer) handleZCTTSStream(w http.ResponseWriter, r *http.Request) 
 	// Upstream → app + TTS pipeline main loop.
 	textBuf := ""
 	seq := 0
+	inThink := false // tracks whether we are inside a <think> block
 	submitSentence := func(text string, isFinal bool) {
 		if strings.TrimSpace(text) == "" {
 			return
@@ -386,31 +413,48 @@ func (s *proxyServer) handleZCTTSStream(w http.ResponseWriter, r *http.Request) 
 
 		switch msg.Type {
 		case "chunk":
-			// Accumulate and sentence-split as text streams in.
-			textBuf += msg.Content
+			// Strip <think>...</think> blocks before accumulating.
+			clean, newInThink := stripThink(msg.Content, inThink)
+			inThink = newInThink
+			if clean == "" {
+				continue
+			}
+			textBuf += clean
 			sentences, remainder := splitSentences(textBuf)
 			textBuf = remainder
 			for _, sent := range sentences {
 				submitSentence(sent, false)
 			}
 
+		case "chunk_reset":
+			// The agent reset its output buffer (e.g. after a think block).
+			// Flush any partial sentence we accumulated so the pipeline can
+			// finish, then clear state for the next segment.
+			if rem := strings.TrimSpace(textBuf); rem != "" {
+				submitSentence(rem, false)
+			}
+			textBuf = ""
+			inThink = false
+
 		case "done":
 			// Flush any trailing partial sentence.
 			if rem := strings.TrimSpace(textBuf); rem != "" {
 				submitSentence(rem, true)
 			} else if seq == 0 {
-				// Agent replied without streaming (full text in "done").
+				// Agent replied without streaming — use full_response, strip think.
 				full := msg.FullResponse
 				if full == "" {
 					full = msg.Content
 				}
-				submitSentence(full, true)
+				clean, _ := stripThink(full, false)
+				submitSentence(clean, true)
 			}
 			textBuf = ""
 
 		case "message":
-			// Non-streaming agent response.
-			submitSentence(msg.Content, true)
+			// Non-streaming agent response — strip think just in case.
+			clean, _ := stripThink(msg.Content, false)
+			submitSentence(clean, true)
 		}
 	}
 

@@ -275,7 +275,8 @@ func dialWS(rawURL string, timeout time.Duration) (*websocket.Conn, time.Duratio
 	return conn, time.Since(t0), err
 }
 
-// readFrames reads all frames until done/error/timeout; deadline is absolute.
+// readFrames reads all frames until error/tts.audio/timeout; deadline is absolute.
+// Does NOT stop on "done" — TTS audio frames may arrive after it.
 func readFrames(conn *websocket.Conn, deadline time.Time) []frame {
 	var frames []frame
 	for time.Now().Before(deadline) {
@@ -288,10 +289,13 @@ func readFrames(conn *websocket.Conn, deadline time.Time) []frame {
 		if json.Unmarshal(msg, &f) == nil {
 			frames = append(frames, f)
 			t := f.typ()
-			// Stop reading on terminal frames
-			if t == "done" || t == "error" || t == "tts.audio" {
-				// For streaming we may still expect more frames after tts.audio,
-				// but the server closes after is_final=true so this is fine.
+			// Stop on error or tts.audio (server closes conn after is_final).
+			// Do NOT break on "done" — TTS audio frames arrive asynchronously
+			// after the agent's done frame.
+			if t == "error" {
+				break
+			}
+			if t == "tts.audio" {
 				break
 			}
 		}
@@ -679,7 +683,9 @@ func printFrameDump(wsURL, sendJSON string, timeout time.Duration) {
 		}
 		fmt.Printf("  %s[%s]%s %s\n", colour, t, cReset, string(pretty))
 
-		if t == "done" || t == "error" {
+		// Stop on error, or on the final tts.audio (server closes after is_final).
+		// Do NOT stop on "done" — TTS frames arrive asynchronously after it.
+		if t == "error" {
 			break
 		}
 		if t == "tts.audio" {
