@@ -21,6 +21,13 @@ zero ALL=(zeroclaw) NOPASSWD: /opt/zeroclaw/zeroclaw config migrate
 zero ALL=(root) NOPASSWD: /usr/bin/tee /var/lib/zeroclaw/.zeroclaw/config.toml
 zero ALL=(root) NOPASSWD: /usr/bin/mkdir -p /var/lib/zeroclaw/.zeroclaw
 
+# ── ZeroClaw runtime files (read by clawberry-proxy for TTS config) ──────────
+# clawberry-proxy.service reads these via AmbientCapabilities=CAP_DAC_READ_SEARCH
+# (no sudo needed as a service).  The rules below allow the same read when
+# clawproxy is run interactively as user zero (e.g. for testing).
+zero ALL=(root) NOPASSWD: /usr/bin/cat /var/lib/zeroclaw/.zeroclaw/config.toml
+zero ALL=(root) NOPASSWD: /usr/bin/cat /var/lib/zeroclaw/.zeroclaw/.secret_key
+
 # ── PicoClaw service management ─────────────────────────────────────────────
 zero ALL=(root) NOPASSWD: /usr/bin/systemctl restart picoclaw.service
 zero ALL=(root) NOPASSWD: /usr/bin/systemctl stop picoclaw.service
