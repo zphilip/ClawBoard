@@ -83,13 +83,44 @@ type zcAuth struct {
 
 // ── zeroclaw pair-code helpers ────────────────────────────────────────────────
 
+// getPairCodeFromAPI fetches the active pair code from the zeroclaw gateway
+// admin endpoints (localhost-only, no auth required):
+//
+//	GET  /admin/paircode      → returns current active code (if any)
+//	POST /admin/paircode/new  → generates + returns a new code
+//
+// Falls back to the zeroclaw CLI if the HTTP calls fail (e.g. gateway not yet
+// fully started) so the user can still pair interactively.
+func getPairCodeFromAPI(base string) string {
+	// Step 1: try to read the existing active code.
+	if data, err := httpGet(base + "/admin/paircode"); err == nil {
+		if code, _ := data["pairing_code"].(string); code != "" {
+			fmt.Printf("%sAuto-fetched pair code from gateway API: %s%s%s\n", prefixZC(), colYellow, code, colReset)
+			return code
+		}
+	}
+
+	// Step 2: no active code — generate a new one via the API.
+	fmt.Printf("%sNo active pair code — generating new one via API…\n", prefixZC())
+	if data, err := httpPost(base+"/admin/paircode/new", nil); err == nil {
+		if code, _ := data["pairing_code"].(string); code != "" {
+			fmt.Printf("%sGenerated new pair code: %s%s%s\n", prefixZC(), colYellow, code, colReset)
+			return code
+		}
+	}
+
+	// Step 3: API unavailable — fall back to CLI.
+	fmt.Printf("%sAdmin API unavailable — trying zeroclaw CLI…\n", prefixZC())
+	return getPairCodeFromCLI()
+}
+
 // pairCodeRe matches the code inside the box printed by `zeroclaw gateway get-paircode`:
 //
 //	│  156155  │
 var pairCodeRe = regexp.MustCompile(`│\s*(\d{4,8})\s*│`)
 
 // getPairCodeFromCLI runs `zeroclaw gateway get-paircode` (and --new if needed)
-// and returns the numeric pair code, or an empty string if it cannot be obtained.
+// as a last-resort fallback when the admin HTTP endpoints are unavailable.
 func getPairCodeFromCLI() string {
 	tryGet := func(args ...string) string {
 		cmd := exec.Command("zeroclaw", args...)
@@ -118,17 +149,21 @@ func getPairCodeFromCLI() string {
 		fmt.Printf("%sGenerated new pair code: %s%s%s\n", prefixZC(), colYellow, code, colReset)
 		return code
 	}
-	fmt.Printf("%sCould not auto-fetch pair code from zeroclaw CLI\n", prefixZC())
+	fmt.Printf("%sCould not auto-fetch pair code from CLI\n", prefixZC())
 	return ""
 }
 
-// acquireToken obtains a zeroclaw bearer token by auto-fetching the pair code
-// from the CLI, falling back to an interactive prompt.
+// acquireToken obtains a zeroclaw bearer token by:
+//  1. Using a code supplied via --zc-pair-code flag
+//  2. Fetching via the gateway admin API (GET /admin/paircode, POST /admin/paircode/new)
+//  3. Falling back to the zeroclaw CLI
+//  4. Last resort: interactive prompt
+//
 // The base URL is the HTTP gateway base (e.g. http://127.0.0.1:42617).
 func (z *zcAuth) acquireToken(base string) error {
 	code := z.pairCode
 	if code == "" {
-		code = getPairCodeFromCLI()
+		code = getPairCodeFromAPI(base)
 	}
 	if code == "" {
 		// Last resort: interactive prompt
@@ -823,7 +858,24 @@ func main() {
 	queueDB := flag.String("queue-db", "", "SQLite queue file path ('' = ~/.clawproxy/queue.db, ':memory:' = no persistence)")
 	queueTTL := flag.Int("queue-ttl", 86400, "buffered message TTL in seconds (0 = no expiry)")
 
+	// TTS flags (proxy mode only — registers /tts/synthesize and /tts/info)
+	ttsProvider := flag.String("tts-provider", "openai", "default TTS provider: openai|elevenlabs|google|edge|piper|minimax")
+	ttsVoice    := flag.String("tts-voice", "", "default TTS voice ID (provider-specific)")
+	ttsFormat   := flag.String("tts-format", "mp3", "default TTS output format (mp3|opus|wav|…)")
+	ttsAPIKey   := flag.String("tts-api-key", "", "TTS API key (overrides OPENAI_API_KEY / ELEVENLABS_API_KEY / GOOGLE_TTS_API_KEY)")
+	ttsModel    := flag.String("tts-model", "tts-1", "OpenAI TTS model name")
+	ttsPiperURL := flag.String("tts-piper-url", "", "Piper TTS server URL (default: http://127.0.0.1:5000/v1/audio/speech)")
+	ttsEdgeBin  := flag.String("tts-edge-bin", "edge-tts", "edge-tts binary name (edge-tts or edge-playback)")
+	// MiniMax TTS flags (env var: MINIMAX_API_KEY)
+	ttsMMKey     := flag.String("tts-minimax-key", "", "MiniMax TTS API key (overrides MINIMAX_API_KEY)")
+	ttsMMModel   := flag.String("tts-minimax-model", "speech-02-turbo", "MiniMax TTS model (speech-2.8-hd, speech-02-turbo, …)")
+	ttsMMBaseURL := flag.String("tts-minimax-url", "", "MiniMax TTS base URL (default: https://api.minimaxi.com/v1/t2a_v2; backup: https://api-bj.minimaxi.com/v1/t2a_v2)")
+
 	flag.Parse()
+
+	// Initialise TTS config (reads env vars for API keys; used by proxy routes).
+	ttsCfg := initTtsConfig(*ttsProvider, *ttsVoice, *ttsFormat, *ttsAPIKey, *ttsModel, *ttsPiperURL, *ttsEdgeBin,
+		*ttsMMKey, *ttsMMModel, *ttsMMBaseURL)
 
 	// auto-enable based on supplied flags
 	if *zcToken != "" || *zcPairCode != "" {
@@ -896,7 +948,7 @@ func main() {
 			}
 		}
 		ttl := time.Duration(*queueTTL) * time.Second
-		runProxy(*proxyPort, zca, pca, *queueDepth, resolvedDB, ttl)
+		runProxy(*proxyPort, zca, pca, *queueDepth, resolvedDB, ttl, ttsCfg)
 	}
 
 	// ── CLI mode: connect ─────────────────────────────────────────────

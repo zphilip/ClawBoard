@@ -207,7 +207,7 @@ func (s *proxyServer) probeAll() {
 	}
 }
 
-func runProxy(port int, zca *zcAuth, pca *pcAuth, maxQueue int, dbPath string, ttl time.Duration) {
+func runProxy(port int, zca *zcAuth, pca *pcAuth, maxQueue int, dbPath string, ttl time.Duration, ttsCfg *TtsConfig) {
 db, err := openQueueStore(dbPath, maxQueue, ttl)
 if err != nil {
 fmt.Printf("%scannot open queue DB %q: %v — falling back to in-memory\n", prefixERR(), dbPath, err)
@@ -229,12 +229,17 @@ mux.HandleFunc("/pico/ws",         s.handlePCCompat)
 mux.HandleFunc("/proxy/ws",     s.handleWS)
 mux.HandleFunc("/proxy/status", s.handleStatus)
 
+// ── TTS endpoints ───────────────────────────────────────────────
+mux.HandleFunc("/tts/synthesize", handleTTS(ttsCfg))
+mux.HandleFunc("/tts/info",       handleTTSInfo(ttsCfg))
+
 addr := fmt.Sprintf(":%d", port)
 fmt.Printf("\n%s%sClawProxy v3%s — proxy mode\n", prefixSYS(), colBold, colReset)
 fmt.Printf("%s  ZC compat  ←  GET /health · POST /pair · WS /ws/chat\n", prefixSYS())
 fmt.Printf("%s  PC compat  \u2190  GET /api/pico/info · WS /pico/ws\n", prefixSYS())
 fmt.Printf("%s  Unified    ←  WS /proxy/ws?client_id=<id>\n", prefixSYS())
 fmt.Printf("%s  Status     ←  GET /proxy/status\n", prefixSYS())
+fmt.Printf("%s  TTS        ←  POST /tts/synthesize · GET /tts/info  (provider=%s)\n", prefixSYS(), ttsCfg.Provider)
 zcOK := colGreen + "✓" + colReset
 if zca == nil {
 zcOK = colRed + "✗ unavailable" + colReset
