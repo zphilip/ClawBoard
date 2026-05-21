@@ -90,13 +90,14 @@ type TtsConfig struct {
 // Priority (highest → lowest):
 //   1. CLI flags  (non-empty string passed in)
 //   2. Env vars   (OPENAI_API_KEY, ELEVENLABS_API_KEY, …)
-//   3. Config file (~/.zeroclaw/config.toml [tts] section)
-//   4. Built-in defaults
+//   3. zeroclaw config.toml [tts] section
+//   4. picoclaw config.json model_list api_key fields
+//   5. openclaw openclaw.json models/messages.tts providers
+//   6. Built-in defaults
 //
-// configPath="" means auto-discover via discoverConfigPath().
-// Pass configPath="-" to disable config file loading entirely.
+// Any configPath="" means auto-discover; pass "-" to disable that source.
 func initTtsConfig(provider, voice, format, apiKey, model, piperURL, edgeBin,
-	mmKey, mmModel, mmBaseURL, configPath string) *TtsConfig {
+	mmKey, mmModel, mmBaseURL, configPath, picoConfigPath, openConfigPath string) *TtsConfig {
 	cfg := &TtsConfig{
 		Provider:       provider,
 		Voice:          voice,
@@ -124,7 +125,7 @@ func initTtsConfig(provider, voice, format, apiKey, model, piperURL, edgeBin,
 		cfg.MiniMaxKey = os.Getenv("MINIMAX_API_KEY")
 	}
 
-	// Config file fallback.
+	// zeroclaw config.toml fallback.
 	if configPath != "-" {
 		if configPath == "" {
 			configPath = discoverConfigPath()
@@ -136,6 +137,28 @@ func initTtsConfig(provider, voice, format, apiKey, model, piperURL, edgeBin,
 			if configPath != "" {
 				fmt.Printf("%sLoaded TTS config from %s\n", prefixSYS(), configPath)
 			}
+		}
+	}
+
+	// picoclaw config.json fallback (model_list api_key entries).
+	if picoConfigPath != "-" {
+		if picoConfigPath == "" {
+			picoConfigPath = discoverPicoClawConfigPath()
+		}
+		if pkeys := loadPicoClawTtsKeys(picoConfigPath); len(pkeys) > 0 {
+			applyExternalTtsKeys(cfg, pkeys)
+			fmt.Printf("%sLoaded TTS keys from picoclaw config %s\n", prefixSYS(), picoConfigPath)
+		}
+	}
+
+	// openclaw openclaw.json fallback (models.providers / messages.tts.providers).
+	if openConfigPath != "-" {
+		if openConfigPath == "" {
+			openConfigPath = discoverOpenClawConfigPath()
+		}
+		if okeys := loadOpenClawTtsKeys(openConfigPath); len(okeys) > 0 {
+			applyExternalTtsKeys(cfg, okeys)
+			fmt.Printf("%sLoaded TTS keys from openclaw config %s\n", prefixSYS(), openConfigPath)
 		}
 	}
 
@@ -213,6 +236,24 @@ func applyFileTtsConfig(cfg *TtsConfig, fc *fileTtsSection) {
 		if cfg.MiniMaxBaseURL == "" {
 			cfg.MiniMaxBaseURL = fc.MiniMax.BaseURL
 		}
+	}
+}
+
+// applyExternalTtsKeys copies provider API keys from a canonical-name→key map
+// (produced by loadPicoClawTtsKeys or loadOpenClawTtsKeys) into cfg, skipping
+// any key that is already set by a higher-priority source.
+func applyExternalTtsKeys(cfg *TtsConfig, keys map[string]string) {
+	if cfg.OpenAIKey == "" {
+		cfg.OpenAIKey = keys["openai"]
+	}
+	if cfg.ElevenKey == "" {
+		cfg.ElevenKey = keys["elevenlabs"]
+	}
+	if cfg.GoogleKey == "" {
+		cfg.GoogleKey = keys["google"]
+	}
+	if cfg.MiniMaxKey == "" {
+		cfg.MiniMaxKey = keys["minimax"]
 	}
 }
 

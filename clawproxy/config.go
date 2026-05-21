@@ -17,6 +17,7 @@ package main
 
 import (
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -110,20 +111,50 @@ type fileTtsMiniMax struct {
 
 // ── Config discovery ──────────────────────────────────────────────────────────
 
-// discoverConfigPath returns the first config.toml found in the standard
-// zeroclaw locations, or "" if none exists.
+// discoverConfigPath returns the first config.toml found by searching the
+// following locations in order (first match wins):
+//
+//  1. $ZEROCLAW_CONFIG           — explicit full path (highest priority)
+//  2. $ZEROCLAW_HOME/.zeroclaw/config.toml — zeroclaw service home override
+//  3. ~/.zeroclaw/config.toml              — current user's zeroclaw dir
+//  4. ~/.config/zeroclaw/config.toml       — XDG config dir
+//  5. /var/lib/zeroclaw/.zeroclaw/config.toml  — Debian/systemd service user
+//  6. /var/lib/zeroclaw/.config/zeroclaw/config.toml
+//  7. /home/zeroclaw/.zeroclaw/config.toml — named service user
+//  8. /opt/zeroclaw/.zeroclaw/config.toml  — manual install
+//  9. /etc/zeroclaw/config.toml            — system-wide config
 func discoverConfigPath() string {
+	// 1. Explicit env var
 	if v := os.Getenv("ZEROCLAW_CONFIG"); v != "" {
 		return v
 	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ""
+
+	var candidates []string
+
+	// 2. ZEROCLAW_HOME override (e.g. ZEROCLAW_HOME=/var/lib/zeroclaw)
+	if zcHome := os.Getenv("ZEROCLAW_HOME"); zcHome != "" {
+		candidates = append(candidates,
+			filepath.Join(zcHome, ".zeroclaw", "config.toml"),
+			filepath.Join(zcHome, ".config", "zeroclaw", "config.toml"),
+		)
 	}
-	candidates := []string{
-		filepath.Join(home, ".zeroclaw", "config.toml"),
-		filepath.Join(home, ".config", "zeroclaw", "config.toml"),
+
+	// 3–4. Current user home
+	if home, err := os.UserHomeDir(); err == nil {
+		candidates = append(candidates,
+			filepath.Join(home, ".zeroclaw", "config.toml"),
+			filepath.Join(home, ".config", "zeroclaw", "config.toml"),
+		)
 	}
+
+	// 5–9. Common service / system paths
+	candidates = append(candidates,
+		"/var/lib/zeroclaw/.zeroclaw/config.toml",
+		"/var/lib/zeroclaw/.config/zeroclaw/config.toml",
+		"/home/zeroclaw/.zeroclaw/config.toml",
+		"/opt/zeroclaw/.zeroclaw/config.toml",
+		"/etc/zeroclaw/config.toml",
+	)
 	for _, p := range candidates {
 		if _, err := os.Stat(p); err == nil {
 			return p
@@ -444,4 +475,267 @@ func decryptSecretsInTtsConfig(fc *fileTtsSection, keyFile string) {
 	if fc.MiniMax != nil {
 		fc.MiniMax.APIKey = decryptSecret(fc.MiniMax.APIKey, keyFile)
 	}
+}
+
+// ── picoclaw JSON config ───────────────────────────────────────────────────────
+//
+// picoclaw stores model API keys in JSON at $PICOCLAW_HOME/config.json
+// (default: ~/.picoclaw/config.json). The model_list field maps to a slice
+// of model entries, each carrying an api_key and a "provider/model" string
+// (e.g. "openai/gpt-5.4") from which we derive the provider.
+//
+// Discovery order (first match wins):
+//   1. $PICOCLAW_CONFIG       — explicit full path
+//   2. $PICOCLAW_HOME/config.json
+//   3. ~/.picoclaw/config.json
+//   4. /var/lib/picoclaw/.picoclaw/config.json  — Debian service user
+//   5. /home/picoclaw/.picoclaw/config.json
+
+type picoClawConfig struct {
+	ModelList []picoModelEntry `json:"model_list"`
+}
+
+// picoModelEntry represents a single entry in picoclaw's model_list.
+type picoModelEntry struct {
+	ModelName string `json:"model_name"`
+	Model     string `json:"model"`    // "provider/model-name"  e.g. "openai/gpt-5.4"
+	APIKey    string `json:"api_key"`  // may be empty; key lives in .security.yml
+	APIBase   string `json:"api_base"`
+}
+
+// discoverPicoClawConfigPath returns the first picoclaw config.json found.
+func discoverPicoClawConfigPath() string {
+	if v := os.Getenv("PICOCLAW_CONFIG"); v != "" {
+		return v
+	}
+	var candidates []string
+	if pcHome := os.Getenv("PICOCLAW_HOME"); pcHome != "" {
+		candidates = append(candidates, filepath.Join(pcHome, "config.json"))
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		candidates = append(candidates, filepath.Join(home, ".picoclaw", "config.json"))
+	}
+	candidates = append(candidates,
+		"/var/lib/picoclaw/.picoclaw/config.json",
+		"/home/picoclaw/.picoclaw/config.json",
+	)
+	for _, p := range candidates {
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
+	return ""
+}
+
+// loadPicoClawTtsKeys reads a picoclaw config.json and returns a
+// canonical-provider → api_key map for any providers that have a key.
+// Returns nil when the file does not exist or has no useful keys.
+func loadPicoClawTtsKeys(path string) map[string]string {
+	if path == "" {
+		return nil
+	}
+	data, err := os.ReadFile(path) //nolint:gosec
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[clawproxy] warning: could not read picoclaw config %s: %v\n", path, err)
+		return nil
+	}
+	var cfg picoClawConfig
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		fmt.Fprintf(os.Stderr, "[clawproxy] warning: could not parse picoclaw config %s: %v\n", path, err)
+		return nil
+	}
+	keys := make(map[string]string)
+	for _, m := range cfg.ModelList {
+		if m.APIKey == "" {
+			continue
+		}
+		// Derive provider from "provider/model-name".
+		provider := m.Model
+		if idx := strings.IndexByte(provider, '/'); idx >= 0 {
+			provider = provider[:idx]
+		}
+		cp := canonicalProvider(strings.ToLower(provider))
+		if cp != "" && keys[cp] == "" {
+			keys[cp] = m.APIKey
+		}
+	}
+	if len(keys) == 0 {
+		return nil
+	}
+	return keys
+}
+
+// ── openclaw JSON5 config ──────────────────────────────────────────────────────
+//
+// openclaw stores provider API keys in JSON5 at ~/.openclaw/openclaw.json.
+// The relevant sections are:
+//   models.providers.<name>.apiKey       — LLM provider key (e.g. openai, minimax)
+//   messages.tts.providers.<name>.apiKey — TTS-specific key (higher priority)
+//
+// Both fields are typed as SecretInput (string | SecretRef object); we only
+// handle the plain-string case here.
+//
+// Discovery order (first match wins):
+//   1. $OPENCLAW_CONFIG_PATH
+//   2. $OPENCLAW_STATE_DIR/openclaw.json
+//   3. $OPENCLAW_HOME/.openclaw/openclaw.json
+//   4. ~/.openclaw/openclaw.json
+//   5. ~/.clawdbot/clawdbot.json          — legacy pre-rebrand path
+//   6. /var/lib/openclaw/.openclaw/openclaw.json
+//   7. /home/openclaw/.openclaw/openclaw.json
+
+// openClawConfig is the minimal shape of openclaw's JSON config we care about.
+type openClawConfig struct {
+	Models   openClawModels   `json:"models"`
+	Messages openClawMessages `json:"messages"`
+}
+
+type openClawModels struct {
+	Providers map[string]openClawProviderEntry `json:"providers"`
+}
+
+type openClawMessages struct {
+	Tts openClawTts `json:"tts"`
+}
+
+type openClawTts struct {
+	Providers map[string]openClawProviderEntry `json:"providers"`
+}
+
+// openClawProviderEntry holds apiKey as interface{} because SecretInput can be
+// a plain string or a SecretRef object ({id, provider, …}).
+type openClawProviderEntry struct {
+	APIKey interface{} `json:"apiKey"`
+}
+
+func (e openClawProviderEntry) apiKeyString() string {
+	s, _ := e.APIKey.(string)
+	return s
+}
+
+// discoverOpenClawConfigPath returns the first openclaw config file found.
+func discoverOpenClawConfigPath() string {
+	if v := os.Getenv("OPENCLAW_CONFIG_PATH"); v != "" {
+		return v
+	}
+	var candidates []string
+	if stateDir := os.Getenv("OPENCLAW_STATE_DIR"); stateDir != "" {
+		candidates = append(candidates, filepath.Join(stateDir, "openclaw.json"))
+	}
+	if ocHome := os.Getenv("OPENCLAW_HOME"); ocHome != "" {
+		candidates = append(candidates, filepath.Join(ocHome, ".openclaw", "openclaw.json"))
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		candidates = append(candidates,
+			filepath.Join(home, ".openclaw", "openclaw.json"),
+			filepath.Join(home, ".clawdbot", "clawdbot.json"), // legacy
+		)
+	}
+	candidates = append(candidates,
+		"/var/lib/openclaw/.openclaw/openclaw.json",
+		"/home/openclaw/.openclaw/openclaw.json",
+	)
+	for _, p := range candidates {
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
+	return ""
+}
+
+// loadOpenClawTtsKeys reads an openclaw config and returns a
+// canonical-provider → api_key map for any providers that have a plain-string key.
+// messages.tts.providers entries take priority over models.providers entries.
+func loadOpenClawTtsKeys(path string) map[string]string {
+	if path == "" {
+		return nil
+	}
+	data, err := os.ReadFile(path) //nolint:gosec
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[clawproxy] warning: could not read openclaw config %s: %v\n", path, err)
+		return nil
+	}
+	data = stripJSON5Comments(data)
+	var cfg openClawConfig
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		fmt.Fprintf(os.Stderr, "[clawproxy] warning: could not parse openclaw config %s: %v\n", path, err)
+		return nil
+	}
+	keys := make(map[string]string)
+	// Lower priority: models.providers
+	for alias, entry := range cfg.Models.Providers {
+		if k := entry.apiKeyString(); k != "" {
+			if cp := canonicalProvider(strings.ToLower(alias)); cp != "" {
+				keys[cp] = k
+			}
+		}
+	}
+	// Higher priority: messages.tts.providers (overrides models.providers)
+	for alias, entry := range cfg.Messages.Tts.Providers {
+		if k := entry.apiKeyString(); k != "" {
+			if cp := canonicalProvider(strings.ToLower(alias)); cp != "" {
+				keys[cp] = k
+			}
+		}
+	}
+	if len(keys) == 0 {
+		return nil
+	}
+	return keys
+}
+
+// stripJSON5Comments removes // line comments and /* */ block comments from
+// JSON5 data so that standard encoding/json can parse it.
+func stripJSON5Comments(data []byte) []byte {
+	out := make([]byte, 0, len(data))
+	i := 0
+	inStr := false
+	for i < len(data) {
+		if inStr {
+			if data[i] == '\\' && i+1 < len(data) {
+				out = append(out, data[i], data[i+1])
+				i += 2
+				continue
+			}
+			if data[i] == '"' {
+				inStr = false
+			}
+			out = append(out, data[i])
+			i++
+			continue
+		}
+		if data[i] == '"' {
+			inStr = true
+			out = append(out, data[i])
+			i++
+			continue
+		}
+		// // line comment
+		if i+1 < len(data) && data[i] == '/' && data[i+1] == '/' {
+			for i < len(data) && data[i] != '\n' {
+				i++
+			}
+			continue
+		}
+		// /* block comment */
+		if i+1 < len(data) && data[i] == '/' && data[i+1] == '*' {
+			i += 2
+			for i+1 < len(data) && !(data[i] == '*' && data[i+1] == '/') {
+				i++
+			}
+			if i+1 < len(data) {
+				i += 2
+			}
+			continue
+		}
+		out = append(out, data[i])
+		i++
+	}
+	return out
 }

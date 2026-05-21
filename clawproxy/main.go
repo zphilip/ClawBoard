@@ -870,14 +870,18 @@ func main() {
 	ttsMMKey     := flag.String("tts-minimax-key", "", "MiniMax TTS API key (overrides MINIMAX_API_KEY)")
 	ttsMMModel   := flag.String("tts-minimax-model", "", "MiniMax TTS model (default from config or speech-2.8-hd)")
 	ttsMMBaseURL := flag.String("tts-minimax-url", "", "MiniMax TTS base URL (default: https://api.minimaxi.com/v1/t2a_v2)")
-	// Config file flag — mirrors zeroclaw's config.toml path discovery
-	configPath   := flag.String("config", "", "path to TOML config file (default: auto-discover ~/.zeroclaw/config.toml; use '-' to disable)")
+	// Config file flags — path discovery for each supported config ecosystem.
+	// Pass '-' to disable a source entirely.
+	configPath      := flag.String("config", "", "zeroclaw config.toml path (default: auto-discover; '-' = disable)")
+	picoConfigPath  := flag.String("picoclaw-config", "", "picoclaw config.json path (default: auto-discover; '-' = disable)")
+	openConfigPath  := flag.String("openclaw-config", "", "openclaw openclaw.json path (default: auto-discover; '-' = disable)")
 
 	flag.Parse()
 
-	// Initialise TTS config (config file → env vars → CLI flags → built-in defaults).
+	// Initialise TTS config.  Priority: CLI flags > env vars > zeroclaw config >
+	// picoclaw config > openclaw config > built-in defaults.
 	ttsCfg := initTtsConfig(*ttsProvider, *ttsVoice, *ttsFormat, *ttsAPIKey, *ttsModel, *ttsPiperURL, *ttsEdgeBin,
-		*ttsMMKey, *ttsMMModel, *ttsMMBaseURL, *configPath)
+		*ttsMMKey, *ttsMMModel, *ttsMMBaseURL, *configPath, *picoConfigPath, *openConfigPath)
 
 	// auto-enable based on supplied flags
 	if *zcToken != "" || *zcPairCode != "" {
