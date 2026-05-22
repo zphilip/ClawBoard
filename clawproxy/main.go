@@ -874,6 +874,11 @@ func main() {
 	ttsF5Key   := flag.String("tts-f5tts-key", "", "F5-TTS Bearer token (overrides F5_TTS_API_KEY; leave empty for open servers)")
 	ttsF5URL   := flag.String("tts-f5tts-url", "", "F5-TTS server base URL (default: http://apicn.aiworm.cn:8010)")
 	ttsF5Speed := flag.Float64("tts-f5tts-speed", 0, "F5-TTS speech speed 0.5–2.0 (0 = use config/default 1.0; try 0.8 if too fast)")
+	// Qwen3-TTS flags (env var: QWEN3_TTS_API_KEY)
+	ttsQ3Key   := flag.String("tts-qwen3-key", "", "Qwen3-TTS Bearer token (overrides QWEN3_TTS_API_KEY; leave empty for open servers)")
+	ttsQ3URL   := flag.String("tts-qwen3-url", "", "Qwen3-TTS server base URL (default: http://apicn.aiworm.cn:8011)")
+	ttsQ3Model := flag.String("tts-qwen3-model", "", "Qwen3-TTS model name (default: qwen3-tts; also: tts-1, tts-1-zh)")
+	ttsQ3Speed := flag.Float64("tts-qwen3-speed", 0, "Qwen3-TTS speech speed 0.5–2.0 (0 = use config/default 1.0)")
 	// Config file flags — path discovery for each supported config ecosystem.
 	// Pass '-' to disable a source entirely.
 	clawproxyConfigPath := flag.String("clawproxy-config", "", "clawproxy config.toml path (default: ~/.clawproxy/config.toml; '-' = disable)")
@@ -888,6 +893,7 @@ func main() {
 	ttsCfg := initTtsConfig(*ttsProvider, *ttsVoice, *ttsFormat, *ttsAPIKey, *ttsModel, *ttsPiperURL, *ttsEdgeBin,
 		*ttsMMKey, *ttsMMModel, *ttsMMBaseURL,
 		*ttsF5Key, *ttsF5URL, *ttsF5Speed,
+		*ttsQ3Key, *ttsQ3URL, *ttsQ3Model, *ttsQ3Speed,
 		*clawproxyConfigPath, *configPath, *picoConfigPath, *openConfigPath)
 
 	// auto-enable based on supplied flags

@@ -100,6 +100,8 @@ type fileTtsSection struct {
 	MiniMax         *fileTtsMiniMax     `toml:"minimax"`
 	// [tts.f5tts] is a clawproxy extension for local/remote F5-TTS servers.
 	F5TTS           *fileTtsF5TTS       `toml:"f5tts"`
+	// [tts.qwen3tts] is a clawproxy extension for Qwen3-TTS servers (OpenAI-compatible).
+	Qwen3           *fileTtsQwen3TTS    `toml:"qwen3tts"`
 }
 
 // fileTtsOpenAI mirrors zeroclaw's [tts.openai] table.
@@ -156,6 +158,21 @@ type fileTtsMiniMax struct {
 type fileTtsF5TTS struct {
 	APIKey  string  `toml:"api_key"`
 	BaseURL string  `toml:"base_url"` // default: http://apicn.aiworm.cn:8010
+	Speed   float64 `toml:"speed"`    // 0.5–2.0; 0 means use default (1.0)
+}
+
+// fileTtsQwen3TTS is a clawproxy extension under [tts.qwen3tts].
+// Example config.toml snippet:
+//
+//	[tts.qwen3tts]
+//	base_url = "http://apicn.aiworm.cn:8011"
+//	api_key  = "your-bearer-token"   # optional
+//	model    = "qwen3-tts"           # default
+//	speed    = 0.9                   # 0.5–2.0
+type fileTtsQwen3TTS struct {
+	APIKey  string  `toml:"api_key"`
+	BaseURL string  `toml:"base_url"` // default: http://apicn.aiworm.cn:8011
+	Model   string  `toml:"model"`    // default: qwen3-tts
 	Speed   float64 `toml:"speed"`    // 0.5–2.0; 0 means use default (1.0)
 }
 
@@ -366,6 +383,19 @@ func scanTtsAliases(tts *fileTtsSection, raw []byte, keyFile string) {
 			if tts.F5TTS.BaseURL == "" {
 				tts.F5TTS.BaseURL = getStr("base_url")
 			}
+		case "qwen3tts":
+			if tts.Qwen3 == nil {
+				tts.Qwen3 = &fileTtsQwen3TTS{}
+			}
+			if tts.Qwen3.APIKey == "" {
+				tts.Qwen3.APIKey = decryptSecret(getStr("api_key"), keyFile)
+			}
+			if tts.Qwen3.BaseURL == "" {
+				tts.Qwen3.BaseURL = getStr("base_url")
+			}
+			if tts.Qwen3.Model == "" {
+				tts.Qwen3.Model = getStr("model")
+			}
 		}
 	}
 }
@@ -560,6 +590,9 @@ func decryptSecretsInTtsConfig(fc *fileTtsSection, keyFile string) {
 	}
 	if fc.F5TTS != nil {
 		fc.F5TTS.APIKey = decryptSecret(fc.F5TTS.APIKey, keyFile)
+	}
+	if fc.Qwen3 != nil {
+		fc.Qwen3.APIKey = decryptSecret(fc.Qwen3.APIKey, keyFile)
 	}
 }
 

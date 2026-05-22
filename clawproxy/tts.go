@@ -87,6 +87,11 @@ type TtsConfig struct {
 	F5TTSKey     string  // Bearer token (F5_TTS_API_KEY env or --tts-f5tts-key)
 	F5TTSBaseURL string  // default: http://apicn.aiworm.cn:8010
 	F5TTSSpeed   float64 // speech speed: 0.5–2.0; 0 means use default (1.0)
+	// Qwen3-TTS (OpenAI-compatible /v1/audio/speech API)
+	Qwen3Key     string  // Bearer token (QWEN3_TTS_API_KEY env or --tts-qwen3-key)
+	Qwen3BaseURL string  // default: http://apicn.aiworm.cn:8011
+	Qwen3Model   string  // model name: qwen3-tts, tts-1, tts-1-zh, … (default: qwen3-tts)
+	Qwen3Speed   float64 // speech speed: 0.5–2.0; 0 means use default (1.0)
 }
 
 // initTtsConfig builds a TtsConfig from CLI flags, env vars, and optionally a
@@ -105,6 +110,7 @@ type TtsConfig struct {
 func initTtsConfig(provider, voice, format, apiKey, model, piperURL, edgeBin,
 	mmKey, mmModel, mmBaseURL,
 	f5Key, f5BaseURL string, f5Speed float64,
+	q3Key, q3BaseURL, q3Model string, q3Speed float64,
 	clawproxyConfigPath, configPath, picoConfigPath, openConfigPath string) *TtsConfig {
 	cfg := &TtsConfig{
 		Provider:       provider,
@@ -120,6 +126,10 @@ func initTtsConfig(provider, voice, format, apiKey, model, piperURL, edgeBin,
 		F5TTSKey:       f5Key,
 		F5TTSBaseURL:   f5BaseURL,
 		F5TTSSpeed:     f5Speed,
+		Qwen3Key:       q3Key,
+		Qwen3BaseURL:   q3BaseURL,
+		Qwen3Model:     q3Model,
+		Qwen3Speed:     q3Speed,
 	}
 
 	// Env var fallbacks (same names as zeroclaw uses).
@@ -137,6 +147,9 @@ func initTtsConfig(provider, voice, format, apiKey, model, piperURL, edgeBin,
 	}
 	if cfg.F5TTSKey == "" {
 		cfg.F5TTSKey = os.Getenv("F5_TTS_API_KEY")
+	}
+	if cfg.Qwen3Key == "" {
+		cfg.Qwen3Key = os.Getenv("QWEN3_TTS_API_KEY")
 	}
 
 	// clawproxy's own config (highest-priority config file; overrides upstream daemons).
@@ -217,6 +230,12 @@ func initTtsConfig(provider, voice, format, apiKey, model, piperURL, edgeBin,
 	if cfg.F5TTSBaseURL == "" {
 		cfg.F5TTSBaseURL = "http://apicn.aiworm.cn:8010"
 	}
+	if cfg.Qwen3BaseURL == "" {
+		cfg.Qwen3BaseURL = "http://apicn.aiworm.cn:8011"
+	}
+	if cfg.Qwen3Model == "" {
+		cfg.Qwen3Model = "qwen3-tts"
+	}
 	cfg.MaxTextLen = 4096
 	return cfg
 }
@@ -278,6 +297,20 @@ func applyFileTtsConfig(cfg *TtsConfig, fc *fileTtsSection) {
 			cfg.F5TTSSpeed = fc.F5TTS.Speed
 		}
 	}
+	if fc.Qwen3 != nil {
+		if cfg.Qwen3Key == "" {
+			cfg.Qwen3Key = fc.Qwen3.APIKey
+		}
+		if cfg.Qwen3BaseURL == "" {
+			cfg.Qwen3BaseURL = fc.Qwen3.BaseURL
+		}
+		if cfg.Qwen3Model == "" {
+			cfg.Qwen3Model = fc.Qwen3.Model
+		}
+		if cfg.Qwen3Speed == 0 && fc.Qwen3.Speed != 0 {
+			cfg.Qwen3Speed = fc.Qwen3.Speed
+		}
+	}
 }
 
 // applyExternalTtsKeys copies provider API keys from a canonical-name→key map
@@ -298,6 +331,9 @@ func applyExternalTtsKeys(cfg *TtsConfig, keys map[string]string) {
 	}
 	if cfg.F5TTSKey == "" {
 		cfg.F5TTSKey = keys["f5tts"]
+	}
+	if cfg.Qwen3Key == "" {
+		cfg.Qwen3Key = keys["qwen3tts"]
 	}
 }
 
@@ -326,6 +362,8 @@ func canonicalProvider(name string) string {
 		return "piper"
 	case "f5tts", "f5-tts", "f5tts-local", "f5tts_local", "f5_tts":
 		return "f5tts"
+	case "qwen3tts", "qwen3-tts", "qwen3_tts", "qwen-tts", "qwen3":
+		return "qwen3tts"
 	}
 	if strings.HasPrefix(name, "openai-") || strings.HasPrefix(name, "gpt-") {
 		return "openai"
@@ -352,6 +390,8 @@ func defaultVoiceFor(provider string) string {
 		return "male-qn-qingse" // MiniMax default; see voice list in platform docs
 	case "f5tts":
 		return "demo_speaker0" // F5-TTS default demo voice
+	case "qwen3tts":
+		return "Vivian" // Qwen3-TTS default voice
 	default:
 		return "alloy"
 	}
@@ -535,6 +575,16 @@ func handleTTSInfo(cfg *TtsConfig) http.HandlerFunc {
 				"formats": []string{"wav"},
 				"note":    "voice = ref_audio_orig; bare names (demo_speaker0) auto-prefixed as resources/{name}.wav",
 			},
+			"qwen3tts": map[string]any{
+				"configured": true, // local server, no key required for open deployments
+				"base_url":   cfg.Qwen3BaseURL,
+				"model":      cfg.Qwen3Model,
+				"auth":       cfg.Qwen3Key != "",
+				// Built-in voices; use /v1/audio/voices to enumerate all.
+				"voices":  []string{"Vivian", "Ryan", "aiden", "dylan", "eric", "ono_anna", "serena", "sohee", "uncle_fu"},
+				"formats": []string{"mp3", "wav", "opus", "flac"},
+				"note":    "OpenAI-compatible /v1/audio/speech; also accepts alloy/echo OpenAI voice aliases",
+			},
 		}
 
 		w.Header().Set("Content-Type", "application/json")
@@ -595,8 +645,10 @@ func synthesize(ctx context.Context, text, provider, voice, format string, cfg *
 		return synthMiniMax(text, voice, format, cfg)
 	case "f5tts":
 		return synthF5TTS(ctx, text, voice, cfg)
+	case "qwen3tts":
+		return synthQwen3TTS(ctx, text, voice, cfg)
 	default:
-		return nil, "", fmt.Errorf("unknown TTS provider %q (valid: openai, elevenlabs, google, edge, piper, minimax, f5tts)", provider)
+		return nil, "", fmt.Errorf("unknown TTS provider %q (valid: openai, elevenlabs, google, edge, piper, minimax, f5tts, qwen3tts)", provider)
 	}
 }
 
@@ -992,6 +1044,81 @@ func synthMiniMax(text, voice, format string, cfg *TtsConfig) ([]byte, string, e
 //   - Bare names (e.g. "demo_speaker0") → auto-prefixed as "resources/demo_speaker0.wav"
 //   - Names already containing "/" or ending in ".wav" → passed through unchanged
 //   - Uploaded custom voice names (returned by /voice-clone/upload_audio) → passed as-is
+
+// synthQwen3TTS calls the OpenAI-compatible /v1/audio/speech endpoint on a
+// Qwen3-TTS server.  The response is raw audio bytes (synchronous, no polling).
+//
+// Supported voices: Vivian, Ryan, aiden, dylan, eric, ono_anna, serena, sohee, uncle_fu
+// (and OpenAI aliases: alloy→Vivian, echo→Ryan, …)
+// Supported models: qwen3-tts, tts-1, tts-1-zh, tts-1-<lang>, …
+func synthQwen3TTS(ctx context.Context, text, voice string, cfg *TtsConfig) ([]byte, string, error) {
+	baseURL := cfg.Qwen3BaseURL
+	if baseURL == "" {
+		baseURL = "http://apicn.aiworm.cn:8011"
+	}
+	if voice == "" {
+		voice = "Vivian"
+	}
+	modelName := cfg.Qwen3Model
+	if modelName == "" {
+		modelName = "qwen3-tts"
+	}
+	speed := cfg.Qwen3Speed
+	if speed <= 0 {
+		speed = 1.0
+	}
+
+	payload := map[string]any{
+		"model":           modelName,
+		"input":           text,
+		"voice":           voice,
+		"response_format": "mp3",
+		"speed":           speed,
+	}
+	bodyJSON, _ := json.Marshal(payload)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/v1/audio/speech", bytes.NewReader(bodyJSON))
+	if err != nil {
+		return nil, "", fmt.Errorf("qwen3-tts: build request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "*/*")
+	if cfg.Qwen3Key != "" {
+		req.Header.Set("Authorization", "Bearer "+cfg.Qwen3Key)
+	}
+
+	client := &http.Client{Timeout: 120 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, "", fmt.Errorf("qwen3-tts: request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, "", fmt.Errorf("qwen3-tts: HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+
+	audio, _ := io.ReadAll(resp.Body)
+	if len(audio) == 0 {
+		return nil, "", fmt.Errorf("qwen3-tts: empty response body")
+	}
+
+	// Infer format from Content-Type header.
+	format := "mp3"
+	ct := resp.Header.Get("Content-Type")
+	switch {
+	case strings.Contains(ct, "wav"):
+		format = "wav"
+	case strings.Contains(ct, "flac"):
+		format = "flac"
+	case strings.Contains(ct, "opus"):
+		format = "opus"
+	}
+	fmt.Printf("%s[qwen3tts] synthesised %d chars → %d bytes (%s)  voice=%s  model=%s\n",
+		prefixSYS(), len([]rune(text)), len(audio), format, voice, modelName)
+	return audio, format, nil
+}
 
 func synthF5TTS(ctx context.Context, text, voice string, cfg *TtsConfig) ([]byte, string, error) {
 	baseURL := cfg.F5TTSBaseURL
