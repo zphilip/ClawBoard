@@ -84,8 +84,9 @@ type TtsConfig struct {
 	MiniMaxModel   string // default: speech-2.8-hd
 	MiniMaxBaseURL string // default: https://api.minimaxi.com/v1/t2a_v2
 	// F5-TTS local/remote server (https://github.com/SWivid/F5-TTS)
-	F5TTSKey     string // Bearer token (F5_TTS_API_KEY env or --tts-f5tts-key)
-	F5TTSBaseURL string // default: http://apicn.aiworm.cn:8010
+	F5TTSKey     string  // Bearer token (F5_TTS_API_KEY env or --tts-f5tts-key)
+	F5TTSBaseURL string  // default: http://apicn.aiworm.cn:8010
+	F5TTSSpeed   float64 // speech speed: 0.5–2.0; 0 means use default (1.0)
 }
 
 // initTtsConfig builds a TtsConfig from CLI flags, env vars, and optionally a
@@ -103,7 +104,7 @@ type TtsConfig struct {
 // Any configPath="" means auto-discover; pass "-" to disable that source.
 func initTtsConfig(provider, voice, format, apiKey, model, piperURL, edgeBin,
 	mmKey, mmModel, mmBaseURL,
-	f5Key, f5BaseURL,
+	f5Key, f5BaseURL string, f5Speed float64,
 	clawproxyConfigPath, configPath, picoConfigPath, openConfigPath string) *TtsConfig {
 	cfg := &TtsConfig{
 		Provider:       provider,
@@ -118,6 +119,7 @@ func initTtsConfig(provider, voice, format, apiKey, model, piperURL, edgeBin,
 		MiniMaxBaseURL: mmBaseURL,
 		F5TTSKey:       f5Key,
 		F5TTSBaseURL:   f5BaseURL,
+		F5TTSSpeed:     f5Speed,
 	}
 
 	// Env var fallbacks (same names as zeroclaw uses).
@@ -271,6 +273,9 @@ func applyFileTtsConfig(cfg *TtsConfig, fc *fileTtsSection) {
 		}
 		if cfg.F5TTSBaseURL == "" {
 			cfg.F5TTSBaseURL = fc.F5TTS.BaseURL
+		}
+		if cfg.F5TTSSpeed == 0 && fc.F5TTS.Speed != 0 {
+			cfg.F5TTSSpeed = fc.F5TTS.Speed
 		}
 	}
 }
@@ -1003,6 +1008,10 @@ func synthF5TTS(ctx context.Context, text, voice string, cfg *TtsConfig) ([]byte
 		refAudio = "resources/" + refAudio + ".wav"
 	}
 
+	speed := cfg.F5TTSSpeed
+	if speed <= 0 {
+		speed = 1.0
+	}
 	payload := map[string]any{
 		"ref_audio_orig":      refAudio,
 		"gen_text":            text,
@@ -1012,7 +1021,7 @@ func synthF5TTS(ctx context.Context, text, voice string, cfg *TtsConfig) ([]byte
 		"seed":                -1,
 		"cross_fade_duration": 0.15,
 		"nfe_step":            32,
-		"speed":               1.0,
+		"speed":               speed,
 	}
 	bodyJSON, _ := json.Marshal(payload)
 

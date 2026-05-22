@@ -152,9 +152,11 @@ type fileTtsMiniMax struct {
 //	[tts.f5tts]
 //	api_key  = "your-bearer-token"   # optional; some deployments use no auth
 //	base_url = "http://apicn.aiworm.cn:8010"
+//	speed    = 0.8                   # 0.5–2.0; default 1.0 (slower = smaller value)
 type fileTtsF5TTS struct {
-	APIKey  string `toml:"api_key"`
-	BaseURL string `toml:"base_url"` // default: http://apicn.aiworm.cn:8010
+	APIKey  string  `toml:"api_key"`
+	BaseURL string  `toml:"base_url"` // default: http://apicn.aiworm.cn:8010
+	Speed   float64 `toml:"speed"`    // 0.5–2.0; 0 means use default (1.0)
 }
 
 // ── Config discovery ──────────────────────────────────────────────────────────

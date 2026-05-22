@@ -871,8 +871,9 @@ func main() {
 	ttsMMModel   := flag.String("tts-minimax-model", "", "MiniMax TTS model (default from config or speech-2.8-hd)")
 	ttsMMBaseURL := flag.String("tts-minimax-url", "", "MiniMax TTS base URL (default: https://api.minimaxi.com/v1/t2a_v2)")
 	// F5-TTS flags (env var: F5_TTS_API_KEY)
-	ttsF5Key     := flag.String("tts-f5tts-key", "", "F5-TTS Bearer token (overrides F5_TTS_API_KEY; leave empty for open servers)")
-	ttsF5URL     := flag.String("tts-f5tts-url", "", "F5-TTS server base URL (default: http://apicn.aiworm.cn:8010)")
+	ttsF5Key   := flag.String("tts-f5tts-key", "", "F5-TTS Bearer token (overrides F5_TTS_API_KEY; leave empty for open servers)")
+	ttsF5URL   := flag.String("tts-f5tts-url", "", "F5-TTS server base URL (default: http://apicn.aiworm.cn:8010)")
+	ttsF5Speed := flag.Float64("tts-f5tts-speed", 0, "F5-TTS speech speed 0.5–2.0 (0 = use config/default 1.0; try 0.8 if too fast)")
 	// Config file flags — path discovery for each supported config ecosystem.
 	// Pass '-' to disable a source entirely.
 	clawproxyConfigPath := flag.String("clawproxy-config", "", "clawproxy config.toml path (default: ~/.clawproxy/config.toml; '-' = disable)")
@@ -886,7 +887,7 @@ func main() {
 	// zeroclaw config > picoclaw config > openclaw config > built-in defaults.
 	ttsCfg := initTtsConfig(*ttsProvider, *ttsVoice, *ttsFormat, *ttsAPIKey, *ttsModel, *ttsPiperURL, *ttsEdgeBin,
 		*ttsMMKey, *ttsMMModel, *ttsMMBaseURL,
-		*ttsF5Key, *ttsF5URL,
+		*ttsF5Key, *ttsF5URL, *ttsF5Speed,
 		*clawproxyConfigPath, *configPath, *picoConfigPath, *openConfigPath)
 
 	// auto-enable based on supplied flags
