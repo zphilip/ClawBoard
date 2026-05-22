@@ -82,6 +82,9 @@ type TtsConfig struct {
 	MiniMaxKey     string
 	MiniMaxModel   string // default: speech-2.8-hd
 	MiniMaxBaseURL string // default: https://api.minimaxi.com/v1/t2a_v2
+	// F5-TTS local/remote server (https://github.com/SWivid/F5-TTS)
+	F5TTSKey     string // Bearer token (F5_TTS_API_KEY env or --tts-f5tts-key)
+	F5TTSBaseURL string // default: http://apicn.aiworm.cn:8010
 }
 
 // initTtsConfig builds a TtsConfig from CLI flags, env vars, and optionally a
@@ -90,14 +93,17 @@ type TtsConfig struct {
 // Priority (highest → lowest):
 //   1. CLI flags  (non-empty string passed in)
 //   2. Env vars   (OPENAI_API_KEY, ELEVENLABS_API_KEY, …)
-//   3. zeroclaw config.toml [tts] section
-//   4. picoclaw config.json model_list api_key fields
-//   5. openclaw openclaw.json models/messages.tts providers
-//   6. Built-in defaults
+//   3. clawproxy's own config  (~/.clawproxy/config.toml)
+//   4. zeroclaw config.toml [tts] section
+//   5. picoclaw config.json model_list api_key fields
+//   6. openclaw openclaw.json models/messages.tts providers
+//   7. Built-in defaults
 //
 // Any configPath="" means auto-discover; pass "-" to disable that source.
 func initTtsConfig(provider, voice, format, apiKey, model, piperURL, edgeBin,
-	mmKey, mmModel, mmBaseURL, configPath, picoConfigPath, openConfigPath string) *TtsConfig {
+	mmKey, mmModel, mmBaseURL,
+	f5Key, f5BaseURL,
+	clawproxyConfigPath, configPath, picoConfigPath, openConfigPath string) *TtsConfig {
 	cfg := &TtsConfig{
 		Provider:       provider,
 		Voice:          voice,
@@ -109,6 +115,8 @@ func initTtsConfig(provider, voice, format, apiKey, model, piperURL, edgeBin,
 		MiniMaxKey:     mmKey,
 		MiniMaxModel:   mmModel,
 		MiniMaxBaseURL: mmBaseURL,
+		F5TTSKey:       f5Key,
+		F5TTSBaseURL:   f5BaseURL,
 	}
 
 	// Env var fallbacks (same names as zeroclaw uses).
@@ -123,6 +131,22 @@ func initTtsConfig(provider, voice, format, apiKey, model, piperURL, edgeBin,
 	}
 	if cfg.MiniMaxKey == "" {
 		cfg.MiniMaxKey = os.Getenv("MINIMAX_API_KEY")
+	}
+	if cfg.F5TTSKey == "" {
+		cfg.F5TTSKey = os.Getenv("F5_TTS_API_KEY")
+	}
+
+	// clawproxy's own config (highest-priority config file; overrides upstream daemons).
+	if clawproxyConfigPath != "-" {
+		if clawproxyConfigPath == "" {
+			clawproxyConfigPath = discoverClawproxyConfigPath()
+		}
+		if fc, err := loadFileConfig(clawproxyConfigPath); err != nil {
+			fmt.Fprintf(os.Stderr, "[clawproxy] warning: could not read clawproxy config %s: %v\n", clawproxyConfigPath, err)
+		} else if fc != nil {
+			applyFileTtsConfig(cfg, fc)
+			fmt.Printf("%sLoaded TTS config from clawproxy config %s\n", prefixSYS(), clawproxyConfigPath)
+		}
 	}
 
 	// zeroclaw config.toml fallback.
@@ -187,6 +211,9 @@ func initTtsConfig(provider, voice, format, apiKey, model, piperURL, edgeBin,
 	if cfg.MiniMaxBaseURL == "" {
 		cfg.MiniMaxBaseURL = "https://api.minimaxi.com/v1/t2a_v2"
 	}
+	if cfg.F5TTSBaseURL == "" {
+		cfg.F5TTSBaseURL = "http://apicn.aiworm.cn:8010"
+	}
 	cfg.MaxTextLen = 4096
 	return cfg
 }
@@ -237,6 +264,14 @@ func applyFileTtsConfig(cfg *TtsConfig, fc *fileTtsSection) {
 			cfg.MiniMaxBaseURL = fc.MiniMax.BaseURL
 		}
 	}
+	if fc.F5TTS != nil {
+		if cfg.F5TTSKey == "" {
+			cfg.F5TTSKey = fc.F5TTS.APIKey
+		}
+		if cfg.F5TTSBaseURL == "" {
+			cfg.F5TTSBaseURL = fc.F5TTS.BaseURL
+		}
+	}
 }
 
 // applyExternalTtsKeys copies provider API keys from a canonical-name→key map
@@ -254,6 +289,9 @@ func applyExternalTtsKeys(cfg *TtsConfig, keys map[string]string) {
 	}
 	if cfg.MiniMaxKey == "" {
 		cfg.MiniMaxKey = keys["minimax"]
+	}
+	if cfg.F5TTSKey == "" {
+		cfg.F5TTSKey = keys["f5tts"]
 	}
 }
 
@@ -280,6 +318,8 @@ func canonicalProvider(name string) string {
 		return "edge"
 	case "piper-tts":
 		return "piper"
+	case "f5tts", "f5-tts", "f5tts-local", "f5tts_local", "f5_tts":
+		return "f5tts"
 	}
 	if strings.HasPrefix(name, "openai-") || strings.HasPrefix(name, "gpt-") {
 		return "openai"
@@ -304,6 +344,8 @@ func defaultVoiceFor(provider string) string {
 		return "en_US-lessac-medium"
 	case "minimax":
 		return "male-qn-qingse" // MiniMax default; see voice list in platform docs
+	case "f5tts":
+		return "demo_speaker0" // F5-TTS default demo voice
 	default:
 		return "alloy"
 	}
@@ -475,6 +517,18 @@ func handleTTSInfo(cfg *TtsConfig) http.HandlerFunc {
 				"formats": []string{"mp3", "wav", "flac"},
 				"note":    "audio returned as hex-encoded string in data.audio field (decoded automatically)",
 			},
+			"f5tts": map[string]any{
+				"configured": true, // no API key required for open deployments
+				"base_url":   cfg.F5TTSBaseURL,
+				"auth":       cfg.F5TTSKey != "",
+				// Demo voices available without upload.
+				"voices": []string{
+					"demo_speaker0", "demo_speaker1", "demo_speaker2",
+					"(custom — upload a reference .wav to obtain a voice name)",
+				},
+				"formats": []string{"wav"},
+				"note":    "voice = ref_audio_orig; bare names (demo_speaker0) auto-prefixed as resources/{name}.wav",
+			},
 		}
 
 		w.Header().Set("Content-Type", "application/json")
@@ -533,8 +587,10 @@ func synthesize(text, provider, voice, format string, cfg *TtsConfig) ([]byte, s
 		return synthPiper(text, voice, cfg)
 	case "minimax":
 		return synthMiniMax(text, voice, format, cfg)
+	case "f5tts":
+		return synthF5TTS(text, voice, cfg)
 	default:
-		return nil, "", fmt.Errorf("unknown TTS provider %q (valid: openai, elevenlabs, google, edge, piper, minimax)", provider)
+		return nil, "", fmt.Errorf("unknown TTS provider %q (valid: openai, elevenlabs, google, edge, piper, minimax, f5tts)", provider)
 	}
 }
 
@@ -907,6 +963,214 @@ func synthMiniMax(text, voice, format string, cfg *TtsConfig) ([]byte, string, e
 	audio, err := hex.DecodeString(audioHex)
 	if err != nil {
 		return nil, "", fmt.Errorf("MiniMax TTS: hex decode failed: %w", err)
+	}
+	return audio, format, nil
+}
+
+// ── F5-TTS (local / self-hosted) ──────────────────────────────────────────────
+// Reference: voice_cloning.py + test_voice_cloning.py
+// API (F5-TTS server, default port 8010):
+//
+//   POST /voice-clone/synthesize_speech[?need_credit=false]
+//     JSON body: { "ref_audio_orig": "<voice>", "gen_text": "...", "ref_text": "",
+//                  "model": "F5TTS_v1_Base", "speed": 1.0, ... }
+//     Returns: { "task_id": "..." }
+//
+//   GET /voice-clone/status?task_id=<id>
+//     Returns: { "status": "processing"|"completed"|"failed", "audio_urls": [...], ... }
+//
+//   GET /voice-clone/result?task_id=<id>
+//     Returns full result JSON if status endpoint doesn't embed audio directly.
+//
+// Voice name conventions:
+//   - Bare names (e.g. "demo_speaker0") → auto-prefixed as "resources/demo_speaker0.wav"
+//   - Names already containing "/" or ending in ".wav" → passed through unchanged
+//   - Uploaded custom voice names (returned by /voice-clone/upload_audio) → passed as-is
+
+func synthF5TTS(text, voice string, cfg *TtsConfig) ([]byte, string, error) {
+	baseURL := cfg.F5TTSBaseURL
+	if baseURL == "" {
+		baseURL = "http://apicn.aiworm.cn:8010"
+	}
+	// Resolve voice → ref_audio_orig.
+	refAudio := voice
+	if refAudio == "" {
+		refAudio = "demo_speaker0"
+	}
+	// Auto-prefix bare demo/custom names with the server's resources/ path.
+	if !strings.Contains(refAudio, "/") && !strings.HasSuffix(refAudio, ".wav") {
+		refAudio = "resources/" + refAudio + ".wav"
+	}
+
+	payload := map[string]any{
+		"ref_audio_orig":      refAudio,
+		"gen_text":            text,
+		"ref_text":            "",
+		"model":               "F5TTS_v1_Base",
+		"remove_silence":      false,
+		"seed":                -1,
+		"cross_fade_duration": 0.15,
+		"nfe_step":            32,
+		"speed":               1.0,
+	}
+	bodyJSON, _ := json.Marshal(payload)
+
+	// Submit synthesis task.
+	submitURL := baseURL + "/voice-clone/synthesize_speech?need_credit=false"
+	req, err := http.NewRequest(http.MethodPost, submitURL, bytes.NewReader(bodyJSON))
+	if err != nil {
+		return nil, "", fmt.Errorf("F5-TTS: build request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	if cfg.F5TTSKey != "" {
+		req.Header.Set("Authorization", "Bearer "+cfg.F5TTSKey)
+	}
+
+	submitClient := &http.Client{Timeout: 30 * time.Second}
+	sresp, err := submitClient.Do(req)
+	if err != nil {
+		return nil, "", fmt.Errorf("F5-TTS: submit failed: %w", err)
+	}
+	defer sresp.Body.Close()
+
+	if sresp.StatusCode >= 400 {
+		body, _ := io.ReadAll(sresp.Body)
+		return nil, "", fmt.Errorf("F5-TTS: submit HTTP %d: %s", sresp.StatusCode, strings.TrimSpace(string(body)))
+	}
+
+	var submitResult map[string]any
+	if err := json.NewDecoder(sresp.Body).Decode(&submitResult); err != nil {
+		return nil, "", fmt.Errorf("F5-TTS: invalid submit response JSON")
+	}
+	taskID, _ := submitResult["task_id"].(string)
+	if taskID == "" {
+		return nil, "", fmt.Errorf("F5-TTS: submit response missing task_id")
+	}
+	fmt.Printf("%s[f5tts] task_id=%s  ref=%s\n", prefixSYS(), taskID, refAudio)
+
+	// Poll for completion (up to 10 minutes; F5-TTS can be slow on CPU).
+	pollClient := &http.Client{Timeout: 15 * time.Second}
+	pollHeaders := map[string]string{"Accept": "application/json"}
+	if cfg.F5TTSKey != "" {
+		pollHeaders["Authorization"] = "Bearer " + cfg.F5TTSKey
+	}
+
+	deadline := time.Now().Add(10 * time.Minute)
+	for time.Now().Before(deadline) {
+		time.Sleep(2 * time.Second)
+
+		statusURL := fmt.Sprintf("%s/voice-clone/status?task_id=%s", baseURL, taskID)
+		sreq, _ := http.NewRequest(http.MethodGet, statusURL, nil)
+		for k, v := range pollHeaders {
+			sreq.Header.Set(k, v)
+		}
+		pr, err := pollClient.Do(sreq)
+		if err != nil {
+			continue // transient network error — keep polling
+		}
+		var statusBody map[string]any
+		json.NewDecoder(pr.Body).Decode(&statusBody) //nolint:errcheck
+		pr.Body.Close()
+
+		status, _ := statusBody["status"].(string)
+		switch status {
+		case "failed", "error":
+			errMsg, _ := statusBody["error"].(string)
+			return nil, "", fmt.Errorf("F5-TTS: synthesis failed: %s", errMsg)
+		case "completed", "success", "done":
+			// Try to extract audio from the status body first, then from /result.
+			if audio, fmt, err := f5ttsExtractAudio(statusBody, baseURL, taskID, pollHeaders, pollClient); err == nil {
+				return audio, fmt, nil
+			}
+		}
+		// "processing" or unknown — keep polling.
+	}
+	return nil, "", fmt.Errorf("F5-TTS: synthesis timed out after 10 minutes (task_id=%s)", taskID)
+}
+
+// f5ttsExtractAudio pulls raw audio bytes out of the status/result response.
+// It tries three extraction paths in priority order:
+//  1. audio_urls[0]  — download from URL
+//  2. audio_b64      — base64-decode inline audio
+//  3. /result endpoint — re-fetch and repeat
+func f5ttsExtractAudio(body map[string]any, baseURL, taskID string,
+	headers map[string]string, client *http.Client) ([]byte, string, error) {
+
+	// 1. audio_urls list.
+	if urls, ok := body["audio_urls"].([]any); ok && len(urls) > 0 {
+		if u, ok := urls[0].(string); ok && u != "" {
+			return f5ttsDownload(u, headers, client)
+		}
+	}
+	// 2. Inline base64 audio.
+	if b64, ok := body["audio_b64"].(string); ok && b64 != "" {
+		audio, err := base64.StdEncoding.DecodeString(b64)
+		if err != nil {
+			return nil, "", fmt.Errorf("F5-TTS: base64 decode: %w", err)
+		}
+		return audio, "wav", nil
+	}
+	// 3. /result endpoint.
+	resultURL := fmt.Sprintf("%s/voice-clone/result?task_id=%s", baseURL, taskID)
+	rreq, _ := http.NewRequest(http.MethodGet, resultURL, nil)
+	for k, v := range headers {
+		rreq.Header.Set(k, v)
+	}
+	rr, err := client.Do(rreq)
+	if err != nil {
+		return nil, "", fmt.Errorf("F5-TTS: result fetch failed: %w", err)
+	}
+	defer rr.Body.Close()
+	var resultBody map[string]any
+	if err := json.NewDecoder(rr.Body).Decode(&resultBody); err != nil {
+		return nil, "", fmt.Errorf("F5-TTS: invalid result JSON")
+	}
+	// Result may be nested under "result" key.
+	if nested, ok := resultBody["result"].(map[string]any); ok {
+		resultBody = nested
+	}
+	if urls, ok := resultBody["audio_urls"].([]any); ok && len(urls) > 0 {
+		if u, ok := urls[0].(string); ok && u != "" {
+			return f5ttsDownload(u, headers, client)
+		}
+	}
+	if b64, ok := resultBody["audio_b64"].(string); ok && b64 != "" {
+		audio, err := base64.StdEncoding.DecodeString(b64)
+		if err != nil {
+			return nil, "", fmt.Errorf("F5-TTS: base64 decode: %w", err)
+		}
+		return audio, "wav", nil
+	}
+	return nil, "", fmt.Errorf("F5-TTS: no audio data found in result")
+}
+
+// f5ttsDownload fetches an audio file URL and returns the raw bytes + format.
+func f5ttsDownload(url string, headers map[string]string, client *http.Client) ([]byte, string, error) {
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return nil, "", fmt.Errorf("F5-TTS: build download request: %w", err)
+	}
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, "", fmt.Errorf("F5-TTS: audio download failed: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		return nil, "", fmt.Errorf("F5-TTS: audio download HTTP %d", resp.StatusCode)
+	}
+	audio, _ := io.ReadAll(resp.Body)
+	// Infer format from Content-Type or URL extension.
+	format := "wav"
+	ct := resp.Header.Get("Content-Type")
+	switch {
+	case strings.Contains(ct, "mpeg") || strings.HasSuffix(url, ".mp3"):
+		format = "mp3"
+	case strings.Contains(ct, "flac") || strings.HasSuffix(url, ".flac"):
+		format = "flac"
 	}
 	return audio, format, nil
 }

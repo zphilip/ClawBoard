@@ -162,11 +162,13 @@ func extractPCFinalText(data []byte) (string, bool) {
 // buildTtsAudioFrame synthesises text and returns a JSON-encoded "tts.audio"
 // frame.  Returns nil if synthesis fails (non-fatal — caller skips the frame).
 func buildTtsAudioFrame(text, provider, voice, format string, cfg *TtsConfig) []byte {
+	fmt.Printf("%s[tts] synthesising %d chars via %s\n", prefixSYS(), len(text), provider)
 	audio, outFmt, err := synthesize(text, provider, voice, format, cfg)
 	if err != nil {
-		fmt.Printf("%s[tts-ws] synthesis error: %v\n", prefixERR(), err)
+		fmt.Printf("%s[tts] synthesis FAILED: %v\n", prefixERR(), err)
 		return nil
 	}
+	fmt.Printf("%s[tts] synthesis OK  %d bytes (%s)\n", prefixSYS(), len(audio), outFmt)
 	frame, _ := json.Marshal(map[string]any{
 		"type":      "tts.audio",
 		"audio_b64": base64.StdEncoding.EncodeToString(audio),
@@ -181,11 +183,13 @@ func buildTtsAudioFrame(text, provider, voice, format string, cfg *TtsConfig) []
 // buildTtsChunkFrame synthesises text and returns a JSON-encoded "tts.chunk"
 // (isFinal=false) or "tts.audio" (isFinal=true) frame with a sequence number.
 func buildTtsChunkFrame(text string, seq int, isFinal bool, opts *ttsConnOpts, cfg *TtsConfig) []byte {
+	fmt.Printf("%s[tts] seq=%d synthesising %d chars via %s\n", prefixSYS(), seq, len(text), opts.provider)
 	audio, outFmt, err := synthesize(text, opts.provider, opts.voice, opts.format, cfg)
 	if err != nil {
-		fmt.Printf("%s[tts-ws] stream synthesis error (seq=%d): %v\n", prefixERR(), seq, err)
+		fmt.Printf("%s[tts] seq=%d synthesis FAILED: %v\n", prefixERR(), seq, err)
 		return nil
 	}
+	fmt.Printf("%s[tts] seq=%d synthesis OK  %d bytes (%s)\n", prefixSYS(), seq, len(audio), outFmt)
 	typ := "tts.chunk"
 	if isFinal {
 		typ = "tts.audio"
@@ -399,6 +403,7 @@ func (s *proxyServer) handleZCTTSStream(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 		seq++
+		fmt.Printf("%s[zc-tts] submit seq=%d isFinal=%v text=%q\n", prefixSYS(), seq, isFinal, text)
 		pipe.submit(text, seq, isFinal)
 	}
 
@@ -547,6 +552,7 @@ func (s *proxyServer) handlePCTTSStream(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 		seq++
+		fmt.Printf("%s[pc-tts] submit seq=%d isFinal=%v text=%q\n", prefixSYS(), seq, isFinal, text)
 		pipe.submit(text, seq, isFinal)
 	}
 

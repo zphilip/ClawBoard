@@ -870,18 +870,24 @@ func main() {
 	ttsMMKey     := flag.String("tts-minimax-key", "", "MiniMax TTS API key (overrides MINIMAX_API_KEY)")
 	ttsMMModel   := flag.String("tts-minimax-model", "", "MiniMax TTS model (default from config or speech-2.8-hd)")
 	ttsMMBaseURL := flag.String("tts-minimax-url", "", "MiniMax TTS base URL (default: https://api.minimaxi.com/v1/t2a_v2)")
+	// F5-TTS flags (env var: F5_TTS_API_KEY)
+	ttsF5Key     := flag.String("tts-f5tts-key", "", "F5-TTS Bearer token (overrides F5_TTS_API_KEY; leave empty for open servers)")
+	ttsF5URL     := flag.String("tts-f5tts-url", "", "F5-TTS server base URL (default: http://apicn.aiworm.cn:8010)")
 	// Config file flags — path discovery for each supported config ecosystem.
 	// Pass '-' to disable a source entirely.
-	configPath      := flag.String("config", "", "zeroclaw config.toml path (default: auto-discover; '-' = disable)")
-	picoConfigPath  := flag.String("picoclaw-config", "", "picoclaw config.json path (default: auto-discover; '-' = disable)")
-	openConfigPath  := flag.String("openclaw-config", "", "openclaw openclaw.json path (default: auto-discover; '-' = disable)")
+	clawproxyConfigPath := flag.String("clawproxy-config", "", "clawproxy config.toml path (default: ~/.clawproxy/config.toml; '-' = disable)")
+	configPath          := flag.String("config", "", "zeroclaw config.toml path (default: auto-discover; '-' = disable)")
+	picoConfigPath      := flag.String("picoclaw-config", "", "picoclaw config.json path (default: auto-discover; '-' = disable)")
+	openConfigPath      := flag.String("openclaw-config", "", "openclaw openclaw.json path (default: auto-discover; '-' = disable)")
 
 	flag.Parse()
 
-	// Initialise TTS config.  Priority: CLI flags > env vars > zeroclaw config >
-	// picoclaw config > openclaw config > built-in defaults.
+	// Initialise TTS config.  Priority: CLI flags > env vars > clawproxy config >
+	// zeroclaw config > picoclaw config > openclaw config > built-in defaults.
 	ttsCfg := initTtsConfig(*ttsProvider, *ttsVoice, *ttsFormat, *ttsAPIKey, *ttsModel, *ttsPiperURL, *ttsEdgeBin,
-		*ttsMMKey, *ttsMMModel, *ttsMMBaseURL, *configPath, *picoConfigPath, *openConfigPath)
+		*ttsMMKey, *ttsMMModel, *ttsMMBaseURL,
+		*ttsF5Key, *ttsF5URL,
+		*clawproxyConfigPath, *configPath, *picoConfigPath, *openConfigPath)
 
 	// auto-enable based on supplied flags
 	if *zcToken != "" || *zcPairCode != "" {

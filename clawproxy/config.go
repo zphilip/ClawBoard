@@ -2,18 +2,31 @@ package main
 
 // config.go — TOML config file support for clawproxy.
 //
-// clawproxy reads TTS (and future) provider settings from a TOML file whose
-// schema mirrors zeroclaw's config.toml so that a shared deployment only needs
-// one config file.
+// clawproxy reads TTS (and future) provider settings from two sources:
 //
-// Default lookup order (first file found wins):
-//   1. --config <path>                (explicit CLI flag)
-//   2. $ZEROCLAW_CONFIG               (env var)
-//   3. ~/.zeroclaw/config.toml        (zeroclaw default)
-//   4. ~/.config/zeroclaw/config.toml (XDG fallback)
+//  1. clawproxy's own config  (~/.clawproxy/config.toml) — clawproxy-specific
+//     settings that override everything from upstream daemons.
+//  2. Upstream daemon configs (zeroclaw / picoclaw / openclaw) — shared
+//     deployments where TTS keys are already configured there.
 //
-// Within tts settings, priority is:
-//   CLI flags > env vars > config file > built-in defaults
+// Overall priority (highest → lowest):
+//   CLI flags > env vars > clawproxy config > zeroclaw config >
+//   picoclaw config > openclaw config > built-in defaults
+//
+// Clawproxy config lookup (first found wins):
+//   1. --clawproxy-config <path>       (explicit CLI flag)
+//   2. $CLAWPROXY_CONFIG               (env var)
+//   3. ~/.clawproxy/config.toml        (default; same dir as saved tokens)
+//   4. /etc/clawproxy/config.toml      (system-wide)
+//
+// Zeroclaw config lookup (first found wins):
+//   1. --config <path>                 (explicit CLI flag)
+//   2. $ZEROCLAW_CONFIG                (env var)
+//   3. ~/.zeroclaw/config.toml         (zeroclaw default)
+//   4. ~/.config/zeroclaw/config.toml  (XDG fallback)
+//
+// The clawproxy config uses the same TOML schema as zeroclaw's config.toml
+// ([tts] section), so it can be minimal — only the fields you want to override.
 
 import (
 	"encoding/hex"
@@ -85,6 +98,8 @@ type fileTtsSection struct {
 	Piper           *fileTtsPiper       `toml:"piper"`
 	// [tts.minimax] is a clawproxy extension (zeroclaw uses minimax for LLM, not yet TTS).
 	MiniMax         *fileTtsMiniMax     `toml:"minimax"`
+	// [tts.f5tts] is a clawproxy extension for local/remote F5-TTS servers.
+	F5TTS           *fileTtsF5TTS       `toml:"f5tts"`
 }
 
 // fileTtsOpenAI mirrors zeroclaw's [tts.openai] table.
@@ -129,6 +144,17 @@ type fileTtsMiniMax struct {
 	APIKey  string `toml:"api_key"`
 	Model   string `toml:"model"`    // default: speech-2.8-hd
 	BaseURL string `toml:"base_url"` // default: https://api.minimaxi.com/v1/t2a_v2
+}
+
+// fileTtsF5TTS is a clawproxy extension under [tts.f5tts].
+// Example config.toml snippet:
+//
+//	[tts.f5tts]
+//	api_key  = "your-bearer-token"   # optional; some deployments use no auth
+//	base_url = "http://apicn.aiworm.cn:8010"
+type fileTtsF5TTS struct {
+	APIKey  string `toml:"api_key"`
+	BaseURL string `toml:"base_url"` // default: http://apicn.aiworm.cn:8010
 }
 
 // ── Config discovery ──────────────────────────────────────────────────────────
@@ -177,6 +203,29 @@ func discoverConfigPath() string {
 		"/opt/zeroclaw/.zeroclaw/config.toml",
 		"/etc/zeroclaw/config.toml",
 	)
+	for _, p := range candidates {
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
+	return ""
+}
+
+// discoverClawproxyConfigPath returns the first clawproxy-native config file
+// found by searching the following locations in order:
+//
+//  1. $CLAWPROXY_CONFIG env var (explicit override)
+//  2. ~/.clawproxy/config.toml  (default; alongside saved tokens)
+//  3. /etc/clawproxy/config.toml (system-wide)
+func discoverClawproxyConfigPath() string {
+	if v := os.Getenv("CLAWPROXY_CONFIG"); v != "" {
+		return v
+	}
+	var candidates []string
+	if home, err := os.UserHomeDir(); err == nil {
+		candidates = append(candidates, filepath.Join(home, ".clawproxy", "config.toml"))
+	}
+	candidates = append(candidates, "/etc/clawproxy/config.toml")
 	for _, p := range candidates {
 		if _, err := os.Stat(p); err == nil {
 			return p
@@ -304,6 +353,16 @@ func scanTtsAliases(tts *fileTtsSection, raw []byte, keyFile string) {
 			}
 			if tts.Piper.APIURL == "" {
 				tts.Piper.APIURL = getStr("api_url")
+			}
+		case "f5tts":
+			if tts.F5TTS == nil {
+				tts.F5TTS = &fileTtsF5TTS{}
+			}
+			if tts.F5TTS.APIKey == "" {
+				tts.F5TTS.APIKey = decryptSecret(getStr("api_key"), keyFile)
+			}
+			if tts.F5TTS.BaseURL == "" {
+				tts.F5TTS.BaseURL = getStr("base_url")
 			}
 		}
 	}
