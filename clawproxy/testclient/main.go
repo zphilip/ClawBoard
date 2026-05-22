@@ -691,6 +691,31 @@ func printFrameDump(wsURL, sendJSON string, timeout time.Duration) {
 		}
 		fmt.Printf("  %s[%s]%s %s\n", colour, t, cReset, string(pretty))
 
+		// Save audio to file for tts.chunk / tts.audio frames.
+		if (t == "tts.chunk" || t == "tts.audio") && f["audio_b64"] != nil {
+			if ab64, ok := f["audio_b64"].(string); ok && ab64 != "" {
+				audio, decErr := base64.StdEncoding.DecodeString(ab64)
+				if decErr == nil && len(audio) > 0 {
+					prov, _ := f["provider"].(string)
+					if prov == "" {
+						prov = "tts"
+					}
+					outFmt, _ := f["format"].(string)
+					if outFmt == "" {
+						outFmt = "wav"
+					}
+					seq := int(0)
+					if sv, ok := f["seq"].(float64); ok {
+						seq = int(sv)
+					}
+					outFile := fmt.Sprintf("tts_dump_%s_seq%d.%s", prov, seq, outFmt)
+					if writeErr := os.WriteFile(outFile, audio, 0o644); writeErr == nil {
+						fmt.Printf("    %s→ saved %s (%d bytes)%s\n", cGrey, outFile, len(audio), cReset)
+					}
+				}
+			}
+		}
+
 		// Stop on error, or on the final tts.audio (server closes after is_final).
 		// Do NOT stop on "done" — TTS frames arrive asynchronously after it.
 		if t == "error" {
