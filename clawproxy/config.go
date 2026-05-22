@@ -556,6 +556,9 @@ func decryptSecretsInTtsConfig(fc *fileTtsSection, keyFile string) {
 	if fc.MiniMax != nil {
 		fc.MiniMax.APIKey = decryptSecret(fc.MiniMax.APIKey, keyFile)
 	}
+	if fc.F5TTS != nil {
+		fc.F5TTS.APIKey = decryptSecret(fc.F5TTS.APIKey, keyFile)
+	}
 }
 
 // ── picoclaw JSON config ───────────────────────────────────────────────────────

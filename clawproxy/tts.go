@@ -50,6 +50,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -434,7 +435,7 @@ func handleTTS(cfg *TtsConfig) http.HandlerFunc {
 		fmt.Printf("%sTTS synthesize  provider=%s  voice=%s  format=%s  len=%d\n",
 			prefixSYS(), provider, voice, format, len([]rune(text)))
 
-		audio, outFormat, err := synthesize(text, provider, voice, format, cfg)
+		audio, outFormat, err := synthesize(r.Context(), text, provider, voice, format, cfg)
 		if err != nil {
 			fmt.Printf("%sTTS error: %v\n", prefixERR(), err)
 			w.Header().Set("Content-Type", "application/json")
@@ -573,7 +574,7 @@ func audioMIME(format string) string {
 
 // synthesize converts text to audio using the named provider.
 // Returns: raw audio bytes, actual format string, error.
-func synthesize(text, provider, voice, format string, cfg *TtsConfig) ([]byte, string, error) {
+func synthesize(ctx context.Context, text, provider, voice, format string, cfg *TtsConfig) ([]byte, string, error) {
 	switch canonicalProvider(provider) {
 	case "openai":
 		return synthOpenAI(text, voice, format, cfg)
@@ -588,7 +589,7 @@ func synthesize(text, provider, voice, format string, cfg *TtsConfig) ([]byte, s
 	case "minimax":
 		return synthMiniMax(text, voice, format, cfg)
 	case "f5tts":
-		return synthF5TTS(text, voice, cfg)
+		return synthF5TTS(ctx, text, voice, cfg)
 	default:
 		return nil, "", fmt.Errorf("unknown TTS provider %q (valid: openai, elevenlabs, google, edge, piper, minimax, f5tts)", provider)
 	}
@@ -987,7 +988,7 @@ func synthMiniMax(text, voice, format string, cfg *TtsConfig) ([]byte, string, e
 //   - Names already containing "/" or ending in ".wav" → passed through unchanged
 //   - Uploaded custom voice names (returned by /voice-clone/upload_audio) → passed as-is
 
-func synthF5TTS(text, voice string, cfg *TtsConfig) ([]byte, string, error) {
+func synthF5TTS(ctx context.Context, text, voice string, cfg *TtsConfig) ([]byte, string, error) {
 	baseURL := cfg.F5TTSBaseURL
 	if baseURL == "" {
 		baseURL = "http://apicn.aiworm.cn:8010"
@@ -1017,7 +1018,7 @@ func synthF5TTS(text, voice string, cfg *TtsConfig) ([]byte, string, error) {
 
 	// Submit synthesis task.
 	submitURL := baseURL + "/voice-clone/synthesize_speech?need_credit=false"
-	req, err := http.NewRequest(http.MethodPost, submitURL, bytes.NewReader(bodyJSON))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, submitURL, bytes.NewReader(bodyJSON))
 	if err != nil {
 		return nil, "", fmt.Errorf("F5-TTS: build request: %w", err)
 	}
@@ -1050,6 +1051,8 @@ func synthF5TTS(text, voice string, cfg *TtsConfig) ([]byte, string, error) {
 	fmt.Printf("%s[f5tts] task_id=%s  ref=%s\n", prefixSYS(), taskID, refAudio)
 
 	// Poll for completion (up to 10 minutes; F5-TTS can be slow on CPU).
+	// The poll loop respects ctx cancellation so the upstream request is
+	// abandoned immediately when the HTTP client disconnects.
 	pollClient := &http.Client{Timeout: 15 * time.Second}
 	pollHeaders := map[string]string{"Accept": "application/json"}
 	if cfg.F5TTSKey != "" {
@@ -1058,15 +1061,23 @@ func synthF5TTS(text, voice string, cfg *TtsConfig) ([]byte, string, error) {
 
 	deadline := time.Now().Add(10 * time.Minute)
 	for time.Now().Before(deadline) {
-		time.Sleep(2 * time.Second)
+		// Respect context cancellation between polls.
+		select {
+		case <-ctx.Done():
+			return nil, "", fmt.Errorf("F5-TTS: cancelled (task_id=%s): %w", taskID, ctx.Err())
+		case <-time.After(2 * time.Second):
+		}
 
 		statusURL := fmt.Sprintf("%s/voice-clone/status?task_id=%s", baseURL, taskID)
-		sreq, _ := http.NewRequest(http.MethodGet, statusURL, nil)
+		sreq, _ := http.NewRequestWithContext(ctx, http.MethodGet, statusURL, nil)
 		for k, v := range pollHeaders {
 			sreq.Header.Set(k, v)
 		}
 		pr, err := pollClient.Do(sreq)
 		if err != nil {
+			if ctx.Err() != nil {
+				return nil, "", fmt.Errorf("F5-TTS: cancelled (task_id=%s): %w", taskID, ctx.Err())
+			}
 			continue // transient network error — keep polling
 		}
 		var statusBody map[string]any
@@ -1080,7 +1091,7 @@ func synthF5TTS(text, voice string, cfg *TtsConfig) ([]byte, string, error) {
 			return nil, "", fmt.Errorf("F5-TTS: synthesis failed: %s", errMsg)
 		case "completed", "success", "done":
 			// Try to extract audio from the status body first, then from /result.
-			if audio, fmt, err := f5ttsExtractAudio(statusBody, baseURL, taskID, pollHeaders, pollClient); err == nil {
+			if audio, fmt, err := f5ttsExtractAudio(ctx, statusBody, baseURL, taskID, pollHeaders, pollClient); err == nil {
 				return audio, fmt, nil
 			}
 		}
@@ -1094,13 +1105,13 @@ func synthF5TTS(text, voice string, cfg *TtsConfig) ([]byte, string, error) {
 //  1. audio_urls[0]  — download from URL
 //  2. audio_b64      — base64-decode inline audio
 //  3. /result endpoint — re-fetch and repeat
-func f5ttsExtractAudio(body map[string]any, baseURL, taskID string,
+func f5ttsExtractAudio(ctx context.Context, body map[string]any, baseURL, taskID string,
 	headers map[string]string, client *http.Client) ([]byte, string, error) {
 
 	// 1. audio_urls list.
 	if urls, ok := body["audio_urls"].([]any); ok && len(urls) > 0 {
 		if u, ok := urls[0].(string); ok && u != "" {
-			return f5ttsDownload(u, headers, client)
+			return f5ttsDownload(ctx, u, headers, client)
 		}
 	}
 	// 2. Inline base64 audio.
@@ -1113,7 +1124,7 @@ func f5ttsExtractAudio(body map[string]any, baseURL, taskID string,
 	}
 	// 3. /result endpoint.
 	resultURL := fmt.Sprintf("%s/voice-clone/result?task_id=%s", baseURL, taskID)
-	rreq, _ := http.NewRequest(http.MethodGet, resultURL, nil)
+	rreq, _ := http.NewRequestWithContext(ctx, http.MethodGet, resultURL, nil)
 	for k, v := range headers {
 		rreq.Header.Set(k, v)
 	}
@@ -1132,7 +1143,7 @@ func f5ttsExtractAudio(body map[string]any, baseURL, taskID string,
 	}
 	if urls, ok := resultBody["audio_urls"].([]any); ok && len(urls) > 0 {
 		if u, ok := urls[0].(string); ok && u != "" {
-			return f5ttsDownload(u, headers, client)
+			return f5ttsDownload(ctx, u, headers, client)
 		}
 	}
 	if b64, ok := resultBody["audio_b64"].(string); ok && b64 != "" {
@@ -1146,8 +1157,8 @@ func f5ttsExtractAudio(body map[string]any, baseURL, taskID string,
 }
 
 // f5ttsDownload fetches an audio file URL and returns the raw bytes + format.
-func f5ttsDownload(url string, headers map[string]string, client *http.Client) ([]byte, string, error) {
-	req, err := http.NewRequest(http.MethodGet, url, nil)
+func f5ttsDownload(ctx context.Context, url string, headers map[string]string, client *http.Client) ([]byte, string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, "", fmt.Errorf("F5-TTS: build download request: %w", err)
 	}

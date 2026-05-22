@@ -13,7 +13,7 @@
 //	--msg           text to send to the agent (default: short sentence)
 //	--tts-provider  TTS provider to use (default: "edge")
 //	--tts-voice     TTS voice override
-//	--timeout       per-test timeout in seconds (default: 30)
+//	--timeout       per-test timeout in seconds (default: 300)
 //	--http-only     only run HTTP endpoint tests, skip WebSocket
 //	--zc            include ZeroClaw WebSocket tests
 //	--pc            include PicoClaw WebSocket tests
@@ -211,7 +211,7 @@ func testHTTP(c *cfg) {
 		} else if code != 200 {
 			fail(name, fmt.Sprintf("HTTP %d", code), dur)
 		} else {
-			pass(name, fmt.Sprintf("provider=%v format=%v", data["provider"], data["format"]), dur)
+			pass(name, fmt.Sprintf("provider=%v format=%v", data["default_provider"], data["default_format"]), dur)
 		}
 	}
 
@@ -724,7 +724,7 @@ func main() {
 	msg := flag.String("msg", "Say exactly three sentences about the sky.", "message to send to agent")
 	ttsProvider := flag.String("tts-provider", "edge", "TTS provider (openai|elevenlabs|google|edge|piper|minimax)")
 	ttsVoice := flag.String("tts-voice", "", "TTS voice override (empty = server default)")
-	timeoutSec := flag.Int("timeout", 30, "per-test timeout (seconds)")
+	timeoutSec := flag.Int("timeout", 300, "per-test timeout (seconds)")
 	httpOnly := flag.Bool("http-only", false, "only run HTTP tests, skip WebSocket")
 	runZC := flag.Bool("zc", false, "run ZeroClaw WS tests")
 	runPC := flag.Bool("pc", false, "run PicoClaw WS tests")

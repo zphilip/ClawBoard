@@ -37,6 +37,7 @@ package main
 //   (the server pipeline is sequential so frames always arrive in order).
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -163,7 +164,7 @@ func extractPCFinalText(data []byte) (string, bool) {
 // frame.  Returns nil if synthesis fails (non-fatal — caller skips the frame).
 func buildTtsAudioFrame(text, provider, voice, format string, cfg *TtsConfig) []byte {
 	fmt.Printf("%s[tts] synthesising %d chars via %s\n", prefixSYS(), len(text), provider)
-	audio, outFmt, err := synthesize(text, provider, voice, format, cfg)
+	audio, outFmt, err := synthesize(context.Background(), text, provider, voice, format, cfg)
 	if err != nil {
 		fmt.Printf("%s[tts] synthesis FAILED: %v\n", prefixERR(), err)
 		return nil
@@ -184,7 +185,7 @@ func buildTtsAudioFrame(text, provider, voice, format string, cfg *TtsConfig) []
 // (isFinal=false) or "tts.audio" (isFinal=true) frame with a sequence number.
 func buildTtsChunkFrame(text string, seq int, isFinal bool, opts *ttsConnOpts, cfg *TtsConfig) []byte {
 	fmt.Printf("%s[tts] seq=%d synthesising %d chars via %s\n", prefixSYS(), seq, len(text), opts.provider)
-	audio, outFmt, err := synthesize(text, opts.provider, opts.voice, opts.format, cfg)
+	audio, outFmt, err := synthesize(context.Background(), text, opts.provider, opts.voice, opts.format, cfg)
 	if err != nil {
 		fmt.Printf("%s[tts] seq=%d synthesis FAILED: %v\n", prefixERR(), seq, err)
 		return nil
