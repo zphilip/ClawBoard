@@ -215,16 +215,20 @@ func testHTTP(c *cfg) {
 		}
 	}
 
-	// POST /tts/synthesize  — short text, quick smoke test
+	// POST /tts/synthesize  — synthesize c.msg (or a short fallback) and save audio
 	{
 		name := "POST /tts/synthesize"
 		provider := c.ttsProvider
 		if provider == "" {
 			provider = "edge"
 		}
-		payload := fmt.Sprintf(`{"text":"Hi.","provider":%q}`, provider)
+		text := c.msg
+		if text == "" {
+			text = "Hi."
+		}
+		payload := fmt.Sprintf(`{"text":%q,"provider":%q}`, text, provider)
 		if c.ttsVoice != "" {
-			payload = fmt.Sprintf(`{"text":"Hi.","provider":%q,"voice":%q}`, provider, c.ttsVoice)
+			payload = fmt.Sprintf(`{"text":%q,"provider":%q,"voice":%q}`, text, provider, c.ttsVoice)
 		}
 		data, code, dur, err := doPost(httpBase(c)+"/tts/synthesize",
 			strings.NewReader(payload), "application/json", c.timeout)
@@ -241,8 +245,18 @@ func testHTTP(c *cfg) {
 		} else {
 			ab64, _ := data["audio_b64"].(string)
 			decoded, _ := base64.StdEncoding.DecodeString(ab64)
-			pass(name, fmt.Sprintf("provider=%v voice=%v bytes=%d",
-				data["provider"], data["voice"], len(decoded)), dur)
+			// Save audio to a file named tts_<provider>.<format>
+			outFmt, _ := data["format"].(string)
+			if outFmt == "" {
+				outFmt = "wav"
+			}
+			outFile := fmt.Sprintf("tts_%s.%s", provider, outFmt)
+			saveNote := ""
+			if writeErr := os.WriteFile(outFile, decoded, 0o644); writeErr == nil {
+				saveNote = "  saved→" + outFile
+			}
+			pass(name, fmt.Sprintf("provider=%v voice=%v bytes=%d%s",
+				data["provider"], data["voice"], len(decoded), saveNote), dur)
 		}
 	}
 }
