@@ -133,21 +133,28 @@ func extractZCFinalText(data []byte) (string, bool) {
 }
 
 // extractPCFinalText returns the complete agent text from a picoclaw agent→app
-// frame if it is a "message.create" (final) frame.
+// frame if it is a "message.create" that carries a speakable response.
+// Skips thought messages (kind=="thought" or thought==true) and tool_call frames.
 func extractPCFinalText(data []byte) (string, bool) {
 	var m struct {
 		Type    string `json:"type"`
 		Payload struct {
 			Content string `json:"content"`
+			Kind    string `json:"kind"`
+			Thought bool   `json:"thought"`
 		} `json:"payload"`
 	}
 	if json.Unmarshal(data, &m) != nil {
 		return "", false
 	}
-	if m.Type == "message.create" {
-		return m.Payload.Content, m.Payload.Content != ""
+	if m.Type != "message.create" {
+		return "", false
 	}
-	return "", false
+	// Skip thought messages and tool invocations.
+	if m.Payload.Thought || m.Payload.Kind == "thought" || m.Payload.Kind == "tool_calls" {
+		return "", false
+	}
+	return m.Payload.Content, m.Payload.Content != ""
 }
 
 // ── TTS frame builders ─────────────────────────────────────────────────────────
@@ -554,6 +561,8 @@ func (s *proxyServer) handlePCTTSStream(w http.ResponseWriter, r *http.Request) 
 			Type    string `json:"type"`
 			Payload struct {
 				Content string `json:"content"`
+				Kind    string `json:"kind"`
+				Thought bool   `json:"thought"`
 			} `json:"payload"`
 		}
 		if json.Unmarshal(data, &msg) != nil {
@@ -562,6 +571,11 @@ func (s *proxyServer) handlePCTTSStream(w http.ResponseWriter, r *http.Request) 
 
 		switch msg.Type {
 		case "message.create":
+			// Skip thought messages and tool invocations — only speak the
+			// final visible response to the user.
+			if msg.Payload.Thought || msg.Payload.Kind == "thought" || msg.Payload.Kind == "tool_calls" {
+				continue
+			}
 			content := msg.Payload.Content
 			if content == "" {
 				continue
