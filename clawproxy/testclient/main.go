@@ -188,15 +188,15 @@ func testHTTP(c *cfg) {
 		} else if code != 200 {
 			fail(name, fmt.Sprintf("HTTP %d", code), dur)
 		} else {
-			zc, _ := data["zeroclaw"].(map[string]any)
-			pc, _ := data["picoclaw"].(map[string]any)
-			zcStatus := "?"
-			pcStatus := "?"
-			if zc != nil {
-				zcStatus, _ = zc["status"].(string)
-			}
-			if pc != nil {
-				pcStatus, _ = pc["status"].(string)
+			agents, _ := data["agents"].(map[string]any)
+			zcStatus, pcStatus := "?", "?"
+			if agents != nil {
+				if zc, ok := agents["zc"].(map[string]any); ok {
+					zcStatus, _ = zc["status"].(string)
+				}
+				if pc, ok := agents["pc"].(map[string]any); ok {
+					pcStatus, _ = pc["status"].(string)
+				}
 			}
 			pass(name, fmt.Sprintf("zc=%s pc=%s", zcStatus, pcStatus), dur)
 		}
@@ -275,8 +275,8 @@ func dialWS(rawURL string, timeout time.Duration) (*websocket.Conn, time.Duratio
 	return conn, time.Since(t0), err
 }
 
-// readFrames reads all frames until error/tts.audio/timeout; deadline is absolute.
-// Does NOT stop on "done" — TTS audio frames may arrive after it.
+// readFrames reads frames for plain-relay tests (no TTS).
+// Stops on done, error, or timeout.
 func readFrames(conn *websocket.Conn, deadline time.Time) []frame {
 	var frames []frame
 	for time.Now().Before(deadline) {
@@ -289,13 +289,7 @@ func readFrames(conn *websocket.Conn, deadline time.Time) []frame {
 		if json.Unmarshal(msg, &f) == nil {
 			frames = append(frames, f)
 			t := f.typ()
-			// Stop on error or tts.audio (server closes conn after is_final).
-			// Do NOT break on "done" — TTS audio frames arrive asynchronously
-			// after the agent's done frame.
-			if t == "error" {
-				break
-			}
-			if t == "tts.audio" {
+			if t == "done" || t == "error" {
 				break
 			}
 		}

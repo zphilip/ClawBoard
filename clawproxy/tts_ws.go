@@ -166,6 +166,7 @@ func buildTtsAudioFrame(text, provider, voice, format string, cfg *TtsConfig) []
 		"format":    outFmt,
 		"provider":  provider,
 		"voice":     voice,
+		"is_final":  true,
 	})
 	return frame
 }
