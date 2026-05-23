@@ -1087,7 +1087,7 @@ func synthQwen3TTS(ctx context.Context, text, voice string, cfg *TtsConfig) ([]b
 		req.Header.Set("Authorization", "Bearer "+cfg.Qwen3Key)
 	}
 
-	client := &http.Client{Timeout: 120 * time.Second}
+	client := &http.Client{Timeout: 300 * time.Second} // 5 min; long texts may take >2 min
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, "", fmt.Errorf("qwen3-tts: request failed: %w", err)
