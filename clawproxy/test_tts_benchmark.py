@@ -26,6 +26,7 @@ Options:
 
 import argparse
 import os
+import re
 import sys
 import time
 import json
@@ -43,6 +44,40 @@ def cyan(t):   return _c("36", t)
 def yellow(t): return _c("33", t)
 def bold(t):   return _c("1",  t)
 def grey(t):   return _c("90", t)
+
+# ── Config loader ───────────────────────────────────────────────────────────────
+
+def _read_toml_value(path: Path, section: str, key: str) -> str:
+    """Minimal TOML reader: finds key inside [section] without a full TOML parser."""
+    try:
+        text = path.read_text()
+    except OSError:
+        return ""
+    in_section = False
+    section_re = re.compile(r'^\s*\[([^\]]+)\]')
+    kv_re      = re.compile(r'^\s*' + re.escape(key) + r'\s*=\s*["\']?([^"\'\n#]+)["\']?')
+    for line in text.splitlines():
+        m = section_re.match(line)
+        if m:
+            in_section = m.group(1).strip() == section
+            continue
+        if in_section:
+            m = kv_re.match(line)
+            if m:
+                return m.group(1).strip()
+    return ""
+
+
+def load_clawproxy_config() -> dict:
+    """Return {f5tts_key, f5tts_url, qwen3_key, qwen3_url} from ~/.clawproxy/config.toml."""
+    cfg_path = Path(os.environ.get("CLAWPROXY_CONFIG",
+                                   Path.home() / ".clawproxy" / "config.toml"))
+    return {
+        "f5tts_key":  _read_toml_value(cfg_path, "tts.f5tts",   "api_key"),
+        "f5tts_url":  _read_toml_value(cfg_path, "tts.f5tts",   "base_url"),
+        "qwen3_key":  _read_toml_value(cfg_path, "tts.qwen3tts", "api_key"),
+        "qwen3_url":  _read_toml_value(cfg_path, "tts.qwen3tts", "base_url"),
+    }
 
 # ── Test texts ─────────────────────────────────────────────────────────────────
 # Each entry: (label, text)
@@ -246,19 +281,20 @@ def print_table(results: list[Result]):
     for r in results:
         by_label.setdefault(r.label, {})[r.provider] = r
 
-    col_w = [22, 6, 14, 14, 14, 14, 24]
+    col_w = [22, 6, 12, 9, 12, 9, 26]
     header = ["Test case", "Chars",
-              "F5-TTS time", "F5-TTS KB", "Qwen3 time", "Qwen3 KB",
+              "F5 time", "F5 KB", "Q3 time", "Q3 KB",
               "Winner (time)"]
     sep = "  ".join("─" * w for w in col_w)
 
-    def fmt_cell(r: Optional[Result]) -> tuple[str, str]:
+    def fmt_time(r: Optional[Result]) -> tuple[str, str]:
         """(time_str, kb_str)"""
         if r is None:
-            return grey("(skipped)"), grey("—")
+            return grey("(skip)"), grey("—")
         if not r.ok:
-            return red(f"ERROR"), red(r.error[:20])
-        return f"{r.elapsed_s:>7.1f}s", f"{r.bytes_out/1024:>7.1f}"
+            short_err = r.error.split(":")[-1].strip()[:18]
+            return red(f"ERR"), red(short_err)
+        return f"{r.elapsed_s:>6.1f}s", f"{r.bytes_out/1024:>6.1f}"
 
     print()
     print(bold("TTS Speed Benchmark"))
@@ -272,8 +308,8 @@ def print_table(results: list[Result]):
     for label, pmap in by_label.items():
         f5  = pmap.get("f5tts")
         q3  = pmap.get("qwen3tts")
-        ft, fk = fmt_cell(f5)
-        qt, qk = fmt_cell(q3)
+        ft, fk = fmt_time(f5)
+        qt, qk = fmt_time(q3)
 
         # Determine winner
         if f5 and f5.ok and q3 and q3.ok:
@@ -327,16 +363,21 @@ def print_table(results: list[Result]):
 # ── Main ────────────────────────────────────────────────────────────────────────
 
 def parse_args():
+    # Pre-load ~/.clawproxy/config.toml so its values become the defaults.
+    fc = load_clawproxy_config()
+
     p = argparse.ArgumentParser(
         description="Benchmark F5-TTS vs Qwen3-TTS synthesis speed")
-    p.add_argument("--f5-url",    default="http://apicn.aiworm.cn:8010",
+    p.add_argument("--f5-url",    default=fc.get("f5tts_url") or "http://apicn.aiworm.cn:8010",
                    help="F5-TTS server base URL")
-    p.add_argument("--q3-url",    default="http://apicn.aiworm.cn:8011",
+    p.add_argument("--q3-url",    default=fc.get("qwen3_url") or "http://apicn.aiworm.cn:8011",
                    help="Qwen3-TTS server base URL")
-    p.add_argument("--f5-key",    default=os.environ.get("F5_TTS_API_KEY", ""),
-                   help="F5-TTS Bearer token")
-    p.add_argument("--q3-key",    default=os.environ.get("QWEN3_TTS_API_KEY", ""),
-                   help="Qwen3-TTS Bearer token")
+    p.add_argument("--f5-key",
+                   default=os.environ.get("F5_TTS_API_KEY") or fc.get("f5tts_key", ""),
+                   help="F5-TTS Bearer token (auto-read from ~/.clawproxy/config.toml or F5_TTS_API_KEY)")
+    p.add_argument("--q3-key",
+                   default=os.environ.get("QWEN3_TTS_API_KEY") or fc.get("qwen3_key", ""),
+                   help="Qwen3-TTS Bearer token (auto-read from ~/.clawproxy/config.toml or QWEN3_TTS_API_KEY)")
     p.add_argument("--f5-voice",  default="demo_speaker0",
                    help="F5-TTS voice (ref audio name)")
     p.add_argument("--q3-voice",  default="Vivian",
@@ -385,9 +426,11 @@ def main():
     print(bold(f"\nRunning {total_runs} synthesis calls "
                f"({len(cases)} texts × {len(providers)} providers)"))
     if not args.skip_f5:
-        print(f"  F5-TTS  : {args.f5_url}  voice={args.f5_voice}")
+        auth_note = grey("(no auth)") if not args.f5_key else green("(auth OK)")
+        print(f"  F5-TTS  : {args.f5_url}  voice={args.f5_voice}  {auth_note}")
     if not args.skip_q3:
-        print(f"  Qwen3   : {args.q3_url}  voice={args.q3_voice}  model={args.q3_model}")
+        auth_note = grey("(no auth)") if not args.q3_key else green("(auth OK)")
+        print(f"  Qwen3   : {args.q3_url}  voice={args.q3_voice}  model={args.q3_model}  {auth_note}")
     print(f"  timeout : {args.timeout}s per call\n")
 
     results: list[Result] = []
