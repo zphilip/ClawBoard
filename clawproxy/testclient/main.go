@@ -650,13 +650,33 @@ func printFrameDump(wsURL, sendJSON string, timeout time.Duration) {
 		fmt.Printf("  %swrite error: %v%s\n", cRed, err, cReset)
 		return
 	}
-	_ = conn.SetReadDeadline(time.Now().Add(timeout))
+
+	// Use a per-frame idle deadline (30 s) rather than a single absolute
+	// deadline.  This means the total wall-clock time is unbounded, but we
+	// detect a stalled server within 30 s of the last received frame.
+	idleTimeout := 30 * time.Second
+	if timeout < idleTimeout {
+		idleTimeout = timeout
+	}
+	_ = conn.SetReadDeadline(time.Now().Add(idleTimeout))
+
+	start := time.Now()
+	ttsFrames := 0
 	for {
 		_, msg, err := conn.ReadMessage()
 		if err != nil {
-			fmt.Printf("  %s(read end: %v)%s\n", cGrey, err, cReset)
+			elapsed := time.Since(start).Round(time.Second)
+			if ttsFrames == 0 {
+				fmt.Printf("  %s(read end after %s — NO TTS frames received: %v)%s\n",
+					cRed, elapsed, err, cReset)
+			} else {
+				fmt.Printf("  %s(read end after %s, tts_frames=%d: %v)%s\n",
+					cGrey, elapsed, ttsFrames, err, cReset)
+			}
 			break
 		}
+		// Reset idle timeout on every successful frame.
+		_ = conn.SetReadDeadline(time.Now().Add(idleTimeout))
 		var f frame
 		json.Unmarshal(msg, &f) //nolint:errcheck
 		t := f.typ()
@@ -693,6 +713,7 @@ func printFrameDump(wsURL, sendJSON string, timeout time.Duration) {
 
 		// Save audio to file for tts.chunk / tts.audio frames.
 		if (t == "tts.chunk" || t == "tts.audio") && f["audio_b64"] != nil {
+			ttsFrames++
 			if ab64, ok := f["audio_b64"].(string); ok && ab64 != "" {
 				audio, decErr := base64.StdEncoding.DecodeString(ab64)
 				if decErr == nil && len(audio) > 0 {

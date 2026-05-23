@@ -161,15 +161,25 @@ func extractPCFinalText(data []byte) (string, bool) {
 // ── TTS frame builders ─────────────────────────────────────────────────────────
 
 // buildTtsAudioFrame synthesises text and returns a JSON-encoded "tts.audio"
-// frame.  Returns nil if synthesis fails (non-fatal — caller skips the frame).
+// frame.  On synthesis failure it returns a JSON error frame instead of nil so
+// the client can display a meaningful error rather than timing out silently.
 func buildTtsAudioFrame(text, provider, voice, format string, cfg *TtsConfig) []byte {
-	fmt.Printf("%s[tts] synthesising %d chars via %s\n", prefixSYS(), len(text), provider)
+	start := time.Now()
+	fmt.Printf("%s[tts] synthesising %d chars via %s  text=%q\n",
+		prefixSYS(), len([]rune(text)), provider, ttsPreview(text))
 	audio, outFmt, err := synthesize(context.Background(), text, provider, voice, format, cfg)
 	if err != nil {
-		fmt.Printf("%s[tts] synthesis FAILED: %v\n", prefixERR(), err)
-		return nil
+		fmt.Printf("%s[tts] synthesis FAILED after %s: %v\n",
+			prefixERR(), time.Since(start).Round(time.Millisecond), err)
+		frame, _ := json.Marshal(map[string]any{
+			"type":     "error",
+			"provider": provider,
+			"message":  fmt.Sprintf("TTS synthesis failed (%s): %v", provider, err),
+		})
+		return frame
 	}
-	fmt.Printf("%s[tts] synthesis OK  %d bytes (%s)\n", prefixSYS(), len(audio), outFmt)
+	fmt.Printf("%s[tts] synthesis OK  %d bytes (%s) in %s\n",
+		prefixSYS(), len(audio), outFmt, time.Since(start).Round(time.Millisecond))
 	frame, _ := json.Marshal(map[string]any{
 		"type":      "tts.audio",
 		"audio_b64": base64.StdEncoding.EncodeToString(audio),
@@ -183,14 +193,26 @@ func buildTtsAudioFrame(text, provider, voice, format string, cfg *TtsConfig) []
 
 // buildTtsChunkFrame synthesises text and returns a JSON-encoded "tts.chunk"
 // (isFinal=false) or "tts.audio" (isFinal=true) frame with a sequence number.
+// On synthesis failure it returns a JSON error frame so the client sees the
+// failure immediately rather than timing out waiting for audio that never comes.
 func buildTtsChunkFrame(text string, seq int, isFinal bool, opts *ttsConnOpts, cfg *TtsConfig) []byte {
-	fmt.Printf("%s[tts] seq=%d synthesising %d chars via %s\n", prefixSYS(), seq, len(text), opts.provider)
+	start := time.Now()
+	fmt.Printf("%s[tts] seq=%d synthesising %d chars via %s  text=%q\n",
+		prefixSYS(), seq, len([]rune(text)), opts.provider, ttsPreview(text))
 	audio, outFmt, err := synthesize(context.Background(), text, opts.provider, opts.voice, opts.format, cfg)
 	if err != nil {
-		fmt.Printf("%s[tts] seq=%d synthesis FAILED: %v\n", prefixERR(), seq, err)
-		return nil
+		fmt.Printf("%s[tts] seq=%d synthesis FAILED after %s: %v\n",
+			prefixERR(), seq, time.Since(start).Round(time.Millisecond), err)
+		frame, _ := json.Marshal(map[string]any{
+			"type":     "error",
+			"provider": opts.provider,
+			"seq":      seq,
+			"message":  fmt.Sprintf("TTS synthesis failed (%s) seq=%d: %v", opts.provider, seq, err),
+		})
+		return frame
 	}
-	fmt.Printf("%s[tts] seq=%d synthesis OK  %d bytes (%s)\n", prefixSYS(), seq, len(audio), outFmt)
+	fmt.Printf("%s[tts] seq=%d synthesis OK  %d bytes (%s) in %s\n",
+		prefixSYS(), seq, len(audio), outFmt, time.Since(start).Round(time.Millisecond))
 	typ := "tts.chunk"
 	if isFinal {
 		typ = "tts.audio"
@@ -206,6 +228,16 @@ func buildTtsChunkFrame(text string, seq int, isFinal bool, opts *ttsConnOpts, c
 		"is_final":  isFinal,
 	})
 	return frame
+}
+
+// ttsPreview returns the first 60 runes of text, eliding the rest.
+func ttsPreview(text string) string {
+	runes := []rune(text)
+	const limit = 60
+	if len(runes) <= limit {
+		return text
+	}
+	return string(runes[:limit]) + "…"
 }
 
 // ── Sentence splitter ──────────────────────────────────────────────────────────
