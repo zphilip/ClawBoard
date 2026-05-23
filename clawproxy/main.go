@@ -879,6 +879,7 @@ func main() {
 	ttsQ3URL   := flag.String("tts-qwen3-url", "", "Qwen3-TTS server base URL (default: http://apicn.aiworm.cn:8011)")
 	ttsQ3Model := flag.String("tts-qwen3-model", "", "Qwen3-TTS model name (default: qwen3-tts; also: tts-1, tts-1-zh)")
 	ttsQ3Speed := flag.Float64("tts-qwen3-speed", 0, "Qwen3-TTS speech speed 0.5–2.0 (0 = use config/default 1.0)")
+	ttsQ3TimeoutSecs := flag.Int("tts-qwen3-timeout", 0, "Qwen3-TTS HTTP timeout in seconds (0 = default 600)")
 	// Config file flags — path discovery for each supported config ecosystem.
 	// Pass '-' to disable a source entirely.
 	clawproxyConfigPath := flag.String("clawproxy-config", "", "clawproxy config.toml path (default: ~/.clawproxy/config.toml; '-' = disable)")
@@ -894,6 +895,7 @@ func main() {
 		*ttsMMKey, *ttsMMModel, *ttsMMBaseURL,
 		*ttsF5Key, *ttsF5URL, *ttsF5Speed,
 		*ttsQ3Key, *ttsQ3URL, *ttsQ3Model, *ttsQ3Speed,
+		time.Duration(*ttsQ3TimeoutSecs)*time.Second,
 		*clawproxyConfigPath, *configPath, *picoConfigPath, *openConfigPath)
 
 	// auto-enable based on supplied flags

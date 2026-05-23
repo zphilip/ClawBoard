@@ -170,10 +170,11 @@ type fileTtsF5TTS struct {
 //	model    = "qwen3-tts"           # default
 //	speed    = 0.9                   # 0.5–2.0
 type fileTtsQwen3TTS struct {
-	APIKey  string  `toml:"api_key"`
-	BaseURL string  `toml:"base_url"` // default: http://apicn.aiworm.cn:8011
-	Model   string  `toml:"model"`    // default: qwen3-tts
-	Speed   float64 `toml:"speed"`    // 0.5–2.0; 0 means use default (1.0)
+	APIKey      string  `toml:"api_key"`
+	BaseURL     string  `toml:"base_url"`    // default: http://apicn.aiworm.cn:8011
+	Model       string  `toml:"model"`       // default: qwen3-tts
+	Speed       float64 `toml:"speed"`       // 0.5–2.0; 0 means use default (1.0)
+	TimeoutSecs int     `toml:"timeout_secs"` // HTTP timeout in seconds; 0 = default (600)
 }
 
 // ── Config discovery ──────────────────────────────────────────────────────────

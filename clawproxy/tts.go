@@ -88,10 +88,11 @@ type TtsConfig struct {
 	F5TTSBaseURL string  // default: http://apicn.aiworm.cn:8010
 	F5TTSSpeed   float64 // speech speed: 0.5–2.0; 0 means use default (1.0)
 	// Qwen3-TTS (OpenAI-compatible /v1/audio/speech API)
-	Qwen3Key     string  // Bearer token (QWEN3_TTS_API_KEY env or --tts-qwen3-key)
-	Qwen3BaseURL string  // default: http://apicn.aiworm.cn:8011
-	Qwen3Model   string  // model name: qwen3-tts, tts-1, tts-1-zh, … (default: qwen3-tts)
-	Qwen3Speed   float64 // speech speed: 0.5–2.0; 0 means use default (1.0)
+	Qwen3Key     string        // Bearer token (QWEN3_TTS_API_KEY env or --tts-qwen3-key)
+	Qwen3BaseURL string        // default: http://apicn.aiworm.cn:8011
+	Qwen3Model   string        // model name: qwen3-tts, tts-1, tts-1-zh, … (default: qwen3-tts)
+	Qwen3Speed   float64       // speech speed: 0.5–2.0; 0 means use default (1.0)
+	Qwen3Timeout time.Duration // HTTP timeout for one synthesis call; 0 = use default (10 min)
 }
 
 // initTtsConfig builds a TtsConfig from CLI flags, env vars, and optionally a
@@ -110,7 +111,7 @@ type TtsConfig struct {
 func initTtsConfig(provider, voice, format, apiKey, model, piperURL, edgeBin,
 	mmKey, mmModel, mmBaseURL,
 	f5Key, f5BaseURL string, f5Speed float64,
-	q3Key, q3BaseURL, q3Model string, q3Speed float64,
+	q3Key, q3BaseURL, q3Model string, q3Speed float64, q3Timeout time.Duration,
 	clawproxyConfigPath, configPath, picoConfigPath, openConfigPath string) *TtsConfig {
 	cfg := &TtsConfig{
 		Provider:       provider,
@@ -130,6 +131,7 @@ func initTtsConfig(provider, voice, format, apiKey, model, piperURL, edgeBin,
 		Qwen3BaseURL:   q3BaseURL,
 		Qwen3Model:     q3Model,
 		Qwen3Speed:     q3Speed,
+		Qwen3Timeout:   q3Timeout,
 	}
 
 	// Env var fallbacks (same names as zeroclaw uses).
@@ -236,6 +238,9 @@ func initTtsConfig(provider, voice, format, apiKey, model, piperURL, edgeBin,
 	if cfg.Qwen3Model == "" {
 		cfg.Qwen3Model = "qwen3-tts"
 	}
+	if cfg.Qwen3Timeout == 0 {
+		cfg.Qwen3Timeout = 10 * time.Minute
+	}
 	cfg.MaxTextLen = 4096
 	return cfg
 }
@@ -309,6 +314,9 @@ func applyFileTtsConfig(cfg *TtsConfig, fc *fileTtsSection) {
 		}
 		if cfg.Qwen3Speed == 0 && fc.Qwen3.Speed != 0 {
 			cfg.Qwen3Speed = fc.Qwen3.Speed
+		}
+		if cfg.Qwen3Timeout == 0 && fc.Qwen3.TimeoutSecs > 0 {
+			cfg.Qwen3Timeout = time.Duration(fc.Qwen3.TimeoutSecs) * time.Second
 		}
 	}
 }
@@ -1087,7 +1095,10 @@ func synthQwen3TTS(ctx context.Context, text, voice string, cfg *TtsConfig) ([]b
 		req.Header.Set("Authorization", "Bearer "+cfg.Qwen3Key)
 	}
 
-	client := &http.Client{Timeout: 300 * time.Second} // 5 min; long texts may take >2 min
+	client := &http.Client{Timeout: cfg.Qwen3Timeout} // configurable; default 10 min
+	if client.Timeout <= 0 {
+		client.Timeout = 10 * time.Minute
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, "", fmt.Errorf("qwen3-tts: request failed: %w", err)
