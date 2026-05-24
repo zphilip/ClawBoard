@@ -249,14 +249,27 @@ def qwen3_synth(text: str, base_url: str, api_key: str,
     }
 
     t0 = time.time()
-    r = requests.post(
-        f"{base_url}/v1/audio/speech",
-        headers=headers,
-        json=payload,
-        timeout=timeout,
-    )
-    r.raise_for_status()
-    return r.content, time.time() - t0
+    try:
+        r = requests.post(
+            f"{base_url}/v1/audio/speech",
+            headers=headers,
+            json=payload,
+            timeout=timeout,
+        )
+        r.raise_for_status()
+        return r.content, time.time() - t0
+    except requests.HTTPError as e:
+        # Include response body because many deployments return the real cause
+        # (unsupported model/voice/format) only in JSON error payload.
+        body = ""
+        if e.response is not None and e.response.text:
+            raw = e.response.text.strip().replace("\n", " ")
+            body = raw[:400]
+        if body:
+            raise RuntimeError(
+                f"HTTP {e.response.status_code if e.response is not None else '?'}: {body}"
+            ) from e
+        raise
 
 
 # ── Benchmark runner ────────────────────────────────────────────────────────────
@@ -362,7 +375,8 @@ def print_table(results: list[Result]):
                 winner = yellow(f"Qwen3-2 ({fastest_time:.1f}s)")
                 wins["qwen3-tts-2"] += 1
 
-        chars = (f5 or q3).chars if (f5 or q3) else 0
+        chars_item = f5 or q3 or q3_2
+        chars = chars_item.chars if chars_item else 0
         row = [label, str(chars), ft, qt, q2t, winner]
         print("  ".join(str(v).ljust(w) for v, w in zip(row, col_w)))
 
