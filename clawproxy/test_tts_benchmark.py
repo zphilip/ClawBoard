@@ -1,24 +1,29 @@
 #!/usr/bin/env python3
 """
-TTS Speed Benchmark: F5-TTS vs Qwen3-TTS
-=========================================
-Synthesises the same texts with both providers and prints a side-by-side
-timing table.
+TTS Speed Benchmark: F5-TTS vs Qwen3-TTS vs Qwen3-TTS-2
+========================================================
+Synthesises the same texts with all configured providers and prints a
+side-by-side timing table.
 
-F5-TTS  : POST /voice-clone/synthesize_speech  (async polling)
-Qwen3   : POST /v1/audio/speech                (sync, OpenAI-compatible)
+F5-TTS      : POST /voice-clone/synthesize_speech  (async polling)
+Qwen3-TTS   : POST /v1/audio/speech                (sync, OpenAI-compatible)
+Qwen3-TTS-2 : POST /v1/audio/speech                (sync, OpenAI-compatible)
 
 Usage:
     python test_tts_benchmark.py [options]
 
 Options:
     --f5-url    URL   F5-TTS server   (default: http://apicn.aiworm.cn:8010)
-    --q3-url    URL   Qwen3-TTS server (default: http://apicn.aiworm.cn:8011)
+    --q3-url      URL   Qwen3-TTS server (default: http://apicn.aiworm.cn:8011)
+    --q3-2-url    URL   Qwen3-TTS-2 server (default: http://apicn.aiworm.cn:8012)
     --f5-key    KEY   F5-TTS Bearer token  (or env F5_TTS_API_KEY)
-    --q3-key    KEY   Qwen3 Bearer token   (or env QWEN3_TTS_API_KEY)
+    --q3-key      KEY   Qwen3 Bearer token   (or env QWEN3_TTS_API_KEY)
+    --q3-2-key    KEY   Qwen3-TTS-2 Bearer token (or env QWEN3_TTS_2_API_KEY)
     --f5-voice  NAME  F5-TTS voice name    (default: demo_speaker0)
-    --q3-voice  NAME  Qwen3-TTS voice      (default: Vivian)
-    --q3-model  NAME  Qwen3-TTS model      (default: qwen3-tts)
+    --q3-voice    NAME  Qwen3-TTS voice      (default: Vivian)
+    --q3-2-voice  NAME  Qwen3-TTS-2 voice    (default: Vivian)
+    --q3-model    NAME  Qwen3-TTS model      (default: qwen3-tts)
+    --q3-2-model  NAME  Qwen3-TTS-2 model    (default: qwen3-tts)
     --timeout   SECS  Per-request timeout  (default: 900)
     --output    DIR   Directory to save audio files (default: ./tts_benchmark_out)
     --no-save         Do not save audio to disk
@@ -69,14 +74,25 @@ def _read_toml_value(path: Path, section: str, key: str) -> str:
 
 
 def load_clawproxy_config() -> dict:
-    """Return {f5tts_key, f5tts_url, qwen3_key, qwen3_url} from ~/.clawproxy/config.toml."""
+    """Return known TTS key/url values from ~/.clawproxy/config.toml."""
     cfg_path = Path(os.environ.get("CLAWPROXY_CONFIG",
                                    Path.home() / ".clawproxy" / "config.toml"))
+
+    # Allow either [tts.qwen3tts2] or [tts.qwen3-tts-2] naming styles.
+    q3_2_key = _read_toml_value(cfg_path, "tts.qwen3tts2", "api_key")
+    if not q3_2_key:
+        q3_2_key = _read_toml_value(cfg_path, "tts.qwen3-tts-2", "api_key")
+    q3_2_url = _read_toml_value(cfg_path, "tts.qwen3tts2", "base_url")
+    if not q3_2_url:
+        q3_2_url = _read_toml_value(cfg_path, "tts.qwen3-tts-2", "base_url")
+
     return {
         "f5tts_key":  _read_toml_value(cfg_path, "tts.f5tts",   "api_key"),
         "f5tts_url":  _read_toml_value(cfg_path, "tts.f5tts",   "base_url"),
         "qwen3_key":  _read_toml_value(cfg_path, "tts.qwen3tts", "api_key"),
         "qwen3_url":  _read_toml_value(cfg_path, "tts.qwen3tts", "base_url"),
+        "qwen3_2_key": q3_2_key,
+        "qwen3_2_url": q3_2_url,
     }
 
 # ── Test texts ─────────────────────────────────────────────────────────────────
@@ -252,9 +268,14 @@ def run_one(provider: str, label: str, text: str, args) -> Result:
         if provider == "f5tts":
             audio, elapsed = f5tts_synth(
                 text, args.f5_url, args.f5_key, args.f5_voice, args.timeout)
-        else:
+        elif provider == "qwen3tts":
             audio, elapsed = qwen3_synth(
                 text, args.q3_url, args.q3_key, args.q3_voice, args.q3_model, args.timeout)
+        elif provider == "qwen3-tts-2":
+            audio, elapsed = qwen3_synth(
+                text, args.q3_2_url, args.q3_2_key, args.q3_2_voice, args.q3_2_model, args.timeout)
+        else:
+            raise ValueError(f"unknown provider: {provider}")
 
         res.elapsed_s = elapsed
         res.bytes_out = len(audio)
@@ -281,20 +302,16 @@ def print_table(results: list[Result]):
     for r in results:
         by_label.setdefault(r.label, {})[r.provider] = r
 
-    col_w = [22, 6, 12, 9, 12, 9, 26]
-    header = ["Test case", "Chars",
-              "F5 time", "F5 KB", "Q3 time", "Q3 KB",
-              "Winner (time)"]
+    col_w = [22, 6, 10, 10, 10, 24]
+    header = ["Test case", "Chars", "F5(s)", "Q3(s)", "Q3-2(s)", "Winner (time)"]
     sep = "  ".join("─" * w for w in col_w)
 
-    def fmt_time(r: Optional[Result]) -> tuple[str, str]:
-        """(time_str, kb_str)"""
+    def fmt_time(r: Optional[Result]) -> str:
         if r is None:
-            return grey("(skip)"), grey("—")
+            return grey("(skip)")
         if not r.ok:
-            short_err = r.error.split(":")[-1].strip()[:18]
-            return red(f"ERR"), red(short_err)
-        return f"{r.elapsed_s:>6.1f}s", f"{r.bytes_out/1024:>6.1f}"
+            return red("ERR")
+        return f"{r.elapsed_s:>6.1f}s"
 
     print()
     print(bold("TTS Speed Benchmark"))
@@ -302,48 +319,62 @@ def print_table(results: list[Result]):
     print("  ".join(bold(h.ljust(w)) for h, w in zip(header, col_w)))
     print(sep)
 
-    total: dict[str, float] = {"f5tts": 0.0, "qwen3tts": 0.0}
-    wins:  dict[str, int]   = {"f5tts": 0,   "qwen3tts": 0, "tie": 0}
+    wins: dict[str, int] = {"f5tts": 0, "qwen3tts": 0, "qwen3-tts-2": 0, "tie": 0}
 
     for label, pmap in by_label.items():
-        f5  = pmap.get("f5tts")
-        q3  = pmap.get("qwen3tts")
-        ft, fk = fmt_time(f5)
-        qt, qk = fmt_time(q3)
+        f5 = pmap.get("f5tts")
+        q3 = pmap.get("qwen3tts")
+        q3_2 = pmap.get("qwen3-tts-2")
+        ft = fmt_time(f5)
+        qt = fmt_time(q3)
+        q2t = fmt_time(q3_2)
 
-        # Determine winner
-        if f5 and f5.ok and q3 and q3.ok:
-            diff = abs(f5.elapsed_s - q3.elapsed_s)
-            if diff < 0.5:
+        ok_times: list[tuple[str, float]] = []
+        for name, item in (("f5tts", f5), ("qwen3tts", q3), ("qwen3-tts-2", q3_2)):
+            if item and item.ok:
+                ok_times.append((name, item.elapsed_s))
+
+        if len(ok_times) == 0:
+            winner = red("all failed")
+        elif len(ok_times) == 1:
+            only_name = ok_times[0][0]
+            if only_name == "f5tts":
+                winner = green("F5-TTS (only pass)")
+            elif only_name == "qwen3tts":
+                winner = cyan("Qwen3 (only pass)")
+            else:
+                winner = yellow("Qwen3-2 (only pass)")
+            wins[only_name] += 1
+        else:
+            ok_times.sort(key=lambda x: x[1])
+            fastest_name, fastest_time = ok_times[0]
+            second_time = ok_times[1][1]
+            if abs(fastest_time - second_time) < 0.5:
                 winner = yellow("tie")
                 wins["tie"] += 1
-            elif f5.elapsed_s < q3.elapsed_s:
-                winner = green(f"F5-TTS  ({f5.elapsed_s:.1f}s vs {q3.elapsed_s:.1f}s)")
+            elif fastest_name == "f5tts":
+                winner = green(f"F5-TTS ({fastest_time:.1f}s)")
                 wins["f5tts"] += 1
-                total["f5tts"] += f5.elapsed_s
-                total["qwen3tts"] += q3.elapsed_s
-            else:
-                winner = cyan(f"Qwen3   ({q3.elapsed_s:.1f}s vs {f5.elapsed_s:.1f}s)")
+            elif fastest_name == "qwen3tts":
+                winner = cyan(f"Qwen3 ({fastest_time:.1f}s)")
                 wins["qwen3tts"] += 1
-                total["f5tts"] += f5.elapsed_s
-                total["qwen3tts"] += q3.elapsed_s
-        elif f5 and f5.ok:
-            winner = green("F5-TTS (Qwen3 failed)")
-            wins["f5tts"] += 1
-        elif q3 and q3.ok:
-            winner = cyan("Qwen3 (F5 failed)")
-            wins["qwen3tts"] += 1
-        else:
-            winner = red("both failed")
+            else:
+                winner = yellow(f"Qwen3-2 ({fastest_time:.1f}s)")
+                wins["qwen3-tts-2"] += 1
 
         chars = (f5 or q3).chars if (f5 or q3) else 0
-        row = [label, str(chars), ft, fk, qt, qk, winner]
+        row = [label, str(chars), ft, qt, q2t, winner]
         print("  ".join(str(v).ljust(w) for v, w in zip(row, col_w)))
 
     print(sep)
 
     # Summary row
-    print(bold(f"  Wins → F5-TTS: {wins['f5tts']}  Qwen3: {wins['qwen3tts']}  Tie: {wins['tie']}"))
+    print(bold(
+        f"  Wins → F5-TTS: {wins['f5tts']}  "
+        f"Qwen3: {wins['qwen3tts']}  "
+        f"Qwen3-2: {wins['qwen3-tts-2']}  "
+        f"Tie: {wins['tie']}"
+    ))
     print()
 
     # Per-provider error summary
@@ -372,18 +403,27 @@ def parse_args():
                    help="F5-TTS server base URL")
     p.add_argument("--q3-url",    default=fc.get("qwen3_url") or "http://apicn.aiworm.cn:8011",
                    help="Qwen3-TTS server base URL")
+    p.add_argument("--q3-2-url",  default=fc.get("qwen3_2_url") or "http://apicn.aiworm.cn:8012",
+                   help="Qwen3-TTS-2 server base URL")
     p.add_argument("--f5-key",
                    default=os.environ.get("F5_TTS_API_KEY") or fc.get("f5tts_key", ""),
                    help="F5-TTS Bearer token (auto-read from ~/.clawproxy/config.toml or F5_TTS_API_KEY)")
     p.add_argument("--q3-key",
                    default=os.environ.get("QWEN3_TTS_API_KEY") or fc.get("qwen3_key", ""),
                    help="Qwen3-TTS Bearer token (auto-read from ~/.clawproxy/config.toml or QWEN3_TTS_API_KEY)")
+    p.add_argument("--q3-2-key",
+                   default=os.environ.get("QWEN3_TTS_2_API_KEY") or fc.get("qwen3_2_key", ""),
+                   help="Qwen3-TTS-2 Bearer token (auto-read from ~/.clawproxy/config.toml or QWEN3_TTS_2_API_KEY)")
     p.add_argument("--f5-voice",  default="demo_speaker0",
                    help="F5-TTS voice (ref audio name)")
     p.add_argument("--q3-voice",  default="Vivian",
                    help="Qwen3-TTS voice")
+    p.add_argument("--q3-2-voice", default="Vivian",
+                   help="Qwen3-TTS-2 voice")
     p.add_argument("--q3-model",  default="qwen3-tts",
                    help="Qwen3-TTS model name")
+    p.add_argument("--q3-2-model", default="qwen3-tts",
+                   help="Qwen3-TTS-2 model name")
     p.add_argument("--timeout",   default=900, type=int,
                    help="Per-request timeout in seconds (default: 900)")
     p.add_argument("--output",    default="./tts_benchmark_out",
@@ -396,6 +436,7 @@ def parse_args():
                         ", ".join(l for l, _ in TEST_CASES))
     p.add_argument("--skip-f5",   action="store_true", help="Skip F5-TTS")
     p.add_argument("--skip-q3",   action="store_true", help="Skip Qwen3-TTS")
+    p.add_argument("--skip-q3-2", action="store_true", help="Skip Qwen3-TTS-2")
     return p.parse_args()
 
 
@@ -417,6 +458,8 @@ def main():
         providers.append("f5tts")
     if not args.skip_q3:
         providers.append("qwen3tts")
+    if not args.skip_q3_2:
+        providers.append("qwen3-tts-2")
 
     if not providers:
         print(red("Both providers skipped — nothing to do."))
@@ -431,6 +474,12 @@ def main():
     if not args.skip_q3:
         auth_note = grey("(no auth)") if not args.q3_key else green("(auth OK)")
         print(f"  Qwen3   : {args.q3_url}  voice={args.q3_voice}  model={args.q3_model}  {auth_note}")
+    if not args.skip_q3_2:
+        auth_note = grey("(no auth)") if not args.q3_2_key else green("(auth OK)")
+        print(
+            f"  Qwen3-2 : {args.q3_2_url}  "
+            f"voice={args.q3_2_voice}  model={args.q3_2_model}  {auth_note}"
+        )
     print(f"  timeout : {args.timeout}s per call\n")
 
     results: list[Result] = []
