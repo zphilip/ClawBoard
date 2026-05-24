@@ -249,27 +249,38 @@ def qwen3_synth(text: str, base_url: str, api_key: str,
     }
 
     t0 = time.time()
-    try:
-        r = requests.post(
-            f"{base_url}/v1/audio/speech",
-            headers=headers,
-            json=payload,
-            timeout=timeout,
-        )
-        r.raise_for_status()
-        return r.content, time.time() - t0
-    except requests.HTTPError as e:
-        # Include response body because many deployments return the real cause
-        # (unsupported model/voice/format) only in JSON error payload.
-        body = ""
-        if e.response is not None and e.response.text:
-            raw = e.response.text.strip().replace("\n", " ")
-            body = raw[:400]
-        if body:
-            raise RuntimeError(
-                f"HTTP {e.response.status_code if e.response is not None else '?'}: {body}"
-            ) from e
-        raise
+    # Some deployments intermittently close the connection mid-response for
+    # long audio; retry a few times before failing the benchmark row.
+    attempts = 3
+    last_exc: Exception | None = None
+    for i in range(attempts):
+        try:
+            r = requests.post(
+                f"{base_url}/v1/audio/speech",
+                headers=headers,
+                json=payload,
+                timeout=timeout,
+            )
+            r.raise_for_status()
+            return r.content, time.time() - t0
+        except requests.HTTPError as e:
+            # Include response body because many deployments return the real cause
+            # (unsupported model/voice/format) only in JSON error payload.
+            body = ""
+            if e.response is not None and e.response.text:
+                raw = e.response.text.strip().replace("\n", " ")
+                body = raw[:400]
+            if body:
+                raise RuntimeError(
+                    f"HTTP {e.response.status_code if e.response is not None else '?'}: {body}"
+                ) from e
+            raise
+        except requests.RequestException as e:
+            last_exc = e
+            if i == attempts - 1:
+                break
+            time.sleep(1.0)
+    raise RuntimeError(f"request failed after {attempts} attempts: {last_exc}")
 
 
 # ── Benchmark runner ────────────────────────────────────────────────────────────
@@ -432,7 +443,7 @@ def parse_args():
                    help="F5-TTS voice (ref audio name)")
     p.add_argument("--q3-voice",  default="Vivian",
                    help="Qwen3-TTS voice")
-    p.add_argument("--q3-2-voice", default="Vivian",
+    p.add_argument("--q3-2-voice", default="vivian",
                    help="Qwen3-TTS-2 voice")
     p.add_argument("--q3-model",  default="qwen3-tts",
                    help="Qwen3-TTS model name")
