@@ -260,6 +260,27 @@ func initTtsConfig(provider, voice, format, apiKey, model, piperURL, edgeBin,
 		cfg.MiMoModel = "mimo-v2.5-tts"
 	}
 	cfg.MaxTextLen = 4096
+
+	// Warn at startup if the configured provider has no API key.
+	switch cfg.Provider {
+	case "mimotts":
+		if cfg.MiMoKey == "" {
+			fmt.Fprintf(os.Stderr, "[clawproxy] WARNING: TTS provider is mimotts but no API key found — set MIMO_API_KEY or --tts-mimo-key\n")
+		}
+	case "openai":
+		if cfg.OpenAIKey == "" {
+			fmt.Fprintf(os.Stderr, "[clawproxy] WARNING: TTS provider is openai but no API key found — set OPENAI_API_KEY or --tts-api-key\n")
+		}
+	case "elevenlabs":
+		if cfg.ElevenKey == "" {
+			fmt.Fprintf(os.Stderr, "[clawproxy] WARNING: TTS provider is elevenlabs but no API key found — set ELEVENLABS_API_KEY\n")
+		}
+	case "minimax":
+		if cfg.MiniMaxKey == "" {
+			fmt.Fprintf(os.Stderr, "[clawproxy] WARNING: TTS provider is minimax but no API key found — set MINIMAX_API_KEY\n")
+		}
+	}
+
 	return cfg
 }
 
@@ -470,8 +491,9 @@ type ttsInfoResponse struct {
 // ── HTTP handlers ─────────────────────────────────────────────────────────────
 
 // POST /tts/synthesize — convert text to audio using a configured TTS provider.
-func handleTTS(cfg *TtsConfig) http.HandlerFunc {
+func handleTTS(getCfg func() *TtsConfig) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		cfg := getCfg()
 		if r.Method != http.MethodPost {
 			jsonError(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
@@ -559,8 +581,9 @@ func handleTTS(cfg *TtsConfig) http.HandlerFunc {
 }
 
 // GET /tts/info — describe the configured TTS setup.
-func handleTTSInfo(cfg *TtsConfig) http.HandlerFunc {
+func handleTTSInfo(getCfg func() *TtsConfig) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		cfg := getCfg()
 		if r.Method != http.MethodGet {
 			jsonError(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
@@ -1489,6 +1512,9 @@ func synthMiMoTTS(ctx context.Context, text, voice string, cfg *TtsConfig) ([]by
 	defer resp.Body.Close()
 
 	respBytes, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode == 401 || resp.StatusCode == 403 {
+		return nil, "", fmt.Errorf("MiMo TTS: invalid API key (HTTP %d) — check MIMO_API_KEY or --tts-mimo-key", resp.StatusCode)
+	}
 	if resp.StatusCode >= 400 {
 		return nil, "", fmt.Errorf("MiMo TTS: HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(respBytes)))
 	}

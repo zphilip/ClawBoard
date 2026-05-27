@@ -35,8 +35,12 @@ import (
 "fmt"
 "net"
 "net/http"
+"os"
+"os/signal"
 "strings"
 "sync"
+"sync/atomic"
+"syscall"
 "time"
 
 "github.com/gorilla/websocket"
@@ -57,10 +61,13 @@ type proxyServer struct {
 	healthMu      sync.RWMutex
 	zcHealth      string // "not_configured"|"unknown"|"online"|"offline"|"auth_error"
 	pcHealth      string
-	ttsCfg        *TtsConfig // server-wide TTS config (shared with /tts/synthesize)
+	// TTS config — replaced atomically on SIGHUP or POST /admin/reload.
+	// Use getTtsCfg() to read; never access the field directly.
+	ttsCfg        atomic.Pointer[TtsConfig]
+	refreshTtsCfg func() *TtsConfig // rebuilds TtsConfig from CLI params + current config files
 }
 
-func newProxyServer(zca *zcAuth, pca *pcAuth, port int, db *queueStore, sessionTTL time.Duration, ttsCfg *TtsConfig) *proxyServer {
+func newProxyServer(zca *zcAuth, pca *pcAuth, port int, db *queueStore, sessionTTL time.Duration, refreshTtsCfg func() *TtsConfig) *proxyServer {
 zcH, pcH := "not_configured", "not_configured"
 if zca != nil {
 zcH = "unknown"
@@ -68,7 +75,7 @@ zcH = "unknown"
 if pca != nil {
 pcH = "unknown"
 }
-return &proxyServer{
+s := &proxyServer{
 		zcAuth:        zca,
 		pcAuth:        pca,
 		port:          port,
@@ -79,11 +86,51 @@ return &proxyServer{
 		zcCompat:      newZCCompatStore(db),
 		zcHealth:      zcH,
 		pcHealth:      pcH,
-		ttsCfg:        ttsCfg,
+		refreshTtsCfg: refreshTtsCfg,
 		upgrader: websocket.Upgrader{
 			CheckOrigin: func(r *http.Request) bool { return true },
 		},
 	}
+s.ttsCfg.Store(refreshTtsCfg())
+return s
+}
+
+// getTtsCfg returns the current server-wide TTS config.  The returned pointer
+// is immutable; a concurrent reload swaps the stored pointer atomically but
+// never mutates the TtsConfig value it points to, so callers can hold it safely
+// for the duration of a single request without further locking.
+func (s *proxyServer) getTtsCfg() *TtsConfig {
+	return s.ttsCfg.Load()
+}
+
+// reloadConfig rebuilds the TTS config by re-reading all config files
+// (CLI-flag values and env vars are always re-applied at highest priority).
+// The new config is swapped in atomically; new HTTP requests and new WS
+// connections pick it up immediately.  Existing established WS sessions keep
+// the config they started with and will pick up the new config on reconnect.
+func (s *proxyServer) reloadConfig() *TtsConfig {
+	newCfg := s.refreshTtsCfg()
+	s.ttsCfg.Store(newCfg)
+	fmt.Printf("%sConfig reloaded: provider=%s voice=%s format=%s\n",
+		prefixSYS(), newCfg.Provider, newCfg.Voice, newCfg.Format)
+	return newCfg
+}
+
+// POST /admin/reload — hot-reload TTS config files without restarting clawproxy.
+func (s *proxyServer) handleAdminReload(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	cfg := s.reloadConfig()
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{ //nolint:errcheck
+		"status":      "ok",
+		"provider":    cfg.Provider,
+		"voice":       cfg.Voice,
+		"format":      cfg.Format,
+		"reloaded_at": time.Now().UTC().Format(time.RFC3339),
+	})
 }
 
 // ── Upstream health tracking ──────────────────────────────────────────────────
@@ -209,13 +256,13 @@ func (s *proxyServer) probeAll() {
 	}
 }
 
-func runProxy(port int, zca *zcAuth, pca *pcAuth, maxQueue int, dbPath string, ttl time.Duration, ttsCfg *TtsConfig) {
+func runProxy(port int, zca *zcAuth, pca *pcAuth, maxQueue int, dbPath string, ttl time.Duration, refreshTtsCfg func() *TtsConfig) {
 db, err := openQueueStore(dbPath, maxQueue, ttl)
 if err != nil {
 fmt.Printf("%scannot open queue DB %q: %v — falling back to in-memory\n", prefixERR(), dbPath, err)
 db, _ = openQueueStore(":memory:", maxQueue, ttl)
 }
-s := newProxyServer(zca, pca, port, db, 24*time.Hour, ttsCfg)
+s := newProxyServer(zca, pca, port, db, 24*time.Hour, refreshTtsCfg)
 mux := http.NewServeMux()
 
 // ── compat: zeroclaw (chat.py) ──────────────────────────────────
@@ -232,8 +279,8 @@ mux.HandleFunc("/proxy/ws",     s.handleWS)
 mux.HandleFunc("/proxy/status", s.handleStatus)
 
 // ── TTS endpoints ───────────────────────────────────────────────
-mux.HandleFunc("/tts/synthesize", handleTTS(ttsCfg))
-mux.HandleFunc("/tts/info",       handleTTSInfo(ttsCfg))
+mux.HandleFunc("/tts/synthesize", handleTTS(s.getTtsCfg))
+mux.HandleFunc("/tts/info",       handleTTSInfo(s.getTtsCfg))
 
 // ── Streaming TTS WebSocket endpoints ─────────────────────────
 // Like /ws/chat and /pico/ws but with per-sentence audio synthesis.
@@ -241,13 +288,28 @@ mux.HandleFunc("/tts/info",       handleTTSInfo(ttsCfg))
 mux.HandleFunc("/ws/chat/tts",  s.handleZCTTSStream)
 mux.HandleFunc("/pico/ws/tts",  s.handlePCTTSStream)
 
+// ── Admin: config hot-reload ──────────────────────────────────
+// POST /admin/reload — re-reads config files; no restart required.
+mux.HandleFunc("/admin/reload", s.handleAdminReload)
+
+// ── SIGHUP → config reload ─────────────────────────────────────
+sigCh := make(chan os.Signal, 1)
+signal.Notify(sigCh, syscall.SIGHUP)
+go func() {
+	for range sigCh {
+		fmt.Printf("%sReceived SIGHUP — reloading config…\n", prefixSYS())
+		s.reloadConfig()
+	}
+}()
+
 addr := fmt.Sprintf(":%d", port)
 fmt.Printf("\n%s%sClawProxy v3%s — proxy mode\n", prefixSYS(), colBold, colReset)
 fmt.Printf("%s  ZC compat  ←  GET /health · POST /pair · WS /ws/chat\n", prefixSYS())
 fmt.Printf("%s  PC compat  \u2190  GET /api/pico/info · WS /pico/ws\n", prefixSYS())
 fmt.Printf("%s  Unified    ←  WS /proxy/ws?client_id=<id>\n", prefixSYS())
 fmt.Printf("%s  Status     ←  GET /proxy/status\n", prefixSYS())
-fmt.Printf("%s  TTS        ←  POST /tts/synthesize · GET /tts/info  (provider=%s)\n", prefixSYS(), ttsCfg.Provider)
+fmt.Printf("%s  Reload     ←  POST /admin/reload  (or send SIGHUP)\n", prefixSYS())
+fmt.Printf("%s  TTS        ←  POST /tts/synthesize · GET /tts/info  (provider=%s)\n", prefixSYS(), s.getTtsCfg().Provider)
 fmt.Printf("%s  TTS-stream ←  WS /ws/chat/tts · WS /pico/ws/tts  (?tts_provider=X&tts_voice=Y)\n", prefixSYS())
 zcOK := colGreen + "✓" + colReset
 if zca == nil {
@@ -357,7 +419,7 @@ func (s *proxyServer) handleZCCompat(w http.ResponseWriter, r *http.Request) {
 	)
 	keyShort := cs.keyShort
 	// Apply TTS options for this connection (updated on every reconnect).
-	cs.setTtsOpts(parseTtsConnOpts(r, s.ttsCfg), s.ttsCfg)
+	cs.setTtsOpts(parseTtsConnOpts(r, s.getTtsCfg()), s.getTtsCfg())
 	cs.start() // no-op if already running
 
 	// Attach the new app connection; drain any buffered upstream messages.
@@ -544,7 +606,7 @@ func (s *proxyServer) handlePCCompat(w http.ResponseWriter, r *http.Request) {
 	)
 	keyShort = cs.keyShort // use the one stored in the session (consistent across all log lines)
 	// Apply TTS options for this connection (updated on every reconnect).
-	cs.setTtsOpts(parseTtsConnOpts(r, s.ttsCfg), s.ttsCfg)
+	cs.setTtsOpts(parseTtsConnOpts(r, s.getTtsCfg()), s.getTtsCfg())
 	cs.start()             // no-op if already running
 
 	// Attach the new app connection; drain any buffered upstream messages.
@@ -716,6 +778,11 @@ type pcCompatSession struct {
 	ttsOpts   *ttsConnOpts
 	ttsCfg    *TtsConfig
 
+	// turnActive tracks whether an agent turn is currently in progress
+	// (set on typing.start / first content frame, cleared on message.create).
+	// Only accessed from the upstream goroutine — no mutex needed.
+	turnActive bool
+
 	getToken func() string           // reads current token from proxyServer
 	getWSURL func(sid string) string // builds upstream wsURL
 
@@ -833,11 +900,75 @@ func (cs *pcCompatSession) deliverOrBuffer(data []byte, keyShort string) {
 	}
 	cs.pendingMu.Unlock()
 
-	// Build an optional TTS audio frame for final text responses (message.create).
-	var ttsFrame []byte
-	if opts, cfg := cs.getTtsState(); opts != nil && cfg != nil {
-		if text, ok := extractPCFinalText(data); ok && text != "" {
-			ttsFrame = buildTtsAudioFrame(text, opts.provider, opts.voice, opts.format, cfg)
+	// TTS: turn-start / turn-end notifications and final-response synthesis.
+	// All synthesis is done asynchronously so that message.create (and other
+	// frames) are forwarded to the app immediately without stalling the relay
+	// loop waiting for the TTS provider to respond.
+	opts, cfg := cs.getTtsState()
+	if opts != nil && cfg != nil {
+		var peek struct {
+			Type string `json:"type"`
+		}
+		if json.Unmarshal(data, &peek) == nil {
+			// typing.start → first frame of a new agent turn.
+			if peek.Type == "typing.start" && !cs.turnActive {
+				cs.turnActive = true
+				if opts.notifyStart != "" {
+					p, v, f, txt := opts.provider, opts.voice, opts.format, opts.notifyStart
+					go func() {
+						frame := buildTtsNotifyFrame("start", txt, p, v, f, cfg)
+						if frame == nil {
+							return
+						}
+						cs.appMu.RLock()
+						app := cs.app
+						cs.appMu.RUnlock()
+						if app == nil {
+							return
+						}
+						cs.appWrMu.Lock()
+						app.WriteMessage(websocket.TextMessage, frame) //nolint:errcheck
+						cs.appWrMu.Unlock()
+					}()
+				}
+			}
+			// message.create or typing.stop → turn complete.
+			if peek.Type == "message.create" || peek.Type == "typing.stop" {
+				cs.turnActive = false
+			}
+			// message.create → synthesise done-notify + full audio async.
+			// We capture what we need before the goroutine so the data slice
+			// is not retained beyond this function.
+			if peek.Type == "message.create" {
+				notifyDoneTxt := opts.notifyDone // "" = disabled
+				ttsText, _ := extractPCFinalText(data)
+				if notifyDoneTxt != "" || ttsText != "" {
+					p, v, f := opts.provider, opts.voice, opts.format
+					go func() {
+						var notifyFrame, audioFrame []byte
+						if notifyDoneTxt != "" {
+							notifyFrame = buildTtsNotifyFrame("done", notifyDoneTxt, p, v, f, cfg)
+						}
+						if ttsText != "" {
+							audioFrame = buildTtsAudioFrame(ttsText, p, v, f, cfg)
+						}
+						cs.appMu.RLock()
+						app := cs.app
+						cs.appMu.RUnlock()
+						if app == nil {
+							return
+						}
+						cs.appWrMu.Lock()
+						if notifyFrame != nil {
+							app.WriteMessage(websocket.TextMessage, notifyFrame) //nolint:errcheck
+						}
+						if audioFrame != nil {
+							app.WriteMessage(websocket.TextMessage, audioFrame) //nolint:errcheck
+						}
+						cs.appWrMu.Unlock()
+					}()
+				}
+			}
 		}
 	}
 
@@ -847,9 +978,6 @@ func (cs *pcCompatSession) deliverOrBuffer(data []byte, keyShort string) {
 	if app != nil {
 		cs.appWrMu.Lock()
 		err := app.WriteMessage(websocket.TextMessage, data)
-		if err == nil && ttsFrame != nil {
-			err = app.WriteMessage(websocket.TextMessage, ttsFrame)
-		}
 		cs.appWrMu.Unlock()
 		if err == nil {
 			return // delivered
@@ -864,9 +992,6 @@ func (cs *pcCompatSession) deliverOrBuffer(data []byte, keyShort string) {
 		return
 	}
 	cs.db.push(cs.key, "", "", data)
-	if ttsFrame != nil {
-		cs.db.push(cs.key, "", "", ttsFrame)
-	}
 	fmt.Printf("%sPC compat[%s] buffered (%d B), queue=%d\n", prefixSYS(), keyShort, len(data), cs.db.count(cs.key))
 }
 
@@ -964,6 +1089,11 @@ type zcCompatSession struct {
 	ttsOptsMu sync.Mutex
 	ttsOpts   *ttsConnOpts
 	ttsCfg    *TtsConfig
+
+	// turnActive tracks whether an agent turn is currently in progress
+	// (set on first chunk/thinking frame, cleared on done/error).
+	// Only accessed from the upstream goroutine — no mutex needed.
+	turnActive bool
 
 	getToken func() string           // reads current ZC token from proxyServer
 	getWSURL func(sid string) string // builds upstream zeroclaw wsURL
@@ -1082,12 +1212,72 @@ func (cs *zcCompatSession) deliverOrBuffer(data []byte, keyShort string) {
 	}
 	cs.pendingMu.Unlock()
 
-	// Build an optional TTS audio frame for final text responses.
-	// Synthesis is done inline (blocking) — only triggers on "done"/"message" frames.
-	var ttsFrame []byte
-	if opts, cfg := cs.getTtsState(); opts != nil && cfg != nil {
-		if text, ok := extractZCFinalText(data); ok && text != "" {
-			ttsFrame = buildTtsAudioFrame(text, opts.provider, opts.voice, opts.format, cfg)
+	// TTS: turn-start / turn-end notifications and final-response synthesis.
+	// All synthesis is done asynchronously so that frames are forwarded to
+	// the app immediately without stalling the relay loop.
+	opts, cfg := cs.getTtsState()
+	if opts != nil && cfg != nil {
+		var peek struct {
+			Type string `json:"type"`
+		}
+		if json.Unmarshal(data, &peek) == nil {
+			// First content chunk / thinking → fire async start notification.
+			if (peek.Type == "chunk" || peek.Type == "thinking") && !cs.turnActive {
+				cs.turnActive = true
+				if opts.notifyStart != "" {
+					p, v, f, txt := opts.provider, opts.voice, opts.format, opts.notifyStart
+					go func() {
+						frame := buildTtsNotifyFrame("start", txt, p, v, f, cfg)
+						if frame == nil {
+							return
+						}
+						cs.appMu.RLock()
+						app := cs.app
+						cs.appMu.RUnlock()
+						if app == nil {
+							return
+						}
+						cs.appWrMu.Lock()
+						app.WriteMessage(websocket.TextMessage, frame) //nolint:errcheck
+						cs.appWrMu.Unlock()
+					}()
+				}
+			}
+			// done / error → turn complete; reset state.
+			if peek.Type == "done" || peek.Type == "error" {
+				cs.turnActive = false
+			}
+			// done → synthesise done-notify + full audio async.
+			if peek.Type == "done" {
+				notifyDoneTxt := opts.notifyDone // "" = disabled
+				ttsText, _ := extractZCFinalText(data)
+				if notifyDoneTxt != "" || ttsText != "" {
+					p, v, f := opts.provider, opts.voice, opts.format
+					go func() {
+						var notifyFrame, audioFrame []byte
+						if notifyDoneTxt != "" {
+							notifyFrame = buildTtsNotifyFrame("done", notifyDoneTxt, p, v, f, cfg)
+						}
+						if ttsText != "" {
+							audioFrame = buildTtsAudioFrame(ttsText, p, v, f, cfg)
+						}
+						cs.appMu.RLock()
+						app := cs.app
+						cs.appMu.RUnlock()
+						if app == nil {
+							return
+						}
+						cs.appWrMu.Lock()
+						if notifyFrame != nil {
+							app.WriteMessage(websocket.TextMessage, notifyFrame) //nolint:errcheck
+						}
+						if audioFrame != nil {
+							app.WriteMessage(websocket.TextMessage, audioFrame) //nolint:errcheck
+						}
+						cs.appWrMu.Unlock()
+					}()
+				}
+			}
 		}
 	}
 
@@ -1097,9 +1287,6 @@ func (cs *zcCompatSession) deliverOrBuffer(data []byte, keyShort string) {
 	if app != nil {
 		cs.appWrMu.Lock()
 		err := app.WriteMessage(websocket.TextMessage, data)
-		if err == nil && ttsFrame != nil {
-			err = app.WriteMessage(websocket.TextMessage, ttsFrame)
-		}
 		cs.appWrMu.Unlock()
 		if err == nil {
 			return // delivered
@@ -1114,9 +1301,6 @@ func (cs *zcCompatSession) deliverOrBuffer(data []byte, keyShort string) {
 		return
 	}
 	cs.db.push(cs.key, "", "", data)
-	if ttsFrame != nil {
-		cs.db.push(cs.key, "", "", ttsFrame)
-	}
 	fmt.Printf("%sZC compat[%s] buffered (%d B), queue=%d\n", prefixSYS(), keyShort, len(data), cs.db.count(cs.key))
 }
 

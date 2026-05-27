@@ -13,8 +13,15 @@ package main
 //     tts_provider=openai     — override provider  (default: server default)
 //     tts_voice=alloy         — override voice     (default: server default)
 //     tts_format=mp3          — override format    (default: mp3)
+//     tts_notify=1            — enable task start/done notification sounds
+//     tts_notify_start=OK.    — phrase spoken when agent starts (default: "OK.")
+//     tts_notify_done=Done.   — phrase spoken when agent finishes (default: "Done.")
 //
-//   Extra frame injected after each final agent reply:
+//   Extra frames injected:
+//     {"type":"tts.notify","notify":"start","audio_b64":"...","format":"mp3",...}
+//       → injected asynchronously when the first agent content frame arrives
+//     {"type":"tts.notify","notify":"done","audio_b64":"...","format":"mp3",...}
+//       → injected before the full-response tts.audio frame on turn completion
 //     {"type":"tts.audio","audio_b64":"<base64>","format":"mp3",
 //      "provider":"openai","voice":"alloy"}
 //
@@ -55,9 +62,11 @@ import (
 // ttsConnOpts holds TTS settings for a single WebSocket connection.
 // A nil value means TTS is disabled for this connection.
 type ttsConnOpts struct {
-	provider string
-	voice    string
-	format   string
+	provider    string
+	voice       string
+	format      string
+	notifyStart string // short phrase synthesised on task start; "" = disabled
+	notifyDone  string // short phrase synthesised on task done;  "" = disabled
 }
 
 // parseTtsConnOpts reads ?tts=1&tts_provider=X&tts_voice=Y&tts_format=Z and
@@ -86,7 +95,19 @@ func parseTtsConnOpts(r *http.Request, cfg *TtsConfig) *ttsConnOpts {
 	if format == "" {
 		format = "mp3"
 	}
-	return &ttsConnOpts{provider: provider, voice: voice, format: format}
+	notifyStart := ""
+	notifyDone := ""
+	if q.Get("tts_notify") == "1" || q.Get("tts_notify") == "true" {
+		notifyStart = q.Get("tts_notify_start")
+		if notifyStart == "" {
+			notifyStart = "OK."
+		}
+		notifyDone = q.Get("tts_notify_done")
+		if notifyDone == "" {
+			notifyDone = "Done."
+		}
+	}
+	return &ttsConnOpts{provider: provider, voice: voice, format: format, notifyStart: notifyStart, notifyDone: notifyDone}
 }
 
 // defaultTtsConnOpts returns opts from server defaults (used by /ws/chat/tts
@@ -187,6 +208,28 @@ func buildTtsAudioFrame(text, provider, voice, format string, cfg *TtsConfig) []
 		"provider":  provider,
 		"voice":     voice,
 		"is_final":  true,
+	})
+	return frame
+}
+
+// buildTtsNotifyFrame synthesises a short notification phrase and returns a
+// JSON-encoded "tts.notify" frame.  Returns nil on synthesis failure so the
+// caller can skip the notification silently — notifications are best-effort.
+func buildTtsNotifyFrame(notifyType, text, provider, voice, format string, cfg *TtsConfig) []byte {
+	fmt.Printf("%s[tts] notify(%s) synthesising %q via %s\n",
+		prefixSYS(), notifyType, text, provider)
+	audio, outFmt, err := synthesize(context.Background(), text, provider, voice, format, cfg)
+	if err != nil {
+		fmt.Printf("%s[tts] notify(%s) synthesis FAILED: %v\n", prefixERR(), notifyType, err)
+		return nil
+	}
+	frame, _ := json.Marshal(map[string]any{
+		"type":      "tts.notify",
+		"notify":    notifyType, // "start" or "done"
+		"audio_b64": base64.StdEncoding.EncodeToString(audio),
+		"format":    outFmt,
+		"provider":  provider,
+		"voice":     voice,
 	})
 	return frame
 }
@@ -368,7 +411,7 @@ func (s *proxyServer) handleZCTTSStream(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, `{"type":"error","message":"zeroclaw not configured"}`, http.StatusServiceUnavailable)
 		return
 	}
-	opts := defaultTtsConnOpts(r, s.ttsCfg)
+	opts := defaultTtsConnOpts(r, s.getTtsCfg())
 
 	sessionID := r.URL.Query().Get("session_id")
 	if sessionID == "" {
@@ -414,7 +457,7 @@ func (s *proxyServer) handleZCTTSStream(w http.ResponseWriter, r *http.Request) 
 		appWrMu.Unlock()
 	}
 
-	pipe := newTtsPipeline(opts, s.ttsCfg, sendToApp)
+	pipe := newTtsPipeline(opts, s.getTtsCfg(), sendToApp)
 
 	// App → upstream relay goroutine.
 	go func() {
@@ -518,7 +561,7 @@ func (s *proxyServer) handlePCTTSStream(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, `{"type":"error","message":"picoclaw not configured"}`, http.StatusServiceUnavailable)
 		return
 	}
-	opts := defaultTtsConnOpts(r, s.ttsCfg)
+	opts := defaultTtsConnOpts(r, s.getTtsCfg())
 
 	sessionID := r.URL.Query().Get("session_id")
 	if sessionID == "" {
@@ -565,7 +608,7 @@ func (s *proxyServer) handlePCTTSStream(w http.ResponseWriter, r *http.Request) 
 		appWrMu.Unlock()
 	}
 
-	pipe := newTtsPipeline(opts, s.ttsCfg, sendToApp)
+	pipe := newTtsPipeline(opts, s.getTtsCfg(), sendToApp)
 
 	// App → upstream relay goroutine.
 	go func() {

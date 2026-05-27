@@ -893,15 +893,18 @@ func main() {
 
 	flag.Parse()
 
-	// Initialise TTS config.  Priority: CLI flags > env vars > clawproxy config >
-	// zeroclaw config > picoclaw config > openclaw config > built-in defaults.
-	ttsCfg := initTtsConfig(*ttsProvider, *ttsVoice, *ttsFormat, *ttsAPIKey, *ttsModel, *ttsPiperURL, *ttsEdgeBin,
-		*ttsMMKey, *ttsMMModel, *ttsMMBaseURL,
-		*ttsF5Key, *ttsF5URL, *ttsF5Speed,
-		*ttsQ3Key, *ttsQ3URL, *ttsQ3Model, *ttsQ3Speed,
-		time.Duration(*ttsQ3TimeoutSecs)*time.Second,
-		*ttsMiMoKey, *ttsMiMoURL, *ttsMiMoModel,
-		*clawproxyConfigPath, *configPath, *picoConfigPath, *openConfigPath)
+	// Build a refreshTtsCfg closure that captures the parsed CLI/env values.
+	// Calling it re-reads all config files from disk (same priority rules apply),
+	// enabling hot-reload via SIGHUP or POST /admin/reload without a restart.
+	refreshTtsCfg := func() *TtsConfig {
+		return initTtsConfig(*ttsProvider, *ttsVoice, *ttsFormat, *ttsAPIKey, *ttsModel, *ttsPiperURL, *ttsEdgeBin,
+			*ttsMMKey, *ttsMMModel, *ttsMMBaseURL,
+			*ttsF5Key, *ttsF5URL, *ttsF5Speed,
+			*ttsQ3Key, *ttsQ3URL, *ttsQ3Model, *ttsQ3Speed,
+			time.Duration(*ttsQ3TimeoutSecs)*time.Second,
+			*ttsMiMoKey, *ttsMiMoURL, *ttsMiMoModel,
+			*clawproxyConfigPath, *configPath, *picoConfigPath, *openConfigPath)
+	}
 
 	// auto-enable based on supplied flags
 	if *zcToken != "" || *zcPairCode != "" {
@@ -974,7 +977,7 @@ func main() {
 			}
 		}
 		ttl := time.Duration(*queueTTL) * time.Second
-		runProxy(*proxyPort, zca, pca, *queueDepth, resolvedDB, ttl, ttsCfg)
+		runProxy(*proxyPort, zca, pca, *queueDepth, resolvedDB, ttl, refreshTtsCfg)
 	}
 
 	// ── CLI mode: connect ─────────────────────────────────────────────
