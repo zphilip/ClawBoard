@@ -859,7 +859,7 @@ func main() {
 	queueTTL := flag.Int("queue-ttl", 86400, "buffered message TTL in seconds (0 = no expiry)")
 
 	// TTS flags (proxy mode only — registers /tts/synthesize and /tts/info)
-	ttsProvider := flag.String("tts-provider", "", "default TTS provider: openai|elevenlabs|google|edge|piper|minimax (default from config or openai)")
+	ttsProvider := flag.String("tts-provider", "", "default TTS provider: openai|elevenlabs|google|edge|piper|minimax|f5tts|qwen3tts|mimotts (default from config or openai)")
 	ttsVoice    := flag.String("tts-voice", "", "default TTS voice ID (provider-specific)")
 	ttsFormat   := flag.String("tts-format", "", "default TTS output format (mp3|opus|wav|…, default from config or mp3)")
 	ttsAPIKey   := flag.String("tts-api-key", "", "TTS API key (overrides OPENAI_API_KEY / ELEVENLABS_API_KEY / GOOGLE_TTS_API_KEY)")
@@ -880,6 +880,10 @@ func main() {
 	ttsQ3Model := flag.String("tts-qwen3-model", "", "Qwen3-TTS model name (default: qwen3-tts; also: tts-1, tts-1-zh)")
 	ttsQ3Speed := flag.Float64("tts-qwen3-speed", 0, "Qwen3-TTS speech speed 0.5–2.0 (0 = use config/default 1.0)")
 	ttsQ3TimeoutSecs := flag.Int("tts-qwen3-timeout", 0, "Qwen3-TTS HTTP timeout in seconds (0 = default 600)")
+	// MiMo-V2.5-TTS flags (env var: MIMO_API_KEY)
+	ttsMiMoKey   := flag.String("tts-mimo-key", "", "MiMo TTS API key (overrides MIMO_API_KEY)")
+	ttsMiMoURL   := flag.String("tts-mimo-url", "", "MiMo TTS base URL (default: https://api.xiaomimimo.com/v1)")
+	ttsMiMoModel := flag.String("tts-mimo-model", "", "MiMo TTS model: mimo-v2.5-tts | mimo-v2.5-tts-voicedesign | mimo-v2.5-tts-voiceclone (default: mimo-v2.5-tts)")
 	// Config file flags — path discovery for each supported config ecosystem.
 	// Pass '-' to disable a source entirely.
 	clawproxyConfigPath := flag.String("clawproxy-config", "", "clawproxy config.toml path (default: ~/.clawproxy/config.toml; '-' = disable)")
@@ -896,6 +900,7 @@ func main() {
 		*ttsF5Key, *ttsF5URL, *ttsF5Speed,
 		*ttsQ3Key, *ttsQ3URL, *ttsQ3Model, *ttsQ3Speed,
 		time.Duration(*ttsQ3TimeoutSecs)*time.Second,
+		*ttsMiMoKey, *ttsMiMoURL, *ttsMiMoModel,
 		*clawproxyConfigPath, *configPath, *picoConfigPath, *openConfigPath)
 
 	// auto-enable based on supplied flags

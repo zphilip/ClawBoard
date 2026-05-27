@@ -47,6 +47,42 @@ _DEBUG = False
 DEFAULT_BASE_URL = "http://apicn.aiworm.cn:8809/v1"
 DEFAULT_MODEL = "gui-owl"
 DEFAULT_API_KEY = "not-needed"
+
+# ---------------------------------------------------------------------------
+# Skill config loader
+# ---------------------------------------------------------------------------
+
+_CONFIG_FILE = Path(__file__).parent / "config.json"
+
+
+def load_skill_config() -> dict:
+    """
+    Load provider settings from config.json next to this script.
+    Returns a dict with keys: base_url, model, api_key.
+    CLI arguments always take precedence over these values.
+    """
+    cfg = {
+        "base_url": DEFAULT_BASE_URL,
+        "model": DEFAULT_MODEL,
+        "api_key": DEFAULT_API_KEY,
+    }
+    if not _CONFIG_FILE.exists():
+        return cfg
+    try:
+        with _CONFIG_FILE.open(encoding="utf-8") as f:
+            data = json.load(f)
+        provider = data.get("provider", {})
+        if provider.get("base_url"):
+            cfg["base_url"] = provider["base_url"]
+        if provider.get("model"):
+            cfg["model"] = provider["model"]
+        if "api_key" in provider:
+            cfg["api_key"] = provider["api_key"]
+    except Exception as e:
+        print(f"[mobile-control] WARNING: failed to load config.json: {e}", file=sys.stderr)
+    return cfg
+
+
 DEFAULT_MAX_STEPS = 20
 DEFAULT_TIMEOUT = 120  # seconds for the entire run
 LOOP_THRESHOLD = 3     # same coordinate N times → inject retry hint
@@ -531,6 +567,7 @@ def run_agent(
 # ---------------------------------------------------------------------------
 
 def parse_args() -> argparse.Namespace:
+    skill_cfg = load_skill_config()
     p = argparse.ArgumentParser(
         description="OpenClaw mobileAgent skill — wraps GUI-Owl mobile control",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -546,9 +583,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--instruction", required=True, help="Natural language task")
     p.add_argument("--adb_path", default="adb", help="Path to ADB binary")
     p.add_argument("--device", default=None, help="ADB device serial")
-    p.add_argument("--base_url", default=DEFAULT_BASE_URL)
-    p.add_argument("--model", default=DEFAULT_MODEL)
-    p.add_argument("--api_key", default=DEFAULT_API_KEY)
+    p.add_argument("--base_url", default=skill_cfg["base_url"],
+                   help="Override base URL from config.json")
+    p.add_argument("--model", default=skill_cfg["model"],
+                   help="Override model from config.json")
+    p.add_argument("--api_key", default=skill_cfg["api_key"],
+                   help="Override API key from config.json")
     p.add_argument("--max_steps", type=int, default=DEFAULT_MAX_STEPS)
     p.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT)
     p.add_argument("--add_info", default="")

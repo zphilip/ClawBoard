@@ -1,0 +1,7 @@
+{
+  "provider": {
+    "base_url": "http://apicn.aiworm.cn:8809/v1",
+    "model": "gui-owl",
+    "api_key": "not-needed"
+  }
+}

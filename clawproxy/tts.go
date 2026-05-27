@@ -93,6 +93,11 @@ type TtsConfig struct {
 	Qwen3Model   string        // model name: qwen3-tts, tts-1, tts-1-zh, … (default: qwen3-tts)
 	Qwen3Speed   float64       // speech speed: 0.5–2.0; 0 means use default (1.0)
 	Qwen3Timeout time.Duration // HTTP timeout for one synthesis call; 0 = use default (10 min)
+	// MiMo-V2.5-TTS (Xiaomi; chat-completions-based TTS API)
+	// https://platform.xiaomimimo.com/docs/zh-CN/usage-guide/speech-synthesis-v2.5
+	MiMoKey     string // MIMO_API_KEY env or --tts-mimo-key
+	MiMoBaseURL string // default: https://api.xiaomimimo.com/v1
+	MiMoModel   string // mimo-v2.5-tts | mimo-v2.5-tts-voicedesign | mimo-v2.5-tts-voiceclone
 }
 
 // initTtsConfig builds a TtsConfig from CLI flags, env vars, and optionally a
@@ -112,6 +117,7 @@ func initTtsConfig(provider, voice, format, apiKey, model, piperURL, edgeBin,
 	mmKey, mmModel, mmBaseURL,
 	f5Key, f5BaseURL string, f5Speed float64,
 	q3Key, q3BaseURL, q3Model string, q3Speed float64, q3Timeout time.Duration,
+	mimoKey, mimoBaseURL, mimoModel string,
 	clawproxyConfigPath, configPath, picoConfigPath, openConfigPath string) *TtsConfig {
 	cfg := &TtsConfig{
 		Provider:       provider,
@@ -132,6 +138,9 @@ func initTtsConfig(provider, voice, format, apiKey, model, piperURL, edgeBin,
 		Qwen3Model:     q3Model,
 		Qwen3Speed:     q3Speed,
 		Qwen3Timeout:   q3Timeout,
+		MiMoKey:        mimoKey,
+		MiMoBaseURL:    mimoBaseURL,
+		MiMoModel:      mimoModel,
 	}
 
 	// Env var fallbacks (same names as zeroclaw uses).
@@ -152,6 +161,9 @@ func initTtsConfig(provider, voice, format, apiKey, model, piperURL, edgeBin,
 	}
 	if cfg.Qwen3Key == "" {
 		cfg.Qwen3Key = os.Getenv("QWEN3_TTS_API_KEY")
+	}
+	if cfg.MiMoKey == "" {
+		cfg.MiMoKey = os.Getenv("MIMO_API_KEY")
 	}
 
 	// clawproxy's own config (highest-priority config file; overrides upstream daemons).
@@ -241,6 +253,12 @@ func initTtsConfig(provider, voice, format, apiKey, model, piperURL, edgeBin,
 	if cfg.Qwen3Timeout == 0 {
 		cfg.Qwen3Timeout = 10 * time.Minute
 	}
+	if cfg.MiMoBaseURL == "" {
+		cfg.MiMoBaseURL = "https://api.xiaomimimo.com/v1"
+	}
+	if cfg.MiMoModel == "" {
+		cfg.MiMoModel = "mimo-v2.5-tts"
+	}
 	cfg.MaxTextLen = 4096
 	return cfg
 }
@@ -319,6 +337,17 @@ func applyFileTtsConfig(cfg *TtsConfig, fc *fileTtsSection) {
 			cfg.Qwen3Timeout = time.Duration(fc.Qwen3.TimeoutSecs) * time.Second
 		}
 	}
+	if fc.MiMo != nil {
+		if cfg.MiMoKey == "" {
+			cfg.MiMoKey = fc.MiMo.APIKey
+		}
+		if cfg.MiMoBaseURL == "" {
+			cfg.MiMoBaseURL = fc.MiMo.BaseURL
+		}
+		if cfg.MiMoModel == "" {
+			cfg.MiMoModel = fc.MiMo.Model
+		}
+	}
 }
 
 // applyExternalTtsKeys copies provider API keys from a canonical-name→key map
@@ -342,6 +371,9 @@ func applyExternalTtsKeys(cfg *TtsConfig, keys map[string]string) {
 	}
 	if cfg.Qwen3Key == "" {
 		cfg.Qwen3Key = keys["qwen3tts"]
+	}
+	if cfg.MiMoKey == "" {
+		cfg.MiMoKey = keys["mimotts"]
 	}
 }
 
@@ -372,6 +404,9 @@ func canonicalProvider(name string) string {
 		return "f5tts"
 	case "qwen3tts", "qwen3-tts", "qwen3_tts", "qwen-tts", "qwen3":
 		return "qwen3tts"
+	case "mimotts", "mimo-tts", "mimo_tts", "mimo", "xiaomimimo", "mimo-v2.5-tts",
+		"mimo-v2.5-tts-voicedesign", "mimo-v2.5-tts-voiceclone":
+		return "mimotts"
 	}
 	if strings.HasPrefix(name, "openai-") || strings.HasPrefix(name, "gpt-") {
 		return "openai"
@@ -400,6 +435,8 @@ func defaultVoiceFor(provider string) string {
 		return "demo_speaker0" // F5-TTS default demo voice
 	case "qwen3tts":
 		return "Vivian" // Qwen3-TTS default voice
+	case "mimotts":
+		return "mimo_default" // MiMo default preset voice (冰糖 on CN cluster)
 	default:
 		return "alloy"
 	}
@@ -593,8 +630,26 @@ func handleTTSInfo(cfg *TtsConfig) http.HandlerFunc {
 				"formats": []string{"mp3", "wav", "opus", "flac"},
 				"note":    "OpenAI-compatible /v1/audio/speech; also accepts alloy/echo OpenAI voice aliases",
 			},
+			"mimotts": map[string]any{
+				"configured": cfg.MiMoKey != "",
+				"base_url":   cfg.MiMoBaseURL,
+				"model":      cfg.MiMoModel,
+				// Preset voices (mimo-v2.5-tts only).
+				"voices": []string{
+					"mimo_default", "冰糖", "茉莉", "苏打", "白桦",
+					"Mia", "Chloe", "Milo", "Dean",
+				},
+				"formats": []string{"wav"},
+				"models": []string{
+					"mimo-v2.5-tts",             // preset voices + singing mode
+					"mimo-v2.5-tts-voicedesign", // voice from text description (voice = style prompt in user msg)
+					"mimo-v2.5-tts-voiceclone",  // voice from base64 audio sample (voice = data:audio/...;base64,...)
+				},
+				"note": "Uses chat/completions endpoint; audio in choices[0].message.audio.data (base64 WAV). " +
+					"For voicedesign, set voice to a text description. " +
+					"For voiceclone, set voice to data:audio/mpeg;base64,<b64>.",
+			},
 		}
-
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(ttsInfoResponse{ //nolint:errcheck
 			DefaultProvider: cfg.Provider,
@@ -655,8 +710,10 @@ func synthesize(ctx context.Context, text, provider, voice, format string, cfg *
 		return synthF5TTS(ctx, text, voice, cfg)
 	case "qwen3tts":
 		return synthQwen3TTS(ctx, text, voice, cfg)
+	case "mimotts":
+		return synthMiMoTTS(ctx, text, voice, cfg)
 	default:
-		return nil, "", fmt.Errorf("unknown TTS provider %q (valid: openai, elevenlabs, google, edge, piper, minimax, f5tts, qwen3tts)", provider)
+		return nil, "", fmt.Errorf("unknown TTS provider %q (valid: openai, elevenlabs, google, edge, piper, minimax, f5tts, qwen3tts, mimotts)", provider)
 	}
 }
 
@@ -1339,4 +1396,136 @@ func f5ttsDownload(ctx context.Context, url string, headers map[string]string, c
 		format = "flac"
 	}
 	return audio, format, nil
+}
+
+// ── MiMo-V2.5-TTS (Xiaomi) ───────────────────────────────────────────────────
+// API docs: https://platform.xiaomimimo.com/docs/zh-CN/usage-guide/speech-synthesis-v2.5
+//
+// MiMo uses the chat completions endpoint, NOT /v1/audio/speech.
+// The text to speak goes in the `assistant` message; an optional `user`
+// message carries a style/emotion instruction or (for voicedesign) the voice
+// description prompt.
+//
+// voice parameter semantics per model:
+//   - mimo-v2.5-tts          → preset voice name ("mimo_default","冰糖","Chloe",…)
+//   - mimo-v2.5-tts-voicedesign → voice is a text description of the desired voice;
+//                               if non-empty it is placed in the user message;
+//                               set model explicitly via cfg.MiMoModel
+//   - mimo-v2.5-tts-voiceclone  → voice is a data-URI string:
+//                               "data:audio/mpeg;base64,<base64-encoded mp3/wav>"
+//
+// Audio is returned as base64 WAV in choices[0].message.audio.data.
+// Auth header is "api-key: <key>" (not "Authorization: Bearer …").
+func synthMiMoTTS(ctx context.Context, text, voice string, cfg *TtsConfig) ([]byte, string, error) {
+	if cfg.MiMoKey == "" {
+		return nil, "", fmt.Errorf("MiMo TTS: no API key — set MIMO_API_KEY or --tts-mimo-key")
+	}
+
+	baseURL := cfg.MiMoBaseURL
+	if baseURL == "" {
+		baseURL = "https://api.xiaomimimo.com/v1"
+	}
+	modelName := cfg.MiMoModel
+	if modelName == "" {
+		modelName = "mimo-v2.5-tts"
+	}
+	if voice == "" {
+		voice = "mimo_default"
+	}
+
+	// Build messages array.  Text to synthesise always goes in the assistant
+	// message.  For voicedesign the voice string is a style description that
+	// goes in the user message.  For voiceclone the data-URI goes in audio.voice.
+	messages := []map[string]any{
+		{"role": "assistant", "content": text},
+	}
+
+	audioParams := map[string]any{
+		"format": "wav",
+	}
+
+	switch {
+	case modelName == "mimo-v2.5-tts-voicedesign":
+		// voice is a text description; pass as user instruction.
+		if voice != "" && voice != "mimo_default" {
+			messages = append([]map[string]any{{"role": "user", "content": voice}}, messages...)
+		}
+		audioParams["optimize_text_preview"] = true
+
+	case modelName == "mimo-v2.5-tts-voiceclone":
+		// voice is a data-URI base64-encoded audio sample.
+		if voice != "" && voice != "mimo_default" {
+			audioParams["voice"] = voice
+		}
+		// user message is optional for voiceclone; add empty string to satisfy API.
+		messages = append([]map[string]any{{"role": "user", "content": ""}}, messages...)
+
+	default:
+		// mimo-v2.5-tts — preset voice in audio.voice.
+		audioParams["voice"] = voice
+	}
+
+	payload := map[string]any{
+		"model":    modelName,
+		"messages": messages,
+		"audio":    audioParams,
+		"stream":   false,
+	}
+	bodyJSON, _ := json.Marshal(payload)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		baseURL+"/chat/completions", bytes.NewReader(bodyJSON))
+	if err != nil {
+		return nil, "", fmt.Errorf("MiMo TTS: build request: %w", err)
+	}
+	req.Header.Set("api-key", cfg.MiMoKey)
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 120 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, "", fmt.Errorf("MiMo TTS: request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBytes, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		return nil, "", fmt.Errorf("MiMo TTS: HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(respBytes)))
+	}
+
+	// Parse: choices[0].message.audio.data (base64 WAV)
+	var respBody struct {
+		Choices []struct {
+			Message struct {
+				Audio *struct {
+					Data string `json:"data"`
+				} `json:"audio"`
+			} `json:"message"`
+		} `json:"choices"`
+		Error *struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(respBytes, &respBody); err != nil {
+		return nil, "", fmt.Errorf("MiMo TTS: invalid response JSON: %w", err)
+	}
+	if respBody.Error != nil && respBody.Error.Message != "" {
+		return nil, "", fmt.Errorf("MiMo TTS error: %s", respBody.Error.Message)
+	}
+	if len(respBody.Choices) == 0 || respBody.Choices[0].Message.Audio == nil {
+		return nil, "", fmt.Errorf("MiMo TTS: response missing choices[0].message.audio")
+	}
+	audioData := respBody.Choices[0].Message.Audio.Data
+	if audioData == "" {
+		return nil, "", fmt.Errorf("MiMo TTS: empty audio data in response")
+	}
+
+	audio, err := base64.StdEncoding.DecodeString(audioData)
+	if err != nil {
+		return nil, "", fmt.Errorf("MiMo TTS: base64 decode failed: %w", err)
+	}
+
+	fmt.Printf("%s[mimotts] synthesised %d chars → %d bytes (wav)  voice=%s  model=%s\n",
+		prefixSYS(), len([]rune(text)), len(audio), voice, modelName)
+	return audio, "wav", nil
 }

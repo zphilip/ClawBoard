@@ -102,6 +102,8 @@ type fileTtsSection struct {
 	F5TTS           *fileTtsF5TTS       `toml:"f5tts"`
 	// [tts.qwen3tts] is a clawproxy extension for Qwen3-TTS servers (OpenAI-compatible).
 	Qwen3           *fileTtsQwen3TTS    `toml:"qwen3tts"`
+	// [tts.mimotts] is a clawproxy extension for Xiaomi MiMo-V2.5-TTS.
+	MiMo            *fileTtsMiMoTTS     `toml:"mimotts"`
 }
 
 // fileTtsOpenAI mirrors zeroclaw's [tts.openai] table.
@@ -175,6 +177,20 @@ type fileTtsQwen3TTS struct {
 	Model       string  `toml:"model"`       // default: qwen3-tts
 	Speed       float64 `toml:"speed"`       // 0.5–2.0; 0 means use default (1.0)
 	TimeoutSecs int     `toml:"timeout_secs"` // HTTP timeout in seconds; 0 = default (600)
+}
+
+// fileTtsMiMoTTS is a clawproxy extension under [tts.mimotts].
+// Supports all three MiMo-V2.5-TTS variants via the model field.
+// Example config.toml snippet:
+//
+//	[tts.mimotts]
+//	api_key  = "your-mimo-api-key"                  # MIMO_API_KEY env var
+//	base_url = "https://api.xiaomimimo.com/v1"       # default
+//	model    = "mimo-v2.5-tts"                       # or mimo-v2.5-tts-voicedesign / voiceclone
+type fileTtsMiMoTTS struct {
+	APIKey  string `toml:"api_key"`
+	BaseURL string `toml:"base_url"` // default: https://api.xiaomimimo.com/v1
+	Model   string `toml:"model"`   // default: mimo-v2.5-tts
 }
 
 // ── Config discovery ──────────────────────────────────────────────────────────
