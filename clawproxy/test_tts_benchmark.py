@@ -17,7 +17,7 @@ Options:
     --f5-url      URL   F5-TTS server     (default: http://apicn.aiworm.cn:8010)
     --q3-url      URL   Qwen3-TTS server  (default: http://apicn.aiworm.cn:8011)
     --q3-2-url    URL   Qwen3-TTS-2 server (default: http://apicn.aiworm.cn:8012)
-    --mimo-url    URL   MiMo TTS server   (default: https://api.xiaomimimo.com/v1)
+    --mimo-url    URL   MiMo TTS server   (default: https://token-plan-cn.xiaomimimo.com/v1)
     --f5-key      KEY   F5-TTS Bearer token     (or env F5_TTS_API_KEY)
     --q3-key      KEY   Qwen3 Bearer token      (or env QWEN3_TTS_API_KEY)
     --q3-2-key    KEY   Qwen3-TTS-2 Bearer token (or env QWEN3_TTS_2_API_KEY)
@@ -161,10 +161,11 @@ class Result:
     provider:    str
     label:       str
     chars:       int
-    elapsed_s:   float = 0.0
-    bytes_out:   int   = 0
-    error:       str   = ""
-    audio_path:  str   = ""
+    elapsed_s:     float = 0.0
+    first_chunk_s: float = 0.0  # time to first audio chunk; equals elapsed_s when not streaming
+    bytes_out:     int   = 0
+    error:         str   = ""
+    audio_path:    str   = ""
 
     @property
     def ok(self): return self.error == ""
@@ -247,7 +248,7 @@ def mimo_synth(text: str, base_url: str, api_key: str,
                voice: str, model: str, timeout: int) -> tuple[bytes, float]:
     """Synthesise text with MiMo-V2.5-TTS.  Returns (audio_bytes, elapsed_s)."""
     if base_url == "":
-        base_url = "https://api.xiaomimimo.com/v1"
+        base_url = "https://token-plan-cn.xiaomimimo.com/v1"
     if model == "":
         model = "mimo-v2.5-tts"
     if voice == "":
@@ -299,6 +300,76 @@ def mimo_synth(text: str, base_url: str, api_key: str,
 
     audio = base64.b64decode(b64)
     return audio, time.time() - t0
+
+
+def mimo_synth_streaming(text: str, base_url: str, api_key: str,
+                         voice: str, model: str, timeout: int) -> tuple[bytes, float, float]:
+    """Streaming synthesis with MiMo-V2.5-TTS via SSE (stream:true).
+    Returns (audio_bytes, first_chunk_s, total_s)."""
+    if base_url == "":
+        base_url = "https://token-plan-cn.xiaomimimo.com/v1"
+    if model == "":
+        model = "mimo-v2.5-tts"
+    if voice == "":
+        voice = "mimo_default"
+
+    headers = {
+        "api-key":      api_key,
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "model": model,
+        "messages": [{"role": "assistant", "content": text}],
+        "audio": {"format": "wav", "voice": voice},
+        "stream": True,
+    }
+
+    t0 = time.time()
+    try:
+        r = requests.post(
+            f"{base_url}/chat/completions",
+            headers=headers,
+            json=payload,
+            stream=True,
+            timeout=timeout,
+        )
+    except requests.RequestException as e:
+        raise RuntimeError(f"request failed: {e}") from e
+
+    if r.status_code in (401, 403):
+        raise RuntimeError(
+            f"invalid API key (HTTP {r.status_code}) — "
+            "check MIMO_API_KEY or --mimo-key"
+        )
+    if r.status_code >= 400:
+        body = r.text.strip().replace("\n", " ")[:400]
+        raise RuntimeError(f"HTTP {r.status_code}: {body}")
+
+    first_chunk_s: Optional[float] = None
+    all_audio: list[bytes] = []
+    for raw_line in r.iter_lines():
+        if not raw_line:
+            continue
+        line = raw_line.decode() if isinstance(raw_line, bytes) else raw_line
+        if not line.startswith("data: "):
+            continue
+        data_str = line[6:]
+        if data_str == "[DONE]":
+            break
+        try:
+            chunk = json.loads(data_str)
+            delta = (chunk.get("choices") or [{}])[0].get("delta") or {}
+            audio_b64 = (delta.get("audio") or {}).get("data", "")
+            if audio_b64:
+                if first_chunk_s is None:
+                    first_chunk_s = time.time() - t0
+                all_audio.append(base64.b64decode(audio_b64))
+        except (json.JSONDecodeError, KeyError, IndexError):
+            pass
+
+    total_s = time.time() - t0
+    audio = b"".join(all_audio)
+    return audio, first_chunk_s if first_chunk_s is not None else total_s, total_s
 
 
 def qwen3_synth(text: str, base_url: str, api_key: str,
@@ -354,6 +425,54 @@ def qwen3_synth(text: str, base_url: str, api_key: str,
     raise RuntimeError(f"request failed after {attempts} attempts: {last_exc}")
 
 
+def qwen3_synth_streaming(text: str, base_url: str, api_key: str,
+                           voice: str, model: str, timeout: int) -> tuple[bytes, float, float]:
+    """Stream the Qwen3-TTS HTTP response, measuring time to first audio byte.
+    Returns (audio_bytes, first_chunk_s, total_s)."""
+    headers = {
+        "Content-Type": "application/json",
+        "Accept":        "*/*",
+    }
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+
+    payload = {
+        "model":           model,
+        "input":           text,
+        "voice":           voice,
+        "response_format": "mp3",
+        "speed":           1.0,
+    }
+
+    t0 = time.time()
+    try:
+        r = requests.post(
+            f"{base_url}/v1/audio/speech",
+            headers=headers,
+            json=payload,
+            stream=True,
+            timeout=timeout,
+        )
+    except requests.RequestException as e:
+        raise RuntimeError(f"request failed: {e}") from e
+
+    if r.status_code >= 400:
+        body = r.text.strip().replace("\n", " ")[:400]
+        raise RuntimeError(f"HTTP {r.status_code}: {body}")
+
+    first_chunk_s: Optional[float] = None
+    chunks: list[bytes] = []
+    for chunk in r.iter_content(chunk_size=8192):
+        if chunk:
+            if first_chunk_s is None:
+                first_chunk_s = time.time() - t0
+            chunks.append(chunk)
+
+    total_s = time.time() - t0
+    audio = b"".join(chunks)
+    return audio, first_chunk_s if first_chunk_s is not None else total_s, total_s
+
+
 # ── Benchmark runner ────────────────────────────────────────────────────────────
 
 def run_one(provider: str, label: str, text: str, args) -> Result:
@@ -361,17 +480,37 @@ def run_one(provider: str, label: str, text: str, args) -> Result:
     res = Result(provider=provider, label=label, chars=chars)
     try:
         if provider == "f5tts":
+            # F5-TTS has no streaming API; first chunk time equals total time.
             audio, elapsed = f5tts_synth(
                 text, args.f5_url, args.f5_key, args.f5_voice, args.timeout)
+            res.first_chunk_s = elapsed
         elif provider == "qwen3tts":
-            audio, elapsed = qwen3_synth(
-                text, args.q3_url, args.q3_key, args.q3_voice, args.q3_model, args.timeout)
+            if args.streaming:
+                audio, first_s, elapsed = qwen3_synth_streaming(
+                    text, args.q3_url, args.q3_key, args.q3_voice, args.q3_model, args.timeout)
+                res.first_chunk_s = first_s
+            else:
+                audio, elapsed = qwen3_synth(
+                    text, args.q3_url, args.q3_key, args.q3_voice, args.q3_model, args.timeout)
+                res.first_chunk_s = elapsed
         elif provider == "qwen3-tts-2":
-            audio, elapsed = qwen3_synth(
-                text, args.q3_2_url, args.q3_2_key, args.q3_2_voice, args.q3_2_model, args.timeout)
+            if args.streaming:
+                audio, first_s, elapsed = qwen3_synth_streaming(
+                    text, args.q3_2_url, args.q3_2_key, args.q3_2_voice, args.q3_2_model, args.timeout)
+                res.first_chunk_s = first_s
+            else:
+                audio, elapsed = qwen3_synth(
+                    text, args.q3_2_url, args.q3_2_key, args.q3_2_voice, args.q3_2_model, args.timeout)
+                res.first_chunk_s = elapsed
         elif provider == "mimotts":
-            audio, elapsed = mimo_synth(
-                text, args.mimo_url, args.mimo_key, args.mimo_voice, args.mimo_model, args.timeout)
+            if args.streaming:
+                audio, first_s, elapsed = mimo_synth_streaming(
+                    text, args.mimo_url, args.mimo_key, args.mimo_voice, args.mimo_model, args.timeout)
+                res.first_chunk_s = first_s
+            else:
+                audio, elapsed = mimo_synth(
+                    text, args.mimo_url, args.mimo_key, args.mimo_voice, args.mimo_model, args.timeout)
+                res.first_chunk_s = elapsed
         else:
             raise ValueError(f"unknown provider: {provider}")
 
@@ -403,14 +542,21 @@ _PROVIDER_LABEL = {
 }
 
 
-def print_table(results: list[Result]):
+def print_table(results: list[Result], streaming: bool = False):
     # Group by label
     by_label: dict[str, dict[str, Result]] = {}
     for r in results:
         by_label.setdefault(r.label, {})[r.provider] = r
 
-    col_w = [22, 6, 10, 10, 10, 10, 26]
-    header = ["Test case", "Chars", "F5(s)", "Q3(s)", "Q3-2(s)", "MiMo(s)", "Winner (time)"]
+    if streaming:
+        # Wider columns: each cell shows "total/firstchunk" e.g. "12.3s/2.1fc"
+        col_w  = [22, 6, 15, 15, 15, 15, 22]
+        header = ["Test case", "Chars",
+                  "F5(tot/fc)", "Q3(tot/fc)", "Q3-2(tot/fc)", "MiMo(tot/fc)",
+                  "Fastest 1st"]
+    else:
+        col_w  = [22, 6, 10, 10, 10, 10, 26]
+        header = ["Test case", "Chars", "F5(s)", "Q3(s)", "Q3-2(s)", "MiMo(s)", "Winner (time)"]
     sep = "  ".join("─" * w for w in col_w)
 
     def fmt_time(r: Optional[Result]) -> str:
@@ -418,10 +564,12 @@ def print_table(results: list[Result]):
             return grey("(skip)")
         if not r.ok:
             return red("ERR")
+        if streaming:
+            return f"{r.elapsed_s:.1f}s/{r.first_chunk_s:.1f}fc"
         return f"{r.elapsed_s:>6.1f}s"
 
     print()
-    print(bold("TTS Speed Benchmark"))
+    print(bold("TTS Speed Benchmark" + (" (streaming · tot/fc)" if streaming else "")))
     print(sep)
     print("  ".join(bold(h.ljust(w)) for h, w in zip(header, col_w)))
     print(sep)
@@ -437,7 +585,9 @@ def print_table(results: list[Result]):
         ok_times: list[tuple[str, float]] = []
         for name, item in (("f5tts", f5), ("qwen3tts", q3), ("qwen3-tts-2", q3_2), ("mimotts", mo)):
             if item and item.ok:
-                ok_times.append((name, item.elapsed_s))
+                # When streaming, rank by first-chunk time; else rank by total.
+                t = item.first_chunk_s if streaming else item.elapsed_s
+                ok_times.append((name, t))
 
         if len(ok_times) == 0:
             winner = red("all failed")
@@ -513,8 +663,8 @@ def parse_args():
                    default=os.environ.get("QWEN3_TTS_2_API_KEY") or fc.get("qwen3_2_key", ""),
                    help="Qwen3-TTS-2 Bearer token (auto-read from ~/.clawproxy/config.toml or QWEN3_TTS_2_API_KEY)")
     p.add_argument("--mimo-url",
-                   default=fc.get("mimotts_url") or "https://api.xiaomimimo.com/v1",
-                   help="MiMo TTS base URL (default: https://api.xiaomimimo.com/v1)")
+                   default=fc.get("mimotts_url") or "https://token-plan-cn.xiaomimimo.com/v1",
+                   help="MiMo TTS base URL (default: https://token-plan-cn.xiaomimimo.com/v1)")
     p.add_argument("--mimo-key",
                    default=os.environ.get("MIMO_API_KEY") or fc.get("mimotts_key", ""),
                    help="MiMo API key (auto-read from ~/.clawproxy/config.toml or MIMO_API_KEY)")
@@ -547,6 +697,11 @@ def parse_args():
     p.add_argument("--skip-q3",   action="store_true", help="Skip Qwen3-TTS")
     p.add_argument("--skip-q3-2", action="store_true", help="Skip Qwen3-TTS-2")
     p.add_argument("--skip-mimo", action="store_true", help="Skip MiMo TTS")
+    p.add_argument("--streaming", action="store_true",
+                   help="Use streaming APIs to measure time-to-first-chunk (TTFC). "
+                        "Qwen3/Qwen3-2 stream the HTTP audio response; "
+                        "MiMo uses SSE (stream:true). "
+                        "Table shows 'total/fc' per provider; winner column ranks by TTFC.")
     return p.parse_args()
 
 
@@ -616,13 +771,18 @@ def main():
 
             if r.ok:
                 cps = f"{r.chars_per_sec:.1f} chars/s"
-                print(f"         → {green('OK')}  {r.elapsed_s:.1f}s  "
+                fc_str = (
+                    f"  {cyan(f'1st={r.first_chunk_s:.1f}s')}"
+                    if args.streaming and r.first_chunk_s < r.elapsed_s - 0.05
+                    else ""
+                )
+                print(f"         → {green('OK')}  {r.elapsed_s:.1f}s{fc_str}  "
                       f"{r.bytes_out//1024} KB  [{cps}]"
                       + (f"  → {r.audio_path}" if r.audio_path else ""))
             else:
                 print(f"         → {red('FAIL')}  {r.error}")
 
-    print_table(results)
+    print_table(results, streaming=args.streaming)
 
 
 if __name__ == "__main__":
