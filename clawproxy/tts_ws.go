@@ -335,6 +335,61 @@ func splitSentences(buf string) (sentences []string, remainder string) {
 	return
 }
 
+// maxChunkRunes is the upper bound on runes per TTS synthesis call.
+// Responses that use markdown (bullet lists, tables, headers) often contain no
+// sentence-ending punctuation for many lines, producing a single enormous chunk
+// that takes tens of seconds to synthesise. rechunk breaks those down further.
+const maxChunkRunes = 150
+
+// rechunk splits text into chunks of at most maxRunes runes. It greedily merges
+// adjacent short fragments, preferring to break at paragraph (\n\n), line (\n),
+// Chinese comma (，), and Latin comma (,) boundaries in that order. A hard
+// character-boundary split is used only as a last resort.
+func rechunk(text string, maxRunes int) []string {
+	if len([]rune(text)) <= maxRunes {
+		if t := strings.TrimSpace(text); t != "" {
+			return []string{t}
+		}
+		return nil
+	}
+	for _, sep := range []string{"\n\n", "\n", "，", ","} {
+		parts := strings.Split(text, sep)
+		var nonEmpty []string
+		for _, p := range parts {
+			if p = strings.TrimSpace(p); p != "" {
+				nonEmpty = append(nonEmpty, p)
+			}
+		}
+		if len(nonEmpty) < 2 {
+			continue
+		}
+		var result []string
+		current := nonEmpty[0]
+		for _, p := range nonEmpty[1:] {
+			candidate := current + " " + p
+			if len([]rune(candidate)) <= maxRunes {
+				current = candidate
+			} else {
+				result = append(result, rechunk(current, maxRunes)...)
+				current = p
+			}
+		}
+		result = append(result, rechunk(current, maxRunes)...)
+		return result
+	}
+	// Hard split at rune boundary as last resort.
+	runes := []rune(text)
+	var result []string
+	for len(runes) > maxRunes {
+		result = append(result, string(runes[:maxRunes]))
+		runes = runes[maxRunes:]
+	}
+	if len(runes) > 0 {
+		result = append(result, string(runes))
+	}
+	return result
+}
+
 // ── Streaming TTS pipeline (shared by both handlers) ──────────────────────────
 
 // ttsPipeline is a sequential synthesis-and-send pipeline.
@@ -478,9 +533,13 @@ func (s *proxyServer) handleZCTTSStream(w http.ResponseWriter, r *http.Request) 
 		if strings.TrimSpace(text) == "" {
 			return
 		}
-		seq++
-		fmt.Printf("%s[zc-tts] submit seq=%d isFinal=%v text=%q\n", prefixSYS(), seq, isFinal, text)
-		pipe.submit(text, seq, isFinal)
+		chunks := rechunk(text, maxChunkRunes)
+		for i, chunk := range chunks {
+			seq++
+			isFinalChunk := isFinal && i == len(chunks)-1
+			fmt.Printf("%s[zc-tts] submit seq=%d isFinal=%v text=%q\n", prefixSYS(), seq, isFinalChunk, chunk)
+			pipe.submit(chunk, seq, isFinalChunk)
+		}
 	}
 
 	for {
@@ -627,9 +686,13 @@ func (s *proxyServer) handlePCTTSStream(w http.ResponseWriter, r *http.Request) 
 		if strings.TrimSpace(text) == "" {
 			return
 		}
-		seq++
-		fmt.Printf("%s[pc-tts] submit seq=%d isFinal=%v text=%q\n", prefixSYS(), seq, isFinal, text)
-		pipe.submit(text, seq, isFinal)
+		chunks := rechunk(text, maxChunkRunes)
+		for i, chunk := range chunks {
+			seq++
+			isFinalChunk := isFinal && i == len(chunks)-1
+			fmt.Printf("%s[pc-tts] submit seq=%d isFinal=%v text=%q\n", prefixSYS(), seq, isFinalChunk, chunk)
+			pipe.submit(chunk, seq, isFinalChunk)
+		}
 	}
 
 	for {

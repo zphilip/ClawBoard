@@ -1,35 +1,45 @@
 #!/usr/bin/env python3
 """
-TTS Speed Benchmark: F5-TTS vs Qwen3-TTS vs Qwen3-TTS-2
-========================================================
+TTS Speed Benchmark: F5-TTS vs Qwen3-TTS vs Qwen3-TTS-2 vs MiMo-TTS
+=====================================================================
 Synthesises the same texts with all configured providers and prints a
 side-by-side timing table.
 
 F5-TTS      : POST /voice-clone/synthesize_speech  (async polling)
 Qwen3-TTS   : POST /v1/audio/speech                (sync, OpenAI-compatible)
 Qwen3-TTS-2 : POST /v1/audio/speech                (sync, OpenAI-compatible)
+MiMo-TTS    : POST /v1/chat/completions            (sync, base64 WAV in response)
 
 Usage:
     python test_tts_benchmark.py [options]
 
 Options:
-    --f5-url    URL   F5-TTS server   (default: http://apicn.aiworm.cn:8010)
-    --q3-url      URL   Qwen3-TTS server (default: http://apicn.aiworm.cn:8011)
+    --f5-url      URL   F5-TTS server     (default: http://apicn.aiworm.cn:8010)
+    --q3-url      URL   Qwen3-TTS server  (default: http://apicn.aiworm.cn:8011)
     --q3-2-url    URL   Qwen3-TTS-2 server (default: http://apicn.aiworm.cn:8012)
-    --f5-key    KEY   F5-TTS Bearer token  (or env F5_TTS_API_KEY)
-    --q3-key      KEY   Qwen3 Bearer token   (or env QWEN3_TTS_API_KEY)
+    --mimo-url    URL   MiMo TTS server   (default: https://api.xiaomimimo.com/v1)
+    --f5-key      KEY   F5-TTS Bearer token     (or env F5_TTS_API_KEY)
+    --q3-key      KEY   Qwen3 Bearer token      (or env QWEN3_TTS_API_KEY)
     --q3-2-key    KEY   Qwen3-TTS-2 Bearer token (or env QWEN3_TTS_2_API_KEY)
-    --f5-voice  NAME  F5-TTS voice name    (default: demo_speaker0)
+    --mimo-key    KEY   MiMo api-key header     (or env MIMO_API_KEY)
+    --f5-voice    NAME  F5-TTS voice name    (default: demo_speaker0)
     --q3-voice    NAME  Qwen3-TTS voice      (default: Vivian)
     --q3-2-voice  NAME  Qwen3-TTS-2 voice    (default: Vivian)
+    --mimo-voice  NAME  MiMo voice           (default: mimo_default)
     --q3-model    NAME  Qwen3-TTS model      (default: qwen3-tts)
     --q3-2-model  NAME  Qwen3-TTS-2 model    (default: qwen3-tts)
-    --timeout   SECS  Per-request timeout  (default: 900)
-    --output    DIR   Directory to save audio files (default: ./tts_benchmark_out)
-    --no-save         Do not save audio to disk
+    --mimo-model  NAME  MiMo model           (default: mimo-v2.5-tts)
+    --timeout     SECS  Per-request timeout  (default: 900)
+    --output      DIR   Directory to save audio files (default: ./tts_benchmark_out)
+    --no-save           Do not save audio to disk
+    --skip-f5           Skip F5-TTS
+    --skip-q3           Skip Qwen3-TTS
+    --skip-q3-2         Skip Qwen3-TTS-2
+    --skip-mimo         Skip MiMo TTS
 """
 
 import argparse
+import base64
 import os
 import re
 import sys
@@ -87,12 +97,15 @@ def load_clawproxy_config() -> dict:
         q3_2_url = _read_toml_value(cfg_path, "tts.qwen3-tts-2", "base_url")
 
     return {
-        "f5tts_key":  _read_toml_value(cfg_path, "tts.f5tts",   "api_key"),
-        "f5tts_url":  _read_toml_value(cfg_path, "tts.f5tts",   "base_url"),
-        "qwen3_key":  _read_toml_value(cfg_path, "tts.qwen3tts", "api_key"),
-        "qwen3_url":  _read_toml_value(cfg_path, "tts.qwen3tts", "base_url"),
+        "f5tts_key":   _read_toml_value(cfg_path, "tts.f5tts",    "api_key"),
+        "f5tts_url":   _read_toml_value(cfg_path, "tts.f5tts",    "base_url"),
+        "qwen3_key":   _read_toml_value(cfg_path, "tts.qwen3tts", "api_key"),
+        "qwen3_url":   _read_toml_value(cfg_path, "tts.qwen3tts", "base_url"),
         "qwen3_2_key": q3_2_key,
         "qwen3_2_url": q3_2_url,
+        "mimotts_key": _read_toml_value(cfg_path, "tts.mimotts",  "api_key"),
+        "mimotts_url": _read_toml_value(cfg_path, "tts.mimotts",  "base_url"),
+        "mimotts_model": _read_toml_value(cfg_path, "tts.mimotts", "model"),
     }
 
 # ── Test texts ─────────────────────────────────────────────────────────────────
@@ -230,6 +243,64 @@ def f5tts_synth(text: str, base_url: str, api_key: str,
     return dr.content, time.time() - t0
 
 
+def mimo_synth(text: str, base_url: str, api_key: str,
+               voice: str, model: str, timeout: int) -> tuple[bytes, float]:
+    """Synthesise text with MiMo-V2.5-TTS.  Returns (audio_bytes, elapsed_s)."""
+    if base_url == "":
+        base_url = "https://api.xiaomimimo.com/v1"
+    if model == "":
+        model = "mimo-v2.5-tts"
+    if voice == "":
+        voice = "mimo_default"
+
+    headers = {
+        "api-key":      api_key,
+        "Content-Type": "application/json",
+    }
+
+    # Preset-voice mode: voice name in audio.voice, text in assistant message.
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "assistant", "content": text},
+        ],
+        "audio": {
+            "format": "wav",
+            "voice":  voice,
+        },
+        "stream": False,
+    }
+
+    t0 = time.time()
+    try:
+        r = requests.post(
+            f"{base_url}/chat/completions",
+            headers=headers,
+            json=payload,
+            timeout=timeout,
+        )
+    except requests.RequestException as e:
+        raise RuntimeError(f"request failed: {e}") from e
+
+    if r.status_code in (401, 403):
+        raise RuntimeError(
+            f"invalid API key (HTTP {r.status_code}) — "
+            "check MIMO_API_KEY or --mimo-key"
+        )
+    if r.status_code >= 400:
+        body = r.text.strip().replace("\n", " ")[:400]
+        raise RuntimeError(f"HTTP {r.status_code}: {body}")
+
+    data = r.json()
+    try:
+        b64 = data["choices"][0]["message"]["audio"]["data"]
+    except (KeyError, IndexError, TypeError) as e:
+        raise RuntimeError(f"unexpected response shape: {e} — {str(data)[:200]}") from e
+
+    audio = base64.b64decode(b64)
+    return audio, time.time() - t0
+
+
 def qwen3_synth(text: str, base_url: str, api_key: str,
                 voice: str, model: str, timeout: int) -> tuple[bytes, float]:
     """Synthesise text with Qwen3-TTS (synchronous).  Returns (audio_bytes, elapsed_s)."""
@@ -298,6 +369,9 @@ def run_one(provider: str, label: str, text: str, args) -> Result:
         elif provider == "qwen3-tts-2":
             audio, elapsed = qwen3_synth(
                 text, args.q3_2_url, args.q3_2_key, args.q3_2_voice, args.q3_2_model, args.timeout)
+        elif provider == "mimotts":
+            audio, elapsed = mimo_synth(
+                text, args.mimo_url, args.mimo_key, args.mimo_voice, args.mimo_model, args.timeout)
         else:
             raise ValueError(f"unknown provider: {provider}")
 
@@ -307,7 +381,7 @@ def run_one(provider: str, label: str, text: str, args) -> Result:
         if not args.no_save and audio:
             out_dir = Path(args.output)
             out_dir.mkdir(parents=True, exist_ok=True)
-            ext = "wav" if provider == "f5tts" else "mp3"
+            ext = "mp3" if provider in ("qwen3tts", "qwen3-tts-2") else "wav"
             path = out_dir / f"{provider}_{label}.{ext}"
             path.write_bytes(audio)
             res.audio_path = str(path)
@@ -320,14 +394,23 @@ def run_one(provider: str, label: str, text: str, args) -> Result:
 
 # ── Table printer ───────────────────────────────────────────────────────────────
 
+# Display labels for each provider
+_PROVIDER_LABEL = {
+    "f5tts":       "F5-TTS",
+    "qwen3tts":    "Qwen3",
+    "qwen3-tts-2": "Qwen3-2",
+    "mimotts":     "MiMo",
+}
+
+
 def print_table(results: list[Result]):
     # Group by label
     by_label: dict[str, dict[str, Result]] = {}
     for r in results:
         by_label.setdefault(r.label, {})[r.provider] = r
 
-    col_w = [22, 6, 10, 10, 10, 24]
-    header = ["Test case", "Chars", "F5(s)", "Q3(s)", "Q3-2(s)", "Winner (time)"]
+    col_w = [22, 6, 10, 10, 10, 10, 26]
+    header = ["Test case", "Chars", "F5(s)", "Q3(s)", "Q3-2(s)", "MiMo(s)", "Winner (time)"]
     sep = "  ".join("─" * w for w in col_w)
 
     def fmt_time(r: Optional[Result]) -> str:
@@ -343,52 +426,41 @@ def print_table(results: list[Result]):
     print("  ".join(bold(h.ljust(w)) for h, w in zip(header, col_w)))
     print(sep)
 
-    wins: dict[str, int] = {"f5tts": 0, "qwen3tts": 0, "qwen3-tts-2": 0, "tie": 0}
+    wins: dict[str, int] = {"f5tts": 0, "qwen3tts": 0, "qwen3-tts-2": 0, "mimotts": 0, "tie": 0}
 
     for label, pmap in by_label.items():
-        f5 = pmap.get("f5tts")
-        q3 = pmap.get("qwen3tts")
+        f5   = pmap.get("f5tts")
+        q3   = pmap.get("qwen3tts")
         q3_2 = pmap.get("qwen3-tts-2")
-        ft = fmt_time(f5)
-        qt = fmt_time(q3)
-        q2t = fmt_time(q3_2)
+        mo   = pmap.get("mimotts")
 
         ok_times: list[tuple[str, float]] = []
-        for name, item in (("f5tts", f5), ("qwen3tts", q3), ("qwen3-tts-2", q3_2)):
+        for name, item in (("f5tts", f5), ("qwen3tts", q3), ("qwen3-tts-2", q3_2), ("mimotts", mo)):
             if item and item.ok:
                 ok_times.append((name, item.elapsed_s))
 
         if len(ok_times) == 0:
             winner = red("all failed")
         elif len(ok_times) == 1:
-            only_name = ok_times[0][0]
-            if only_name == "f5tts":
-                winner = green("F5-TTS (only pass)")
-            elif only_name == "qwen3tts":
-                winner = cyan("Qwen3 (only pass)")
-            else:
-                winner = yellow("Qwen3-2 (only pass)")
+            only_name, only_time = ok_times[0]
+            label_str = _PROVIDER_LABEL.get(only_name, only_name)
+            winner = cyan(f"{label_str} (only pass)")
             wins[only_name] += 1
         else:
             ok_times.sort(key=lambda x: x[1])
             fastest_name, fastest_time = ok_times[0]
             second_time = ok_times[1][1]
+            label_str = _PROVIDER_LABEL.get(fastest_name, fastest_name)
             if abs(fastest_time - second_time) < 0.5:
                 winner = yellow("tie")
                 wins["tie"] += 1
-            elif fastest_name == "f5tts":
-                winner = green(f"F5-TTS ({fastest_time:.1f}s)")
-                wins["f5tts"] += 1
-            elif fastest_name == "qwen3tts":
-                winner = cyan(f"Qwen3 ({fastest_time:.1f}s)")
-                wins["qwen3tts"] += 1
             else:
-                winner = yellow(f"Qwen3-2 ({fastest_time:.1f}s)")
-                wins["qwen3-tts-2"] += 1
+                winner = green(f"{label_str} ({fastest_time:.1f}s)")
+                wins[fastest_name] += 1
 
-        chars_item = f5 or q3 or q3_2
+        chars_item = f5 or q3 or q3_2 or mo
         chars = chars_item.chars if chars_item else 0
-        row = [label, str(chars), ft, qt, q2t, winner]
+        row = [label, str(chars), fmt_time(f5), fmt_time(q3), fmt_time(q3_2), fmt_time(mo), winner]
         print("  ".join(str(v).ljust(w) for v, w in zip(row, col_w)))
 
     print(sep)
@@ -398,6 +470,7 @@ def print_table(results: list[Result]):
         f"  Wins → F5-TTS: {wins['f5tts']}  "
         f"Qwen3: {wins['qwen3tts']}  "
         f"Qwen3-2: {wins['qwen3-tts-2']}  "
+        f"MiMo: {wins['mimotts']}  "
         f"Tie: {wins['tie']}"
     ))
     print()
@@ -439,6 +512,17 @@ def parse_args():
     p.add_argument("--q3-2-key",
                    default=os.environ.get("QWEN3_TTS_2_API_KEY") or fc.get("qwen3_2_key", ""),
                    help="Qwen3-TTS-2 Bearer token (auto-read from ~/.clawproxy/config.toml or QWEN3_TTS_2_API_KEY)")
+    p.add_argument("--mimo-url",
+                   default=fc.get("mimotts_url") or "https://api.xiaomimimo.com/v1",
+                   help="MiMo TTS base URL (default: https://api.xiaomimimo.com/v1)")
+    p.add_argument("--mimo-key",
+                   default=os.environ.get("MIMO_API_KEY") or fc.get("mimotts_key", ""),
+                   help="MiMo API key (auto-read from ~/.clawproxy/config.toml or MIMO_API_KEY)")
+    p.add_argument("--mimo-model",
+                   default=fc.get("mimotts_model") or "mimo-v2.5-tts",
+                   help="MiMo model name (default: mimo-v2.5-tts)")
+    p.add_argument("--mimo-voice",  default="mimo_default",
+                   help="MiMo voice (default: mimo_default)")
     p.add_argument("--f5-voice",  default="demo_speaker0",
                    help="F5-TTS voice (ref audio name)")
     p.add_argument("--q3-voice",  default="Vivian",
@@ -462,6 +546,7 @@ def parse_args():
     p.add_argument("--skip-f5",   action="store_true", help="Skip F5-TTS")
     p.add_argument("--skip-q3",   action="store_true", help="Skip Qwen3-TTS")
     p.add_argument("--skip-q3-2", action="store_true", help="Skip Qwen3-TTS-2")
+    p.add_argument("--skip-mimo", action="store_true", help="Skip MiMo TTS")
     return p.parse_args()
 
 
@@ -485,9 +570,11 @@ def main():
         providers.append("qwen3tts")
     if not args.skip_q3_2:
         providers.append("qwen3-tts-2")
+    if not args.skip_mimo:
+        providers.append("mimotts")
 
     if not providers:
-        print(red("Both providers skipped — nothing to do."))
+        print(red("All providers skipped — nothing to do."))
         sys.exit(1)
 
     total_runs = len(cases) * len(providers)
@@ -505,6 +592,9 @@ def main():
             f"  Qwen3-2 : {args.q3_2_url}  "
             f"voice={args.q3_2_voice}  model={args.q3_2_model}  {auth_note}"
         )
+    if not args.skip_mimo:
+        auth_note = grey("(no auth)") if not args.mimo_key else green("(auth OK)")
+        print(f"  MiMo    : {args.mimo_url}  voice={args.mimo_voice}  model={args.mimo_model}  {auth_note}")
     print(f"  timeout : {args.timeout}s per call\n")
 
     results: list[Result] = []

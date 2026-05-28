@@ -651,10 +651,11 @@ func printFrameDump(wsURL, sendJSON string, timeout time.Duration) {
 		return
 	}
 
-	// Use a per-frame idle deadline (30 s) rather than a single absolute
-	// deadline.  This means the total wall-clock time is unbounded, but we
-	// detect a stalled server within 30 s of the last received frame.
-	idleTimeout := 30 * time.Second
+	// Use a per-frame idle deadline rather than a single absolute deadline.
+	// This means the total wall-clock time is unbounded, but we detect a
+	// stalled server within idleTimeout of the last received frame.
+	// 90 s accommodates slow TTS providers (e.g. MiMo cold-start latency).
+	idleTimeout := 90 * time.Second
 	if timeout < idleTimeout {
 		idleTimeout = timeout
 	}
