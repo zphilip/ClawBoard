@@ -945,13 +945,45 @@ func (cs *pcCompatSession) deliverOrBuffer(data []byte, keyShort string) {
 				if notifyDoneTxt != "" || ttsText != "" {
 					p, v, f := opts.provider, opts.voice, opts.format
 					go func() {
-						var notifyFrame, audioFrame []byte
+						// 1. Done-notify (short phrase) first.
 						if notifyDoneTxt != "" {
-							notifyFrame = buildTtsNotifyFrame("done", notifyDoneTxt, p, v, f, cfg)
+							if notifyFrame := buildTtsNotifyFrame("done", notifyDoneTxt, p, v, f, cfg); notifyFrame != nil {
+								cs.appMu.RLock()
+								app := cs.app
+								cs.appMu.RUnlock()
+								if app != nil {
+									cs.appWrMu.Lock()
+									app.WriteMessage(websocket.TextMessage, notifyFrame) //nolint:errcheck
+									cs.appWrMu.Unlock()
+								}
+							}
 						}
-						if ttsText != "" {
-							audioFrame = buildTtsAudioFrame(ttsText, p, v, f, cfg)
+						if ttsText == "" {
+							return
 						}
+						// 2a. Streaming: rechunk → sequential tts.chunk frames.
+						if opts.streaming {
+							sendFn := func(frame []byte) {
+								cs.appMu.RLock()
+								a := cs.app
+								cs.appMu.RUnlock()
+								if a == nil {
+									return
+								}
+								cs.appWrMu.Lock()
+								a.WriteMessage(websocket.TextMessage, frame) //nolint:errcheck
+								cs.appWrMu.Unlock()
+							}
+							pipe := newTtsPipeline(opts, cfg, sendFn)
+							chunks := rechunk(ttsText, maxChunkRunes)
+							for i, chunk := range chunks {
+								pipe.submit(chunk, i+1, i == len(chunks)-1)
+							}
+							pipe.close()
+							return
+						}
+						// 2b. Single-shot: one API call, one tts.audio frame.
+						audioFrame := buildTtsAudioFrame(ttsText, p, v, f, cfg)
 						cs.appMu.RLock()
 						app := cs.app
 						cs.appMu.RUnlock()
@@ -959,12 +991,7 @@ func (cs *pcCompatSession) deliverOrBuffer(data []byte, keyShort string) {
 							return
 						}
 						cs.appWrMu.Lock()
-						if notifyFrame != nil {
-							app.WriteMessage(websocket.TextMessage, notifyFrame) //nolint:errcheck
-						}
-						if audioFrame != nil {
-							app.WriteMessage(websocket.TextMessage, audioFrame) //nolint:errcheck
-						}
+						app.WriteMessage(websocket.TextMessage, audioFrame) //nolint:errcheck
 						cs.appWrMu.Unlock()
 					}()
 				}
@@ -976,6 +1003,7 @@ func (cs *pcCompatSession) deliverOrBuffer(data []byte, keyShort string) {
 	app := cs.app
 	cs.appMu.RUnlock()
 	if app != nil {
+		data = injectResponseKind(data)
 		cs.appWrMu.Lock()
 		err := app.WriteMessage(websocket.TextMessage, data)
 		cs.appWrMu.Unlock()
@@ -1254,13 +1282,45 @@ func (cs *zcCompatSession) deliverOrBuffer(data []byte, keyShort string) {
 				if notifyDoneTxt != "" || ttsText != "" {
 					p, v, f := opts.provider, opts.voice, opts.format
 					go func() {
-						var notifyFrame, audioFrame []byte
+						// 1. Done-notify (short phrase) first.
 						if notifyDoneTxt != "" {
-							notifyFrame = buildTtsNotifyFrame("done", notifyDoneTxt, p, v, f, cfg)
+							if notifyFrame := buildTtsNotifyFrame("done", notifyDoneTxt, p, v, f, cfg); notifyFrame != nil {
+								cs.appMu.RLock()
+								app := cs.app
+								cs.appMu.RUnlock()
+								if app != nil {
+									cs.appWrMu.Lock()
+									app.WriteMessage(websocket.TextMessage, notifyFrame) //nolint:errcheck
+									cs.appWrMu.Unlock()
+								}
+							}
 						}
-						if ttsText != "" {
-							audioFrame = buildTtsAudioFrame(ttsText, p, v, f, cfg)
+						if ttsText == "" {
+							return
 						}
+						// 2a. Streaming: rechunk → sequential tts.chunk frames.
+						if opts.streaming {
+							sendFn := func(frame []byte) {
+								cs.appMu.RLock()
+								a := cs.app
+								cs.appMu.RUnlock()
+								if a == nil {
+									return
+								}
+								cs.appWrMu.Lock()
+								a.WriteMessage(websocket.TextMessage, frame) //nolint:errcheck
+								cs.appWrMu.Unlock()
+							}
+							pipe := newTtsPipeline(opts, cfg, sendFn)
+							chunks := rechunk(ttsText, maxChunkRunes)
+							for i, chunk := range chunks {
+								pipe.submit(chunk, i+1, i == len(chunks)-1)
+							}
+							pipe.close()
+							return
+						}
+						// 2b. Single-shot: one API call, one tts.audio frame.
+						audioFrame := buildTtsAudioFrame(ttsText, p, v, f, cfg)
 						cs.appMu.RLock()
 						app := cs.app
 						cs.appMu.RUnlock()
@@ -1268,12 +1328,7 @@ func (cs *zcCompatSession) deliverOrBuffer(data []byte, keyShort string) {
 							return
 						}
 						cs.appWrMu.Lock()
-						if notifyFrame != nil {
-							app.WriteMessage(websocket.TextMessage, notifyFrame) //nolint:errcheck
-						}
-						if audioFrame != nil {
-							app.WriteMessage(websocket.TextMessage, audioFrame) //nolint:errcheck
-						}
+						app.WriteMessage(websocket.TextMessage, audioFrame) //nolint:errcheck
 						cs.appWrMu.Unlock()
 					}()
 				}

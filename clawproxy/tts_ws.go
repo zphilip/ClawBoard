@@ -13,6 +13,10 @@ package main
 //     tts_provider=openai     — override provider  (default: server default)
 //     tts_voice=alloy         — override voice     (default: server default)
 //     tts_format=mp3          — override format    (default: mp3)
+//     tts_streaming=1         — split response into ≤150-rune chunks and stream
+//                               each as a tts.chunk frame; last chunk is tts.audio.
+//                               Same progressive audio as the /tts endpoints,
+//                               without changing the WebSocket URL.
 //     tts_notify=1            — enable task start/done notification sounds
 //     tts_notify_start=OK.    — phrase spoken when agent starts (default: "OK.")
 //     tts_notify_done=Done.   — phrase spoken when agent finishes (default: "Done.")
@@ -67,6 +71,7 @@ type ttsConnOpts struct {
 	format      string
 	notifyStart string // short phrase synthesised on task start; "" = disabled
 	notifyDone  string // short phrase synthesised on task done;  "" = disabled
+	streaming   bool   // if true, rechunk text and send tts.chunk frames progressively
 }
 
 // parseTtsConnOpts reads ?tts=1&tts_provider=X&tts_voice=Y&tts_format=Z and
@@ -107,7 +112,9 @@ func parseTtsConnOpts(r *http.Request, cfg *TtsConfig) *ttsConnOpts {
 			notifyDone = "Done."
 		}
 	}
-	return &ttsConnOpts{provider: provider, voice: voice, format: format, notifyStart: notifyStart, notifyDone: notifyDone}
+	streaming := q.Get("tts_streaming") == "1" || q.Get("tts_streaming") == "true"
+	return &ttsConnOpts{provider: provider, voice: voice, format: format,
+		notifyStart: notifyStart, notifyDone: notifyDone, streaming: streaming}
 }
 
 // defaultTtsConnOpts returns opts from server defaults (used by /ws/chat/tts
@@ -124,7 +131,8 @@ func defaultTtsConnOpts(r *http.Request, cfg *TtsConfig) *ttsConnOpts {
 	if voice == "" {
 		voice = defaultVoiceFor(cfg.Provider)
 	}
-	return &ttsConnOpts{provider: cfg.Provider, voice: voice, format: format}
+	// Dedicated streaming endpoints always use the chunked pipeline.
+	return &ttsConnOpts{provider: cfg.Provider, voice: voice, format: format, streaming: true}
 }
 
 // ── Text extraction helpers ────────────────────────────────────────────────────
@@ -177,6 +185,42 @@ func extractPCFinalText(data []byte) (string, bool) {
 		return "", false
 	}
 	return m.Payload.Content, m.Payload.Content != ""
+}
+
+// injectResponseKind adds "kind":"response" to a PC message.create frame's
+// payload when the payload has no kind field (i.e. it is the final response
+// text, not a thought or tool frame).  Returns data unchanged for all other
+// frame types or when kind is already set.
+func injectResponseKind(data []byte) []byte {
+	var peek struct {
+		Type    string `json:"type"`
+		Payload struct {
+			Kind string `json:"kind"`
+		} `json:"payload"`
+	}
+	if json.Unmarshal(data, &peek) != nil {
+		return data
+	}
+	if peek.Type != "message.create" || peek.Payload.Kind != "" {
+		return data
+	}
+	// Re-parse as generic map to preserve all fields.
+	var frame map[string]json.RawMessage
+	if json.Unmarshal(data, &frame) != nil {
+		return data
+	}
+	var payload map[string]json.RawMessage
+	if json.Unmarshal(frame["payload"], &payload) != nil {
+		return data
+	}
+	kindVal, _ := json.Marshal("response")
+	payload["kind"] = kindVal
+	frame["payload"], _ = json.Marshal(payload)
+	out, err := json.Marshal(frame)
+	if err != nil {
+		return data
+	}
+	return out
 }
 
 // ── TTS frame builders ─────────────────────────────────────────────────────────
