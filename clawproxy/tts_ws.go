@@ -155,9 +155,11 @@ func extractZCFinalText(data []byte) (string, bool) {
 		if t == "" {
 			t = m.Content
 		}
-		return t, t != ""
+		clean := cleanForTTS(t)
+		return clean, clean != ""
 	case "message":
-		return m.Content, m.Content != ""
+		clean := cleanForTTS(m.Content)
+		return clean, clean != ""
 	}
 	return "", false
 }
@@ -184,7 +186,8 @@ func extractPCFinalText(data []byte) (string, bool) {
 	if m.Payload.Thought || m.Payload.Kind == "thought" || m.Payload.Kind == "tool_calls" {
 		return "", false
 	}
-	return m.Payload.Content, m.Payload.Content != ""
+	clean := cleanForTTS(m.Payload.Content)
+	return clean, clean != ""
 }
 
 // injectResponseKind adds "kind":"response" to a PC message.create frame's
@@ -221,6 +224,59 @@ func injectResponseKind(data []byte) []byte {
 		return data
 	}
 	return out
+}
+
+// ── Text normalisation for TTS ─────────────────────────────────────────────────
+
+// Compiled regexps used by cleanForTTS.  Declared at package level so they are
+// compiled once at startup rather than on every call.
+var (
+	reTTSHTMLTag    = regexp.MustCompile(`<[^>]+>`)
+	reTTSCodeFence  = regexp.MustCompile("(?s)```[^`]*```")
+	reTTSInlineCode = regexp.MustCompile("`([^`]+)`")
+	reTTSBold3      = regexp.MustCompile(`\*{3}([^*]+)\*{3}`)
+	reTTSBold2      = regexp.MustCompile(`\*{2}([^*]+)\*{2}`)
+	reTTSItalic     = regexp.MustCompile(`\*([^*\n]+)\*`)
+	reTTSUnder2     = regexp.MustCompile(`__([^_]+)__`)
+	reTTSUnder1     = regexp.MustCompile(`_([^_\n]+)_`)
+	reTTSStrike     = regexp.MustCompile(`~~([^~]+)~~`)
+	reTTSHeading    = regexp.MustCompile(`(?m)^#{1,6} `)
+	reTTSBullet     = regexp.MustCompile(`(?m)^[-*+] `)
+	reTTSOList      = regexp.MustCompile(`(?m)^\d+\. `)
+	reTTSBlockquote = regexp.MustCompile(`(?m)^> ?`)
+	reTTSHRule      = regexp.MustCompile(`(?m)^[-*_]{3,} *$`)
+	reTTSLink       = regexp.MustCompile(`\[([^\]]+)\]\([^)]*\)`)
+	reTTSImage      = regexp.MustCompile(`!\[[^\]]*\]\([^)]*\)`)
+	reTTSFootnote   = regexp.MustCompile(`\[\^[^\]]+\]`)
+	reTTSMultiNL    = regexp.MustCompile(`\n{3,}`)
+)
+
+// cleanForTTS strips Markdown and HTML formatting, returning plain prose
+// suitable for speech synthesis.  It removes visual structure (headers, bold,
+// bullets, code fences, links) while preserving all spoken content and natural
+// sentence breaks so that rechunk and the TTS provider can process the result.
+func cleanForTTS(text string) string {
+	s := text
+	s = reTTSHTMLTag.ReplaceAllString(s, "")
+	s = reTTSCodeFence.ReplaceAllString(s, "")
+	s = reTTSInlineCode.ReplaceAllString(s, "$1")
+	s = reTTSBold3.ReplaceAllString(s, "$1")
+	s = reTTSBold2.ReplaceAllString(s, "$1")
+	s = reTTSItalic.ReplaceAllString(s, "$1")
+	s = reTTSUnder2.ReplaceAllString(s, "$1")
+	s = reTTSUnder1.ReplaceAllString(s, "$1")
+	s = reTTSStrike.ReplaceAllString(s, "$1")
+	s = reTTSHeading.ReplaceAllString(s, "")
+	s = reTTSBullet.ReplaceAllString(s, "")
+	s = reTTSOList.ReplaceAllString(s, "")
+	s = reTTSBlockquote.ReplaceAllString(s, "")
+	s = reTTSHRule.ReplaceAllString(s, "")
+	s = reTTSImage.ReplaceAllString(s, "")
+	s = reTTSLink.ReplaceAllString(s, "$1")
+	s = reTTSFootnote.ReplaceAllString(s, "")
+	s = reTTSMultiNL.ReplaceAllString(s, "\n\n")
+	s = strings.TrimSpace(s)
+	return s
 }
 
 // ── TTS frame builders ─────────────────────────────────────────────────────────
