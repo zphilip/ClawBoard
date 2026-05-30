@@ -1420,7 +1420,6 @@ def index(request: Request):
         btn_oc   = ui.button('📂 OpenClaw',     icon='folder'  ).props('flat align=left color=grey-7').classes('w-full')
         btn_wifi    = ui.button(T['btn_wifi'],    icon='wifi'    ).props('flat align=left color=grey-7').classes('w-full')
         btn_proxy   = ui.button(T['btn_proxy'],   icon='swap_horiz').props('flat align=left color=grey-7').classes('w-full')
-        btn_skills  = ui.button(T['btn_skills'],  icon='extension').props('flat align=left color=grey-7').classes('w-full')
         btn_upgrade = ui.button(T['btn_upgrade'], icon='system_update_alt').props('flat align=left color=grey-7').classes('w-full')
 
     # ── Character tab builder (shared by all agents) ───────────────────────────
@@ -1477,6 +1476,95 @@ def index(request: Request):
             ui.button(T['char_deploy_btn'], icon='upload', on_click=_do_deploy) \
                 .props(f'color={accent} elevated')
 
+    # ── Skills tab builder (shared by all agents) ──────────────────────────────
+    def _build_skills_tab(workspace_dir: str, owner: str, accent: str = 'blue-8'):
+        """Render the Skills Config tab panel body for a given agent workspace."""
+        _sk_dir = os.path.join(SCRIPT_DIR, 'skills')
+        _skill_configs: list[tuple[str, str]] = []
+        if os.path.isdir(_sk_dir):
+            for _sn in sorted(os.listdir(_sk_dir)):
+                _scfg = os.path.join(_sk_dir, _sn, 'config.json')
+                if os.path.isfile(_scfg):
+                    _skill_configs.append((_sn, _scfg))
+        if not _skill_configs:
+            ui.label(T['skills_no_config']).classes('text-caption text-grey-6 q-mt-sm')
+            return
+        _color_base = accent.split('-')[0]
+        with ui.tabs().classes(f'w-full bg-{_color_base}-1') as _sk_tabs:
+            _sk_tab_objs: list = []
+            for _sn, _ in _skill_configs:
+                _sk_tab_objs.append(ui.tab(_sn, icon='extension'))
+        with ui.tab_panels(_sk_tabs, value=_sk_tab_objs[0]).classes('w-full'):
+            for (_sn, _scfg_path), _tab_obj in zip(_skill_configs, _sk_tab_objs):
+                with ui.tab_panel(_tab_obj):
+                    try:
+                        with open(_scfg_path, 'r', encoding='utf-8') as _fh:
+                            _raw = _fh.read()
+                    except Exception as _load_err:
+                        _raw = f'// error loading: {_load_err}'
+                    with ui.card().classes('w-full q-pa-md'):
+                        ui.label(f'skills/{_sn}/config.json').classes('text-caption text-grey-7 q-mb-xs font-mono')
+                        _ta = ui.textarea(value=_raw).classes('w-full font-mono') \
+                                .props('outlined rows=16 label="config.json"')
+
+                        def _make_save(_path=_scfg_path, _area=_ta, _skill=_sn):
+                            def _do_save():
+                                raw = _area.value
+                                try:
+                                    json.loads(raw)
+                                except json.JSONDecodeError as _je:
+                                    ui.notify(T['skills_json_invalid'].format(_je), type='negative')
+                                    return
+                                try:
+                                    with open(_path, 'w', encoding='utf-8') as _wf:
+                                        _wf.write(raw)
+                                    ui.notify(T['skills_saved_ok'].format(_skill), type='positive')
+                                except Exception as _we:
+                                    ui.notify(T['skills_save_err'].format(_we), type='negative')
+                            return _do_save
+
+                        def _make_fmt(_area=_ta):
+                            def _do_fmt():
+                                try:
+                                    _parsed = json.loads(_area.value)
+                                    _area.set_value(json.dumps(_parsed, indent=2, ensure_ascii=False))
+                                except json.JSONDecodeError as _je:
+                                    ui.notify(T['skills_json_invalid'].format(_je), type='negative')
+                            return _do_fmt
+
+                        def _make_deploy(_area=_ta, _skill=_sn, _ws=workspace_dir, _own=owner):
+                            def _do_deploy():
+                                raw = _area.value
+                                try:
+                                    json.loads(raw)
+                                except json.JSONDecodeError as _je:
+                                    ui.notify(T['skills_json_invalid'].format(_je), type='negative')
+                                    return
+                                dst_dir  = os.path.join(_ws, 'skills', _skill)
+                                dst_file = os.path.join(dst_dir, 'config.json')
+                                subprocess.run(['sudo', '/usr/bin/mkdir', '-p', dst_dir], capture_output=True)
+                                r = subprocess.run(
+                                    ['sudo', '/usr/bin/tee', dst_file],
+                                    input=raw, capture_output=True, text=True,
+                                )
+                                if r.returncode == 0:
+                                    subprocess.run(
+                                        ['sudo', '/usr/bin/chown', '-R', f'{_own}:{_own}', dst_dir],
+                                        capture_output=True,
+                                    )
+                                    ui.notify(T['skill_deploy_ok'].format(_skill, dst_dir), type='positive')
+                                else:
+                                    ui.notify(T['skill_deploy_err'].format(r.stderr.strip()), type='negative')
+                            return _do_deploy
+
+                        with ui.row().classes('q-mt-sm gap-2'):
+                            ui.button(T['skills_save_btn'], icon='save',
+                                      on_click=_make_save()).props(f'color={accent}')
+                            ui.button(T['skills_fmt_btn'], icon='format_align_left',
+                                      on_click=_make_fmt()).props('flat color=grey-7')
+                            ui.button(T['skill_deploy_btn'], icon='upload',
+                                      on_click=_make_deploy()).props(f'color={accent} elevated')
+
     # ══ ZeroClaw Dashboard ════════════════════════════════════════════════════
     zc_content = ui.column().classes('w-full q-px-sm q-pt-sm')
     with zc_content:
@@ -1488,7 +1576,8 @@ def index(request: Request):
             t_zc_wiz  = ui.tab(T['tab_wizard'],        icon='auto_fix_high')
             t_zc_cfg  = ui.tab(T['tab_configuration'], icon='settings')
             t_zc_pair = ui.tab(T['tab_pair_device'],   icon='devices')
-            t_zc_char = ui.tab(T['tab_characters'],    icon='face')
+            t_zc_char   = ui.tab(T['tab_characters'],    icon='face')
+            t_zc_skills = ui.tab(T['tab_skills'],        icon='extension')
 
         with ui.tab_panels(zc_sub_tabs, value=t_zc_cfg).classes('w-full'):
 
@@ -2310,6 +2399,10 @@ def index(request: Request):
             with ui.tab_panel(t_zc_char):
                 _build_character_tab('/var/lib/zeroclaw/.zeroclaw/workspace', 'zeroclaw', 'blue-8')
 
+            # ── ZeroClaw › Skills ─────────────────────────────────────────
+            with ui.tab_panel(t_zc_skills):
+                _build_skills_tab('/var/lib/zeroclaw/.zeroclaw/workspace', 'zeroclaw', 'blue-8')
+
     # ══ PicoClaw Dashboard ════════════════════════════════════════════════════
     pc_content = ui.column().classes('w-full q-px-sm q-pt-sm')
     pc_content.set_visibility(False)
@@ -2322,7 +2415,8 @@ def index(request: Request):
             t_pc_wiz  = ui.tab(T['pc_tab_wizard'],     icon='auto_fix_high')
             t_pc_cfg  = ui.tab(T['tab_configuration'], icon='settings')
             t_pc_pair = ui.tab(T['tab_pair_device'],   icon='devices')
-            t_pc_char = ui.tab(T['tab_characters'],    icon='face')
+            t_pc_char   = ui.tab(T['tab_characters'],    icon='face')
+            t_pc_skills = ui.tab(T['tab_skills'],        icon='extension')
 
         with ui.tab_panels(pc_sub_tabs, value=t_pc_cfg).classes('w-full'):
 
@@ -3271,6 +3365,10 @@ def index(request: Request):
             with ui.tab_panel(t_pc_char):
                 _build_character_tab('/var/lib/picoclaw/.picoclaw/workspace', 'picoclaw', 'purple-8')
 
+            # ── PicoClaw › Skills ─────────────────────────────────────────
+            with ui.tab_panel(t_pc_skills):
+                _build_skills_tab('/var/lib/picoclaw/.picoclaw/workspace', 'picoclaw', 'purple-8')
+
     # ══ OpenClaw Dashboard ════════════════════════════════════════════════════
     oc_content = ui.column().classes('w-full q-px-sm q-pt-sm')
     oc_content.set_visibility(False)
@@ -3315,6 +3413,7 @@ def index(request: Request):
             t_oc_pair   = ui.tab(T['oc_tab_pair_device'],   icon='devices')
             t_oc_doctor = ui.tab(T['oc_tab_doctor'],         icon='medical_services')
             t_oc_char   = ui.tab(T['tab_characters'],        icon='face')
+            t_oc_skills = ui.tab(T['tab_skills'],            icon='extension')
 
         oc_sub_tabs.set_visibility(_oc_svc_enabled)
 
@@ -4115,6 +4214,10 @@ def index(request: Request):
             with ui.tab_panel(t_oc_char):
                 _build_character_tab('/var/lib/openclaw/.openclaw/workspace', 'openclaw', 'teal-8')
 
+            # ── OpenClaw › Skills ─────────────────────────────────────────
+            with ui.tab_panel(t_oc_skills):
+                _build_skills_tab('/var/lib/openclaw/.openclaw/workspace', 'openclaw', 'teal-8')
+
     # ── Sidebar navigation wiring ──────────────────────────────────────────────
     # ══ WiFi Setup ════════════════════════════════════════════════════════════
     wifi_content = ui.column().classes('w-full q-px-sm q-pt-sm')
@@ -4374,72 +4477,6 @@ def index(request: Request):
     with upgrade_content:
         ui.label(T['upgrade_title']).classes('text-h6 text-orange-9 q-mb-xs')
 
-    # ══ Skills Config ═════════════════════════════════════════════════════════
-    _SKILLS_DIR = os.path.join(SCRIPT_DIR, 'skills')
-    _skill_configs: list[tuple[str, str]] = []   # [(skill_name, config_path), ...]
-    if os.path.isdir(_SKILLS_DIR):
-        for _sname in sorted(os.listdir(_SKILLS_DIR)):
-            _scfg = os.path.join(_SKILLS_DIR, _sname, 'config.json')
-            if os.path.isfile(_scfg):
-                _skill_configs.append((_sname, _scfg))
-
-    skills_content = ui.column().classes('w-full q-px-sm q-pt-sm')
-    skills_content.set_visibility(False)
-    with skills_content:
-        ui.label(T['skills_cfg_title']).classes('text-h6 text-deep-orange-9 q-mb-xs')
-        if not _skill_configs:
-            ui.label(T['skills_no_config']).classes('text-caption text-grey-6 q-mt-sm')
-        else:
-            with ui.tabs().classes('w-full bg-deep-orange-1') as _sk_tabs:
-                _sk_tab_objs: list = []
-                for _sname, _ in _skill_configs:
-                    _sk_tab_objs.append(ui.tab(_sname, icon='extension'))
-
-            with ui.tab_panels(_sk_tabs, value=_sk_tab_objs[0]).classes('w-full'):
-                for (_sname, _scfg_path), _tab_obj in zip(_skill_configs, _sk_tab_objs):
-                    with ui.tab_panel(_tab_obj):
-                        try:
-                            with open(_scfg_path, 'r', encoding='utf-8') as _f:
-                                _raw = _f.read()
-                        except Exception as _load_err:
-                            _raw = f'// error loading: {_load_err}'
-
-                        with ui.card().classes('w-full q-pa-md'):
-                            ui.label(f'skills/{_sname}/config.json').classes('text-caption text-grey-7 q-mb-xs font-mono')
-                            _ta = ui.textarea(value=_raw).classes('w-full font-mono') \
-                                    .props('outlined rows=20 label="config.json"')
-
-                            def _make_save(_path=_scfg_path, _area=_ta, _skill=_sname):
-                                def _do_save():
-                                    raw = _area.value
-                                    try:
-                                        json.loads(raw)
-                                    except json.JSONDecodeError as _je:
-                                        ui.notify(T['skills_json_invalid'].format(_je), type='negative')
-                                        return
-                                    try:
-                                        with open(_path, 'w', encoding='utf-8') as _wf:
-                                            _wf.write(raw)
-                                        ui.notify(T['skills_saved_ok'].format(_skill), type='positive')
-                                    except Exception as _we:
-                                        ui.notify(T['skills_save_err'].format(_we), type='negative')
-                                return _do_save
-
-                            def _make_fmt(_area=_ta):
-                                def _do_fmt():
-                                    try:
-                                        _parsed = json.loads(_area.value)
-                                        _area.set_value(json.dumps(_parsed, indent=2, ensure_ascii=False))
-                                    except json.JSONDecodeError as _je:
-                                        ui.notify(T['skills_json_invalid'].format(_je), type='negative')
-                                return _do_fmt
-
-                            with ui.row().classes('q-mt-sm gap-2'):
-                                ui.button(T['skills_save_btn'], icon='save',
-                                          on_click=_make_save()).props('color=deep-orange-8')
-                                ui.button(T['skills_fmt_btn'], icon='format_align_left',
-                                          on_click=_make_fmt()).props('flat color=grey-7')
-
     upgrade_content_inner = upgrade_content
     with upgrade_content_inner:
         with ui.card().classes('w-full q-pa-md'):
@@ -4521,21 +4558,18 @@ def index(request: Request):
         oc_content.set_visibility(name == 'openclaw')
         wifi_content.set_visibility(name == 'wifi')
         proxy_content.set_visibility(name == 'proxy')
-        skills_content.set_visibility(name == 'skills')
         upgrade_content.set_visibility(name == 'upgrade')
         btn_zc._props['color']      = 'blue-8'        if name == 'zeroclaw' else 'grey-7'
         btn_pc._props['color']      = 'purple-8'      if name == 'picoclaw' else 'grey-7'
         btn_oc._props['color']      = 'teal-8'        if name == 'openclaw' else 'grey-7'
         btn_wifi._props['color']    = 'teal-8'        if name == 'wifi'     else 'grey-7'
         btn_proxy._props['color']   = 'indigo-7'      if name == 'proxy'    else 'grey-7'
-        btn_skills._props['color']  = 'deep-orange-8' if name == 'skills'   else 'grey-7'
         btn_upgrade._props['color'] = 'orange-9'      if name == 'upgrade'  else 'grey-7'
         btn_zc.update()
         btn_pc.update()
         btn_oc.update()
         btn_wifi.update()
         btn_proxy.update()
-        btn_skills.update()
         btn_upgrade.update()
 
     btn_zc.on('click',      lambda: _switch_dash('zeroclaw'))
@@ -4543,7 +4577,6 @@ def index(request: Request):
     btn_oc.on('click',      lambda: _switch_dash('openclaw'))
     btn_wifi.on('click',    lambda: _switch_dash('wifi'))
     btn_proxy.on('click',   lambda: (_proxy_refresh(), _switch_dash('proxy')))
-    btn_skills.on('click',  lambda: _switch_dash('skills'))
     btn_upgrade.on('click', lambda: _switch_dash('upgrade'))
 
 

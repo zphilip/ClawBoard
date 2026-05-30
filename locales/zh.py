@@ -247,4 +247,9 @@ STRINGS = {
     'char_deploy_btn':     '▶ 部署到工作区',
     'char_deploy_ok':      '✅ 角色 {} 已部署到 {}',
     'char_deploy_err':     '❌ 部署失败：{}',
+    # Skills tab (per-agent)
+    'tab_skills':          '技能配置',
+    'skill_deploy_btn':    '▶ 部署到工作区',
+    'skill_deploy_ok':     '✅ 技能 {} 已部署到 {}',
+    'skill_deploy_err':    '❌ 技能部署失败：{}',
 }
