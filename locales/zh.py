@@ -227,4 +227,13 @@ STRINGS = {
     'proxy_enabled':        '已启用',
     'proxy_disabled':       '已禁用',
     'proxy_active':         '🟢 运行中',
-    'proxy_inactive':       '🔴 已停止',}
+    'proxy_inactive':       '🔴 已停止',
+    # ── 技能配置 ──────────────────────────────────────────────────────────────
+    'btn_skills':           '🧩 技能配置',
+    'skills_cfg_title':     '🧩 技能配置',
+    'skills_no_config':     '暂无可配置的技能（在 skills/*/config.json 中添加配置文件后刷新页面）',
+    'skills_save_btn':      '保存',
+    'skills_fmt_btn':       '格式化 JSON',
+    'skills_saved_ok':      '✅ {} 配置已保存',
+    'skills_save_err':      '❌ 保存失败：{}',
+    'skills_json_invalid':  '⚠️ JSON 格式错误：{}',}

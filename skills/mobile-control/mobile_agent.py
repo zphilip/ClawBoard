@@ -59,28 +59,49 @@ def load_skill_config() -> dict:
     """
     Load provider settings from config.json next to this script.
     Returns a dict with keys: base_url, model, api_key.
+
+    Resolution order:
+      1. If 'provider' exists and has a non-empty api_key → use provider.
+      2. Otherwise → use 'fallback_provider' (defaults to DEFAULT_* constants).
+
     CLI arguments always take precedence over these values.
     """
-    cfg = {
+    fallback = {
         "base_url": DEFAULT_BASE_URL,
         "model": DEFAULT_MODEL,
         "api_key": DEFAULT_API_KEY,
     }
     if not _CONFIG_FILE.exists():
-        return cfg
+        return fallback
     try:
         with _CONFIG_FILE.open(encoding="utf-8") as f:
             data = json.load(f)
+
+        # Load fallback_provider if present (overrides hard-coded defaults)
+        fp = data.get("fallback_provider", {})
+        if fp.get("base_url"):
+            fallback["base_url"] = fp["base_url"]
+        if fp.get("model"):
+            fallback["model"] = fp["model"]
+        if "api_key" in fp:
+            fallback["api_key"] = fp["api_key"]
+
+        # Use primary provider only if it has a non-empty api_key
         provider = data.get("provider", {})
-        if provider.get("base_url"):
-            cfg["base_url"] = provider["base_url"]
-        if provider.get("model"):
-            cfg["model"] = provider["model"]
-        if "api_key" in provider:
+        if provider and provider.get("api_key"):
+            cfg = dict(fallback)
+            if provider.get("base_url"):
+                cfg["base_url"] = provider["base_url"]
+            if provider.get("model"):
+                cfg["model"] = provider["model"]
             cfg["api_key"] = provider["api_key"]
+            return cfg
+
+        # No valid primary provider — use fallback
+        return fallback
     except Exception as e:
         print(f"[mobile-control] WARNING: failed to load config.json: {e}", file=sys.stderr)
-    return cfg
+    return fallback
 
 
 DEFAULT_MAX_STEPS = 20

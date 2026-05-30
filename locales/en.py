@@ -227,4 +227,13 @@ STRINGS = {
     'proxy_enabled':        'enabled',
     'proxy_disabled':       'disabled',
     'proxy_active':         '🟢 running',
-    'proxy_inactive':       '🔴 stopped',}
+    'proxy_inactive':       '🔴 stopped',
+    # ── Skills config ─────────────────────────────────────────────────────────
+    'btn_skills':           '🧩 Skills Config',
+    'skills_cfg_title':     '🧩 Skills Configuration',
+    'skills_no_config':     'No configurable skills found (add a config.json inside a skill folder and reload)',
+    'skills_save_btn':      'Save',
+    'skills_fmt_btn':       'Format JSON',
+    'skills_saved_ok':      '✅ {} config saved',
+    'skills_save_err':      '❌ Save failed: {}',
+    'skills_json_invalid':  '⚠️ Invalid JSON: {}',}

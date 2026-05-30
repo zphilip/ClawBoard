@@ -1386,6 +1386,7 @@ def index(request: Request):
         btn_oc   = ui.button('📂 OpenClaw',     icon='folder'  ).props('flat align=left color=grey-7').classes('w-full')
         btn_wifi    = ui.button(T['btn_wifi'],    icon='wifi'    ).props('flat align=left color=grey-7').classes('w-full')
         btn_proxy   = ui.button(T['btn_proxy'],   icon='swap_horiz').props('flat align=left color=grey-7').classes('w-full')
+        btn_skills  = ui.button(T['btn_skills'],  icon='extension').props('flat align=left color=grey-7').classes('w-full')
         btn_upgrade = ui.button(T['btn_upgrade'], icon='system_update_alt').props('flat align=left color=grey-7').classes('w-full')
 
     # ══ ZeroClaw Dashboard ════════════════════════════════════════════════════
@@ -4269,6 +4270,75 @@ def index(request: Request):
     upgrade_content.set_visibility(False)
     with upgrade_content:
         ui.label(T['upgrade_title']).classes('text-h6 text-orange-9 q-mb-xs')
+
+    # ══ Skills Config ═════════════════════════════════════════════════════════
+    _SKILLS_DIR = os.path.join(SCRIPT_DIR, 'skills')
+    _skill_configs: list[tuple[str, str]] = []   # [(skill_name, config_path), ...]
+    if os.path.isdir(_SKILLS_DIR):
+        for _sname in sorted(os.listdir(_SKILLS_DIR)):
+            _scfg = os.path.join(_SKILLS_DIR, _sname, 'config.json')
+            if os.path.isfile(_scfg):
+                _skill_configs.append((_sname, _scfg))
+
+    skills_content = ui.column().classes('w-full q-px-sm q-pt-sm')
+    skills_content.set_visibility(False)
+    with skills_content:
+        ui.label(T['skills_cfg_title']).classes('text-h6 text-deep-orange-9 q-mb-xs')
+        if not _skill_configs:
+            ui.label(T['skills_no_config']).classes('text-caption text-grey-6 q-mt-sm')
+        else:
+            with ui.tabs().classes('w-full bg-deep-orange-1') as _sk_tabs:
+                _sk_tab_objs: list = []
+                for _sname, _ in _skill_configs:
+                    _sk_tab_objs.append(ui.tab(_sname, icon='extension'))
+
+            with ui.tab_panels(_sk_tabs, value=_sk_tab_objs[0]).classes('w-full'):
+                for (_sname, _scfg_path), _tab_obj in zip(_skill_configs, _sk_tab_objs):
+                    with ui.tab_panel(_tab_obj):
+                        try:
+                            with open(_scfg_path, 'r', encoding='utf-8') as _f:
+                                _raw = _f.read()
+                        except Exception as _load_err:
+                            _raw = f'// error loading: {_load_err}'
+
+                        with ui.card().classes('w-full q-pa-md'):
+                            ui.label(f'skills/{_sname}/config.json').classes('text-caption text-grey-7 q-mb-xs font-mono')
+                            _ta = ui.textarea(value=_raw).classes('w-full font-mono') \
+                                    .props('outlined rows=20 label="config.json"')
+
+                            def _make_save(_path=_scfg_path, _area=_ta, _skill=_sname):
+                                def _do_save():
+                                    raw = _area.value
+                                    try:
+                                        json.loads(raw)
+                                    except json.JSONDecodeError as _je:
+                                        ui.notify(T['skills_json_invalid'].format(_je), type='negative')
+                                        return
+                                    try:
+                                        with open(_path, 'w', encoding='utf-8') as _wf:
+                                            _wf.write(raw)
+                                        ui.notify(T['skills_saved_ok'].format(_skill), type='positive')
+                                    except Exception as _we:
+                                        ui.notify(T['skills_save_err'].format(_we), type='negative')
+                                return _do_save
+
+                            def _make_fmt(_area=_ta):
+                                def _do_fmt():
+                                    try:
+                                        _parsed = json.loads(_area.value)
+                                        _area.set_value(json.dumps(_parsed, indent=2, ensure_ascii=False))
+                                    except json.JSONDecodeError as _je:
+                                        ui.notify(T['skills_json_invalid'].format(_je), type='negative')
+                                return _do_fmt
+
+                            with ui.row().classes('q-mt-sm gap-2'):
+                                ui.button(T['skills_save_btn'], icon='save',
+                                          on_click=_make_save()).props('color=deep-orange-8')
+                                ui.button(T['skills_fmt_btn'], icon='format_align_left',
+                                          on_click=_make_fmt()).props('flat color=grey-7')
+
+    upgrade_content_inner = upgrade_content
+    with upgrade_content_inner:
         with ui.card().classes('w-full q-pa-md'):
             ui.label(T['upgrade_card_title']).classes('text-subtitle1 text-bold q-mb-xs')
             ui.label(T['upgrade_hint']).classes('text-caption text-grey-6 q-mb-sm')
@@ -4348,18 +4418,21 @@ def index(request: Request):
         oc_content.set_visibility(name == 'openclaw')
         wifi_content.set_visibility(name == 'wifi')
         proxy_content.set_visibility(name == 'proxy')
+        skills_content.set_visibility(name == 'skills')
         upgrade_content.set_visibility(name == 'upgrade')
-        btn_zc._props['color']      = 'blue-8'   if name == 'zeroclaw' else 'grey-7'
-        btn_pc._props['color']      = 'purple-8' if name == 'picoclaw' else 'grey-7'
-        btn_oc._props['color']      = 'teal-8'   if name == 'openclaw' else 'grey-7'
-        btn_wifi._props['color']    = 'teal-8'   if name == 'wifi'     else 'grey-7'
-        btn_proxy._props['color']   = 'indigo-7' if name == 'proxy'    else 'grey-7'
-        btn_upgrade._props['color'] = 'orange-9' if name == 'upgrade'  else 'grey-7'
+        btn_zc._props['color']      = 'blue-8'        if name == 'zeroclaw' else 'grey-7'
+        btn_pc._props['color']      = 'purple-8'      if name == 'picoclaw' else 'grey-7'
+        btn_oc._props['color']      = 'teal-8'        if name == 'openclaw' else 'grey-7'
+        btn_wifi._props['color']    = 'teal-8'        if name == 'wifi'     else 'grey-7'
+        btn_proxy._props['color']   = 'indigo-7'      if name == 'proxy'    else 'grey-7'
+        btn_skills._props['color']  = 'deep-orange-8' if name == 'skills'   else 'grey-7'
+        btn_upgrade._props['color'] = 'orange-9'      if name == 'upgrade'  else 'grey-7'
         btn_zc.update()
         btn_pc.update()
         btn_oc.update()
         btn_wifi.update()
         btn_proxy.update()
+        btn_skills.update()
         btn_upgrade.update()
 
     btn_zc.on('click',      lambda: _switch_dash('zeroclaw'))
@@ -4367,6 +4440,7 @@ def index(request: Request):
     btn_oc.on('click',      lambda: _switch_dash('openclaw'))
     btn_wifi.on('click',    lambda: _switch_dash('wifi'))
     btn_proxy.on('click',   lambda: (_proxy_refresh(), _switch_dash('proxy')))
+    btn_skills.on('click',  lambda: _switch_dash('skills'))
     btn_upgrade.on('click', lambda: _switch_dash('upgrade'))
 
 
