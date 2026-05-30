@@ -135,12 +135,12 @@ cd /path/to/ClawBoard/skills/mobile-control
 # Basic usage — uses local GUI-Owl server on port 8810
 python3 mobile_agent.py \
     --instruction "打开百度地图,导航回家" \
-    --adb_path "$(which adb)"
+    --adb_path adb
 
 # With specific device (multi-device setup)
 python3 mobile_agent.py \
     --instruction "Open WeChat and send hello to Mom" \
-    --adb_path "$(which adb)" \
+    --adb_path adb \
     --device "emulator-5554"
 
 # With custom model endpoint (override port 8810)

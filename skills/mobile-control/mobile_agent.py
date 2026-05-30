@@ -27,6 +27,7 @@ import argparse
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import textwrap
@@ -40,6 +41,20 @@ from typing import Optional
 # ---------------------------------------------------------------------------
 _LOG_FILE = None
 _DEBUG = False
+
+# Persistent trace log — always written, not gated by --debug.
+# Captures provider selection and key decision points for offline diagnosis.
+_TRACE_LOG = Path(__file__).parent / "skill_trace.log"
+
+
+def _trace(msg: str) -> None:
+    """Append a timestamped line to skill_trace.log in the skill directory."""
+    line = f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} {msg}"
+    try:
+        with _TRACE_LOG.open("a", encoding="utf-8") as _f:
+            _f.write(line + "\n")
+    except Exception:
+        pass  # never crash due to logging
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -73,6 +88,7 @@ def load_skill_config() -> dict:
         "api_key": DEFAULT_API_KEY,
     }
     if not _CONFIG_FILE.exists():
+        _trace(f"[config] config.json not found at {_CONFIG_FILE} — using hard-coded fallback")
         return fallback
     try:
         with _CONFIG_FILE.open(encoding="utf-8") as f:
@@ -86,9 +102,15 @@ def load_skill_config() -> dict:
             fallback["model"] = fp["model"]
         if "api_key" in fp:
             fallback["api_key"] = fp["api_key"]
+        _trace(f"[config] fallback_provider loaded: base_url={fallback['base_url']} model={fallback['model']}")
 
         # Use primary provider only if it has a non-empty api_key
         provider = data.get("provider", {})
+        _trace(
+            f"[config] primary provider: base_url={provider.get('base_url','<none>')} "
+            f"model={provider.get('model','<none>')} "
+            f"api_key={'<set>' if provider.get('api_key') else '<EMPTY — will use fallback>'}"
+        )
         if provider and provider.get("api_key"):
             cfg = dict(fallback)
             if provider.get("base_url"):
@@ -96,11 +118,14 @@ def load_skill_config() -> dict:
             if provider.get("model"):
                 cfg["model"] = provider["model"]
             cfg["api_key"] = provider["api_key"]
+            _trace(f"[config] SELECTED primary provider: base_url={cfg['base_url']} model={cfg['model']}")
             return cfg
 
         # No valid primary provider — use fallback
+        _trace(f"[config] SELECTED fallback provider: base_url={fallback['base_url']} model={fallback['model']} (reason: primary api_key is empty)")
         return fallback
     except Exception as e:
+        _trace(f"[config] ERROR loading config.json: {e} — using hard-coded fallback")
         print(f"[mobile-control] WARNING: failed to load config.json: {e}", file=sys.stderr)
     return fallback
 
@@ -578,10 +603,12 @@ def run_agent(
         # Script exited cleanly → treat as success
         status = "success"
 
-    # Clean up all screenshots after the task ends (success or failure)
+    # Clean up all screenshots after the task ends (success or failure).
+    # Use rmtree to also remove subdirectories created by the runner
+    # (task_dir / anno_dir live inside screenshots/ now).
     try:
-        for _f in screenshots_dir.glob("*.png"):
-            _f.unlink(missing_ok=True)
+        if screenshots_dir.exists():
+            shutil.rmtree(screenshots_dir, ignore_errors=True)
         _log("Screenshot directory cleaned up.")
     except Exception as _e:
         _log(f"Screenshot cleanup warning: {_e}")

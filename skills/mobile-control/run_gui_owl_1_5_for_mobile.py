@@ -14,8 +14,10 @@ import argparse
 import json
 import os
 import shutil
+import signal
 import time
 from datetime import datetime
+from pathlib import Path
 
 from PIL import Image
 
@@ -201,13 +203,30 @@ def main():
     # Initialize ADB
     adb_tools = AdbTools(adb_path=args.adb_path, device=args.device)
 
-    # Prepare output directories
+    # Prepare output directories — place INSIDE screenshots/ so they are
+    # never left scattered in the skill's root directory.
+    _skill_dir = Path(__file__).parent
+    _screenshots_root = _skill_dir / "screenshots"
     instruction = args.instruction
     if args.add_info:
         instruction = f"{instruction} ({args.add_info})"
 
-    task_dir = instruction.replace(" ", "_")[:80]
+    _slug = instruction.replace(" ", "_")[:80]
+    task_dir = str(_screenshots_root / _slug)
     anno_dir = task_dir + "_anno"
+
+    def _cleanup():
+        for _d in (task_dir, anno_dir):
+            try:
+                shutil.rmtree(_d, ignore_errors=True)
+            except Exception:
+                pass
+
+    # Install SIGTERM handler so cleanup runs even when the parent kills us.
+    def _sigterm_handler(signum, frame):
+        _cleanup()
+        raise SystemExit(0)
+    signal.signal(signal.SIGTERM, _sigterm_handler)
 
     for d in (task_dir, anno_dir):
         if os.path.exists(d):
@@ -344,11 +363,7 @@ def main():
     print("\n[DONE] Agent execution finished.")
 
     # Clean up screenshot directories after task ends
-    for _d in (task_dir, anno_dir):
-        try:
-            shutil.rmtree(_d, ignore_errors=True)
-        except Exception:
-            pass
+    _cleanup()
     print("[CLEANUP] Screenshot directories removed.")
 
 

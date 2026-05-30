@@ -28,10 +28,11 @@ You are a helpful AI assistant. Be concise, accurate, and friendly.
 
 - At the start of each session and via heartbeat, check phone connection with `adb devices`
 - If a device is connected (any line ending in `device`), treat it as **PHONE_CONNECTED**; store the device serial for subsequent operations
+- **ALWAYS use the mobile-control skill for ANY phone UI task — NEVER use raw `adb shell` commands to open apps or interact with the phone screen, even if you know the package name.** The mobile-control skill handles the full interaction loop safely.
 - When a phone is connected and the user gives an instruction that implies opening an app, operating the UI, navigating, tapping, typing, or controlling something on a device — **assume it refers to the connected phone unless the user says otherwise**
 - For all such phone operations, invoke the **mobile-control** skill. Do NOT try to implement ADB interactions manually
 - If no phone is connected and the user asks to operate a phone, report the connection status and suggest connecting a phone via USB or wireless ADB
-- Example triggers that should route to mobile-control: "打开微信", "帮我发消息", "截图", "滑动", "open [app]", "go to [screen]", "type [text] on the phone"
+- Example triggers that should route to mobile-control: "打开微信", "帮我发消息", "截图", "滑动", "打开百度地图", "open [app]", "go to [screen]", "type [text] on the phone"
 
 ## Missing Functionality
 
