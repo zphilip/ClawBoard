@@ -31,6 +31,7 @@ import subprocess
 import sys
 import textwrap
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -344,12 +345,18 @@ def _find_runner_script() -> Optional[str]:
 SCREENSHOTS_DIR = Path(__file__).parent / "screenshots"
 
 
-def _take_screenshot(adb_path: str, device: Optional[str], dest: Path) -> bool:
+def _take_screenshot(adb_path: str, device: Optional[str], dest: Path,
+                     max_age_seconds: int = 30) -> bool:
     """
     Capture a screenshot from the device via ADB and save to dest.
+    Removes any existing file first to prevent stale data being returned.
+    Validates the captured file's mtime is within max_age_seconds.
     Returns True on success.
     """
     dest.parent.mkdir(parents=True, exist_ok=True)
+    # Remove stale file so existence check cannot give a false positive
+    if dest.exists():
+        dest.unlink()
     # Must run in binary mode — PNG output is not valid UTF-8
     import subprocess as _sp
     cmd = [adb_path]
@@ -360,6 +367,11 @@ def _take_screenshot(adb_path: str, device: Optional[str], dest: Path) -> bool:
         result = _sp.run(cmd, capture_output=True, timeout=15)
         if result.returncode == 0 and result.stdout:
             dest.write_bytes(result.stdout)
+            age = time.time() - dest.stat().st_mtime
+            if age > max_age_seconds:
+                _log(f"Screenshot {dest.name} is {age:.1f}s old (max {max_age_seconds}s); discarding")
+                dest.unlink(missing_ok=True)
+                return False
             return True
     except Exception as e:
         _log(f"Screenshot failed: {e}")
@@ -493,8 +505,9 @@ def run_agent(
 
                 # Capture verification screenshot after the action settles
                 time.sleep(1.2)
+                _ts = datetime.now().strftime('%Y%m%d_%H%M%S_%f')[:19]
                 action_slug = re.sub(r'[^\w]+', '_', action_summary)[:40]
-                shot_path = screenshots_dir / f"step_{step:03d}_{action_slug}.png"
+                shot_path = screenshots_dir / f"step_{step:03d}_{_ts}_{action_slug}.png"
                 shot_ok = _take_screenshot(adb_path, device, shot_path)
                 shot_rel = str(shot_path) if shot_ok else None
 
@@ -531,7 +544,8 @@ def run_agent(
                 if re.search(pat, line, re.IGNORECASE):
                     proc.terminate()
                     status = "success"
-                    shot_path = screenshots_dir / f"step_{step:03d}_finish.png"
+                    _ts_fin = datetime.now().strftime('%Y%m%d_%H%M%S_%f')[:19]
+                    shot_path = screenshots_dir / f"step_{step:03d}_{_ts_fin}_finish.png"
                     shot_ok = _take_screenshot(adb_path, device, shot_path)
                     _emit_progress(
                         step, "finish",
@@ -563,6 +577,14 @@ def run_agent(
     if rc == 0 and status == "timeout":
         # Script exited cleanly → treat as success
         status = "success"
+
+    # Clean up all screenshots after the task ends (success or failure)
+    try:
+        for _f in screenshots_dir.glob("*.png"):
+            _f.unlink(missing_ok=True)
+        _log("Screenshot directory cleaned up.")
+    except Exception as _e:
+        _log(f"Screenshot cleanup warning: {_e}")
 
     message_map = {
         "success": f"Task completed in {step} steps.",

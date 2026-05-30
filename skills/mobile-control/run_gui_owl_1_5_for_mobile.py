@@ -15,6 +15,7 @@ import json
 import os
 import shutil
 import time
+from datetime import datetime
 
 from PIL import Image
 
@@ -226,7 +227,8 @@ def main():
         print(f"{'='*50}")
 
         # 1. Capture screenshot
-        screenshot_path = os.path.join(task_dir, f"screenshot_{step_id}.png")
+        _ts = datetime.now().strftime('%Y%m%d_%H%M%S_%f')[:19]
+        screenshot_path = os.path.join(task_dir, f"screenshot_{step_id}_{_ts}.png")
         if not adb_tools.get_screenshot(screenshot_path):
             print("[ERROR] Failed to capture screenshot. Retrying...")
             time.sleep(1)
@@ -340,6 +342,14 @@ def main():
         time.sleep(2)
 
     print("\n[DONE] Agent execution finished.")
+
+    # Clean up screenshot directories after task ends
+    for _d in (task_dir, anno_dir):
+        try:
+            shutil.rmtree(_d, ignore_errors=True)
+        except Exception:
+            pass
+    print("[CLEANUP] Screenshot directories removed.")
 
 
 if __name__ == "__main__":

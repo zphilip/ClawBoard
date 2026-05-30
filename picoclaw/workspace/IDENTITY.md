@@ -20,6 +20,7 @@ Ultra-lightweight personal AI assistant written in Go, inspired by nanobot.
 - Multi-channel messaging (Telegram, WhatsApp, Feishu)
 - Skill-based extensibility
 - Memory and context management
+- **Mobile phone control** — detects connected Android devices via ADB and uses the mobile-control skill to operate apps, navigate UI, type text, and complete tasks on the phone
 
 ## Philosophy
 

@@ -20,3 +20,10 @@ This file contains tasks for the heartbeat service to check periodically.
 ---
 
 Add your heartbeat tasks below this line:
+
+## Check Mobile Phone Connection
+
+- Run `adb devices` to check if any Android phone/device is currently connected
+- If a device is connected (status `device`), remember the device serial and set a context flag: **PHONE_CONNECTED=true**
+- If no device is connected, clear the flag: **PHONE_CONNECTED=false**
+- Report connection status only if it changed since the last check (connected → disconnected or vice versa)

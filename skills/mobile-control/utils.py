@@ -89,17 +89,39 @@ class AdbTools:
 
     # -- screenshot -------------------------------------------------------
 
-    def get_screenshot(self, image_path, retry_times=3):
+    def get_screenshot(self, image_path, retry_times=3, max_age_seconds=30):
         """
         Capture a screenshot from the device and save it to *image_path*.
+        Removes any stale file at *image_path* before capturing so that a
+        leftover screenshot from a previous step or run cannot be returned.
+        After capture, validates that the file's mtime is within
+        *max_age_seconds* to guard against OS buffering anomalies.
         Returns True on success, False after exhausting retries.
         """
+        # Remove stale file so os.path.exists() cannot give a false positive.
+        try:
+            os.remove(image_path)
+        except FileNotFoundError:
+            pass
+
         device_flag = f" -s {self.device}" if self.device else ""
         cmd = f"{self.adb_path}{device_flag} exec-out screencap -p > {image_path}"
 
         for _ in range(retry_times):
             subprocess.run(cmd, capture_output=True, text=True, shell=True)
             if os.path.exists(image_path):
+                age = time.time() - os.path.getmtime(image_path)
+                if age > max_age_seconds:
+                    print(
+                        f"[WARN] Screenshot at {image_path!r} is {age:.1f}s old "
+                        f"(expected < {max_age_seconds}s); discarding and retrying"
+                    )
+                    try:
+                        os.remove(image_path)
+                    except OSError:
+                        pass
+                    time.sleep(0.5)
+                    continue
                 self._load_image_info(image_path)
                 return True
             time.sleep(0.1)
