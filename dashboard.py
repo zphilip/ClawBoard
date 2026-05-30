@@ -1480,14 +1480,24 @@ def index(request: Request):
     def _build_skills_tab(workspace_dir: str, owner: str, accent: str = 'blue-8'):
         """Render the Skills Config tab panel body for a given agent workspace."""
         _sk_ws = os.path.join(workspace_dir, 'skills')
+        # Use sudo find — the dashboard runs as 'zero' and cannot directly read
+        # agent home dirs (zeroclaw:zeroclaw, picoclaw:picoclaw, etc.).
+        _find = subprocess.run(
+            ['sudo', '/usr/bin/find', _sk_ws,
+             '-mindepth', '2', '-maxdepth', '2', '-name', 'config.json', '-type', 'f'],
+            capture_output=True, text=True,
+        )
         _skill_configs: list[tuple[str, str]] = []
-        if os.path.isdir(_sk_ws):
-            for _sn in sorted(os.listdir(_sk_ws)):
-                _cfg = os.path.join(_sk_ws, _sn, 'config.json')
-                if os.path.isfile(_cfg):
+        if _find.returncode == 0:
+            for _line in sorted(_find.stdout.splitlines()):
+                _cfg = _line.strip()
+                if _cfg:
+                    _sn = os.path.basename(os.path.dirname(_cfg))
                     _skill_configs.append((_sn, _cfg))
         if not _skill_configs:
             ui.label(T['skills_no_config']).classes('text-caption text-grey-6 q-mt-sm')
+            if _find.returncode != 0 and _find.stderr.strip():
+                ui.label(_find.stderr.strip()).classes('text-caption text-red-6 q-mt-xs font-mono')
             return
         _color_base = accent.split('-')[0]
         with ui.tabs().classes(f'w-full bg-{_color_base}-1') as _sk_tabs:
@@ -1497,11 +1507,12 @@ def index(request: Request):
         with ui.tab_panels(_sk_tabs, value=_sk_tab_objs[0]).classes('w-full'):
             for (_sn, _scfg_path), _tab_obj in zip(_skill_configs, _sk_tab_objs):
                 with ui.tab_panel(_tab_obj):
-                    try:
-                        with open(_scfg_path, 'r', encoding='utf-8') as _fh:
-                            _raw = _fh.read()
-                    except Exception as _load_err:
-                        _raw = f'// error loading: {_load_err}'
+                    # Read via sudo — same reason as above
+                    _cat = subprocess.run(
+                        ['sudo', '/usr/bin/cat', _scfg_path],
+                        capture_output=True, text=True,
+                    )
+                    _raw = _cat.stdout if _cat.returncode == 0 else f'// error reading: {_cat.stderr.strip()}'
                     with ui.card().classes('w-full q-pa-md'):
                         ui.label(f'skills/{_sn}/config.json').classes('text-caption text-grey-7 q-mb-xs font-mono')
                         _ta = ui.textarea(value=_raw).classes('w-full font-mono') \
