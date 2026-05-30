@@ -83,6 +83,38 @@ zero ALL=(openclaw) NOPASSWD: /bin/bash
 # ── Workspace-sync upgrade script ────────────────────────────────────────────
 zero ALL=(root) NOPASSWD: /usr/bin/bash /usr/local/bin/clawberry-workspace-sync.sh
 
+# ── Skills config — read (dashboard scans agent workspace via sudo because ────
+#    the workspace dirs are owned by the agent user, not zero) ────────────────
+# find args are exact so zero cannot abuse the rule for other paths
+zero ALL=(root) NOPASSWD: /usr/bin/find /var/lib/zeroclaw/.zeroclaw/workspace/skills -mindepth 2 -maxdepth 2 -name config.json -type f
+zero ALL=(root) NOPASSWD: /usr/bin/cat /var/lib/zeroclaw/.zeroclaw/workspace/skills/*/config.json
+zero ALL=(root) NOPASSWD: /usr/bin/find /var/lib/picoclaw/.picoclaw/workspace/skills -mindepth 2 -maxdepth 2 -name config.json -type f
+zero ALL=(root) NOPASSWD: /usr/bin/cat /var/lib/picoclaw/.picoclaw/workspace/skills/*/config.json
+zero ALL=(root) NOPASSWD: /usr/bin/find /var/lib/openclaw/.openclaw/workspace/skills -mindepth 2 -maxdepth 2 -name config.json -type f
+zero ALL=(root) NOPASSWD: /usr/bin/cat /var/lib/openclaw/.openclaw/workspace/skills/*/config.json
+
+# ── Skills config — write (dashboard saves edited configs to agent workspace) ─
+zero ALL=(root) NOPASSWD: /usr/bin/mkdir -p /var/lib/zeroclaw/.zeroclaw/workspace/skills/*
+zero ALL=(root) NOPASSWD: /usr/bin/tee /var/lib/zeroclaw/.zeroclaw/workspace/skills/*/config.json
+zero ALL=(root) NOPASSWD: /usr/bin/chown zeroclaw\:zeroclaw /var/lib/zeroclaw/.zeroclaw/workspace/skills/*/config.json
+zero ALL=(root) NOPASSWD: /usr/bin/mkdir -p /var/lib/picoclaw/.picoclaw/workspace/skills/*
+zero ALL=(root) NOPASSWD: /usr/bin/tee /var/lib/picoclaw/.picoclaw/workspace/skills/*/config.json
+zero ALL=(root) NOPASSWD: /usr/bin/chown picoclaw\:picoclaw /var/lib/picoclaw/.picoclaw/workspace/skills/*/config.json
+zero ALL=(root) NOPASSWD: /usr/bin/mkdir -p /var/lib/openclaw/.openclaw/workspace/skills/*
+zero ALL=(root) NOPASSWD: /usr/bin/tee /var/lib/openclaw/.openclaw/workspace/skills/*/config.json
+zero ALL=(root) NOPASSWD: /usr/bin/chown openclaw\:openclaw /var/lib/openclaw/.openclaw/workspace/skills/*/config.json
+
+# ── Character deploy — write (dashboard copies persona files to agent workspace)
+zero ALL=(root) NOPASSWD: /usr/bin/mkdir -p /var/lib/zeroclaw/.zeroclaw/workspace
+zero ALL=(root) NOPASSWD: /usr/bin/tee /var/lib/zeroclaw/.zeroclaw/workspace/*
+zero ALL=(root) NOPASSWD: /usr/bin/chown -R zeroclaw\:zeroclaw /var/lib/zeroclaw/.zeroclaw/workspace
+zero ALL=(root) NOPASSWD: /usr/bin/mkdir -p /var/lib/picoclaw/.picoclaw/workspace
+zero ALL=(root) NOPASSWD: /usr/bin/tee /var/lib/picoclaw/.picoclaw/workspace/*
+zero ALL=(root) NOPASSWD: /usr/bin/chown -R picoclaw\:picoclaw /var/lib/picoclaw/.picoclaw/workspace
+zero ALL=(root) NOPASSWD: /usr/bin/mkdir -p /var/lib/openclaw/.openclaw/workspace
+zero ALL=(root) NOPASSWD: /usr/bin/tee /var/lib/openclaw/.openclaw/workspace/*
+zero ALL=(root) NOPASSWD: /usr/bin/chown -R openclaw\:openclaw /var/lib/openclaw/.openclaw/workspace
+
 # ── ClawBoard venv — skill package management ────────────────────────────────
 # All service accounts (zero, zeroclaw, picoclaw, openclaw) are in the
 # `clawboard` group and the venv is group-writable, so they can run
