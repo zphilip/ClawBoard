@@ -582,6 +582,22 @@ if [[ -d "$WORK_DIR/skills" ]]; then
 else
     log "WARNING: skills/ not found in repo — skipping"
 fi
+# ── Seed MEMORY.md into picoclaw workspace/memory/ ───────────────────────────
+# MEMORY.md lives at the workspace root in the repo but picoclaw expects it
+# (and writes runtime updates to) ~/.picoclaw/workspace/memory/MEMORY.md.
+# --update: skip if the device copy is newer so the agent's own edits survive.
+PICOCLAW_MEMORY_SRC="$WORK_DIR/$PICOCLAW_WORKSPACE_SRC/MEMORY.md"
+PICOCLAW_MEMORY_DST_DIR="$PICOCLAW_WORKSPACE_DST/memory"
+if [[ -f "$PICOCLAW_MEMORY_SRC" ]]; then
+    mkdir -p "$PICOCLAW_MEMORY_DST_DIR"
+    rsync --archive --update "$PICOCLAW_MEMORY_SRC" "$PICOCLAW_MEMORY_DST_DIR/MEMORY.md"
+    chown -R "$PICOCLAW_USER:$PICOCLAW_USER" "$PICOCLAW_MEMORY_DST_DIR" 2>/dev/null || \
+        log "WARNING: chown $PICOCLAW_USER failed for $PICOCLAW_MEMORY_DST_DIR"
+    log "Seeded MEMORY.md → $PICOCLAW_MEMORY_DST_DIR/MEMORY.md"
+else
+    log "WARNING: $PICOCLAW_MEMORY_SRC not found in repo — skipping memory seed"
+fi
+
 # Ensure /var/lib/picoclaw/.picoclaw exists and is owned by picoclaw
 if [[ ! -d "/var/lib/picoclaw/.picoclaw" ]]; then
     log "Creating /var/lib/picoclaw/.picoclaw"
