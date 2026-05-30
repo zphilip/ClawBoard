@@ -477,6 +477,9 @@ def run_agent(
             stderr=subprocess.STDOUT,
             text=True,
             bufsize=1,
+            # Pin CWD to the skill directory so any relative-path artefacts
+            # from the runner land here, not in picoclaw's workspace root.
+            cwd=str(Path(__file__).parent.resolve()),
         )
     except FileNotFoundError as e:
         return {

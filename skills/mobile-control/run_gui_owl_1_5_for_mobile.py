@@ -205,7 +205,8 @@ def main():
 
     # Prepare output directories — place INSIDE screenshots/ so they are
     # never left scattered in the skill's root directory.
-    _skill_dir = Path(__file__).parent
+    # Use .resolve() to guarantee an absolute path even if __file__ is relative.
+    _skill_dir = Path(__file__).resolve().parent
     _screenshots_root = _skill_dir / "screenshots"
     instruction = args.instruction
     if args.add_info:
