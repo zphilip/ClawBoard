@@ -236,4 +236,15 @@ STRINGS = {
     'skills_fmt_btn':       'Format JSON',
     'skills_saved_ok':      '✅ {} config saved',
     'skills_save_err':      '❌ Save failed: {}',
-    'skills_json_invalid':  '⚠️ Invalid JSON: {}',}
+    'skills_json_invalid':  '⚠️ Invalid JSON: {}',
+    # Characters tab
+    'tab_characters':      'Characters',
+    'char_title':          'Character Deployment',
+    'char_no_chars':       'No character folders found (create a subfolder under characters/)',
+    'char_select_label':   'Select Character',
+    'char_files_label':    'Files in character',
+    'char_workspace_lbl':  'Target workspace',
+    'char_deploy_btn':     '▶ Deploy to Workspace',
+    'char_deploy_ok':      '✅ Character {} deployed to {}',
+    'char_deploy_err':     '❌ Deploy failed: {}',
+}

@@ -22,6 +22,7 @@ PICOCLAW_DEPLOY_SECURITY_PATH= '/var/lib/picoclaw/.picoclaw/.security.yml'      
 
 OPENCLAW_CONFIG_PATH         = os.path.join(SCRIPT_DIR, 'config', 'openclaw.json')
 OPENCLAW_DEPLOY_CONFIG_PATH  = '/var/lib/openclaw/.openclaw/openclaw.json'
+CHARACTERS_DIR               = os.path.join(SCRIPT_DIR, 'characters')          # character personas folder
 
 def _sudo_read_file(path: str) -> tuple[str, str]:
     """Read a file that requires elevated privileges via `sudo cat`.
@@ -855,6 +856,39 @@ def deploy_picoclaw_security():
     )
     return True, ''
 
+def deploy_character(src_dir: str, workspace_dir: str, owner: str) -> tuple[bool, str]:
+    """Copy all files from src_dir (character folder) into workspace_dir using sudo tee.
+    Creates workspace_dir if it doesn't exist. Sets ownership to owner:owner.
+    Returns (ok, message)."""
+    try:
+        files = [f for f in os.listdir(src_dir) if os.path.isfile(os.path.join(src_dir, f))]
+    except Exception as exc:
+        return False, f'Cannot list source: {exc}'
+    if not files:
+        return False, 'No files in character folder'
+    subprocess.run(['sudo', '/usr/bin/mkdir', '-p', workspace_dir], capture_output=True)
+    errors: list[str] = []
+    for fname in files:
+        try:
+            with open(os.path.join(src_dir, fname), 'r', encoding='utf-8') as fh:
+                content = fh.read()
+        except Exception as exc:
+            errors.append(f'{fname}: read error: {exc}')
+            continue
+        r = subprocess.run(
+            ['sudo', '/usr/bin/tee', os.path.join(workspace_dir, fname)],
+            input=content, capture_output=True, text=True,
+        )
+        if r.returncode != 0:
+            errors.append(f'{fname}: write error: {r.stderr.strip()}')
+    subprocess.run(
+        ['sudo', '/usr/bin/chown', '-R', f'{owner}:{owner}', workspace_dir],
+        capture_output=True,
+    )
+    if errors:
+        return False, '; '.join(errors)
+    return True, ''
+
 def restart_service():
     """Restart via systemctl. Requires narrow sudoers rules — no password needed.
     Install with: sudo cp daemon/sudoers.d-clawboard /etc/sudoers.d/clawboard
@@ -1389,6 +1423,60 @@ def index(request: Request):
         btn_skills  = ui.button(T['btn_skills'],  icon='extension').props('flat align=left color=grey-7').classes('w-full')
         btn_upgrade = ui.button(T['btn_upgrade'], icon='system_update_alt').props('flat align=left color=grey-7').classes('w-full')
 
+    # ── Character tab builder (shared by all agents) ───────────────────────────
+    def _build_character_tab(workspace_dir: str, owner: str, accent: str = 'blue-8'):
+        """Render the Characters tab panel body for a given agent workspace."""
+        chars_dir = os.path.join(SCRIPT_DIR, 'characters')
+        char_names: list[str] = []
+        if os.path.isdir(chars_dir):
+            char_names = sorted([
+                d for d in os.listdir(chars_dir)
+                if os.path.isdir(os.path.join(chars_dir, d))
+            ])
+        if not char_names:
+            ui.label(T['char_no_chars']).classes('text-caption text-grey-6 q-mt-sm')
+            return
+        with ui.card().classes('w-full q-pa-md'):
+            ui.label(T['char_title']).classes(f'text-subtitle1 text-bold text-{accent} q-mb-xs')
+            ui.label(f'{T["char_workspace_lbl"]}: {workspace_dir}').classes('text-caption text-grey-7 q-mb-sm font-mono')
+            char_select = ui.select(
+                char_names, label=T['char_select_label'], value=char_names[0],
+            ).classes('w-full q-mb-xs')
+            ui.label(T['char_files_label']).classes('text-caption text-grey-6 q-mt-xs')
+            files_col = ui.column().classes('w-full q-pl-sm q-mb-sm')
+
+            def _refresh_preview(name: str):
+                files_col.clear()
+                src = os.path.join(chars_dir, name)
+                with files_col:
+                    if os.path.isdir(src):
+                        for fn in sorted(os.listdir(src)):
+                            if os.path.isfile(os.path.join(src, fn)):
+                                ui.label(f'📄 {fn}').classes('text-caption text-mono')
+                    else:
+                        ui.label('(not found)').classes('text-caption text-grey-6')
+
+            _refresh_preview(char_names[0])
+            char_select.on('update:model-value', lambda e: _refresh_preview(e.value))
+            deploy_status = ui.label('').classes('text-caption q-mt-xs')
+
+            def _do_deploy(_ws=workspace_dir, _own=owner, _sel=char_select, _st=deploy_status):
+                src = os.path.join(chars_dir, _sel.value)
+                ok, err = deploy_character(src, _ws, _own)
+                if ok:
+                    txt = T['char_deploy_ok'].format(_sel.value, _ws)
+                    _st.set_text(txt)
+                    _st.classes(remove='text-negative', add='text-positive')
+                    ui.notify(txt, type='positive')
+                else:
+                    txt = T['char_deploy_err'].format(err)
+                    _st.set_text(txt)
+                    _st.classes(remove='text-positive', add='text-negative')
+                    ui.notify(txt, type='negative')
+
+            ui.button(T['char_deploy_btn'], icon='upload', on_click=_do_deploy) \
+                .props(f'color={accent} elevated')
+
     # ══ ZeroClaw Dashboard ════════════════════════════════════════════════════
     zc_content = ui.column().classes('w-full q-px-sm q-pt-sm')
     with zc_content:
@@ -1400,6 +1488,7 @@ def index(request: Request):
             t_zc_wiz  = ui.tab(T['tab_wizard'],        icon='auto_fix_high')
             t_zc_cfg  = ui.tab(T['tab_configuration'], icon='settings')
             t_zc_pair = ui.tab(T['tab_pair_device'],   icon='devices')
+            t_zc_char = ui.tab(T['tab_characters'],    icon='face')
 
         with ui.tab_panels(zc_sub_tabs, value=t_zc_cfg).classes('w-full'):
 
@@ -2217,6 +2306,10 @@ def index(request: Request):
                         ui.notify(T['pair_invite_copied'], type='positive')
                     ui.button(T['pair_invite_btn'], on_click=_gen_invite).props('outline color=green')
 
+            # ── ZeroClaw › Characters ──────────────────────────────────────
+            with ui.tab_panel(t_zc_char):
+                _build_character_tab('/var/lib/zeroclaw/.zeroclaw/workspace', 'zeroclaw', 'blue-8')
+
     # ══ PicoClaw Dashboard ════════════════════════════════════════════════════
     pc_content = ui.column().classes('w-full q-px-sm q-pt-sm')
     pc_content.set_visibility(False)
@@ -2229,6 +2322,7 @@ def index(request: Request):
             t_pc_wiz  = ui.tab(T['pc_tab_wizard'],     icon='auto_fix_high')
             t_pc_cfg  = ui.tab(T['tab_configuration'], icon='settings')
             t_pc_pair = ui.tab(T['tab_pair_device'],   icon='devices')
+            t_pc_char = ui.tab(T['tab_characters'],    icon='face')
 
         with ui.tab_panels(pc_sub_tabs, value=t_pc_cfg).classes('w-full'):
 
@@ -3173,6 +3267,10 @@ def index(request: Request):
                         ui.label(T['pc_pair_missing_token']).classes('text-negative q-mt-sm')
                         ui.button(T['pc_pair_btn_setup'], on_click=_run_pico_setup_for_pair).props('elevated color=purple-8').classes('q-mt-sm')
 
+            # ── PicoClaw › Characters ──────────────────────────────────────
+            with ui.tab_panel(t_pc_char):
+                _build_character_tab('/var/lib/picoclaw/.picoclaw/workspace', 'picoclaw', 'purple-8')
+
     # ══ OpenClaw Dashboard ════════════════════════════════════════════════════
     oc_content = ui.column().classes('w-full q-px-sm q-pt-sm')
     oc_content.set_visibility(False)
@@ -3216,6 +3314,7 @@ def index(request: Request):
             t_oc_cfg    = ui.tab(T['oc_tab_configuration'], icon='settings')
             t_oc_pair   = ui.tab(T['oc_tab_pair_device'],   icon='devices')
             t_oc_doctor = ui.tab(T['oc_tab_doctor'],         icon='medical_services')
+            t_oc_char   = ui.tab(T['tab_characters'],        icon='face')
 
         oc_sub_tabs.set_visibility(_oc_svc_enabled)
 
@@ -4011,6 +4110,10 @@ def index(request: Request):
                         _btn.enable()
 
                     _doctor_btn.on_click(_oc_run_doctor)
+
+            # ── OpenClaw › Characters ──────────────────────────────────────
+            with ui.tab_panel(t_oc_char):
+                _build_character_tab('/var/lib/openclaw/.openclaw/workspace', 'openclaw', 'teal-8')
 
     # ── Sidebar navigation wiring ──────────────────────────────────────────────
     # ══ WiFi Setup ════════════════════════════════════════════════════════════

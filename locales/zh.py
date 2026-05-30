@@ -236,4 +236,15 @@ STRINGS = {
     'skills_fmt_btn':       '格式化 JSON',
     'skills_saved_ok':      '✅ {} 配置已保存',
     'skills_save_err':      '❌ 保存失败：{}',
-    'skills_json_invalid':  '⚠️ JSON 格式错误：{}',}
+    'skills_json_invalid':  '⚠️ JSON 格式错误：{}',
+    # Characters tab
+    'tab_characters':      '角色',
+    'char_title':          '角色部署',
+    'char_no_chars':       '暂无角色目录（在 characters/ 下创建子文件夹并添加文件）',
+    'char_select_label':   '选择角色',
+    'char_files_label':    '包含文件',
+    'char_workspace_lbl':  '目标工作区',
+    'char_deploy_btn':     '▶ 部署到工作区',
+    'char_deploy_ok':      '✅ 角色 {} 已部署到 {}',
+    'char_deploy_err':     '❌ 部署失败：{}',
+}

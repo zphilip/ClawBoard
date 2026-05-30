@@ -126,6 +126,7 @@ clawberry_radxa_patch.py
 publish_services.sh
 scripts/clawberry-workspace-sync.sh
 scripts/upgrade_picoclaw_config.py
+characters/
 EOF
 
 # GIT_TERMINAL_PROMPT=0 prevents git from hanging asking for credentials.
@@ -358,6 +359,12 @@ done
 if [[ -d "$WORK_DIR/locales" ]]; then
     rsync --archive --update "$WORK_DIR/locales/" "$CLAWBOARD_DST/locales/"
     log "  synced locales/"
+fi
+
+# characters/ directory (agent persona files)
+if [[ -d "$WORK_DIR/characters" ]]; then
+    rsync --archive --update "$WORK_DIR/characters/" "$CLAWBOARD_DST/characters/"
+    log "  synced characters/"
 fi
 
 # lib/ directory
