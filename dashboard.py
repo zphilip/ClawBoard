@@ -1479,13 +1479,13 @@ def index(request: Request):
     # ── Skills tab builder (shared by all agents) ──────────────────────────────
     def _build_skills_tab(workspace_dir: str, owner: str, accent: str = 'blue-8'):
         """Render the Skills Config tab panel body for a given agent workspace."""
-        _sk_dir = os.path.join(SCRIPT_DIR, 'skills')
+        _sk_ws = os.path.join(workspace_dir, 'skills')
         _skill_configs: list[tuple[str, str]] = []
-        if os.path.isdir(_sk_dir):
-            for _sn in sorted(os.listdir(_sk_dir)):
-                _scfg = os.path.join(_sk_dir, _sn, 'config.json')
-                if os.path.isfile(_scfg):
-                    _skill_configs.append((_sn, _scfg))
+        if os.path.isdir(_sk_ws):
+            for _sn in sorted(os.listdir(_sk_ws)):
+                _cfg = os.path.join(_sk_ws, _sn, 'config.json')
+                if os.path.isfile(_cfg):
+                    _skill_configs.append((_sn, _cfg))
         if not _skill_configs:
             ui.label(T['skills_no_config']).classes('text-caption text-grey-6 q-mt-sm')
             return
@@ -1507,7 +1507,7 @@ def index(request: Request):
                         _ta = ui.textarea(value=_raw).classes('w-full font-mono') \
                                 .props('outlined rows=16 label="config.json"')
 
-                        def _make_save(_path=_scfg_path, _area=_ta, _skill=_sn):
+                        def _make_save(_area=_ta, _skill=_sn, _dst=_scfg_path, _own=owner):
                             def _do_save():
                                 raw = _area.value
                                 try:
@@ -1515,12 +1515,22 @@ def index(request: Request):
                                 except json.JSONDecodeError as _je:
                                     ui.notify(T['skills_json_invalid'].format(_je), type='negative')
                                     return
-                                try:
-                                    with open(_path, 'w', encoding='utf-8') as _wf:
-                                        _wf.write(raw)
+                                subprocess.run(
+                                    ['sudo', '/usr/bin/mkdir', '-p', os.path.dirname(_dst)],
+                                    capture_output=True,
+                                )
+                                r = subprocess.run(
+                                    ['sudo', '/usr/bin/tee', _dst],
+                                    input=raw, capture_output=True, text=True,
+                                )
+                                if r.returncode == 0:
+                                    subprocess.run(
+                                        ['sudo', '/usr/bin/chown', f'{_own}:{_own}', _dst],
+                                        capture_output=True,
+                                    )
                                     ui.notify(T['skills_saved_ok'].format(_skill), type='positive')
-                                except Exception as _we:
-                                    ui.notify(T['skills_save_err'].format(_we), type='negative')
+                                else:
+                                    ui.notify(T['skills_save_err'].format(r.stderr.strip()), type='negative')
                             return _do_save
 
                         def _make_fmt(_area=_ta):
@@ -1532,38 +1542,11 @@ def index(request: Request):
                                     ui.notify(T['skills_json_invalid'].format(_je), type='negative')
                             return _do_fmt
 
-                        def _make_deploy(_area=_ta, _skill=_sn, _ws=workspace_dir, _own=owner):
-                            def _do_deploy():
-                                raw = _area.value
-                                try:
-                                    json.loads(raw)
-                                except json.JSONDecodeError as _je:
-                                    ui.notify(T['skills_json_invalid'].format(_je), type='negative')
-                                    return
-                                dst_dir  = os.path.join(_ws, 'skills', _skill)
-                                dst_file = os.path.join(dst_dir, 'config.json')
-                                subprocess.run(['sudo', '/usr/bin/mkdir', '-p', dst_dir], capture_output=True)
-                                r = subprocess.run(
-                                    ['sudo', '/usr/bin/tee', dst_file],
-                                    input=raw, capture_output=True, text=True,
-                                )
-                                if r.returncode == 0:
-                                    subprocess.run(
-                                        ['sudo', '/usr/bin/chown', '-R', f'{_own}:{_own}', dst_dir],
-                                        capture_output=True,
-                                    )
-                                    ui.notify(T['skill_deploy_ok'].format(_skill, dst_dir), type='positive')
-                                else:
-                                    ui.notify(T['skill_deploy_err'].format(r.stderr.strip()), type='negative')
-                            return _do_deploy
-
                         with ui.row().classes('q-mt-sm gap-2'):
                             ui.button(T['skills_save_btn'], icon='save',
                                       on_click=_make_save()).props(f'color={accent}')
                             ui.button(T['skills_fmt_btn'], icon='format_align_left',
                                       on_click=_make_fmt()).props('flat color=grey-7')
-                            ui.button(T['skill_deploy_btn'], icon='upload',
-                                      on_click=_make_deploy()).props(f'color={accent} elevated')
 
     # ══ ZeroClaw Dashboard ════════════════════════════════════════════════════
     zc_content = ui.column().classes('w-full q-px-sm q-pt-sm')
