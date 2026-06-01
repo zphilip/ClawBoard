@@ -243,6 +243,15 @@ def main():
     # Set to True once any physical action (click, swipe, type, etc.) is
     # executed.  Used to detect premature 'answer' refusals at step 0.
     any_real_action = False
+    # Counts consecutive `wait` actions — used to detect a stuck agent.
+    consecutive_waits = 0
+
+    # Keywords in the model's action text that signal it is on the wrong screen.
+    # When any of these appear the runner injects a Home-correction immediately.
+    _WRONG_SCREEN_SIGNALS = [
+        "调试界面", "调试工具", "debug interface", "developer",
+        "PicoClaw", "picoclaw", "调试", "开发者",
+    ]
 
     for step_id in range(args.max_steps):
         print(f"\n{'='*50}")
@@ -257,15 +266,48 @@ def main():
             time.sleep(1)
             continue
 
+        # 1b. ADB foreground-app check — know the ground truth before asking the VLM.
+        _fg_pkg = adb_tools.get_foreground_package()
+        if _fg_pkg:
+            _fg_names = PACKAGES_NAME_DICT.get(_fg_pkg, [])
+            _fg_label = f"{_fg_pkg} ({', '.join(_fg_names)})" if _fg_names else _fg_pkg
+            print(f"[ADB] Foreground app: {_fg_label}")
+        else:
+            _fg_label = ""
+
         # 2. Build messages and call the VLM
         messages = build_messages(
-            screenshot_path, instruction, history, args.model
+            screenshot_path, instruction, history, args.model,
+            foreground_pkg=_fg_label,
         )
 
         vllm = GUIOwlWrapper(args.api_key, args.base_url, args.model)
         output_text, _, _ = vllm.predict_mm(messages)
 
         print(f"[MODEL OUTPUT]\n{output_text}")
+
+        # 3a. Wrong-screen early exit: if the model text explicitly mentions a
+        # debug/developer/wrong-app screen, press Home and restart rather than
+        # blindly executing the suggested action.
+        _action_text = output_text.split("<tool_call>")[0]
+        if any(sig in _action_text for sig in _WRONG_SCREEN_SIGNALS):
+            print(
+                "[WARN] Model output indicates wrong/debug screen — "
+                "injecting Home correction."
+            )
+            _correction = (
+                "Action: I am on the wrong screen. Pressing Home to navigate "
+                "to the correct app.\n"
+                "<tool_call>\n"
+                '{"name": "mobile_use", "arguments": '
+                '{"action": "system_button", "button": "Home"}}\n'
+                "</tool_call>"
+            )
+            history.append({"output": _correction, "image": screenshot_path})
+            adb_tools.home()
+            consecutive_waits = 0
+            time.sleep(2)
+            continue
 
         # 3. Parse the action
         try:
@@ -292,6 +334,7 @@ def main():
 
         if action_type == "click":
             any_real_action = True
+            consecutive_waits = 0
             adb_tools.click(
                 action_parameter["coordinate"][0],
                 action_parameter["coordinate"][1],
@@ -299,6 +342,7 @@ def main():
 
         elif action_type == "long_press":
             any_real_action = True
+            consecutive_waits = 0
             adb_tools.long_press(
                 action_parameter["coordinate"][0],
                 action_parameter["coordinate"][1],
@@ -306,10 +350,12 @@ def main():
 
         elif action_type == "type":
             any_real_action = True
+            consecutive_waits = 0
             adb_tools.type(action_parameter["text"])
 
         elif action_type in ("scroll", "swipe"):
             any_real_action = True
+            consecutive_waits = 0
             adb_tools.slide(
                 action_parameter["coordinate"][0],
                 action_parameter["coordinate"][1],
@@ -319,6 +365,7 @@ def main():
 
         elif action_type == "system_button":
             any_real_action = True
+            consecutive_waits = 0
             button = action_parameter["button"]
             if button == "Back":
                 adb_tools.back()
@@ -327,6 +374,25 @@ def main():
 
         elif action_type == "wait":
             wait_time = action_parameter.get("time", 2)
+            consecutive_waits += 1
+            if consecutive_waits >= 2:
+                print(
+                    f"[WARN] {consecutive_waits} consecutive wait actions — "
+                    "agent appears stuck on wrong screen. Injecting Home correction."
+                )
+                _correction = (
+                    "Action: I have been waiting too long on the wrong screen. "
+                    "Pressing Home to navigate to the correct app.\n"
+                    "<tool_call>\n"
+                    '{"name": "mobile_use", "arguments": '
+                    '{"action": "system_button", "button": "Home"}}\n'
+                    "</tool_call>"
+                )
+                history.append({"output": _correction, "image": screenshot_path})
+                adb_tools.home()
+                consecutive_waits = 0
+                time.sleep(2)
+                continue
             time.sleep(wait_time)
 
         elif action_type == "terminate":
@@ -336,6 +402,7 @@ def main():
 
         elif action_type == "open":
             any_real_action = True
+            consecutive_waits = 0
             opened = handle_open_action(
                 action_parameter,
                 instruction,

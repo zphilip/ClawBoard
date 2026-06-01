@@ -10,6 +10,7 @@ Utility functions for Mobile-Agent-v3.5:
 import json
 import math
 import os
+import re
 import subprocess
 import time
 from datetime import datetime
@@ -74,6 +75,37 @@ class AdbTools:
         self.device = device
         self._device_flag = f" -s {device} " if device is not None else " "
         self.image_info = None
+
+    def get_foreground_package(self) -> str:
+        """
+        Return the package name of the app currently in the foreground
+        (e.g. 'com.baidu.BaiduMap').  Returns '' on failure.
+
+        Uses `dumpsys activity activities` which works across Android 8–14.
+        Falls back to `dumpsys window windows` for devices where the first
+        command returns nothing useful.
+        """
+        device_flag = f" -s {self.device}" if self.device else ""
+        for probe_cmd in (
+            f"{self.adb_path}{device_flag} shell dumpsys activity activities",
+            f"{self.adb_path}{device_flag} shell dumpsys window windows",
+        ):
+            try:
+                result = subprocess.run(
+                    probe_cmd, capture_output=True, text=True,
+                    shell=True, timeout=6,
+                )
+                for line in result.stdout.splitlines():
+                    if any(k in line for k in (
+                        "mResumedActivity", "topResumedActivity",
+                        "mCurrentFocus", "mFocusedApp",
+                    )):
+                        m = re.search(r'\s+([\w.]+)/[.\w]+', line)
+                        if m:
+                            return m.group(1)
+            except Exception:
+                pass
+        return ""
 
     # -- helpers ----------------------------------------------------------
 
@@ -392,10 +424,18 @@ Rules:
 - After every action, look at the new screenshot and VERIFY the action had the intended effect before deciding the next step.
 - If the action did not produce the expected result (wrong app, wrong screen, wrong text entered, wrong search result), take immediate corrective action — do NOT proceed as if it succeeded.
 - When selecting a search result or map location, carefully read the text to confirm it matches the target. If it does not match, go back and try again.
-- Never declare success ("navigate completed", "task done") unless the screenshot clearly shows the task outcome.'''
+- Never declare success ("navigate completed", "task done") unless the screenshot clearly shows the task outcome.
+
+## App context verification (run at every step)
+- Before choosing any action, identify which app is currently on screen by reading the status bar, app title bar, or distinctive UI elements.
+- If the task requires a specific app (e.g., Baidu Maps / 百度地图) and the current screenshot does NOT show that app, your ONLY valid next action is: press Home (system_button=Home), then open the correct app.
+- NEVER execute task-specific actions (type text, tap search results, tap navigation buttons) while the wrong app is in the foreground.
+- "Wait for the debug interface to stabilise" is NOT a valid step. Seeing a debug or developer screen means you are in the wrong app — press Home immediately and open the correct app.
+- If you see PicoClaw, a terminal, a settings screen, or any non-target interface, treat it as a wrong-app situation and navigate away before doing anything else.'''
 
 
-def build_messages(image_path, instruction, history_output, model_name, history_n=4):
+def build_messages(image_path, instruction, history_output, model_name,
+                   history_n=4, foreground_pkg: str = ""):
     """
     Construct the multi-turn message list for the VLM.
 
@@ -442,6 +482,11 @@ def build_messages(image_path, instruction, history_output, model_name, history_
         f"Instruction: {date_info}{instruction}\n\n"
         f"Previous actions:\n{previous_actions_str}"
     )
+    if foreground_pkg:
+        instruction_prompt += (
+            f"\n\nCurrent foreground app (from ADB): {foreground_pkg}\n"
+            f"Verify this matches the app required by the task before acting."
+        )
 
     # Assemble messages
     messages = [
