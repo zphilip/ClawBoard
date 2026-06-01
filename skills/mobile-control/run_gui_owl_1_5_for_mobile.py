@@ -296,6 +296,13 @@ def main():
     else:
         print("[SUPERVISOR] disabled — set supervisor_provider.model in config.json to enable")
 
+    # Compact mode: use stripped-down system prompt + fewer UI nodes when the
+    # VLM's context window is very small (≤2048 tokens).
+    _compact_mode = bool(_vlm_max_ctx and _vlm_max_ctx <= 2048)
+    _ui_max_nodes = 20 if _compact_mode else 60
+    if _compact_mode:
+        print(f"[VLM] Compact mode ON (max_context_size={_vlm_max_ctx}): using compact system prompt, UI dump limited to {_ui_max_nodes} nodes")
+
     history = []
     # Set to True once any physical action (click, swipe, type, etc.) is
     # executed.  Used to detect premature 'answer' refusals at step 0.
@@ -350,7 +357,7 @@ def main():
         # 1b. UI accessibility dump — gives the VLM exact element bounds and labels.
         # Falls back gracefully (empty string) for WebView / game-engine screens.
         _ui_xml = adb_tools.get_ui_dump()
-        _ui_summary = summarise_ui_dump(_ui_xml)
+        _ui_summary = summarise_ui_dump(_ui_xml, max_nodes=_ui_max_nodes)
         if _ui_summary:
             _node_count = _ui_summary.count("\n")
             print(f"[UI dump] {_node_count} interactive elements found")
@@ -362,6 +369,7 @@ def main():
             screenshot_path, instruction, history, args.model,
             foreground_pkg=_fg_label,
             ui_summary=_ui_summary,
+            compact=_compact_mode,
         )
 
         vllm = GUIOwlWrapper(args.api_key, args.base_url, args.model,

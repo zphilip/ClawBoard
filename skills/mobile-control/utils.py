@@ -479,6 +479,7 @@ Rules:
 
 # Critical execution rules — MUST follow every step
 
+
 ## Always execute, never refuse
 - You MUST always try to execute the task, even if the current screen is not the right app or state.
 - If you are on the wrong screen or wrong app, navigate there yourself: press Home to go to the home screen, then open the required app. Never give up or tell the user to do it themselves.
@@ -517,6 +518,12 @@ Rules:
 - Do NOT fabricate or assume any information that is not shown on screen: distances, travel times, congestion indices, prices, ratings, status messages, or any other numbers/text.
 - If you cannot see clear confirmation that the task completed (e.g. navigation actively running, booking confirmed screen), do NOT answer — take the next required action instead.
 - Your answer text must describe only what is visible. Never extrapolate from partial information. If the screen shows a destination pin but navigation has not started, say so — do not invent route details.'''
+
+# Compact system prompt for small-context models (≤2048 tokens).
+# Contains only the tool schema + response format; drops behavioural rules so
+# the prompt itself fits within the model's context window.
+# Derived dynamically so it stays in sync when SYSTEM_PROMPT is updated.
+SYSTEM_PROMPT_COMPACT = SYSTEM_PROMPT[:SYSTEM_PROMPT.index('\n# Critical execution rules')]
 
 
 # ---------------------------------------------------------------------------
@@ -588,7 +595,8 @@ def summarise_ui_dump(xml: str, max_nodes: int = 60) -> str:
 
 
 def build_messages(image_path, instruction, history_output, model_name,
-                   history_n=4, foreground_pkg: str = "", ui_summary: str = ""):
+                   history_n=4, foreground_pkg: str = "", ui_summary: str = "",
+                   compact: bool = False):
     """
     Construct the multi-turn message list for the VLM.
 
@@ -644,10 +652,11 @@ def build_messages(image_path, instruction, history_output, model_name,
         instruction_prompt += f"\n\n{ui_summary}\nUse the bounds and resource IDs above to choose exact tap coordinates instead of guessing from the screenshot alone."
 
     # Assemble messages
+    _system_text = SYSTEM_PROMPT_COMPACT if compact else SYSTEM_PROMPT
     messages = [
         {
             "role": "system",
-            "content": [{"text": SYSTEM_PROMPT}],
+            "content": [{"text": _system_text}],
         }
     ]
 
@@ -828,6 +837,9 @@ class GUIOwlWrapper(LlmWrapper, MultimodalLlmWrapper):
         # Snapshot the base payload for history trimming (re-using pre-encoded images).
         _base_payload = list(payload)
         _keep_n_history = len(_base_payload) - 2  # number of history slots
+        # Flag: set True once history is already at minimum so next text-overflow
+        # gives up rather than retrying with the same payload indefinitely.
+        _history_trim_exhausted = False
 
         counter = self.max_retry
         wait_seconds = self.RETRY_WAITING_SECONDS
@@ -851,17 +863,24 @@ class GUIOwlWrapper(LlmWrapper, MultimodalLlmWrapper):
                         target_img_tok = target - text_tok_est
                         if target_img_tok <= 0 or max_pixels <= 3136:
                             # Text alone exceeds budget — shrinking image won't help.
+                            # Give up only if we already tried at minimum history.
+                            if _history_trim_exhausted:
+                                print(
+                                    f'Cannot fit content in {n_ctx}-token context '
+                                    f'even after trimming history — giving up'
+                                )
+                                return ERROR_CALLING_LLM, None, None
                             # Trim history from the base payload progressively.
+                            _prev_keep = _keep_n_history
                             _keep_n_history = max(0, _keep_n_history // 2)
                             payload = self._trim_payload_history(_base_payload, _keep_n_history)
+                            if _keep_n_history == _prev_keep:
+                                # Reached minimum — mark so we give up next time.
+                                _history_trim_exhausted = True
                             print(
                                 f'Context exceeded by text; trimming history to '
                                 f'last {_keep_n_history} message(s) and retrying...'
                             )
-                            if _keep_n_history == 0 and text_tok_est > target:
-                                # Even with no history it won't fit — give up now.
-                                print('Cannot fit content in context even with empty history — giving up')
-                                return ERROR_CALLING_LLM, None, None
                         else:
                             new_max_pixels = max(int(target_img_tok * _PX_PER_TOK), 3136)
                             max_pixels = new_max_pixels
