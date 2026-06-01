@@ -856,16 +856,21 @@ def deploy_picoclaw_security():
     )
     return True, ''
 
-def deploy_character(src_dir: str, workspace_dir: str, owner: str) -> tuple[bool, str]:
-    """Copy all files from src_dir (character folder) into workspace_dir using sudo tee.
+def deploy_character(src_dir: str, workspace_dir: str, owner: str, include_memory: bool = False) -> tuple[bool, str]:
+    """Copy files from src_dir (character/agent subfolder) into workspace_dir using sudo tee.
     Creates workspace_dir if it doesn't exist. Sets ownership to owner:owner.
+    MEMORY.md is skipped unless include_memory=True.
     Returns (ok, message)."""
     try:
-        files = [f for f in os.listdir(src_dir) if os.path.isfile(os.path.join(src_dir, f))]
+        files = [
+            f for f in os.listdir(src_dir)
+            if os.path.isfile(os.path.join(src_dir, f))
+            and (f != 'MEMORY.md' or include_memory)
+        ]
     except Exception as exc:
         return False, f'Cannot list source: {exc}'
     if not files:
-        return False, 'No files in character folder'
+        return False, 'No files in character folder (or only MEMORY.md which is excluded by default)'
     subprocess.run(['sudo', '/usr/bin/mkdir', '-p', workspace_dir], capture_output=True)
     errors: list[str] = []
     for fname in files:
@@ -1424,8 +1429,12 @@ def index(request: Request):
 
     # ── Character tab builder (shared by all agents) ───────────────────────────
     def _build_character_tab(workspace_dir: str, owner: str, accent: str = 'blue-8'):
-        """Render the Characters tab panel body for a given agent workspace."""
+        """Render the Characters tab panel body for a given agent workspace.
+        Character files are read from characters/{name}/{owner}/ subfolders.
+        MEMORY.md is excluded from the default deploy; a separate opt-in checkbox
+        with a warning is shown instead."""
         chars_dir = os.path.join(SCRIPT_DIR, 'characters')
+        agent_key = owner  # subfolder name inside each character dir (picoclaw / zeroclaw / …)
         char_names: list[str] = []
         if os.path.isdir(chars_dir):
             char_names = sorted([
@@ -1446,22 +1455,33 @@ def index(request: Request):
 
             def _refresh_preview(name: str):
                 files_col.clear()
-                src = os.path.join(chars_dir, name)
+                src = os.path.join(chars_dir, name, agent_key)
                 with files_col:
                     if os.path.isdir(src):
+                        shown = False
                         for fn in sorted(os.listdir(src)):
-                            if os.path.isfile(os.path.join(src, fn)):
+                            if os.path.isfile(os.path.join(src, fn)) and fn != 'MEMORY.md':
                                 ui.label(f'📄 {fn}').classes('text-caption text-mono')
+                                shown = True
+                        if not shown:
+                            ui.label('(no files)').classes('text-caption text-grey-6')
                     else:
                         ui.label('(not found)').classes('text-caption text-grey-6')
 
             _refresh_preview(char_names[0])
             char_select.on('update:model-value', lambda e: _refresh_preview(e.value))
+
+            # MEMORY.md: separate opt-in with overwrite warning
+            with ui.row().classes('items-center q-mt-xs q-mb-sm'):
+                memory_chk = ui.checkbox('MEMORY.md').props('color=warning')
+                ui.label(T['char_memory_warn']).classes('text-caption text-warning q-ml-xs')
+
             deploy_status = ui.label('').classes('text-caption q-mt-xs')
 
-            def _do_deploy(_ws=workspace_dir, _own=owner, _sel=char_select, _st=deploy_status):
-                src = os.path.join(chars_dir, _sel.value)
-                ok, err = deploy_character(src, _ws, _own)
+            def _do_deploy(_ws=workspace_dir, _own=owner, _sel=char_select,
+                           _st=deploy_status, _mchk=memory_chk):
+                src = os.path.join(chars_dir, _sel.value, agent_key)
+                ok, err = deploy_character(src, _ws, _own, include_memory=_mchk.value)
                 if ok:
                     txt = T['char_deploy_ok'].format(_sel.value, _ws)
                     _st.set_text(txt)

@@ -247,6 +247,7 @@ STRINGS = {
     'char_deploy_btn':     '▶ Deploy to Workspace',
     'char_deploy_ok':      '✅ Character {} deployed to {}',
     'char_deploy_err':     '❌ Deploy failed: {}',
+    'char_memory_warn':    '⚠ Overwrites current agent memory — check only if intentional',
     # Skills tab (per-agent)
     'tab_skills':          'Skills Config',
     'skill_deploy_btn':    '▶ Deploy to Workspace',
