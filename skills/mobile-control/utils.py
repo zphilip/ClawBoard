@@ -466,6 +466,20 @@ Rules:
 - "Wait for the debug interface to stabilise" is NOT a valid step. Seeing a debug or developer screen means you are in the wrong app — press Home immediately and open the correct app.
 - If you see PicoClaw, a terminal, a settings screen, or any non-target interface, treat it as a wrong-app situation and navigate away before doing anything else.
 
+## Prioritise direct UI shortcuts
+- Before planning a multi-step flow, ALWAYS scan the UI elements list for a button or link that directly performs the task goal.
+- Examples: a "导航" / "开始导航" / "Navigate" button on a location card, a pre-populated search field, a 一键导航 (one-tap navigation) shortcut.
+- If such a direct shortcut appears in the UI elements list or is visible in the screenshot, click it IMMEDIATELY — do NOT start a longer manual flow.
+- Do not scroll past or dismiss a result card that already offers the required action.
+
+## Recovery when stuck or looping
+- If you have executed the same action (same tap coordinate, same button) 3 or more times without any change in screen state, your approach is not working.
+- Recovery steps (in order):
+  1. Press Back once (返回上一界面) to dismiss overlays or exit a dead-end screen.
+  2. If still stuck after Back, press Home, then reopen the required app with the `open` action.
+  3. If the app appears frozen or in an unrecoverable state, press Home and use `open` to force-relaunch it — a fresh start is always better than endless retries.
+- Do NOT keep tapping the same coordinate hoping the result will change. Recognise the loop and break out of it.
+
 ## Honesty rules for the answer action
 - ONLY use the answer action when the task outcome is LITERALLY VISIBLE in the current screenshot.
 - Do NOT fabricate or assume any information that is not shown on screen: distances, travel times, congestion indices, prices, ratings, status messages, or any other numbers/text.
@@ -892,27 +906,65 @@ Output:
 
 
 def _try_parse_json(text):
-    """Attempt to parse a JSON object from text.
+    """Extract and parse the first JSON object from text.
 
-    Handles:
-    - <think>...</think> chain-of-thought blocks (MiniMax, DeepSeek-R1, Qwen-thinking…)
-    - ```json ... ``` and ``` ... ``` markdown fences
-    - Plain JSON
+    Strategy (tried in order):
+    1. Strip <think>...</think> blocks, then parse the remainder.
+    2. If the remainder is empty or invalid, regex-extract the first
+       balanced {...} from the stripped text.
+    3. Last resort: extract the first {...} from the FULL original text
+       (catches the case where the entire response is inside <think>).
+    Also handles ```json / ``` markdown fences.
     """
     if not text:
         return None
-    try:
-        cleaned = text
-        # Strip chain-of-thought reasoning blocks emitted by thinking models
-        cleaned = re.sub(r"<think>.*?</think>", "", cleaned, flags=re.DOTALL).strip()
-        if "```json" in cleaned:
-            cleaned = cleaned.split("```json")[1].split("```")[0]
-        elif cleaned.startswith("```"):
-            cleaned = cleaned.strip("`").strip()
-        return json.loads(cleaned.strip())
-    except Exception as e:
-        print(f"[WARN] JSON parse failed: {e}")
+
+    def _extract_first_obj(s: str):
+        """Return the first balanced {...} substring, or None."""
+        start = s.find("{")
+        if start == -1:
+            return None
+        depth = 0
+        for i, c in enumerate(s[start:], start):
+            if c == "{":
+                depth += 1
+            elif c == "}":
+                depth -= 1
+                if depth == 0:
+                    return s[start : i + 1]
         return None
+
+    # Pass 1 — strip think blocks, handle fences, try direct parse
+    stripped = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
+    target = stripped if stripped else text
+    if "```json" in target:
+        target = target.split("```json")[1].split("```")[0].strip()
+    elif target.startswith("```"):
+        target = target.strip("`").strip()
+    if target:
+        try:
+            return json.loads(target)
+        except json.JSONDecodeError:
+            pass
+
+    # Pass 2 — regex-extract first {...} from stripped/post-fence text
+    candidate = _extract_first_obj(target)
+    if candidate:
+        try:
+            return json.loads(candidate)
+        except json.JSONDecodeError:
+            pass
+
+    # Pass 3 — search the full original text (think block may contain the JSON)
+    candidate = _extract_first_obj(text)
+    if candidate:
+        try:
+            return json.loads(candidate)
+        except json.JSONDecodeError:
+            pass
+
+    print("[WARN] JSON parse failed: no valid JSON object found in response")
+    return None
 
 
 # ---------------------------------------------------------------------------

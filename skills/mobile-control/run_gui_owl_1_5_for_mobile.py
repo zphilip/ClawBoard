@@ -287,6 +287,9 @@ def main():
     any_real_action = False
     # Counts consecutive `wait` actions — used to detect a stuck agent.
     consecutive_waits = 0
+    # Rolling window of the last 5 click coordinates.
+    # Used to detect a stuck loop (same coordinate tapped 3+ times in a row).
+    _recent_click_coords: list[tuple] = []
 
     # Keywords in the model's action text that signal it is on the wrong screen.
     # When any of these appear the runner injects a Home-correction immediately.
@@ -457,10 +460,32 @@ def main():
         if action_type == "click":
             any_real_action = True
             consecutive_waits = 0
-            adb_tools.click(
+            _coord = (
                 action_parameter["coordinate"][0],
                 action_parameter["coordinate"][1],
             )
+            _recent_click_coords.append(_coord)
+            if len(_recent_click_coords) > 5:
+                _recent_click_coords.pop(0)
+            # Detect 3+ consecutive taps on the exact same coordinate → stuck loop
+            if len(_recent_click_coords) >= 3 and len(set(_recent_click_coords[-3:])) == 1:
+                print(
+                    f"[STUCK] coordinate {_coord} tapped 3x in a row — "
+                    "pressing Back to escape stuck state"
+                )
+                _stuck_note = (
+                    "Action: [RECOVERY] I have tapped the same coordinate 3 times "
+                    "with no change. Pressing Back to escape the stuck state.\n"
+                    "<tool_call>\n"
+                    '{"name": "mobile_use", "arguments": {"action": "system_button", "button": "Back"}}\n'
+                    "</tool_call>"
+                )
+                history.append({"output": _stuck_note, "image": screenshot_path})
+                adb_tools.back()
+                _recent_click_coords.clear()
+                time.sleep(1.5)
+                continue
+            adb_tools.click(_coord[0], _coord[1])
 
         elif action_type == "long_press":
             any_real_action = True
@@ -488,6 +513,7 @@ def main():
         elif action_type == "system_button":
             any_real_action = True
             consecutive_waits = 0
+            _recent_click_coords.clear()  # navigation resets the click-loop window
             button = action_parameter["button"]
             if button == "Back":
                 adb_tools.back()
