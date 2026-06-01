@@ -130,6 +130,31 @@ def load_skill_config() -> dict:
     return fallback
 
 
+def load_supervisor_config() -> dict:
+    """
+    Load supervisor_provider settings from config.json.
+    Returns a dict with keys base_url, model, api_key, or an empty dict
+    when the section is absent or has no model set (supervisor disabled).
+    """
+    if not _CONFIG_FILE.exists():
+        return {}
+    try:
+        with _CONFIG_FILE.open(encoding="utf-8") as f:
+            data = json.load(f)
+        sp = data.get("supervisor_provider", {})
+        if sp.get("model"):
+            cfg = {
+                "model": sp["model"],
+                "base_url": sp.get("base_url", ""),
+                "api_key": sp.get("api_key", ""),
+            }
+            _trace(f"[config] supervisor_provider loaded: base_url={cfg['base_url']} model={cfg['model']}")
+            return cfg
+    except Exception as e:
+        _trace(f"[config] ERROR loading supervisor_provider: {e}")
+    return {}
+
+
 DEFAULT_MAX_STEPS = 20
 DEFAULT_TIMEOUT = 120  # seconds for the entire run
 LOOP_THRESHOLD = 3     # same coordinate N times → inject retry hint
@@ -786,6 +811,14 @@ def main() -> int:
 
     _log(f"Runner: {runner}")
 
+    # Supervisor config: CLI flags take precedence; fall back to config.json section
+    sup_cfg = load_supervisor_config()
+    sup_model = getattr(args, "supervisor_model", "") or sup_cfg.get("model", "")
+    sup_api_key = getattr(args, "supervisor_api_key", "") or sup_cfg.get("api_key", "")
+    sup_base_url = getattr(args, "supervisor_base_url", "") or sup_cfg.get("base_url", "")
+    if sup_model:
+        _log(f"Supervisor LLM: {sup_model} @ {sup_base_url or '(same as main)'}")
+
     # 6. Run the agent
     result = run_agent(
         instruction=args.instruction,
@@ -798,9 +831,9 @@ def main() -> int:
         timeout=args.timeout,
         add_info=args.add_info,
         runner_script=runner,
-        supervisor_model=getattr(args, "supervisor_model", ""),
-        supervisor_api_key=getattr(args, "supervisor_api_key", ""),
-        supervisor_base_url=getattr(args, "supervisor_base_url", ""),
+        supervisor_model=sup_model,
+        supervisor_api_key=sup_api_key,
+        supervisor_base_url=sup_base_url,
     )
 
     # 7. Emit result JSON (consumed by OpenClaw)

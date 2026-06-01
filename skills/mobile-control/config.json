@@ -8,5 +8,10 @@
     "base_url": "http://apicn.aiworm.cn:8809/v1",
     "model": "gui-owl",
     "api_key": "not-needed"
+  },
+  "supervisor_provider": {
+    "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    "model": "qwen-plus",
+    "api_key": ""
   }
 }
