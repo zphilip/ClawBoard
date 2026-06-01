@@ -892,14 +892,24 @@ Output:
 
 
 def _try_parse_json(text):
-    """Attempt to parse a JSON object from text, handling markdown fences."""
+    """Attempt to parse a JSON object from text.
+
+    Handles:
+    - <think>...</think> chain-of-thought blocks (MiniMax, DeepSeek-R1, Qwen-thinking…)
+    - ```json ... ``` and ``` ... ``` markdown fences
+    - Plain JSON
+    """
     if not text:
         return None
     try:
         cleaned = text
+        # Strip chain-of-thought reasoning blocks emitted by thinking models
+        cleaned = re.sub(r"<think>.*?</think>", "", cleaned, flags=re.DOTALL).strip()
         if "```json" in cleaned:
             cleaned = cleaned.split("```json")[1].split("```")[0]
-        return json.loads(cleaned)
+        elif cleaned.startswith("```"):
+            cleaned = cleaned.strip("`").strip()
+        return json.loads(cleaned.strip())
     except Exception as e:
         print(f"[WARN] JSON parse failed: {e}")
         return None
