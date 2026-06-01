@@ -464,7 +464,13 @@ Rules:
 - If the task requires a specific app (e.g., Baidu Maps / 百度地图) and the current screenshot does NOT show that app, your ONLY valid next action is: press Home (system_button=Home), then open the correct app.
 - NEVER execute task-specific actions (type text, tap search results, tap navigation buttons) while the wrong app is in the foreground.
 - "Wait for the debug interface to stabilise" is NOT a valid step. Seeing a debug or developer screen means you are in the wrong app — press Home immediately and open the correct app.
-- If you see PicoClaw, a terminal, a settings screen, or any non-target interface, treat it as a wrong-app situation and navigate away before doing anything else.'''
+- If you see PicoClaw, a terminal, a settings screen, or any non-target interface, treat it as a wrong-app situation and navigate away before doing anything else.
+
+## Honesty rules for the answer action
+- ONLY use the answer action when the task outcome is LITERALLY VISIBLE in the current screenshot.
+- Do NOT fabricate or assume any information that is not shown on screen: distances, travel times, congestion indices, prices, ratings, status messages, or any other numbers/text.
+- If you cannot see clear confirmation that the task completed (e.g. navigation actively running, booking confirmed screen), do NOT answer — take the next required action instead.
+- Your answer text must describe only what is visible. Never extrapolate from partial information. If the screen shows a destination pin but navigation has not started, say so — do not invent route details.'''
 
 
 # ---------------------------------------------------------------------------
@@ -911,10 +917,11 @@ the task forward.
 You will be given:
 - The user's task
 - The foreground app currently on screen (from ADB ground truth)
+- The actual UI elements on screen (from uiautomator dump — ground truth)
 - The VLM's plain-text reasoning (what it says it is doing)
 - The exact tool_call it proposes to execute (JSON)
 
-You must check for these common failure modes and override when found:
+You must check for these failure modes and override when found:
 
 1. WRONG APP — The foreground app is NOT the app required by the task.
    The only valid action is system_button=Home or open=<correct app>.
@@ -928,7 +935,19 @@ You must check for these common failure modes and override when found:
 inside the wrong app (e.g. searching in Google Maps instead of Baidu Maps).
    Override with system_button=Home.
 
-4. APPROVE — If none of the above apply, approve.
+4. HALLUCINATED ANSWER — The action is "answer" and the answer text describes \
+specific information (distances, times, prices, status indicators, numbers) \
+that do NOT appear in the UI elements list. Real on-screen data must appear \
+in the UI dump or be directly readable from a screenshot. If the claimed \
+details are absent from the UI elements, override with a `wait` action so \
+the agent takes one more look at the screen before concluding.
+
+5. PREMATURE ANSWER — The action is "answer" but the task goal is clearly \
+not yet achieved based on the foreground app and UI elements (e.g. task \
+requires navigation to be running but only a destination pin is shown).
+   Override with a `wait` action.
+
+6. APPROVE — If none of the above apply, approve.
 
 Respond with ONLY a JSON object, no markdown, no extra text:
 - Approve:  {"verdict": "approve"}
@@ -939,6 +958,7 @@ Respond with ONLY a JSON object, no markdown, no extra text:
 _SUPERVISOR_USER_TMPL = """\
 Task: {task}
 Foreground app (ADB): {fg_label}
+UI elements on screen (ground truth): {ui_summary}
 VLM reasoning text: {action_text}
 Proposed tool_call: {tool_call_json}
 """
@@ -960,6 +980,7 @@ class SupervisorLLM:
         fg_label: str,
         action_text: str,
         tool_call_dict: dict,
+        ui_summary: str = "",
     ) -> dict:
         """
         Returns one of:
@@ -970,6 +991,7 @@ class SupervisorLLM:
         user_msg = _SUPERVISOR_USER_TMPL.format(
             task=task,
             fg_label=fg_label,
+            ui_summary=(ui_summary or "(not available)"),
             action_text=(action_text or "").strip()[:800],
             tool_call_json=json.dumps(tool_call_dict, ensure_ascii=False),
         )
@@ -981,13 +1003,18 @@ class SupervisorLLM:
                     {"role": "user", "content": user_msg},
                 ],
                 temperature=0,
-                max_tokens=256,
+                max_tokens=300,
             )
-            raw = resp.choices[0].message.content or ""
+            raw = (resp.choices[0].message.content or "").strip()
+            if not raw:
+                print("[SUPERVISOR] empty response from API — approving by default")
+                return {"verdict": "approve"}
             parsed = _try_parse_json(raw)
             if parsed and parsed.get("verdict") in ("approve", "override"):
                 return parsed
+            print(f"[SUPERVISOR] unexpected response format: {raw[:120]}")
         except Exception as _e:
             print(f"[SUPERVISOR] error — approving by default: {_e}")
         return {"verdict": "approve"}
+
 

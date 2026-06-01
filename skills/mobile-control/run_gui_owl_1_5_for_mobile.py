@@ -368,36 +368,69 @@ def main():
             continue
         action_parameter = action["arguments"]
 
-        # 3b. Supervisor validation — fast text LLM checks intent vs. tool_call.
-        # Only active when --supervisor_model is supplied.
-        if supervisor is not None:
+        # 3b. Rule-based guard — catches hallucination/wrong-action without any LLM call.
+        # Runs unconditionally so it works even when supervisor API is down.
+        _rb_override: dict | None = None
+        _proposed_action = action_parameter.get("action", "")
+
+        # (a) Intent/action mismatch: VLM says "Home/主页" but tool_call is a click
+        _home_keywords = ("home", "主页", "主屏幕", "返回桌面", "按home", "按主页")
+        if _proposed_action == "click" and any(kw in _action_text.lower() for kw in _home_keywords):
+            _rb_override = {"action": "system_button", "button": "Home"}
+            print("[RULE] Intent/action mismatch: description says Home but action is click — correcting to Home")
+
+        # (b) Premature answer with no real action taken
+        elif _proposed_action == "answer" and not any_real_action:
+            _rb_override = {"action": "system_button", "button": "Home"}
+            print("[RULE] Premature answer before any real action — pressing Home first")
+
+        if _rb_override:
+            _rb_note = (
+                f"Action: [RULE OVERRIDE] {_rb_override}\n"
+                f"<tool_call>\n{json.dumps({'name': 'mobile_use', 'arguments': _rb_override}, ensure_ascii=False)}\n</tool_call>"
+            )
+            history.append({"output": _rb_note, "image": screenshot_path})
+            if _rb_override.get("action") == "system_button" and _rb_override.get("button") == "Home":
+                adb_tools.home()
+                consecutive_waits = 0
+                time.sleep(2)
+                continue
+            action_parameter = _rb_override
+            action["arguments"] = _rb_override
+
+        # 3c. Supervisor validation — fast text LLM checks intent vs. tool_call.
+        # Passes UI dump so it can verify answer claims against actual screen content.
+        # Only active when supervisor is configured.
+        if supervisor is not None and _rb_override is None:
             _sup_verdict = supervisor.validate(
                 task=instruction,
                 fg_label=_fg_label,
                 action_text=_action_text,
                 tool_call_dict=action,
+                ui_summary=_ui_summary,
             )
             if _sup_verdict.get("verdict") == "override":
                 _reason = _sup_verdict.get("reason", "")
                 print(f"[SUPERVISOR] overriding action — {_reason}")
-                # Replace the action with the supervisor's correction
                 _override_tc = _sup_verdict.get("tool_call", {})
                 if _override_tc and "arguments" in _override_tc:
                     action = _override_tc
                     action_parameter = action["arguments"]
-                    # Inject the override into history so the VLM sees what happened
                     _sup_note = (
                         f"Action: [SUPERVISOR OVERRIDE] {_reason}\n"
                         f"<tool_call>\n{json.dumps(_override_tc, ensure_ascii=False)}\n</tool_call>"
                     )
                     history.append({"output": _sup_note, "image": screenshot_path})
-                    # Execute the corrective action immediately (typically Home)
                     if action_parameter.get("action") == "system_button" and action_parameter.get("button") == "Home":
                         adb_tools.home()
                         consecutive_waits = 0
                         time.sleep(2)
                         continue
-                    # For other overrides fall through to normal execution below
+                    elif action_parameter.get("action") == "wait":
+                        # Supervisor wants the agent to re-examine the screen
+                        print("[SUPERVISOR] forcing re-examine (wait) before answer")
+                        time.sleep(2)
+                        continue
                 else:
                     print("[SUPERVISOR] override had no valid tool_call — approving original")
             else:
