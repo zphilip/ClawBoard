@@ -458,8 +458,12 @@ def run_agent(
 
     _log(f"Launching: {' '.join(cmd)}")
 
-    # Prepare screenshots output directory
+    # Clean up any leftover screenshots/task-dirs from previous runs before
+    # starting fresh.  This runs at the START so stale data cannot be reused
+    # even when the previous run was killed before its own end-of-task cleanup.
     screenshots_dir = SCREENSHOTS_DIR
+    if screenshots_dir.exists():
+        shutil.rmtree(screenshots_dir, ignore_errors=True)
     screenshots_dir.mkdir(parents=True, exist_ok=True)
 
     start = time.time()
