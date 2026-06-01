@@ -122,7 +122,33 @@ class AdbTools:
                         pass
                     time.sleep(0.5)
                     continue
-                self._load_image_info(image_path)
+                # Validate that the file is a readable image before accepting.
+                # ADB failures can produce empty or non-PNG files.
+                file_size = os.path.getsize(image_path)
+                if file_size < 512:
+                    print(
+                        f"[WARN] Screenshot at {image_path!r} is suspiciously small "
+                        f"({file_size} bytes); discarding and retrying"
+                    )
+                    try:
+                        os.remove(image_path)
+                    except OSError:
+                        pass
+                    time.sleep(0.5)
+                    continue
+                try:
+                    self._load_image_info(image_path)
+                except Exception as _img_err:
+                    print(
+                        f"[WARN] Screenshot at {image_path!r} is not a valid image "
+                        f"({_img_err}); discarding and retrying"
+                    )
+                    try:
+                        os.remove(image_path)
+                    except OSError:
+                        pass
+                    time.sleep(0.5)
+                    continue
                 return True
             time.sleep(0.1)
         return False
