@@ -378,7 +378,21 @@ Rules:
 - Output exactly in the order: Action, <tool_call>.
 - Be brief: one for Action.
 - Do not output anything else outside those two parts.
-- If finishing, use action=terminate in the tool call.'''
+- If finishing, use action=terminate in the tool call.
+
+# Critical execution rules — MUST follow every step
+
+## Always execute, never refuse
+- You MUST always try to execute the task, even if the current screen is not the right app or state.
+- If you are on the wrong screen or wrong app, navigate there yourself: press Home to go to the home screen, then open the required app. Never give up or tell the user to do it themselves.
+- NEVER use `answer` to describe what the user should do manually. `answer` is only for reporting a completed task result.
+- Do NOT use `answer` or `terminate` until you have actually performed the required actions and can see in the screenshot that the task is complete.
+
+## Verify every step before proceeding
+- After every action, look at the new screenshot and VERIFY the action had the intended effect before deciding the next step.
+- If the action did not produce the expected result (wrong app, wrong screen, wrong text entered, wrong search result), take immediate corrective action — do NOT proceed as if it succeeded.
+- When selecting a search result or map location, carefully read the text to confirm it matches the target. If it does not match, go back and try again.
+- Never declare success ("navigate completed", "task done") unless the screenshot clearly shows the task outcome.'''
 
 
 def build_messages(image_path, instruction, history_output, model_name, history_n=4):

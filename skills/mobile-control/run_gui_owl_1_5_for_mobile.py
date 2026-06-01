@@ -240,6 +240,9 @@ def main():
     resolver_model = args.app_resolver_model
 
     history = []
+    # Set to True once any physical action (click, swipe, type, etc.) is
+    # executed.  Used to detect premature 'answer' refusals at step 0.
+    any_real_action = False
 
     for step_id in range(args.max_steps):
         print(f"\n{'='*50}")
@@ -288,21 +291,25 @@ def main():
         action_type = action_parameter["action"]
 
         if action_type == "click":
+            any_real_action = True
             adb_tools.click(
                 action_parameter["coordinate"][0],
                 action_parameter["coordinate"][1],
             )
 
         elif action_type == "long_press":
+            any_real_action = True
             adb_tools.long_press(
                 action_parameter["coordinate"][0],
                 action_parameter["coordinate"][1],
             )
 
         elif action_type == "type":
+            any_real_action = True
             adb_tools.type(action_parameter["text"])
 
         elif action_type in ("scroll", "swipe"):
+            any_real_action = True
             adb_tools.slide(
                 action_parameter["coordinate"][0],
                 action_parameter["coordinate"][1],
@@ -311,6 +318,7 @@ def main():
             )
 
         elif action_type == "system_button":
+            any_real_action = True
             button = action_parameter["button"]
             if button == "Back":
                 adb_tools.back()
@@ -327,6 +335,7 @@ def main():
             break
 
         elif action_type == "open":
+            any_real_action = True
             opened = handle_open_action(
                 action_parameter,
                 instruction,
@@ -340,6 +349,25 @@ def main():
 
         elif action_type == "answer":
             conclusion = output_text.split("<tool_call>")[0].strip()
+            # Guard: if the model gives 'answer' before performing any real
+            # actions it is refusing rather than completing the task.
+            # Inject a self-correction into history, press Home, and continue.
+            if not any_real_action:
+                print(
+                    f"[WARN] Model gave 'answer' at step {step_id} with no prior "
+                    "actions — treating as premature refusal, injecting correction."
+                )
+                correction = (
+                    "Action: I made an error — I must not give up before trying. "
+                    "I will navigate to the required app from the current screen.\n"
+                    "<tool_call>\n"
+                    '{"name": "mobile_use", "arguments": {"action": "system_button", "button": "Home"}}\n'
+                    "</tool_call>"
+                )
+                history.append({"output": correction, "image": screenshot_path})
+                adb_tools.home()
+                time.sleep(2)
+                continue
             print(f"[ANSWER] {conclusion}")
             print("[TERMINATED] Task completed.")
             break
