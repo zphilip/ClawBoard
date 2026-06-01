@@ -147,8 +147,9 @@ def load_supervisor_config() -> dict:
                 "model": sp["model"],
                 "base_url": sp.get("base_url", ""),
                 "api_key": sp.get("api_key", ""),
+                "vision": bool(sp.get("vision", False)),
             }
-            _trace(f"[config] supervisor_provider loaded: base_url={cfg['base_url']} model={cfg['model']}")
+            _trace(f"[config] supervisor_provider loaded: base_url={cfg['base_url']} model={cfg['model']} vision={cfg['vision']}")
             return cfg
     except Exception as e:
         _trace(f"[config] ERROR loading supervisor_provider: {e}")

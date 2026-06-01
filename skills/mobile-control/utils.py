@@ -918,6 +918,9 @@ You will be given:
 - The user's task
 - The foreground app currently on screen (from ADB ground truth)
 - The actual UI elements on screen (from uiautomator dump — ground truth)
+- A screenshot of the current screen (when provided — treat it as PRIMARY \
+evidence; it shows everything including WebView/canvas content that the \
+UI dump may miss)
 - The VLM's plain-text reasoning (what it says it is doing)
 - The exact tool_call it proposes to execute (JSON)
 
@@ -937,15 +940,13 @@ inside the wrong app (e.g. searching in Google Maps instead of Baidu Maps).
 
 4. HALLUCINATED ANSWER — The action is "answer" and the answer text describes \
 specific information (distances, times, prices, status indicators, numbers) \
-that do NOT appear in the UI elements list. Real on-screen data must appear \
-in the UI dump or be directly readable from a screenshot. If the claimed \
-details are absent from the UI elements, override with a `wait` action so \
-the agent takes one more look at the screen before concluding.
+that are NOT visible on screen. When a screenshot is provided, look at it \
+directly — if the claimed numbers/text are not visible on screen, override \
+with a `wait` action. When only UI elements are available, cross-check those.
 
 5. PREMATURE ANSWER — The action is "answer" but the task goal is clearly \
-not yet achieved based on the foreground app and UI elements (e.g. task \
-requires navigation to be running but only a destination pin is shown).
-   Override with a `wait` action.
+not yet achieved (e.g. task requires navigation running but only a pin is \
+shown; no confirmation screen visible). Override with a `wait` action.
 
 6. APPROVE — If none of the above apply, approve.
 
@@ -966,13 +967,17 @@ Proposed tool_call: {tool_call_json}
 
 class SupervisorLLM:
     """
-    Lightweight text-only LLM that validates each VLM step before execution.
-    Compatible with any OpenAI-compatible API (MiniMax, Qwen-plus, GPT-4o-mini…).
+    Supervisor LLM that validates each VLM step before execution.
+    Set vision=True when the supervisor model supports image input — it will
+    receive the screenshot as primary evidence, catching WebView/canvas content
+    that the uiautomator text dump misses.
+    Compatible with any OpenAI-compatible API (Qwen-VL, GPT-4o, MiniMax-VL…).
     """
 
-    def __init__(self, api_key: str, base_url: str, model: str):
+    def __init__(self, api_key: str, base_url: str, model: str, vision: bool = False):
         self.model = model
-        self._client = OpenAI(api_key=api_key, base_url=base_url, timeout=15)
+        self.vision = vision
+        self._client = OpenAI(api_key=api_key, base_url=base_url, timeout=20)
 
     def validate(
         self,
@@ -981,26 +986,46 @@ class SupervisorLLM:
         action_text: str,
         tool_call_dict: dict,
         ui_summary: str = "",
+        screenshot_path: str = "",
     ) -> dict:
         """
         Returns one of:
           {"verdict": "approve"}
           {"verdict": "override", "tool_call": {...}, "reason": "..."}
         Returns {"verdict": "approve"} on any error so as not to block execution.
+
+        When self.vision is True and screenshot_path is provided, the screenshot
+        is sent alongside the text context so the supervisor can directly verify
+        what is visible on screen (including WebView/canvas content).
         """
-        user_msg = _SUPERVISOR_USER_TMPL.format(
+        user_text = _SUPERVISOR_USER_TMPL.format(
             task=task,
             fg_label=fg_label,
             ui_summary=(ui_summary or "(not available)"),
             action_text=(action_text or "").strip()[:800],
             tool_call_json=json.dumps(tool_call_dict, ensure_ascii=False),
         )
+        # Build user message: multimodal (image + text) or plain text
+        if self.vision and screenshot_path and os.path.exists(screenshot_path):
+            try:
+                with open(screenshot_path, "rb") as _img_f:
+                    _b64 = base64.b64encode(_img_f.read()).decode()
+                user_content: Any = [
+                    {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{_b64}"}},
+                    {"type": "text", "text": user_text},
+                ]
+                print("[SUPERVISOR] sending screenshot for visual verification")
+            except Exception as _enc_err:
+                print(f"[SUPERVISOR] could not encode screenshot ({_enc_err}) — falling back to text-only")
+                user_content = user_text
+        else:
+            user_content = user_text
         try:
             resp = self._client.chat.completions.create(
                 model=self.model,
                 messages=[
                     {"role": "system", "content": _SUPERVISOR_SYSTEM},
-                    {"role": "user", "content": user_msg},
+                    {"role": "user", "content": user_content},
                 ],
                 temperature=0,
                 max_tokens=300,

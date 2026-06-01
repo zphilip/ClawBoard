@@ -255,25 +255,29 @@ def main():
     _sup_model = getattr(args, "supervisor_model", "") or ""
     _sup_api_key = getattr(args, "supervisor_api_key", "") or ""
     _sup_base_url = getattr(args, "supervisor_base_url", "") or ""
-    if not _sup_model:
-        try:
-            _cfg_path = Path(__file__).resolve().parent / "config.json"
-            with _cfg_path.open(encoding="utf-8") as _f:
-                _cfg = json.load(_f)
-            _sp = _cfg.get("supervisor_provider", {})
-            if _sp.get("model"):
-                _sup_model = _sp["model"]
-                _sup_api_key = _sup_api_key or _sp.get("api_key", "")
-                _sup_base_url = _sup_base_url or _sp.get("base_url", "")
-        except Exception:
-            pass
+    _sup_vision = False
+    # Always read config.json: vision flag always comes from config;
+    # model/key/url only filled in from config when not supplied via CLI.
+    try:
+        _cfg_path = Path(__file__).resolve().parent / "config.json"
+        with _cfg_path.open(encoding="utf-8") as _f:
+            _cfg = json.load(_f)
+        _sp = _cfg.get("supervisor_provider", {})
+        _sup_vision = bool(_sp.get("vision", False))
+        if not _sup_model and _sp.get("model"):
+            _sup_model = _sp["model"]
+            _sup_api_key = _sup_api_key or _sp.get("api_key", "")
+            _sup_base_url = _sup_base_url or _sp.get("base_url", "")
+    except Exception:
+        pass
 
     supervisor: SupervisorLLM | None = None
     if _sup_model:
         _eff_api_key = _sup_api_key or args.api_key
         _eff_base_url = _sup_base_url or args.base_url
-        supervisor = SupervisorLLM(_eff_api_key, _eff_base_url, _sup_model)
-        print(f"[SUPERVISOR] enabled — model: {_sup_model} @ {_eff_base_url}")
+        supervisor = SupervisorLLM(_eff_api_key, _eff_base_url, _sup_model, vision=_sup_vision)
+        _vis_tag = " [vision=ON]" if _sup_vision else ""
+        print(f"[SUPERVISOR] enabled — model: {_sup_model} @ {_eff_base_url}{_vis_tag}")
     else:
         print("[SUPERVISOR] disabled — set supervisor_provider.model in config.json to enable")
 
@@ -408,6 +412,7 @@ def main():
                 action_text=_action_text,
                 tool_call_dict=action,
                 ui_summary=_ui_summary,
+                screenshot_path=screenshot_path,
             )
             if _sup_verdict.get("verdict") == "override":
                 _reason = _sup_verdict.get("reason", "")
