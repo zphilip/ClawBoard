@@ -439,6 +439,9 @@ def run_agent(
     timeout: int,
     add_info: str,
     runner_script: str,
+    supervisor_model: str = "",
+    supervisor_api_key: str = "",
+    supervisor_base_url: str = "",
 ) -> dict:
     """
     Launch run_gui_owl_1_5_for_mobile.py in a subprocess, monitor its output,
@@ -455,6 +458,12 @@ def run_agent(
         "--add_info", add_info,
         "--max_steps", str(max_steps),
     ]
+    if supervisor_model:
+        cmd += [
+            "--supervisor_model", supervisor_model,
+            "--supervisor_api_key", supervisor_api_key or api_key,
+            "--supervisor_base_url", supervisor_base_url or base_url,
+        ]
 
     _log(f"Launching: {' '.join(cmd)}")
 
@@ -679,6 +688,13 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--max_steps", type=int, default=DEFAULT_MAX_STEPS)
     p.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT)
     p.add_argument("--add_info", default="")
+    p.add_argument("--supervisor_model", default="",
+                   help="Text LLM that validates each step before execution. "
+                        "E.g. 'MiniMax-Text-01'. Leave empty to disable.")
+    p.add_argument("--supervisor_api_key", default="",
+                   help="API key for supervisor LLM (defaults to --api_key).")
+    p.add_argument("--supervisor_base_url", default="",
+                   help="Base URL for supervisor LLM (defaults to --base_url).")
     p.add_argument("--dry_run", action="store_true",
                    help="Only run pre-checks, skip model inference")
     p.add_argument("--debug", action="store_true",
@@ -782,6 +798,9 @@ def main() -> int:
         timeout=args.timeout,
         add_info=args.add_info,
         runner_script=runner,
+        supervisor_model=getattr(args, "supervisor_model", ""),
+        supervisor_api_key=getattr(args, "supervisor_api_key", ""),
+        supervisor_base_url=getattr(args, "supervisor_base_url", ""),
     )
 
     # 7. Emit result JSON (consumed by OpenClaw)

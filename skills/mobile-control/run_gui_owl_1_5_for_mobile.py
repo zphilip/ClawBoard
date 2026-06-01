@@ -30,6 +30,7 @@ from utils import (
     smart_resize,
     GUIOwlWrapper,
     summarise_ui_dump,
+    SupervisorLLM,
 )
 
 
@@ -59,6 +60,15 @@ def parse_args():
                         help="Base URL for the app-resolver LLM (defaults to --base_url).")
     parser.add_argument("--app_resolver_model", type=str, default="qwen-plus",
                         help="Model name for the app-resolver LLM.")
+    # Supervisor LLM (optional) — a fast text model that validates each step
+    # before execution. Disabled when --supervisor_model is not supplied.
+    parser.add_argument("--supervisor_model", type=str, default="",
+                        help="Model name for the supervisor LLM (e.g. 'MiniMax-Text-01'). "
+                             "Leave empty to disable supervision.")
+    parser.add_argument("--supervisor_api_key", type=str, default=None,
+                        help="API key for the supervisor LLM (defaults to --api_key).")
+    parser.add_argument("--supervisor_base_url", type=str, default=None,
+                        help="Base URL for the supervisor LLM (defaults to --base_url).")
     return parser.parse_args()
 
 
@@ -240,6 +250,16 @@ def main():
     resolver_base_url = args.app_resolver_base_url or args.base_url
     resolver_model = args.app_resolver_model
 
+    # Supervisor LLM — optional; disabled when --supervisor_model is empty
+    supervisor: SupervisorLLM | None = None
+    if getattr(args, "supervisor_model", ""):
+        sup_api_key = args.supervisor_api_key or args.api_key
+        sup_base_url = args.supervisor_base_url or args.base_url
+        supervisor = SupervisorLLM(sup_api_key, sup_base_url, args.supervisor_model)
+        print(f"[SUPERVISOR] enabled — model: {args.supervisor_model}")
+    else:
+        print("[SUPERVISOR] disabled (no --supervisor_model supplied)")
+
     history = []
     # Set to True once any physical action (click, swipe, type, etc.) is
     # executed.  Used to detect premature 'answer' refusals at step 0.
@@ -330,6 +350,41 @@ def main():
             time.sleep(1)
             continue
         action_parameter = action["arguments"]
+
+        # 3b. Supervisor validation — fast text LLM checks intent vs. tool_call.
+        # Only active when --supervisor_model is supplied.
+        if supervisor is not None:
+            _sup_verdict = supervisor.validate(
+                task=instruction,
+                fg_label=_fg_label,
+                action_text=_action_text,
+                tool_call_dict=action,
+            )
+            if _sup_verdict.get("verdict") == "override":
+                _reason = _sup_verdict.get("reason", "")
+                print(f"[SUPERVISOR] overriding action — {_reason}")
+                # Replace the action with the supervisor's correction
+                _override_tc = _sup_verdict.get("tool_call", {})
+                if _override_tc and "arguments" in _override_tc:
+                    action = _override_tc
+                    action_parameter = action["arguments"]
+                    # Inject the override into history so the VLM sees what happened
+                    _sup_note = (
+                        f"Action: [SUPERVISOR OVERRIDE] {_reason}\n"
+                        f"<tool_call>\n{json.dumps(_override_tc, ensure_ascii=False)}\n</tool_call>"
+                    )
+                    history.append({"output": _sup_note, "image": screenshot_path})
+                    # Execute the corrective action immediately (typically Home)
+                    if action_parameter.get("action") == "system_button" and action_parameter.get("button") == "Home":
+                        adb_tools.home()
+                        consecutive_waits = 0
+                        time.sleep(2)
+                        continue
+                    # For other overrides fall through to normal execution below
+                else:
+                    print("[SUPERVISOR] override had no valid tool_call — approving original")
+            else:
+                print("[SUPERVISOR] approved")
 
         # 4. Rescale coordinates from 1000x1000 to actual resolution
         img = Image.open(screenshot_path)

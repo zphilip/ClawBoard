@@ -897,3 +897,97 @@ def _try_parse_json(text):
     except Exception as e:
         print(f"[WARN] JSON parse failed: {e}")
         return None
+
+
+# ---------------------------------------------------------------------------
+# Supervisor LLM — verifies each step before execution
+# ---------------------------------------------------------------------------
+
+_SUPERVISOR_SYSTEM = """\
+You are a mobile automation supervisor. Your only job is to verify that the \
+action the VLM agent is about to take is safe, correct, and actually moves \
+the task forward.
+
+You will be given:
+- The user's task
+- The foreground app currently on screen (from ADB ground truth)
+- The VLM's plain-text reasoning (what it says it is doing)
+- The exact tool_call it proposes to execute (JSON)
+
+You must check for these common failure modes and override when found:
+
+1. WRONG APP — The foreground app is NOT the app required by the task.
+   The only valid action is system_button=Home or open=<correct app>.
+   Override if the VLM is about to do anything else in the wrong app.
+
+2. INTENT/ACTION MISMATCH — The VLM says "press Home" / "返回主屏幕" / \
+"按主页" in its text but the tool_call is a `click` at a coordinate.
+   Override with system_button=Home.
+
+3. LOOPING IN WRONG APP — The VLM is clearly trying to accomplish the task \
+inside the wrong app (e.g. searching in Google Maps instead of Baidu Maps).
+   Override with system_button=Home.
+
+4. APPROVE — If none of the above apply, approve.
+
+Respond with ONLY a JSON object, no markdown, no extra text:
+- Approve:  {"verdict": "approve"}
+- Override: {"verdict": "override", "tool_call": {"name": "mobile_use", \
+"arguments": {"action": "...", ...}}, "reason": "one sentence"}
+"""
+
+_SUPERVISOR_USER_TMPL = """\
+Task: {task}
+Foreground app (ADB): {fg_label}
+VLM reasoning text: {action_text}
+Proposed tool_call: {tool_call_json}
+"""
+
+
+class SupervisorLLM:
+    """
+    Lightweight text-only LLM that validates each VLM step before execution.
+    Compatible with any OpenAI-compatible API (MiniMax, Qwen-plus, GPT-4o-mini…).
+    """
+
+    def __init__(self, api_key: str, base_url: str, model: str):
+        self.model = model
+        self._client = OpenAI(api_key=api_key, base_url=base_url, timeout=15)
+
+    def validate(
+        self,
+        task: str,
+        fg_label: str,
+        action_text: str,
+        tool_call_dict: dict,
+    ) -> dict:
+        """
+        Returns one of:
+          {"verdict": "approve"}
+          {"verdict": "override", "tool_call": {...}, "reason": "..."}
+        Returns {"verdict": "approve"} on any error so as not to block execution.
+        """
+        user_msg = _SUPERVISOR_USER_TMPL.format(
+            task=task,
+            fg_label=fg_label,
+            action_text=(action_text or "").strip()[:800],
+            tool_call_json=json.dumps(tool_call_dict, ensure_ascii=False),
+        )
+        try:
+            resp = self._client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": _SUPERVISOR_SYSTEM},
+                    {"role": "user", "content": user_msg},
+                ],
+                temperature=0,
+                max_tokens=256,
+            )
+            raw = resp.choices[0].message.content or ""
+            parsed = _try_parse_json(raw)
+            if parsed and parsed.get("verdict") in ("approve", "override"):
+                return parsed
+        except Exception as _e:
+            print(f"[SUPERVISOR] error — approving by default: {_e}")
+        return {"verdict": "approve"}
+
