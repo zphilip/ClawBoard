@@ -256,6 +256,7 @@ def main():
     _sup_api_key = getattr(args, "supervisor_api_key", "") or ""
     _sup_base_url = getattr(args, "supervisor_base_url", "") or ""
     _sup_vision = False
+    _sup_reasoning_split = False
     # Always read config.json: vision flag always comes from config;
     # model/key/url only filled in from config when not supplied via CLI.
     try:
@@ -264,6 +265,7 @@ def main():
             _cfg = json.load(_f)
         _sp = _cfg.get("supervisor_provider", {})
         _sup_vision = bool(_sp.get("vision", False))
+        _sup_reasoning_split = bool(_sp.get("reasoning_split", False))
         if not _sup_model and _sp.get("model"):
             _sup_model = _sp["model"]
             _sup_api_key = _sup_api_key or _sp.get("api_key", "")
@@ -275,9 +277,13 @@ def main():
     if _sup_model:
         _eff_api_key = _sup_api_key or args.api_key
         _eff_base_url = _sup_base_url or args.base_url
-        supervisor = SupervisorLLM(_eff_api_key, _eff_base_url, _sup_model, vision=_sup_vision)
+        supervisor = SupervisorLLM(
+            _eff_api_key, _eff_base_url, _sup_model,
+            vision=_sup_vision, reasoning_split=_sup_reasoning_split,
+        )
         _vis_tag = " [vision=ON]" if _sup_vision else ""
-        print(f"[SUPERVISOR] enabled — model: {_sup_model} @ {_eff_base_url}{_vis_tag}")
+        _rs_tag = " [reasoning_split=ON]" if _sup_reasoning_split else ""
+        print(f"[SUPERVISOR] enabled — model: {_sup_model} @ {_eff_base_url}{_vis_tag}{_rs_tag}")
     else:
         print("[SUPERVISOR] disabled — set supervisor_provider.model in config.json to enable")
 

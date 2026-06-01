@@ -1030,15 +1030,23 @@ Proposed tool_call: {tool_call_json}
 class SupervisorLLM:
     """
     Supervisor LLM that validates each VLM step before execution.
-    Set vision=True when the supervisor model supports image input — it will
-    receive the screenshot as primary evidence, catching WebView/canvas content
-    that the uiautomator text dump misses.
-    Compatible with any OpenAI-compatible API (Qwen-VL, GPT-4o, MiniMax-VL…).
+    Set vision=True when the supervisor model supports image input.
+    Set reasoning_split=True for models that support the MiniMax/reasoning_split
+    parameter (MiniMax-M3, etc.) — this separates chain-of-thought into
+    reasoning_details so that content contains ONLY the JSON verdict.
     """
 
-    def __init__(self, api_key: str, base_url: str, model: str, vision: bool = False):
+    def __init__(
+        self,
+        api_key: str,
+        base_url: str,
+        model: str,
+        vision: bool = False,
+        reasoning_split: bool = False,
+    ):
         self.model = model
         self.vision = vision
+        self.reasoning_split = reasoning_split
         self._client = OpenAI(api_key=api_key, base_url=base_url, timeout=20)
 
     def validate(
@@ -1083,6 +1091,9 @@ class SupervisorLLM:
         else:
             user_content = user_text
         try:
+            _extra_body: dict = {}
+            if self.reasoning_split:
+                _extra_body["reasoning_split"] = True
             resp = self._client.chat.completions.create(
                 model=self.model,
                 messages=[
@@ -1091,7 +1102,10 @@ class SupervisorLLM:
                 ],
                 temperature=0,
                 max_tokens=300,
+                **(dict(extra_body=_extra_body) if _extra_body else {}),
             )
+            # With reasoning_split=True, content has only the JSON verdict;
+            # the chain-of-thought is in reasoning_details (we don't need it).
             raw = (resp.choices[0].message.content or "").strip()
             if not raw:
                 print("[SUPERVISOR] empty response from API — approving by default")

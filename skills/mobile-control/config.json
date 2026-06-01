@@ -11,9 +11,9 @@
   },
   "supervisor_provider": {
     "base_url": "https://api.minimaxi.com/v1",
-    "model": "MiniMax-M3",
+    "model": "MiniMax-M2.7",
     "api_key": "",
     "vision": false,
-    "reasoning_split": true
+    "reasoning_split": false
   }
 }

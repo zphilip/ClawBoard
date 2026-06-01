@@ -148,8 +148,9 @@ def load_supervisor_config() -> dict:
                 "base_url": sp.get("base_url", ""),
                 "api_key": sp.get("api_key", ""),
                 "vision": bool(sp.get("vision", False)),
+                "reasoning_split": bool(sp.get("reasoning_split", False)),
             }
-            _trace(f"[config] supervisor_provider loaded: base_url={cfg['base_url']} model={cfg['model']} vision={cfg['vision']}")
+            _trace(f"[config] supervisor_provider loaded: base_url={cfg['base_url']} model={cfg['model']} vision={cfg['vision']} reasoning_split={cfg['reasoning_split']}")
             return cfg
     except Exception as e:
         _trace(f"[config] ERROR loading supervisor_provider: {e}")
