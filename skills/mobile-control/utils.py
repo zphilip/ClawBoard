@@ -988,9 +988,30 @@ UI dump may miss)
 
 You must check for these failure modes and override when found:
 
+0. WRONG OPEN TARGET — The action is `open` and the `text` field names an app \
+that is WRONG or ambiguous for the task.
+   Common confusions that must be caught:
+   • '百度' (Baidu Search/Browser, com.baidu.searchbox) is NOT '百度地图' \
+(Baidu Maps, com.baidu.BaiduMap).
+   • '高德' is NOT '高德地图' (Amap/AutoNavi Maps).
+   • Any partial alias that resolves to a different category of app than what \
+the task requires (search engine vs. map, browser vs. travel app, etc.).
+   When "Installed apps on device" is provided, check whether the exact open \
+target exists in that list. If the target is absent or is a known alias for \
+the wrong app, override with open using the precise app name from the task \
+instruction. Exact match is required — do not let shorter aliases slip through.
+
 1. WRONG APP — The foreground app is NOT the app required by the task.
-   The only valid action is system_button=Home or open=<correct app>.
-   Override if the VLM is about to do anything else in the wrong app.
+   EXCEPTION — System UI overlays are NOT wrong-app situations; they are \
+mandatory dialogs that must be handled in place:
+   • com.android.permissioncontroller — permission dialog; agent should tap \
+the appropriate Allow / Deny / Grant button.
+   • com.android.systemui — system notification or status-bar overlay.
+   • Any launcher (net.oneplus.launcher, com.android.launcher*, \
+com.miui.home, com.huawei.android.launcher, etc.) — home screen reached \
+normally; agent should open the correct app.
+   For all other wrong-app foreground packages, the only valid override is \
+system_button=Home or open=<correct app>.
 
 2. INTENT/ACTION MISMATCH — The VLM says "press Home" / "返回主屏幕" / \
 "按主页" in its text but the tool_call is a `click` at a coordinate.
@@ -1057,6 +1078,7 @@ class SupervisorLLM:
         tool_call_dict: dict,
         ui_summary: str = "",
         screenshot_path: str = "",
+        installed_apps_hint: str = "",
     ) -> dict:
         """
         Returns one of:
@@ -1067,6 +1089,10 @@ class SupervisorLLM:
         When self.vision is True and screenshot_path is provided, the screenshot
         is sent alongside the text context so the supervisor can directly verify
         what is visible on screen (including WebView/canvas content).
+
+        installed_apps_hint: comma-separated display names of installed apps on
+        the device.  Passed when the proposed action is ``open`` so the
+        supervisor can verify the open target against actual installed apps.
         """
         user_text = _SUPERVISOR_USER_TMPL.format(
             task=task,
@@ -1075,6 +1101,8 @@ class SupervisorLLM:
             action_text=(action_text or "").strip()[:800],
             tool_call_json=json.dumps(tool_call_dict, ensure_ascii=False),
         )
+        if installed_apps_hint:
+            user_text += f"\nInstalled apps on device: {installed_apps_hint}"
         # Build user message: multimodal (image + text) or plain text
         if self.vision and screenshot_path and os.path.exists(screenshot_path):
             try:

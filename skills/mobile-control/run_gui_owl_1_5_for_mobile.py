@@ -304,6 +304,18 @@ def main():
         "PicoClaw", "picoclaw", "调试", "开发者",
     ]
 
+    # Cache installed app display-names once for the supervisor's open-target check.
+    # Only fetched when supervisor is active to avoid unnecessary ADB latency.
+    _cached_sup_app_names: list[str] = []
+    if supervisor is not None:
+        try:
+            _inst_pkgs = adb_tools.get_package_name(all_packages=True)
+            _cached_sup_app_names = [
+                PACKAGES_NAME_DICT[p][0] for p in _inst_pkgs if p in PACKAGES_NAME_DICT
+            ]
+        except Exception:
+            pass
+
     for step_id in range(args.max_steps):
         print(f"\n{'='*50}")
         print(f"STEP {step_id}")
@@ -415,6 +427,9 @@ def main():
         # Passes UI dump so it can verify answer claims against actual screen content.
         # Only active when supervisor is configured.
         if supervisor is not None and _rb_override is None:
+            _sup_apps_hint = ""
+            if _proposed_action == "open" and _cached_sup_app_names:
+                _sup_apps_hint = ", ".join(_cached_sup_app_names[:60])
             _sup_verdict = supervisor.validate(
                 task=instruction,
                 fg_label=_fg_label,
@@ -422,6 +437,7 @@ def main():
                 tool_call_dict=action,
                 ui_summary=_ui_summary,
                 screenshot_path=screenshot_path,
+                installed_apps_hint=_sup_apps_hint,
             )
             if _sup_verdict.get("verdict") == "override":
                 _reason = _sup_verdict.get("reason", "")
