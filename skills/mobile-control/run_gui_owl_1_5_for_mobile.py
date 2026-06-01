@@ -250,15 +250,32 @@ def main():
     resolver_base_url = args.app_resolver_base_url or args.base_url
     resolver_model = args.app_resolver_model
 
-    # Supervisor LLM — optional; disabled when --supervisor_model is empty
+    # Supervisor LLM — CLI args take precedence; fall back to config.json
+    # supervisor_provider section so it works even when called directly.
+    _sup_model = getattr(args, "supervisor_model", "") or ""
+    _sup_api_key = getattr(args, "supervisor_api_key", "") or ""
+    _sup_base_url = getattr(args, "supervisor_base_url", "") or ""
+    if not _sup_model:
+        try:
+            _cfg_path = Path(__file__).resolve().parent / "config.json"
+            with _cfg_path.open(encoding="utf-8") as _f:
+                _cfg = json.load(_f)
+            _sp = _cfg.get("supervisor_provider", {})
+            if _sp.get("model"):
+                _sup_model = _sp["model"]
+                _sup_api_key = _sup_api_key or _sp.get("api_key", "")
+                _sup_base_url = _sup_base_url or _sp.get("base_url", "")
+        except Exception:
+            pass
+
     supervisor: SupervisorLLM | None = None
-    if getattr(args, "supervisor_model", ""):
-        sup_api_key = args.supervisor_api_key or args.api_key
-        sup_base_url = args.supervisor_base_url or args.base_url
-        supervisor = SupervisorLLM(sup_api_key, sup_base_url, args.supervisor_model)
-        print(f"[SUPERVISOR] enabled — model: {args.supervisor_model}")
+    if _sup_model:
+        _eff_api_key = _sup_api_key or args.api_key
+        _eff_base_url = _sup_base_url or args.base_url
+        supervisor = SupervisorLLM(_eff_api_key, _eff_base_url, _sup_model)
+        print(f"[SUPERVISOR] enabled — model: {_sup_model} @ {_eff_base_url}")
     else:
-        print("[SUPERVISOR] disabled (no --supervisor_model supplied)")
+        print("[SUPERVISOR] disabled — set supervisor_provider.model in config.json to enable")
 
     history = []
     # Set to True once any physical action (click, swipe, type, etc.) is
