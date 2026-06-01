@@ -495,6 +495,7 @@ def run_agent(
         }
 
     current_step_output: list[str] = []
+    current_fg_app: str = ""
 
     try:
         for raw_line in proc.stdout:  # type: ignore[union-attr]
@@ -526,8 +527,14 @@ def run_agent(
                 m = re.search(r"\d+", line)
                 step = int(m.group(0)) if m else step
                 current_step_output = []
+                current_fg_app = ""  # reset per step; will be filled by [Foreground] line
 
             current_step_output.append(line)
+
+            # Track foreground app reported by the runner (from ADB).
+            _fg_match = re.match(r"\[Foreground\]\s+(.+)", line)
+            if _fg_match:
+                current_fg_app = _fg_match.group(1).strip()
 
             # Parse action from tool_call blocks
             action_summary = _extract_action_summary(line)
@@ -544,9 +551,12 @@ def run_agent(
                 shot_rel = str(shot_path) if shot_ok else None
 
                 # Emit live progress so the agent can narrate to the user
+                _msg = f"Step {step}: {action_summary}"
+                if current_fg_app:
+                    _msg += f"  [Foreground: {current_fg_app}]"
                 _emit_progress(
                     step, action_summary,
-                    f"Step {step}: {action_summary}",
+                    _msg,
                     screenshot=shot_rel,
                 )
                 _debug(f"action parsed: {action_summary}")
