@@ -111,10 +111,24 @@ class AdbTools:
 
     def get_ui_dump(self) -> str:
         """
-        Dump the current UI accessibility hierarchy via uiautomator and return
-        the raw XML string.  Returns '' on failure (WebView, game engines, or
-        ADB error).  The dump is pulled to a temp file to avoid path conflicts
-        when multiple devices are connected.
+        Dump the current UI accessibility hierarchy and return the raw XML
+        string.  Tries ``adb shell uiautomator dump`` first; if that returns
+        empty or very sparse XML (< 5 ``<node`` elements), falls back to the
+        ``uiautomator2`` Python library (optional — install with
+        ``pip install uiautomator2``).  Returns '' when both methods fail
+        (WebView, game engines, ADB error, etc.).
+        """
+        xml = self._get_ui_dump_adb()
+        if not xml or xml.count("<node") < 5:
+            xml_u2 = self._get_ui_dump_u2()
+            if xml_u2 and xml_u2.count("<node") > xml.count("<node"):
+                return xml_u2
+        return xml
+
+    def _get_ui_dump_adb(self) -> str:
+        """
+        Dump UI hierarchy via ``adb shell uiautomator dump``.
+        Returns the raw XML string or '' on failure.
         """
         device_flag = f" -s {self.device}" if self.device else ""
         remote = "/sdcard/window_dump.xml"
@@ -138,6 +152,24 @@ class AdbTools:
             os.unlink(local)
             return xml
         except Exception:
+            return ""
+
+    def _get_ui_dump_u2(self) -> str:
+        """
+        Fallback UI dump via the ``uiautomator2`` Python library.
+        Requires ``pip install uiautomator2`` and the atx-agent running on
+        the device (installed automatically on first ``u2.connect()``).
+        Returns '' if the library is not installed or the connection fails.
+        """
+        try:
+            import uiautomator2 as u2  # optional dependency
+            d = u2.connect(self.device) if self.device else u2.connect()
+            xml = d.dump_hierarchy()
+            return xml or ""
+        except ImportError:
+            return ""
+        except Exception as _e:
+            print(f"[UI DUMP] uiautomator2 fallback failed: {_e}")
             return ""
 
     # -- helpers ----------------------------------------------------------
@@ -1139,9 +1171,23 @@ class SupervisorLLM:
                 print("[SUPERVISOR] empty response from API — approving by default")
                 return {"verdict": "approve"}
             parsed = _try_parse_json(raw)
-            if parsed and parsed.get("verdict") in ("approve", "override"):
-                return parsed
-            print(f"[SUPERVISOR] unexpected response format: {raw[:120]}")
+            if parsed:
+                v = str(parsed.get("verdict", "")).lower()
+                # Normalise past-tense forms ("approved" → "approve", etc.)
+                if v in ("approve", "approved"):
+                    return {"verdict": "approve"}
+                if v in ("override", "overridden"):
+                    return dict(parsed, verdict="override")
+            # Last-resort keyword scan — model output chain-of-thought prose
+            # instead of bare JSON (happens even with reasoning_split=True on
+            # some model versions).  Scan the final 300 chars for a verdict.
+            _tail = raw[-300:].lower()
+            if re.search(r'\b(approve|approved)\b', _tail) and "override" not in _tail:
+                return {"verdict": "approve"}
+            if "override" in _tail:
+                print(f"[SUPERVISOR] prose override detected but cannot parse action — approving: {raw[:80]!r}")
+            else:
+                print(f"[SUPERVISOR] unexpected response format: {raw[:120]!r}")
         except Exception as _e:
             print(f"[SUPERVISOR] error — approving by default: {_e}")
         return {"verdict": "approve"}
