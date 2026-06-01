@@ -28,7 +28,8 @@ from utils import (
     build_messages,
     resolve_app_name_via_llm,
     smart_resize,
-    GUIOwlWrapper
+    GUIOwlWrapper,
+    summarise_ui_dump,
 )
 
 
@@ -256,6 +257,15 @@ def main():
     for step_id in range(args.max_steps):
         print(f"\n{'='*50}")
         print(f"STEP {step_id}")
+
+        # ADB foreground-app check — get ground truth before screenshot + VLM.
+        _fg_pkg = adb_tools.get_foreground_package()
+        if _fg_pkg:
+            _fg_names = PACKAGES_NAME_DICT.get(_fg_pkg, [])
+            _fg_label = f"{_fg_pkg} ({', '.join(_fg_names)})" if _fg_names else _fg_pkg
+            print(f"[Foreground] {_fg_label}")
+        else:
+            _fg_label = ""
         print(f"{'='*50}")
 
         # 1. Capture screenshot
@@ -266,19 +276,21 @@ def main():
             time.sleep(1)
             continue
 
-        # 1b. ADB foreground-app check — know the ground truth before asking the VLM.
-        _fg_pkg = adb_tools.get_foreground_package()
-        if _fg_pkg:
-            _fg_names = PACKAGES_NAME_DICT.get(_fg_pkg, [])
-            _fg_label = f"{_fg_pkg} ({', '.join(_fg_names)})" if _fg_names else _fg_pkg
-            print(f"[ADB] Foreground app: {_fg_label}")
+        # 1b. UI accessibility dump — gives the VLM exact element bounds and labels.
+        # Falls back gracefully (empty string) for WebView / game-engine screens.
+        _ui_xml = adb_tools.get_ui_dump()
+        _ui_summary = summarise_ui_dump(_ui_xml)
+        if _ui_summary:
+            _node_count = _ui_summary.count("\n")
+            print(f"[UI dump] {_node_count} interactive elements found")
         else:
-            _fg_label = ""
+            print("[UI dump] No accessibility data (WebView or ADB error — screenshot only)")
 
         # 2. Build messages and call the VLM
         messages = build_messages(
             screenshot_path, instruction, history, args.model,
             foreground_pkg=_fg_label,
+            ui_summary=_ui_summary,
         )
 
         vllm = GUIOwlWrapper(args.api_key, args.base_url, args.model)

@@ -12,7 +12,9 @@ import math
 import os
 import re
 import subprocess
+import tempfile
 import time
+import xml.etree.ElementTree as ET
 from datetime import datetime
 from typing import Any, Optional
 import abc
@@ -106,6 +108,37 @@ class AdbTools:
             except Exception:
                 pass
         return ""
+
+    def get_ui_dump(self) -> str:
+        """
+        Dump the current UI accessibility hierarchy via uiautomator and return
+        the raw XML string.  Returns '' on failure (WebView, game engines, or
+        ADB error).  The dump is pulled to a temp file to avoid path conflicts
+        when multiple devices are connected.
+        """
+        device_flag = f" -s {self.device}" if self.device else ""
+        remote = "/sdcard/window_dump.xml"
+        try:
+            # Write XML to device storage
+            r = subprocess.run(
+                f"{self.adb_path}{device_flag} shell uiautomator dump {remote}",
+                capture_output=True, text=True, shell=True, timeout=8,
+            )
+            if "ERROR" in r.stdout or "ERROR" in r.stderr:
+                return ""
+            # Pull to a temp file
+            with tempfile.NamedTemporaryFile(suffix=".xml", delete=False) as tf:
+                local = tf.name
+            subprocess.run(
+                f"{self.adb_path}{device_flag} pull {remote} {local}",
+                capture_output=True, text=True, shell=True, timeout=8,
+            )
+            with open(local, encoding="utf-8", errors="replace") as f:
+                xml = f.read()
+            os.unlink(local)
+            return xml
+        except Exception:
+            return ""
 
     # -- helpers ----------------------------------------------------------
 
@@ -434,8 +467,76 @@ Rules:
 - If you see PicoClaw, a terminal, a settings screen, or any non-target interface, treat it as a wrong-app situation and navigate away before doing anything else.'''
 
 
+# ---------------------------------------------------------------------------
+# UI hierarchy helpers
+# ---------------------------------------------------------------------------
+
+def summarise_ui_dump(xml: str, max_nodes: int = 60) -> str:
+    """
+    Parse the raw uiautomator XML dump and return a compact, human-readable
+    summary of the interactive UI elements on screen.
+
+    Only nodes that are either clickable, long-clickable, or carry visible text
+    are included.  The output is intentionally terse so it fits comfortably
+    inside the VLM prompt without crowding the screenshot context.
+
+    Returns '' if the XML cannot be parsed or contains no useful nodes.
+    """
+    if not xml:
+        return ""
+    try:
+        root = ET.fromstring(xml)
+    except ET.ParseError:
+        return ""
+
+    lines: list[str] = []
+    for node in root.iter("node"):
+        attrib = node.attrib
+        clickable = attrib.get("clickable") == "true"
+        long_clickable = attrib.get("long-clickable") == "true"
+        text = (attrib.get("text") or "").strip()
+        content_desc = (attrib.get("content-desc") or "").strip()
+        cls = attrib.get("class", "").rsplit(".", 1)[-1]   # e.g. "Button"
+        bounds = attrib.get("bounds", "")
+        resource_id = attrib.get("resource-id", "")
+        # Derive a short id (strip package prefix)
+        short_id = resource_id.split("/")[-1] if "/" in resource_id else resource_id
+        enabled = attrib.get("enabled") == "true"
+
+        # Skip nodes with nothing useful to show
+        label = text or content_desc
+        if not label and not clickable and not long_clickable:
+            continue
+        if not enabled:
+            continue
+
+        parts: list[str] = [f"[{cls}]"]
+        if label:
+            parts.append(f'"{label}"')
+        if short_id:
+            parts.append(f"id={short_id}")
+        if bounds:
+            parts.append(f"bounds={bounds}")
+        flags: list[str] = []
+        if clickable:
+            flags.append("clickable")
+        if long_clickable:
+            flags.append("long-clickable")
+        if flags:
+            parts.append(" ".join(flags))
+        lines.append("  " + "  ".join(parts))
+
+        if len(lines) >= max_nodes:
+            lines.append(f"  ... (truncated at {max_nodes} nodes)")
+            break
+
+    if not lines:
+        return ""
+    return "UI elements on screen:\n" + "\n".join(lines)
+
+
 def build_messages(image_path, instruction, history_output, model_name,
-                   history_n=4, foreground_pkg: str = ""):
+                   history_n=4, foreground_pkg: str = "", ui_summary: str = ""):
     """
     Construct the multi-turn message list for the VLM.
 
@@ -487,6 +588,8 @@ def build_messages(image_path, instruction, history_output, model_name,
             f"\n\nCurrent foreground app (from ADB): {foreground_pkg}\n"
             f"Verify this matches the app required by the task before acting."
         )
+    if ui_summary:
+        instruction_prompt += f"\n\n{ui_summary}\nUse the bounds and resource IDs above to choose exact tap coordinates instead of guessing from the screenshot alone."
 
     # Assemble messages
     messages = [
