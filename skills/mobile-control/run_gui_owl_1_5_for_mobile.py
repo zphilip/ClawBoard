@@ -69,6 +69,9 @@ def parse_args():
                         help="API key for the supervisor LLM (defaults to --api_key).")
     parser.add_argument("--supervisor_base_url", type=str, default=None,
                         help="Base URL for the supervisor LLM (defaults to --base_url).")
+    parser.add_argument("--max-context-size", type=int, default=None,
+                        help="Override VLM context window size (tokens). "
+                             "Activates compact mode when ≤2048.")
     return parser.parse_args()
 
 
@@ -257,8 +260,8 @@ def main():
     _sup_base_url = getattr(args, "supervisor_base_url", "") or ""
     _sup_vision = False
     _sup_reasoning_split = False
-    # max_context_size for the VLM (read from the matching provider config).
-    _vlm_max_ctx = None
+    # max_context_size for the VLM: CLI arg takes priority, then config.json.
+    _vlm_max_ctx = getattr(args, 'max_context_size', None)
     # Always read config.json: vision flag always comes from config;
     # model/key/url only filled in from config when not supplied via CLI.
     try:
@@ -274,11 +277,13 @@ def main():
             _sup_base_url = _sup_base_url or _sp.get("base_url", "")
         # Determine which provider the runner was launched with and pull its
         # max_context_size so GUIOwlWrapper can trim content proactively.
-        for _pkey in ("provider", "fallback_provider"):
-            _prov = _cfg.get(_pkey, {})
-            if _prov.get("base_url") == args.base_url or _prov.get("model") == args.model:
-                _vlm_max_ctx = _prov.get("max_context_size") or None
-                break
+        # Only override if CLI did not supply --max-context-size.
+        if _vlm_max_ctx is None:
+            for _pkey in ("provider", "fallback_provider"):
+                _prov = _cfg.get(_pkey, {})
+                if _prov.get("base_url") == args.base_url or _prov.get("model") == args.model:
+                    _vlm_max_ctx = _prov.get("max_context_size") or None
+                    break
     except Exception:
         pass
 

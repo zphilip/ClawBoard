@@ -63,6 +63,7 @@ def _trace(msg: str) -> None:
 DEFAULT_BASE_URL = "http://apicn.aiworm.cn:8809/v1"
 DEFAULT_MODEL = "gui-owl"
 DEFAULT_API_KEY = "not-needed"
+DEFAULT_MAX_CONTEXT_SIZE = 2048  # gui-owl fallback model has a 2048-token context
 
 # ---------------------------------------------------------------------------
 # Skill config loader
@@ -74,7 +75,7 @@ _CONFIG_FILE = Path(__file__).parent / "config.json"
 def load_skill_config() -> dict:
     """
     Load provider settings from config.json next to this script.
-    Returns a dict with keys: base_url, model, api_key.
+    Returns a dict with keys: base_url, model, api_key, max_context_size.
 
     Resolution order:
       1. If 'provider' exists and has a non-empty api_key → use provider.
@@ -86,6 +87,7 @@ def load_skill_config() -> dict:
         "base_url": DEFAULT_BASE_URL,
         "model": DEFAULT_MODEL,
         "api_key": DEFAULT_API_KEY,
+        "max_context_size": DEFAULT_MAX_CONTEXT_SIZE,
     }
     if not _CONFIG_FILE.exists():
         _trace(f"[config] config.json not found at {_CONFIG_FILE} — using hard-coded fallback")
@@ -102,7 +104,9 @@ def load_skill_config() -> dict:
             fallback["model"] = fp["model"]
         if "api_key" in fp:
             fallback["api_key"] = fp["api_key"]
-        _trace(f"[config] fallback_provider loaded: base_url={fallback['base_url']} model={fallback['model']}")
+        if fp.get("max_context_size"):
+            fallback["max_context_size"] = int(fp["max_context_size"])
+        _trace(f"[config] fallback_provider loaded: base_url={fallback['base_url']} model={fallback['model']} max_context_size={fallback['max_context_size']}")
 
         # Use primary provider only if it has a non-empty api_key
         provider = data.get("provider", {})
@@ -118,7 +122,9 @@ def load_skill_config() -> dict:
             if provider.get("model"):
                 cfg["model"] = provider["model"]
             cfg["api_key"] = provider["api_key"]
-            _trace(f"[config] SELECTED primary provider: base_url={cfg['base_url']} model={cfg['model']}")
+            # Primary provider is typically a large-context model—don't cap it.
+            cfg["max_context_size"] = provider.get("max_context_size") or None
+            _trace(f"[config] SELECTED primary provider: base_url={cfg['base_url']} model={cfg['model']} max_context_size={cfg['max_context_size']}")
             return cfg
 
         # No valid primary provider — use fallback
@@ -469,6 +475,7 @@ def run_agent(
     supervisor_model: str = "",
     supervisor_api_key: str = "",
     supervisor_base_url: str = "",
+    max_context_size: Optional[int] = None,
 ) -> dict:
     """
     Launch run_gui_owl_1_5_for_mobile.py in a subprocess, monitor its output,
@@ -491,6 +498,8 @@ def run_agent(
             "--supervisor_api_key", supervisor_api_key or api_key,
             "--supervisor_base_url", supervisor_base_url or base_url,
         ]
+    if max_context_size is not None:
+        cmd += ["--max-context-size", str(max_context_size)]
 
     _log(f"Launching: {' '.join(cmd)}")
 
@@ -722,6 +731,11 @@ def parse_args() -> argparse.Namespace:
                    help="API key for supervisor LLM (defaults to --api_key).")
     p.add_argument("--supervisor_base_url", default="",
                    help="Base URL for supervisor LLM (defaults to --base_url).")
+    p.add_argument("--max-context-size", type=int,
+                   default=skill_cfg.get("max_context_size"),
+                   dest="max_context_size",
+                   help="VLM context window size (tokens). Activates compact mode when ≤2048. "
+                        "Defaults to config.json value or 2048 for the built-in fallback model.")
     p.add_argument("--dry_run", action="store_true",
                    help="Only run pre-checks, skip model inference")
     p.add_argument("--debug", action="store_true",
@@ -836,6 +850,7 @@ def main() -> int:
         supervisor_model=sup_model,
         supervisor_api_key=sup_api_key,
         supervisor_base_url=sup_base_url,
+        max_context_size=args.max_context_size or None,
     )
 
     # 7. Emit result JSON (consumed by OpenClaw)
