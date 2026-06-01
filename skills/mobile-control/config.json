@@ -10,8 +10,8 @@
     "api_key": "not-needed"
   },
   "supervisor_provider": {
-    "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-    "model": "qwen-plus",
-    "api_key": ""
+    "base_url": "https://api.minimaxi.com/v1",
+    "model": "MiniMax-M2.7",
+    "api_key": "sk-cp-9ePeC0G4DL6RDuSLFf43iD1cmyrUisCQMRDTDw4R432x1oC4Frf-kvxmml2xv5Sj7vW46nvXVXVj4Pdw7nw4Fwudr8okASmnnJ5YML1SIHzwvRj6mwNHBec"
   }
 }
