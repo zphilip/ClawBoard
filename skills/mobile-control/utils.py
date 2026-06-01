@@ -750,6 +750,7 @@ class GUIOwlWrapper(LlmWrapper, MultimodalLlmWrapper):
             model_name: str,
             max_retry: int = 10,
             temperature: float = 0.0,
+            max_context_size: Optional[int] = None,
     ):
         if max_retry <= 0:
             max_retry = 10
@@ -757,6 +758,9 @@ class GUIOwlWrapper(LlmWrapper, MultimodalLlmWrapper):
         self.max_retry = min(max_retry, 10)
         self.temperature = temperature
         self.model = model_name
+        # When set, used to calculate initial image budget and detect when text
+        # alone exceeds the context so we trim history instead of the image.
+        self.max_context_size: Optional[int] = max_context_size
         self.bot = OpenAI(
             api_key=api_key,
             base_url=base_url,
@@ -775,7 +779,20 @@ class GUIOwlWrapper(LlmWrapper, MultimodalLlmWrapper):
           converted_messages.append({'role': message['role'], 'content': new_content})
 
       return converted_messages
-    
+
+    @staticmethod
+    def _trim_payload_history(original_payload: list, keep_n: int) -> list:
+        """
+        Return a copy of *original_payload* keeping only the last *keep_n*
+        history messages (everything between the system message and the final
+        user message).  Always keeps [0] (system) and [-1] (current user).
+        """
+        if len(original_payload) <= 2:
+            return original_payload
+        history = original_payload[1:-1]
+        trimmed = history[-keep_n:] if keep_n > 0 else []
+        return [original_payload[0]] + trimmed + [original_payload[-1]]
+
     def predict(
             self,
             text_prompt: str,
@@ -786,21 +803,31 @@ class GUIOwlWrapper(LlmWrapper, MultimodalLlmWrapper):
             self, messages = None
     ) -> tuple[str, Optional[bool], Any]:
 
-        # Compute initial max_pixels based on number of images so the first
-        # attempt already fits within the 2048-token context.
-        # Reserve 40% for output and ~700 tokens for text; split image budget evenly.
+        # Use declared context size if available; otherwise assume large model.
+        _n_ctx = self.max_context_size or 32768
+        # Initial max_pixels: budget 60% of context for input, 700 tokens for
+        # text, remainder split across images.  Clamped to [3136, 401408].
         n_images = sum(
             1
             for msg in messages
             for item in msg.get('content', [])
             if 'image' in item
         )
-        _n_ctx = 2048
-        _text_reserve = 700
-        _available = int(_n_ctx * 0.60) - _text_reserve  # tokens available for all images
-        _tokens_per_image = max(_available // max(n_images, 1), 16)
-        max_pixels = max(_tokens_per_image * 28 * 28, 3136)  # 28^2 = 784 tokens per pixel bucket
+        if self.max_context_size:
+            _text_reserve = 700
+            _available = int(_n_ctx * 0.60) - _text_reserve
+            _tokens_per_image = max(_available // max(n_images, 1), 16)
+            max_pixels = max(min(_tokens_per_image * 28 * 28, 401408), 3136)
+        else:
+            max_pixels = 401408  # unconstrained — let the model decide
+
+        # Pixels-per-token ratio for the vision encoder (28×28 = 784 px/tok).
+        _PX_PER_TOK = 28 * 28
+
         payload = self.convert_messages_format_to_openaiurl(messages, max_pixels=max_pixels)
+        # Snapshot the base payload for history trimming (re-using pre-encoded images).
+        _base_payload = list(payload)
+        _keep_n_history = len(_base_payload) - 2  # number of history slots
 
         counter = self.max_retry
         wait_seconds = self.RETRY_WAITING_SECONDS
@@ -811,21 +838,39 @@ class GUIOwlWrapper(LlmWrapper, MultimodalLlmWrapper):
             except Exception as e:
                 error_str = str(e)
                 if 'exceed_context_size_error' in error_str:
-                    # Parse actual token counts from the error to compute exact reduction
-                    import re as _re
-                    np_m = _re.search(r"'n_prompt_tokens':\s*(\d+)", error_str)
-                    nc_m = _re.search(r"'n_ctx':\s*(\d+)", error_str)
+                    np_m = re.search(r"'n_prompt_tokens':\s*(\d+)", error_str)
+                    nc_m = re.search(r"'n_ctx':\s*(\d+)", error_str)
                     if np_m and nc_m:
                         n_prompt = int(np_m.group(1))
-                        n_ctx = int(nc_m.group(1))
-                        # Target 60% of context for input, leaving 40% for output
-                        target = n_ctx * 0.60
-                        ratio = target / n_prompt if n_prompt > 0 else 0.5
-                        max_pixels = max(int(max_pixels * ratio), 3136)
+                        n_ctx   = int(nc_m.group(1))
+                        target  = int(n_ctx * 0.60)
+                        # Separate image tokens from text tokens so we only
+                        # scale the image portion, not the whole prompt.
+                        img_tok_est  = max_pixels / _PX_PER_TOK
+                        text_tok_est = n_prompt - img_tok_est
+                        target_img_tok = target - text_tok_est
+                        if target_img_tok <= 0 or max_pixels <= 3136:
+                            # Text alone exceeds budget — shrinking image won't help.
+                            # Trim history from the base payload progressively.
+                            _keep_n_history = max(0, _keep_n_history // 2)
+                            payload = self._trim_payload_history(_base_payload, _keep_n_history)
+                            print(
+                                f'Context exceeded by text; trimming history to '
+                                f'last {_keep_n_history} message(s) and retrying...'
+                            )
+                            if _keep_n_history == 0 and text_tok_est > target:
+                                # Even with no history it won't fit — give up now.
+                                print('Cannot fit content in context even with empty history — giving up')
+                                return ERROR_CALLING_LLM, None, None
+                        else:
+                            new_max_pixels = max(int(target_img_tok * _PX_PER_TOK), 3136)
+                            max_pixels = new_max_pixels
+                            payload = self.convert_messages_format_to_openaiurl(messages, max_pixels=max_pixels)
+                            print(f'Image too large for context, resizing to max_pixels={max_pixels} and retrying...')
                     else:
                         max_pixels = max(int(max_pixels * 0.5), 3136)
-                    print(f'Image too large for context, resizing to max_pixels={max_pixels} and retrying...')
-                    payload = self.convert_messages_format_to_openaiurl(messages, max_pixels=max_pixels)
+                        payload = self.convert_messages_format_to_openaiurl(messages, max_pixels=max_pixels)
+                        print(f'Image too large for context, resizing to max_pixels={max_pixels} and retrying...')
                 else:
                     time.sleep(wait_seconds)
                 counter -= 1

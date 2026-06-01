@@ -7,7 +7,8 @@
   "fallback_provider": {
     "base_url": "http://apicn.aiworm.cn:8809/v1",
     "model": "gui-owl",
-    "api_key": "not-needed"
+    "api_key": "not-needed",
+    "max_context_size": 2048
   },
   "supervisor_provider": {
     "base_url": "https://api.minimaxi.com/v1",

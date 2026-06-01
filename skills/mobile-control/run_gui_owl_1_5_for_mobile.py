@@ -257,6 +257,8 @@ def main():
     _sup_base_url = getattr(args, "supervisor_base_url", "") or ""
     _sup_vision = False
     _sup_reasoning_split = False
+    # max_context_size for the VLM (read from the matching provider config).
+    _vlm_max_ctx = None
     # Always read config.json: vision flag always comes from config;
     # model/key/url only filled in from config when not supplied via CLI.
     try:
@@ -270,6 +272,13 @@ def main():
             _sup_model = _sp["model"]
             _sup_api_key = _sup_api_key or _sp.get("api_key", "")
             _sup_base_url = _sup_base_url or _sp.get("base_url", "")
+        # Determine which provider the runner was launched with and pull its
+        # max_context_size so GUIOwlWrapper can trim content proactively.
+        for _pkey in ("provider", "fallback_provider"):
+            _prov = _cfg.get(_pkey, {})
+            if _prov.get("base_url") == args.base_url or _prov.get("model") == args.model:
+                _vlm_max_ctx = _prov.get("max_context_size") or None
+                break
     except Exception:
         pass
 
@@ -355,7 +364,8 @@ def main():
             ui_summary=_ui_summary,
         )
 
-        vllm = GUIOwlWrapper(args.api_key, args.base_url, args.model)
+        vllm = GUIOwlWrapper(args.api_key, args.base_url, args.model,
+                             max_context_size=_vlm_max_ctx)
         output_text, _, _ = vllm.predict_mm(messages)
 
         print(f"[MODEL OUTPUT]\n{output_text}")
