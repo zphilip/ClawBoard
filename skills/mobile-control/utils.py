@@ -699,8 +699,14 @@ def build_messages(image_path, instruction, history_output, model_name,
     history_start_idx = max(0, current_step - history_n)
 
     # Summarize early actions (before the image-history window)
+    # In compact mode keep only a tiny tail to stay inside 2k-token contexts.
+    _max_prev_steps = 3 if compact else 30
+    _max_prev_action_chars = 90 if compact else 240
+    _max_prev_total_chars = 420 if compact else 4000
     previous_actions = []
-    for i in range(history_start_idx):
+    _prev_start = max(0, history_start_idx - _max_prev_steps)
+    _omitted_prev = max(0, _prev_start)
+    for i in range(_prev_start, history_start_idx):
         if i < len(history_output):
             text = history_output[i]["output"]
             if model_name.endswith(".mem"):
@@ -709,9 +715,17 @@ def build_messages(image_path, instruction, history_output, model_name,
             else:
                 if "Action:" in text and "<tool_call>" in text:
                     text = text.split("Action:")[1].split("<tool_call>")[0].strip()
+            text = re.sub(r"\s+", " ", text).strip()
+            if len(text) > _max_prev_action_chars:
+                text = text[:_max_prev_action_chars].rstrip() + "..."
             previous_actions.append(f"Step {i + 1}: {text}")
 
+    if _omitted_prev > 0:
+        previous_actions.insert(0, f"... ({_omitted_prev} earlier steps omitted)")
+
     previous_actions_str = "\n".join(previous_actions) if previous_actions else "None"
+    if len(previous_actions_str) > _max_prev_total_chars:
+        previous_actions_str = previous_actions_str[:_max_prev_total_chars].rstrip() + "..."
 
     # Build date context
     today = datetime.today()
@@ -737,8 +751,15 @@ def build_messages(image_path, instruction, history_output, model_name,
         instruction_prompt += f"\n\n{ui_summary}\nUse the bounds and resource IDs above to choose exact tap coordinates instead of guessing from the screenshot alone."
 
     if installed_apps_hint:
+        _apps_hint = installed_apps_hint
+        if compact:
+            _apps = [x.strip() for x in installed_apps_hint.split(",") if x.strip()]
+            _apps = _apps[:12]
+            _apps_hint = ", ".join(_apps)
+            if len(_apps_hint) > 180:
+                _apps_hint = _apps_hint[:180].rstrip() + "..."
         instruction_prompt += (
-            f"\n\nInstalled apps on device (use only exact matches from this list): {installed_apps_hint}"
+            f"\n\nInstalled apps on device (use only exact matches from this list): {_apps_hint}"
         )
     if target_app_hint:
         instruction_prompt += (
