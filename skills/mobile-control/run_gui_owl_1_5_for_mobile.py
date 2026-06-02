@@ -424,6 +424,18 @@ def main():
     termination_reason = "unknown"
     for step_id in range(args.max_steps):
         _step_t0 = time.time()
+        _step_metrics: dict[str, float] = {}
+
+        def _emit_step_summary(_outcome: str) -> None:
+            _parts = [f"step={step_id}", f"outcome={_outcome}", f"total={time.time() - _step_t0:.2f}s"]
+            for _k in (
+                "screenshot", "ui_dump", "vlm_primary", "vlm_fallback",
+                "supervisor", "action",
+            ):
+                if _k in _step_metrics:
+                    _parts.append(f"{_k}={_step_metrics[_k]:.2f}s")
+            _log_t("[STEP SUMMARY] " + " | ".join(_parts))
+
         print(f"\n{'='*50}")
         print(f"STEP {step_id}")
         print(f"[STEP DEBUG] history_len={len(history)} any_real_action={any_real_action} max_steps={args.max_steps}")
@@ -445,9 +457,11 @@ def main():
         screenshot_path = os.path.join(task_dir, f"screenshot_{step_id}_{_ts}.png")
         if not adb_tools.get_screenshot(screenshot_path):
             print("[ERROR] Failed to capture screenshot. Retrying...")
+            _emit_step_summary("screenshot_failed")
             time.sleep(1)
             continue
-        _log_t(f"[TIMING] screenshot_capture={time.time() - _t_screenshot:.2f}s")
+        _step_metrics["screenshot"] = time.time() - _t_screenshot
+        _log_t(f"[TIMING] screenshot_capture={_step_metrics['screenshot']:.2f}s")
 
         # 1b. UI accessibility dump — gives the VLM exact element bounds and labels.
         # Falls back gracefully (empty string) for WebView / game-engine screens.
@@ -459,7 +473,8 @@ def main():
             print(f"[UI dump] {_node_count} interactive elements found")
         else:
             print("[UI dump] No accessibility data (WebView or ADB error — screenshot only)")
-        _log_t(f"[TIMING] ui_dump={time.time() - _t_ui_dump:.2f}s")
+        _step_metrics["ui_dump"] = time.time() - _t_ui_dump
+        _log_t(f"[TIMING] ui_dump={_step_metrics['ui_dump']:.2f}s")
 
         # 2. Build messages and call the VLM
         messages = build_messages(
@@ -500,7 +515,8 @@ def main():
                     print("[VLM] primary attempt failed — retrying in 2s")
                     time.sleep(2)
             _primary_failed_after_attempt = (output_text == ERROR_CALLING_LLM)
-        _log_t(f"[TIMING] vlm_primary={time.time() - _t_primary:.2f}s")
+        _step_metrics["vlm_primary"] = time.time() - _t_primary
+        _log_t(f"[TIMING] vlm_primary={_step_metrics['vlm_primary']:.2f}s")
         _provider_used = f"primary:{args.model} @ {args.base_url}"
 
         # If primary provider failed, try the fallback (e.g. local gui-owl).
@@ -547,7 +563,8 @@ def main():
                     time.sleep(2)
             if output_text == ERROR_CALLING_LLM:
                 print("[VLM] fallback exhausted all retries")
-            _log_t(f"[TIMING] vlm_fallback={time.time() - _t_fallback:.2f}s")
+            _step_metrics["vlm_fallback"] = time.time() - _t_fallback
+            _log_t(f"[TIMING] vlm_fallback={_step_metrics['vlm_fallback']:.2f}s")
             _provider_used = f"fallback:{_fb_model} @ {_fb_base_url}"
         elif output_text == ERROR_CALLING_LLM:
             print("[VLM] primary failed and no fallback provider is configured")
@@ -579,6 +596,7 @@ def main():
             history.append({"output": _correction, "image": screenshot_path})
             adb_tools.home()
             consecutive_waits = 0
+            _emit_step_summary("wrong_screen_home_recovery")
             time.sleep(2)
             continue
 
@@ -588,6 +606,7 @@ def main():
         except ValueError as e:
             print(f"[WARN] Could not parse action: {e} — skipping step")
             history.append({"output": output_text, "image": screenshot_path})
+            _emit_step_summary("parse_failed")
             time.sleep(1)
             continue
         action_parameter = action["arguments"]
@@ -647,6 +666,7 @@ def main():
                 else:
                     print("[ACTION EXEC] RULE override -> Home done")
                 consecutive_waits = 0
+                _emit_step_summary("rule_override_home")
                 time.sleep(2)
                 continue
             action_parameter = _rb_override
@@ -673,7 +693,8 @@ def main():
             except Exception as _sup_err:
                 print(f"[SUPERVISOR] error during validation ({_sup_err!r}) — approving by default")
                 _sup_verdict = {"verdict": "approve"}
-            _log_t(f"[TIMING] supervisor_validate={time.time() - _t_supervisor:.2f}s")
+            _step_metrics["supervisor"] = time.time() - _t_supervisor
+            _log_t(f"[TIMING] supervisor_validate={_step_metrics['supervisor']:.2f}s")
             if _sup_verdict.get("verdict") == "override":
                 _reason = _sup_verdict.get("reason", "")
                 print(f"[SUPERVISOR] overriding action — {_reason}")
@@ -693,11 +714,13 @@ def main():
                         else:
                             print("[ACTION EXEC] SUPERVISOR override -> Home done")
                         consecutive_waits = 0
+                        _emit_step_summary("supervisor_override_home")
                         time.sleep(2)
                         continue
                     elif action_parameter.get("action") == "wait":
                         # Supervisor wants the agent to re-examine the screen
                         print("[SUPERVISOR] forcing re-examine (wait) before answer")
+                        _emit_step_summary("supervisor_forced_wait")
                         time.sleep(2)
                         continue
                 else:
@@ -715,6 +738,7 @@ def main():
                     )
                     history.append({"output": _sup_note, "image": screenshot_path})
                     consecutive_waits = 0
+                    _emit_step_summary("supervisor_fallback_home")
                     time.sleep(2)
                     continue
             else:
@@ -767,7 +791,8 @@ def main():
                 print(f"[ACTION EXEC] click {_coord} failed")
             else:
                 print(f"[ACTION EXEC] click {_coord} done")
-            _log_t(f"[TIMING] action_click={time.time() - _t_action:.2f}s")
+            _step_metrics["action"] = time.time() - _t_action
+            _log_t(f"[TIMING] action_click={_step_metrics['action']:.2f}s")
 
         elif action_type == "long_press":
             _t_action = time.time()
@@ -779,7 +804,8 @@ def main():
                 action_parameter["coordinate"][1],
             )
             print("[ACTION EXEC] long_press done" if _ok else "[ACTION EXEC] long_press failed")
-            _log_t(f"[TIMING] action_long_press={time.time() - _t_action:.2f}s")
+            _step_metrics["action"] = time.time() - _t_action
+            _log_t(f"[TIMING] action_long_press={_step_metrics['action']:.2f}s")
 
         elif action_type == "type":
             _t_action = time.time()
@@ -793,7 +819,8 @@ def main():
             else:
                 print("[ACTION EXEC] type failed_or_unverified")
                 print("[WARN] Input command may have succeeded but text was not observed in UI")
-            _log_t(f"[TIMING] action_type={time.time() - _t_action:.2f}s")
+            _step_metrics["action"] = time.time() - _t_action
+            _log_t(f"[TIMING] action_type={_step_metrics['action']:.2f}s")
 
         elif action_type in ("scroll", "swipe"):
             _t_action = time.time()
@@ -807,7 +834,8 @@ def main():
                 action_parameter["coordinate2"][1],
             )
             print("[ACTION EXEC] swipe/scroll done" if _ok else "[ACTION EXEC] swipe/scroll failed")
-            _log_t(f"[TIMING] action_swipe={time.time() - _t_action:.2f}s")
+            _step_metrics["action"] = time.time() - _t_action
+            _log_t(f"[TIMING] action_swipe={_step_metrics['action']:.2f}s")
 
         elif action_type == "system_button":
             _t_action = time.time()
@@ -827,7 +855,8 @@ def main():
                     print("[ACTION EXEC] system_button Home failed")
                 else:
                     print("[ACTION EXEC] system_button Home done")
-            _log_t(f"[TIMING] action_system_button={time.time() - _t_action:.2f}s")
+            _step_metrics["action"] = time.time() - _t_action
+            _log_t(f"[TIMING] action_system_button={_step_metrics['action']:.2f}s")
 
         elif action_type == "wait":
             _t_action = time.time()
@@ -853,15 +882,19 @@ def main():
                 else:
                     print("[ACTION EXEC] wait-recovery -> Home done")
                 consecutive_waits = 0
+                _step_metrics["action"] = time.time() - _t_action
+                _emit_step_summary("wait_recovery_home")
                 time.sleep(2)
                 continue
             time.sleep(wait_time)
-            _log_t(f"[TIMING] action_wait={time.time() - _t_action:.2f}s")
+            _step_metrics["action"] = time.time() - _t_action
+            _log_t(f"[TIMING] action_wait={_step_metrics['action']:.2f}s")
 
         elif action_type == "terminate":
             status = action_parameter.get("status", "unknown")
             print(f"[TERMINATED] Status: {status}")
             termination_reason = f"terminate_action_status={status}"
+            _emit_step_summary("terminate_action")
             break
 
         elif action_type == "open":
@@ -876,8 +909,10 @@ def main():
                 resolver_base_url,
                 resolver_model,
             )
-            _log_t(f"[TIMING] action_open={time.time() - _t_action:.2f}s")
+            _step_metrics["action"] = time.time() - _t_action
+            _log_t(f"[TIMING] action_open={_step_metrics['action']:.2f}s")
             if not opened:
+                _emit_step_summary("open_not_found")
                 continue
 
         elif action_type == "answer":
@@ -903,6 +938,7 @@ def main():
                     print("[ACTION EXEC] premature-answer recovery -> Home failed")
                 else:
                     print("[ACTION EXEC] premature-answer recovery -> Home done")
+                _emit_step_summary("premature_answer_home")
                 time.sleep(2)
                 continue
             print(f"[ANSWER] {conclusion}")
@@ -932,12 +968,14 @@ def main():
                         "</tool_call>"
                     )
                     history.append({"output": correction, "image": screenshot_path})
+                    _emit_step_summary("answer_rejected_by_supervisor")
                     continue
                 print("[SUPERVISOR] task confirmed complete")
             else:
                 print("[SUPERVISOR] completion check skipped (supervisor disabled)")
             print("[TERMINATED] Task completed.")
             termination_reason = "answer_confirmed_complete"
+            _emit_step_summary("answer_confirmed_complete")
             break
 
         elif action_type in ("call_user", "calluser", "interact"):
@@ -955,6 +993,7 @@ def main():
             action_parameter,
             os.path.join(anno_dir, f"screenshot_anno_{step_id}.png"),
         )
+        _emit_step_summary("completed")
         _log_t(f"[STEP END] step={step_id} total={time.time() - _step_t0:.2f}s")
         time.sleep(2)
     else:
