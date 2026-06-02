@@ -711,17 +711,19 @@ def pil_to_base64(image):
     image.save(buffer, format="PNG") 
     return base64.b64encode(buffer.getvalue()).decode("utf-8")
 
-def image_to_base64(image_path, max_pixels=401408):
+def image_to_base64(image_path, max_pixels=None):
     if isinstance(image_path, str) and image_path.startswith("file://"):
         image_path = image_path[7:]
     dummy_image = Image.open(image_path)
-    MIN_PIXELS=3136
-    resized_height, resized_width  = smart_resize(dummy_image.height,
-        dummy_image.width,
-        factor=28,
-        min_pixels=MIN_PIXELS,
-        max_pixels=max_pixels,)
-    dummy_image = dummy_image.resize((resized_width, resized_height))
+    if max_pixels is not None:
+        MIN_PIXELS = 3136
+        resized_height, resized_width = smart_resize(
+            dummy_image.height, dummy_image.width,
+            factor=28,
+            min_pixels=MIN_PIXELS,
+            max_pixels=max_pixels,
+        )
+        dummy_image = dummy_image.resize((resized_width, resized_height))
     return f"data:image/png;base64,{pil_to_base64(dummy_image)}"
 
 class LlmWrapper(abc.ABC):
@@ -784,7 +786,7 @@ class GUIOwlWrapper(LlmWrapper, MultimodalLlmWrapper):
             timeout=30
         )
 
-    def convert_messages_format_to_openaiurl(self, messages, max_pixels=401408):
+    def convert_messages_format_to_openaiurl(self, messages, max_pixels=None):
       converted_messages = []
       for message in messages:
           new_content = []
@@ -836,7 +838,7 @@ class GUIOwlWrapper(LlmWrapper, MultimodalLlmWrapper):
             _tokens_per_image = max(_available // max(n_images, 1), 16)
             max_pixels = max(min(_tokens_per_image * 28 * 28, 401408), 3136)
         else:
-            max_pixels = 401408  # unconstrained — let the model decide
+            max_pixels = None  # no resize — provider receives image at original resolution
 
         # Pixels-per-token ratio for the vision encoder (28×28 = 784 px/tok).
         _PX_PER_TOK = 28 * 28
@@ -873,10 +875,12 @@ class GUIOwlWrapper(LlmWrapper, MultimodalLlmWrapper):
                         target  = int(n_ctx * 0.60)
                         # Separate image tokens from text tokens so we only
                         # scale the image portion, not the whole prompt.
-                        img_tok_est  = max_pixels / _PX_PER_TOK
+                        # When no resize was applied (max_pixels is None), estimate
+                        # image tokens as n_prompt minus a text-token allowance.
+                        img_tok_est  = (n_prompt - 700) if max_pixels is None else max_pixels / _PX_PER_TOK
                         text_tok_est = n_prompt - img_tok_est
                         target_img_tok = target - text_tok_est
-                        if target_img_tok <= 0 or max_pixels <= 3136:
+                        if target_img_tok <= 0 or (max_pixels is not None and max_pixels <= 3136):
                             # Text alone exceeds budget — shrinking image won't help.
                             # Give up only if we already tried at minimum history.
                             if _history_trim_exhausted:
@@ -902,7 +906,9 @@ class GUIOwlWrapper(LlmWrapper, MultimodalLlmWrapper):
                             payload = self.convert_messages_format_to_openaiurl(messages, max_pixels=max_pixels)
                             print(f'Image too large for context, resizing to max_pixels={max_pixels} and retrying...')
                     else:
-                        max_pixels = max(int(max_pixels * 0.5), 3136)
+                        # Fallback: halve current max_pixels (or start from 401408
+                        # if image was sent at full resolution).
+                        max_pixels = max(int((max_pixels or 401408) * 0.5), 3136)
                         payload = self.convert_messages_format_to_openaiurl(messages, max_pixels=max_pixels)
                         print(f'Image too large for context, resizing to max_pixels={max_pixels} and retrying...')
                 else:
