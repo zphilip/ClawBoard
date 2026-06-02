@@ -523,6 +523,10 @@ def run_agent(
     status = "timeout"
     last_action = ""
     loop_hint_injected = False
+    end_reason = "runner_started"
+    finish_pattern_hit = ""
+    last_runner_line = ""
+    runner_termination_reason = ""
 
     try:
         proc = subprocess.Popen(
@@ -551,11 +555,24 @@ def run_agent(
         for raw_line in proc.stdout:  # type: ignore[union-attr]
             line = raw_line.rstrip()
             elapsed = time.time() - start
+            if line:
+                last_runner_line = line
+
+            # Runner-provided end reason (if available).
+            if line.startswith("[TERMINATION REASON]"):
+                runner_termination_reason = line.split("]", 1)[-1].strip()
+
+            # Explicit task completion signal from runner.
+            if line.strip() == "[TERMINATED] Task completed.":
+                status = "success"
+                end_reason = "runner_terminated_completed"
+                break
 
             # Hard timeout
             if elapsed > timeout:
                 proc.terminate()
                 status = "timeout"
+                end_reason = f"hard_timeout_elapsed={int(elapsed)}s"
                 break
 
             # Forward line to stderr for live visibility
@@ -636,6 +653,8 @@ def run_agent(
                 if re.search(pat, line, re.IGNORECASE):
                     proc.terminate()
                     status = "success"
+                    finish_pattern_hit = pat
+                    end_reason = f"finish_pattern_matched:{pat}"
                     _ts_fin = datetime.now().strftime('%Y%m%d_%H%M%S_%f')[:19]
                     shot_path = screenshots_dir / f"step_{step:03d}_{_ts_fin}_finish.png"
                     shot_ok = _take_screenshot(adb_path, device, shot_path)
@@ -652,11 +671,13 @@ def run_agent(
             for pat in SUCCESS_PATTERNS:
                 if re.search(pat, line, re.IGNORECASE):
                     status = "success"
+                    end_reason = f"success_pattern_matched:{pat}"
                     break
 
     except KeyboardInterrupt:
         proc.terminate()
         status = "error"
+        end_reason = "keyboard_interrupt"
 
     # Wait for process to exit
     try:
@@ -666,9 +687,16 @@ def run_agent(
 
     rc = proc.returncode if proc.returncode is not None else -1
 
-    if rc == 0 and status == "timeout":
-        # Script exited cleanly → treat as success
-        status = "success"
+    # IMPORTANT: clean runner exit without explicit completion marker is NOT success.
+    # This avoids false positives like "opened app at step 1" then silent exit.
+    if status == "timeout" and rc != 0 and not end_reason.startswith("hard_timeout"):
+        status = "error"
+        end_reason = f"runner_nonzero_exit rc={rc}"
+    elif status == "timeout" and rc == 0:
+        if runner_termination_reason:
+            end_reason = f"runner_exit_without_completion rc=0; {runner_termination_reason}"
+        else:
+            end_reason = "runner_exit_without_completion rc=0"
 
     # Clean up all screenshots after the task ends (success or failure).
     # Use rmtree to also remove subdirectories created by the runner
@@ -688,6 +716,16 @@ def run_agent(
     message = message_map.get(status, f"Status: {status} after {step} steps.")
     if loop_hint_injected:
         message += " (Loop detected — agent was retrying the same position.)"
+    message += f" [reason: {end_reason}]"
+
+    _log(
+        "END DEBUG | "
+        f"status={status} rc={rc} step={step} reason={end_reason} "
+        f"finish_pattern={finish_pattern_hit or 'none'} "
+        f"runner_reason={runner_termination_reason or 'none'} "
+        f"last_action={last_action or 'none'} "
+        f"last_line={last_runner_line[:200] if last_runner_line else 'none'}"
+    )
 
     return {
         "type": "result",
@@ -696,6 +734,13 @@ def run_agent(
         "last_action": last_action,
         "message": message,
         "actions": actions,
+        "debug": {
+            "end_reason": end_reason,
+            "rc": rc,
+            "finish_pattern": finish_pattern_hit,
+            "runner_termination_reason": runner_termination_reason,
+            "last_runner_line": last_runner_line,
+        },
     }
 
 

@@ -352,9 +352,11 @@ def main():
         except Exception:
             pass
 
+    termination_reason = "unknown"
     for step_id in range(args.max_steps):
         print(f"\n{'='*50}")
         print(f"STEP {step_id}")
+        print(f"[STEP DEBUG] history_len={len(history)} any_real_action={any_real_action} max_steps={args.max_steps}")
 
         # ADB foreground-app check — get ground truth before screenshot + VLM.
         _fg_pkg = adb_tools.get_foreground_package()
@@ -395,6 +397,7 @@ def main():
         vllm = GUIOwlWrapper(args.api_key, args.base_url, args.model,
                              max_context_size=_vlm_max_ctx)
         output_text, _, _ = vllm.predict_mm(messages)
+        _provider_used = f"primary:{args.model} @ {args.base_url}"
 
         # If primary provider failed, try the fallback (e.g. local gui-owl).
         if output_text == ERROR_CALLING_LLM and _fb_model:
@@ -416,6 +419,12 @@ def main():
             _fb_vllm = GUIOwlWrapper(_fb_api_key, _fb_base_url, _fb_model,
                                      max_context_size=_fb_max_ctx)
             output_text, _, _ = _fb_vllm.predict_mm(_fb_messages)
+            _provider_used = f"fallback:{_fb_model} @ {_fb_base_url}"
+
+        if output_text == ERROR_CALLING_LLM:
+            print(f"[VLM] provider used: {_provider_used} (ERROR_CALLING_LLM)")
+        else:
+            print(f"[VLM] provider used: {_provider_used}")
 
         print(f"[MODEL OUTPUT]\n{output_text}")
 
@@ -469,6 +478,8 @@ def main():
             print("[RULE] Premature answer before any real action — pressing Home first")
 
         if _rb_override:
+            if supervisor is not None:
+                print("[SUPERVISOR] skipped (rule override already applied)")
             _rb_note = (
                 f"Action: [RULE OVERRIDE] {_rb_override}\n"
                 f"<tool_call>\n{json.dumps({'name': 'mobile_use', 'arguments': _rb_override}, ensure_ascii=False)}\n</tool_call>"
@@ -642,6 +653,7 @@ def main():
         elif action_type == "terminate":
             status = action_parameter.get("status", "unknown")
             print(f"[TERMINATED] Status: {status}")
+            termination_reason = f"terminate_action_status={status}"
             break
 
         elif action_type == "open":
@@ -708,7 +720,10 @@ def main():
                     history.append({"output": correction, "image": screenshot_path})
                     continue
                 print("[SUPERVISOR] task confirmed complete")
+            else:
+                print("[SUPERVISOR] completion check skipped (supervisor disabled)")
             print("[TERMINATED] Task completed.")
+            termination_reason = "answer_confirmed_complete"
             break
 
         elif action_type in ("call_user", "calluser", "interact"):
@@ -727,7 +742,11 @@ def main():
             os.path.join(anno_dir, f"screenshot_anno_{step_id}.png"),
         )
         time.sleep(2)
+    else:
+        termination_reason = f"max_steps_reached ({args.max_steps})"
+        print(f"[TERMINATED] Reached max_steps={args.max_steps} without explicit completion.")
 
+    print(f"[TERMINATION REASON] {termination_reason}")
     print("\n[DONE] Agent execution finished.")
 
     # Clean up screenshot directories after task ends
