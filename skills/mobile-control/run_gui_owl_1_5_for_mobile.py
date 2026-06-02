@@ -240,6 +240,7 @@ def main():
 
     # Install SIGTERM handler so cleanup runs even when the parent kills us.
     def _sigterm_handler(signum, frame):
+        print("[TERMINATION REASON] sigterm_from_parent")
         _cleanup()
         raise SystemExit(0)
     signal.signal(signal.SIGTERM, _sigterm_handler)
@@ -394,9 +395,23 @@ def main():
             compact=_compact_mode,
         )
 
-        vllm = GUIOwlWrapper(args.api_key, args.base_url, args.model,
-                             max_context_size=_vlm_max_ctx)
-        output_text, _, _ = vllm.predict_mm(messages)
+        vllm = GUIOwlWrapper(
+            args.api_key,
+            args.base_url,
+            args.model,
+            max_retry=1,
+            max_context_size=_vlm_max_ctx,
+        )
+        _primary_attempts = 2
+        output_text = ERROR_CALLING_LLM
+        for _p_try in range(1, _primary_attempts + 1):
+            print(f"[VLM] primary attempt {_p_try}/{_primary_attempts}")
+            output_text, _, _ = vllm.predict_mm(messages)
+            if output_text != ERROR_CALLING_LLM:
+                break
+            if _p_try < _primary_attempts:
+                print("[VLM] primary attempt failed — retrying in 2s")
+                time.sleep(2)
         _provider_used = f"primary:{args.model} @ {args.base_url}"
 
         # If primary provider failed, try the fallback (e.g. local gui-owl).
@@ -420,7 +435,7 @@ def main():
                 _fb_api_key,
                 _fb_base_url,
                 _fb_model,
-                max_retry=3,
+                max_retry=1,
                 max_context_size=_fb_max_ctx,
             )
             _fb_attempts = 3
@@ -435,6 +450,8 @@ def main():
             if output_text == ERROR_CALLING_LLM:
                 print("[VLM] fallback exhausted all retries")
             _provider_used = f"fallback:{_fb_model} @ {_fb_base_url}"
+        elif output_text == ERROR_CALLING_LLM:
+            print("[VLM] primary failed and no fallback provider is configured")
 
         if output_text == ERROR_CALLING_LLM:
             print(f"[VLM] provider used: {_provider_used} (ERROR_CALLING_LLM)")
