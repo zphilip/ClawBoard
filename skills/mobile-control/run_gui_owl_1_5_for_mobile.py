@@ -246,6 +246,7 @@ def main():
     _skill_dir = Path(__file__).resolve().parent
     _screenshots_root = _skill_dir / "screenshots"
     _memory_root = _skill_dir / "memory_data"
+    _run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
     instruction = args.instruction
     if args.add_info:
         instruction = f"{instruction} ({args.add_info})"
@@ -481,6 +482,7 @@ def main():
             try:
                 _memory_logger.log_event({
                     "type": "step_outcome",
+                    "run_id": _run_id,
                     "step": step_id,
                     "outcome": _outcome,
                     "instruction": instruction,
