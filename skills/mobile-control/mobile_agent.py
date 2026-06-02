@@ -239,7 +239,8 @@ def _emit_progress(step: int, action: str, message: str, screenshot: Optional[st
 
 def _log(msg: str) -> None:
     """Status update on stderr (not captured by OpenClaw's JSON parser) and optional log file."""
-    line = f"[mobile-control] {msg}"
+    _now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    line = f"[{_now}] [mobile-control] {msg}"
     print(line, file=sys.stderr, flush=True)
     if _LOG_FILE:
         try:

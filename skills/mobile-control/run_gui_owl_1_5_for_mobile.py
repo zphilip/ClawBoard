@@ -35,6 +35,19 @@ from utils import (
 )
 
 
+PRIMARY_RECOVERY_COOLDOWN_SECONDS = 600  # 10 minutes
+
+
+def _ts() -> str:
+    """Human-friendly timestamp for log lines."""
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _log_t(msg: str) -> None:
+    """Print a timestamped log line."""
+    print(f"[{_ts()}] {msg}")
+
+
 
 def parse_args():
     """Parse command-line arguments."""
@@ -337,6 +350,10 @@ def main():
     any_real_action = False
     # Counts consecutive `wait` actions — used to detect a stuck agent.
     consecutive_waits = 0
+    # If the primary provider fails, suppress primary attempts for this
+    # cooldown window and use fallback directly for faster recovery.
+    _primary_cooldown_until = 0.0
+    _primary_cooldown_reason = ""
     # Rolling window of the last 5 click coordinates.
     # Used to detect a stuck loop (same coordinate tapped 3+ times in a row).
     _recent_click_coords: list[tuple] = []
@@ -406,9 +423,11 @@ def main():
 
     termination_reason = "unknown"
     for step_id in range(args.max_steps):
+        _step_t0 = time.time()
         print(f"\n{'='*50}")
         print(f"STEP {step_id}")
         print(f"[STEP DEBUG] history_len={len(history)} any_real_action={any_real_action} max_steps={args.max_steps}")
+        _log_t(f"[STEP START] step={step_id}")
 
         # ADB foreground-app check — get ground truth before screenshot + VLM.
         _fg_pkg = adb_tools.get_foreground_package()
@@ -421,15 +440,18 @@ def main():
         print(f"{'='*50}")
 
         # 1. Capture screenshot
+        _t_screenshot = time.time()
         _ts = datetime.now().strftime('%Y%m%d_%H%M%S_%f')[:19]
         screenshot_path = os.path.join(task_dir, f"screenshot_{step_id}_{_ts}.png")
         if not adb_tools.get_screenshot(screenshot_path):
             print("[ERROR] Failed to capture screenshot. Retrying...")
             time.sleep(1)
             continue
+        _log_t(f"[TIMING] screenshot_capture={time.time() - _t_screenshot:.2f}s")
 
         # 1b. UI accessibility dump — gives the VLM exact element bounds and labels.
         # Falls back gracefully (empty string) for WebView / game-engine screens.
+        _t_ui_dump = time.time()
         _ui_xml = adb_tools.get_ui_dump()
         _ui_summary = summarise_ui_dump(_ui_xml, max_nodes=_ui_max_nodes)
         if _ui_summary:
@@ -437,6 +459,7 @@ def main():
             print(f"[UI dump] {_node_count} interactive elements found")
         else:
             print("[UI dump] No accessibility data (WebView or ADB error — screenshot only)")
+        _log_t(f"[TIMING] ui_dump={time.time() - _t_ui_dump:.2f}s")
 
         # 2. Build messages and call the VLM
         messages = build_messages(
@@ -457,18 +480,32 @@ def main():
         )
         _primary_attempts = 2
         output_text = ERROR_CALLING_LLM
-        for _p_try in range(1, _primary_attempts + 1):
-            print(f"[VLM] primary attempt {_p_try}/{_primary_attempts}")
-            output_text, _, _ = vllm.predict_mm(messages)
-            if output_text != ERROR_CALLING_LLM:
-                break
-            if _p_try < _primary_attempts:
-                print("[VLM] primary attempt failed — retrying in 2s")
-                time.sleep(2)
+        _t_primary = time.time()
+        _now = time.time()
+        if _now < _primary_cooldown_until:
+            _remaining = int(_primary_cooldown_until - _now)
+            print(
+                f"[VLM] primary provider in cooldown ({_remaining}s left, reason={_primary_cooldown_reason}) — skipping primary"
+            )
+        else:
+            for _p_try in range(1, _primary_attempts + 1):
+                print(f"[VLM] primary attempt {_p_try}/{_primary_attempts}")
+                output_text, _, _ = vllm.predict_mm(messages)
+                if output_text != ERROR_CALLING_LLM:
+                    break
+                if _p_try < _primary_attempts:
+                    print("[VLM] primary attempt failed — retrying in 2s")
+                    time.sleep(2)
+        _log_t(f"[TIMING] vlm_primary={time.time() - _t_primary:.2f}s")
         _provider_used = f"primary:{args.model} @ {args.base_url}"
 
         # If primary provider failed, try the fallback (e.g. local gui-owl).
         if output_text == ERROR_CALLING_LLM and _fb_model:
+            _primary_cooldown_until = time.time() + PRIMARY_RECOVERY_COOLDOWN_SECONDS
+            _primary_cooldown_reason = "primary_error"
+            _log_t(
+                f"[VLM] entering primary cooldown for {PRIMARY_RECOVERY_COOLDOWN_SECONDS}s"
+            )
             print(f"[VLM] Primary provider failed — switching to fallback: {_fb_model}")
             _fb_compact = bool(_fb_max_ctx and _fb_max_ctx <= 2048)
             if _fb_compact and not _compact_mode:
@@ -493,6 +530,7 @@ def main():
                 max_retry=1,
                 max_context_size=_fb_max_ctx,
             )
+            _t_fallback = time.time()
             _fb_attempts = 3
             for _fb_try in range(1, _fb_attempts + 1):
                 print(f"[VLM] fallback attempt {_fb_try}/{_fb_attempts}")
@@ -504,6 +542,7 @@ def main():
                     time.sleep(2)
             if output_text == ERROR_CALLING_LLM:
                 print("[VLM] fallback exhausted all retries")
+            _log_t(f"[TIMING] vlm_fallback={time.time() - _t_fallback:.2f}s")
             _provider_used = f"fallback:{_fb_model} @ {_fb_base_url}"
         elif output_text == ERROR_CALLING_LLM:
             print("[VLM] primary failed and no fallback provider is configured")
@@ -615,6 +654,7 @@ def main():
             _sup_apps_hint = ""
             if _proposed_action == "open" and _cached_sup_app_names:
                 _sup_apps_hint = ", ".join(_cached_sup_app_names[:60])
+            _t_supervisor = time.time()
             try:
                 _sup_verdict = supervisor.validate(
                     task=instruction,
@@ -628,6 +668,7 @@ def main():
             except Exception as _sup_err:
                 print(f"[SUPERVISOR] error during validation ({_sup_err!r}) — approving by default")
                 _sup_verdict = {"verdict": "approve"}
+            _log_t(f"[TIMING] supervisor_validate={time.time() - _t_supervisor:.2f}s")
             if _sup_verdict.get("verdict") == "override":
                 _reason = _sup_verdict.get("reason", "")
                 print(f"[SUPERVISOR] overriding action — {_reason}")
@@ -688,6 +729,7 @@ def main():
         action_type = action_parameter["action"]
 
         if action_type == "click":
+            _t_action = time.time()
             any_real_action = True
             consecutive_waits = 0
             _coord = (
@@ -720,8 +762,10 @@ def main():
                 print(f"[ACTION EXEC] click {_coord} failed")
             else:
                 print(f"[ACTION EXEC] click {_coord} done")
+            _log_t(f"[TIMING] action_click={time.time() - _t_action:.2f}s")
 
         elif action_type == "long_press":
+            _t_action = time.time()
             any_real_action = True
             consecutive_waits = 0
             print("[ACTION EXEC] long_press (start)")
@@ -730,8 +774,10 @@ def main():
                 action_parameter["coordinate"][1],
             )
             print("[ACTION EXEC] long_press done" if _ok else "[ACTION EXEC] long_press failed")
+            _log_t(f"[TIMING] action_long_press={time.time() - _t_action:.2f}s")
 
         elif action_type == "type":
+            _t_action = time.time()
             any_real_action = True
             consecutive_waits = 0
             _text = str(action_parameter.get("text", ""))
@@ -742,8 +788,10 @@ def main():
             else:
                 print("[ACTION EXEC] type failed_or_unverified")
                 print("[WARN] Input command may have succeeded but text was not observed in UI")
+            _log_t(f"[TIMING] action_type={time.time() - _t_action:.2f}s")
 
         elif action_type in ("scroll", "swipe"):
+            _t_action = time.time()
             any_real_action = True
             consecutive_waits = 0
             print("[ACTION EXEC] swipe/scroll (start)")
@@ -754,8 +802,10 @@ def main():
                 action_parameter["coordinate2"][1],
             )
             print("[ACTION EXEC] swipe/scroll done" if _ok else "[ACTION EXEC] swipe/scroll failed")
+            _log_t(f"[TIMING] action_swipe={time.time() - _t_action:.2f}s")
 
         elif action_type == "system_button":
+            _t_action = time.time()
             any_real_action = True
             consecutive_waits = 0
             _recent_click_coords.clear()  # navigation resets the click-loop window
@@ -772,8 +822,10 @@ def main():
                     print("[ACTION EXEC] system_button Home failed")
                 else:
                     print("[ACTION EXEC] system_button Home done")
+            _log_t(f"[TIMING] action_system_button={time.time() - _t_action:.2f}s")
 
         elif action_type == "wait":
+            _t_action = time.time()
             wait_time = action_parameter.get("time", 2)
             consecutive_waits += 1
             if consecutive_waits >= 2:
@@ -799,6 +851,7 @@ def main():
                 time.sleep(2)
                 continue
             time.sleep(wait_time)
+            _log_t(f"[TIMING] action_wait={time.time() - _t_action:.2f}s")
 
         elif action_type == "terminate":
             status = action_parameter.get("status", "unknown")
@@ -807,6 +860,7 @@ def main():
             break
 
         elif action_type == "open":
+            _t_action = time.time()
             any_real_action = True
             consecutive_waits = 0
             opened = handle_open_action(
@@ -817,6 +871,7 @@ def main():
                 resolver_base_url,
                 resolver_model,
             )
+            _log_t(f"[TIMING] action_open={time.time() - _t_action:.2f}s")
             if not opened:
                 continue
 
@@ -895,6 +950,7 @@ def main():
             action_parameter,
             os.path.join(anno_dir, f"screenshot_anno_{step_id}.png"),
         )
+        _log_t(f"[STEP END] step={step_id} total={time.time() - _step_t0:.2f}s")
         time.sleep(2)
     else:
         termination_reason = f"max_steps_reached ({args.max_steps})"
