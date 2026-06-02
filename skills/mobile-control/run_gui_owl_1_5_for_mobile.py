@@ -22,6 +22,8 @@ from pathlib import Path
 from PIL import Image
 
 from packages import PACKAGES_NAME_DICT, NAME_PACKAGE_DICT, normalize_package_name
+from memory.logger import MemoryEventLogger
+from memory.signature import build_intent_signature, build_state_key, build_ui_fingerprint
 from utils import (
     AdbTools,
     annotate_screenshot,
@@ -243,6 +245,7 @@ def main():
     # Use .resolve() to guarantee an absolute path even if __file__ is relative.
     _skill_dir = Path(__file__).resolve().parent
     _screenshots_root = _skill_dir / "screenshots"
+    _memory_root = _skill_dir / "memory_data"
     instruction = args.instruction
     if args.add_info:
         instruction = f"{instruction} ({args.add_info})"
@@ -345,6 +348,8 @@ def main():
         print(f"[VLM] Compact mode ON (max_context_size={_vlm_max_ctx}): using compact system prompt, UI dump limited to {_ui_max_nodes} nodes")
 
     history = []
+    _intent_sig = build_intent_signature(instruction)
+    _memory_logger = MemoryEventLogger(_memory_root / "events.jsonl")
     # Set to True once any physical action (click, swipe, type, etc.) is
     # executed.  Used to detect premature 'answer' refusals at step 0.
     any_real_action = False
@@ -431,6 +436,11 @@ def main():
         _step_t0 = time.time()
         _step_metrics: dict[str, float] = {}
         _step_summary_emitted = False
+        _step_state_key = ""
+        _step_ui_fp = ""
+        _provider_used = ""
+        _step_action_type = ""
+        _step_action_args: dict = {}
 
         def _emit_step_summary(_outcome: str) -> None:
             nonlocal _step_summary_emitted
@@ -468,6 +478,34 @@ def main():
                 f"(primary={_llm_primary:.2f}s, fallback={_llm_fallback:.2f}s) | "
                 f"supervisor={_sup_total:.2f}s | supervisor_share={_sup_share:.1f}%"
             )
+            try:
+                _memory_logger.log_event({
+                    "type": "step_outcome",
+                    "step": step_id,
+                    "outcome": _outcome,
+                    "instruction": instruction,
+                    "intent_signature": _intent_sig,
+                    "foreground_pkg": _fg_pkg,
+                    "ui_fingerprint": _step_ui_fp,
+                    "state_key": _step_state_key,
+                    "provider_used": _provider_used,
+                    "action_type": _step_action_type,
+                    "action_args": _step_action_args,
+                    "metrics": {
+                        "step_total": round(time.time() - _step_t0, 4),
+                        "screenshot": round(_step_metrics.get("screenshot", 0.0), 4),
+                        "ui_dump": round(_step_metrics.get("ui_dump", 0.0), 4),
+                        "vlm_primary": round(_llm_primary, 4),
+                        "vlm_fallback": round(_llm_fallback, 4),
+                        "vlm_total": round(_llm_total, 4),
+                        "supervisor": round(_sup_total, 4),
+                        "action": round(_step_metrics.get("action", 0.0), 4),
+                        "supervisor_share": round(_sup_share, 2),
+                    },
+                })
+            except Exception:
+                # Read-only instrumentation must never affect runtime behavior.
+                pass
 
         print(f"\n{'='*50}")
         print(f"STEP {step_id}")
@@ -508,6 +546,8 @@ def main():
             print("[UI dump] No accessibility data (WebView or ADB error — screenshot only)")
         _step_metrics["ui_dump"] = time.time() - _t_ui_dump
         _log_t(f"[TIMING] ui_dump={_step_metrics['ui_dump']:.2f}s")
+        _step_ui_fp = build_ui_fingerprint(_fg_pkg, _ui_summary)
+        _step_state_key = build_state_key(_intent_sig, _step_ui_fp, "default")
 
         # 2. Build messages and call the VLM
         messages = build_messages(
@@ -643,6 +683,8 @@ def main():
             time.sleep(1)
             continue
         action_parameter = action["arguments"]
+        _step_action_type = str(action_parameter.get("action", ""))
+        _step_action_args = dict(action_parameter)
 
         # 3b. Rule-based guard — catches hallucination/wrong-action without any LLM call.
         # Runs unconditionally so it works even when supervisor API is down.
@@ -704,6 +746,8 @@ def main():
                 continue
             action_parameter = _rb_override
             action["arguments"] = _rb_override
+            _step_action_type = str(action_parameter.get("action", ""))
+            _step_action_args = dict(action_parameter)
 
         # 3c. Supervisor validation — fast text LLM checks intent vs. tool_call.
         # Passes UI dump so it can verify answer claims against actual screen content.
