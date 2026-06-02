@@ -164,7 +164,7 @@ def load_supervisor_config() -> dict:
 
 
 DEFAULT_MAX_STEPS = 20
-DEFAULT_TIMEOUT = 600  # seconds for the entire run (10 minutes)
+DEFAULT_TIMEOUT = 900  # seconds for the entire run (15 minutes)
 LOOP_THRESHOLD = 3     # same coordinate N times → inject retry hint
 ADB_IME = "com.android.adbkeyboard/.AdbIME"
 
@@ -574,6 +574,7 @@ def run_agent(
                 proc.terminate()
                 status = "timeout"
                 end_reason = f"hard_timeout_elapsed={int(elapsed)}s"
+                _log(f"Hard timeout reached at {int(elapsed)}s (limit={timeout}s); terminating runner")
                 break
 
             # Forward line to stderr for live visibility
@@ -693,7 +694,7 @@ def run_agent(
     if status == "timeout" and rc != 0 and not end_reason.startswith("hard_timeout"):
         status = "error"
         end_reason = f"runner_nonzero_exit rc={rc}"
-    elif status == "timeout" and rc == 0:
+    elif status == "timeout" and rc == 0 and not end_reason.startswith("hard_timeout"):
         if runner_termination_reason:
             end_reason = f"runner_exit_without_completion rc=0; {runner_termination_reason}"
         else:
