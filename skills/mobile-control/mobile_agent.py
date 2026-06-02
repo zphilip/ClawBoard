@@ -696,7 +696,7 @@ def run_agent(
         if runner_termination_reason:
             end_reason = f"runner_exit_without_completion rc=0; {runner_termination_reason}"
         else:
-            end_reason = "runner_exit_without_completion rc=0"
+            end_reason = f"runner_exit_without_completion rc=0; last_line={last_runner_line[:120]!r}"
 
     # Clean up all screenshots after the task ends (success or failure).
     # Use rmtree to also remove subdirectories created by the runner

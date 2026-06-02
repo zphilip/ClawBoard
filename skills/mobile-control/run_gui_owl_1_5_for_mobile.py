@@ -140,14 +140,21 @@ def rescale_coordinates(action_parameter, resized_width, resized_height):
     Convert normalized (0-1000) coordinates to actual pixel coordinates
     based on the resized image dimensions.
     """
+    _raw_coords: dict[str, list[int]] = {}
     for key in ("coordinate", "coordinate1", "coordinate2"):
         if key in action_parameter:
+            _raw_coords[key] = list(action_parameter[key])
             action_parameter[key][0] = int(
                 action_parameter[key][0] / 1000 * resized_width
             )
             action_parameter[key][1] = int(
                 action_parameter[key][1] / 1000 * resized_height
             )
+    if _raw_coords:
+        print(
+            f"[COORD DEBUG] raw={_raw_coords} -> scaled={{{', '.join(f'{k}: {action_parameter[k]}' for k in _raw_coords)}}} "
+            f"(resized={resized_width}x{resized_height})"
+        )
     return action_parameter
 
 
