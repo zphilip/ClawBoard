@@ -21,7 +21,7 @@ from pathlib import Path
 
 from PIL import Image
 
-from packages import PACKAGES_NAME_DICT, NAME_PACKAGE_DICT
+from packages import PACKAGES_NAME_DICT, NAME_PACKAGE_DICT, normalize_package_name
 from utils import (
     AdbTools,
     annotate_screenshot,
@@ -353,8 +353,21 @@ def main():
     _cached_sup_app_names: list[str] = []
     _cached_inst_app_names: list[str] = []
     _target_app_hint: str = ""
+    _target_pkg_hint: str = ""
+    _installed_pkg_set: set[str] = set()
+    _launcher_pkgs = {
+        "net.oneplus.launcher",
+        "com.android.launcher",
+        "com.android.launcher3",
+        "com.miui.home",
+        "com.huawei.android.launcher",
+        "com.oppo.launcher",
+        "com.vivo.launcher",
+        "com.samsung.android.launcher",
+    }
     try:
         _inst_pkgs = adb_tools.get_package_name(all_packages=True)
+        _installed_pkg_set = set(_inst_pkgs)
         _cached_inst_app_names = [
             PACKAGES_NAME_DICT[p][0] for p in _inst_pkgs if p in PACKAGES_NAME_DICT
         ]
@@ -378,6 +391,16 @@ def main():
             if _norm_name and _norm_name in _norm_instruction:
                 _target_app_hint = _name
                 break
+        if _target_app_hint:
+            _cand_pkgs = NAME_PACKAGE_DICT.get(normalize_package_name(_target_app_hint), [])
+            for _pkg in _cand_pkgs:
+                if _pkg in _installed_pkg_set:
+                    _target_pkg_hint = _pkg
+                    break
+            if _target_pkg_hint:
+                print(f"[TARGET APP] instruction target={_target_app_hint} package={_target_pkg_hint}")
+            else:
+                print(f"[TARGET APP] instruction target={_target_app_hint} (package unresolved)")
     except Exception:
         pass
 
@@ -540,6 +563,30 @@ def main():
         elif _proposed_action == "answer" and not any_real_action:
             _rb_override = {"action": "system_button", "button": "Home"}
             print("[RULE] Premature answer before any real action — pressing Home first")
+
+        # (c) App disambiguation/recovery guard:
+        # If the task has a clear target app package (e.g., QQ音乐), do not rely
+        # on ambiguous launcher icon taps (e.g., QQ vs QQ音乐). Force an exact
+        # open target action when on launcher or when stuck in a wrong foreground app.
+        elif _target_pkg_hint and _target_app_hint:
+            _fg_pkg_clean = (_fg_pkg or "").strip()
+            _on_launcher = _fg_pkg_clean in _launcher_pkgs
+            _in_wrong_app = bool(_fg_pkg_clean and not _on_launcher and _fg_pkg_clean != _target_pkg_hint)
+
+            if _on_launcher and _proposed_action == "click":
+                _rb_override = {"action": "open", "text": _target_app_hint}
+                print(
+                    f"[RULE] On launcher with target app {_target_app_hint} — "
+                    "replacing ambiguous click with exact open"
+                )
+            elif _in_wrong_app and _proposed_action in (
+                "wait", "click", "type", "scroll", "swipe", "long_press"
+            ):
+                _rb_override = {"action": "open", "text": _target_app_hint}
+                print(
+                    f"[RULE] Wrong foreground app {_fg_pkg_clean}; "
+                    f"forcing open target {_target_app_hint} ({_target_pkg_hint})"
+                )
 
         if _rb_override:
             if supervisor is not None:
