@@ -486,7 +486,11 @@ def main():
             )
             history.append({"output": _rb_note, "image": screenshot_path})
             if _rb_override.get("action") == "system_button" and _rb_override.get("button") == "Home":
-                adb_tools.home()
+                print("[ACTION EXEC] RULE override -> Home (start)")
+                if not adb_tools.home():
+                    print("[ACTION EXEC] RULE override -> Home failed")
+                else:
+                    print("[ACTION EXEC] RULE override -> Home done")
                 consecutive_waits = 0
                 time.sleep(2)
                 continue
@@ -526,7 +530,11 @@ def main():
                     )
                     history.append({"output": _sup_note, "image": screenshot_path})
                     if action_parameter.get("action") == "system_button" and action_parameter.get("button") == "Home":
-                        adb_tools.home()
+                        print("[ACTION EXEC] SUPERVISOR override -> Home (start)")
+                        if not adb_tools.home():
+                            print("[ACTION EXEC] SUPERVISOR override -> Home failed")
+                        else:
+                            print("[ACTION EXEC] SUPERVISOR override -> Home done")
                         consecutive_waits = 0
                         time.sleep(2)
                         continue
@@ -537,7 +545,11 @@ def main():
                         continue
                 else:
                     print("[SUPERVISOR] override had no valid tool_call — injecting Home correction")
-                    adb_tools.home()
+                    print("[ACTION EXEC] SUPERVISOR fallback -> Home (start)")
+                    if not adb_tools.home():
+                        print("[ACTION EXEC] SUPERVISOR fallback -> Home failed")
+                    else:
+                        print("[ACTION EXEC] SUPERVISOR fallback -> Home done")
                     _sup_note = (
                         "Action: [SUPERVISOR OVERRIDE] no valid tool_call — pressing Home\n"
                         "<tool_call>\n"
@@ -592,30 +604,40 @@ def main():
                 _recent_click_coords.clear()
                 time.sleep(1.5)
                 continue
-            adb_tools.click(_coord[0], _coord[1])
+            print(f"[ACTION EXEC] click {_coord} (start)")
+            if not adb_tools.click(_coord[0], _coord[1]):
+                print(f"[ACTION EXEC] click {_coord} failed")
+            else:
+                print(f"[ACTION EXEC] click {_coord} done")
 
         elif action_type == "long_press":
             any_real_action = True
             consecutive_waits = 0
-            adb_tools.long_press(
+            print("[ACTION EXEC] long_press (start)")
+            _ok = adb_tools.long_press(
                 action_parameter["coordinate"][0],
                 action_parameter["coordinate"][1],
             )
+            print("[ACTION EXEC] long_press done" if _ok else "[ACTION EXEC] long_press failed")
 
         elif action_type == "type":
             any_real_action = True
             consecutive_waits = 0
-            adb_tools.type(action_parameter["text"])
+            print("[ACTION EXEC] type (start)")
+            _ok = adb_tools.type(action_parameter["text"])
+            print("[ACTION EXEC] type done" if _ok else "[ACTION EXEC] type failed")
 
         elif action_type in ("scroll", "swipe"):
             any_real_action = True
             consecutive_waits = 0
-            adb_tools.slide(
+            print("[ACTION EXEC] swipe/scroll (start)")
+            _ok = adb_tools.slide(
                 action_parameter["coordinate"][0],
                 action_parameter["coordinate"][1],
                 action_parameter["coordinate2"][0],
                 action_parameter["coordinate2"][1],
             )
+            print("[ACTION EXEC] swipe/scroll done" if _ok else "[ACTION EXEC] swipe/scroll failed")
 
         elif action_type == "system_button":
             any_real_action = True
@@ -623,9 +645,17 @@ def main():
             _recent_click_coords.clear()  # navigation resets the click-loop window
             button = action_parameter["button"]
             if button == "Back":
-                adb_tools.back()
+                print("[ACTION EXEC] system_button Back (start)")
+                if not adb_tools.back():
+                    print("[ACTION EXEC] system_button Back failed")
+                else:
+                    print("[ACTION EXEC] system_button Back done")
             elif button == "Home":
-                adb_tools.home()
+                print("[ACTION EXEC] system_button Home (start)")
+                if not adb_tools.home():
+                    print("[ACTION EXEC] system_button Home failed")
+                else:
+                    print("[ACTION EXEC] system_button Home done")
 
         elif action_type == "wait":
             wait_time = action_parameter.get("time", 2)
@@ -644,7 +674,11 @@ def main():
                     "</tool_call>"
                 )
                 history.append({"output": _correction, "image": screenshot_path})
-                adb_tools.home()
+                print("[ACTION EXEC] wait-recovery -> Home (start)")
+                if not adb_tools.home():
+                    print("[ACTION EXEC] wait-recovery -> Home failed")
+                else:
+                    print("[ACTION EXEC] wait-recovery -> Home done")
                 consecutive_waits = 0
                 time.sleep(2)
                 continue
@@ -688,7 +722,11 @@ def main():
                     "</tool_call>"
                 )
                 history.append({"output": correction, "image": screenshot_path})
-                adb_tools.home()
+                print("[ACTION EXEC] premature-answer recovery -> Home (start)")
+                if not adb_tools.home():
+                    print("[ACTION EXEC] premature-answer recovery -> Home failed")
+                else:
+                    print("[ACTION EXEC] premature-answer recovery -> Home done")
                 time.sleep(2)
                 continue
             print(f"[ANSWER] {conclusion}")

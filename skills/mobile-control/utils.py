@@ -177,7 +177,25 @@ class AdbTools:
     def _run(self, args):
         """Run an ADB command string."""
         cmd = self.adb_path + self._device_flag + args
-        subprocess.run(cmd, capture_output=True, text=True, shell=True)
+        try:
+            res = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                shell=True,
+                timeout=10,
+            )
+            if res.returncode != 0:
+                err = (res.stderr or res.stdout or "").strip()[:180]
+                print(f"[ADB] command failed (rc={res.returncode}): {args} | {err}")
+                return False
+            return True
+        except subprocess.TimeoutExpired:
+            print(f"[ADB] command timeout (>10s): {args}")
+            return False
+        except Exception as _e:
+            print(f"[ADB] command error: {args} | {_e}")
+            return False
 
     def _load_image_info(self, path):
         """Cache the width and height of the screenshot."""
@@ -254,23 +272,23 @@ class AdbTools:
 
     def click(self, x, y):
         """Tap at screen coordinate (x, y)."""
-        self._run(f"shell input tap {x} {y}")
+        return self._run(f"shell input tap {x} {y}")
 
     def long_press(self, x, y, duration=800):
         """Long-press at (x, y) for *duration* milliseconds."""
-        self._run(f"shell input swipe {x} {y} {x} {y} {duration}")
+        return self._run(f"shell input swipe {x} {y} {x} {y} {duration}")
 
     def slide(self, x1, y1, x2, y2, slide_time=800):
         """Swipe from (x1, y1) to (x2, y2) over *slide_time* milliseconds."""
-        self._run(f"shell input swipe {x1} {y1} {x2} {y2} {slide_time}")
+        return self._run(f"shell input swipe {x1} {y1} {x2} {y2} {slide_time}")
 
     def back(self):
         """Press the Back button."""
-        self._run("shell input keyevent 4")
+        return self._run("shell input keyevent 4")
 
     def home(self):
         """Press the Home button to return to the home screen."""
-        self._run(
+        return self._run(
             "shell am start -a android.intent.action.MAIN "
             "-c android.intent.category.HOME"
         )
@@ -294,7 +312,9 @@ class AdbTools:
             if isinstance(item, (int, float)):
                 time.sleep(item)
             else:
-                self._run(item.strip())
+                if not self._run(item.strip()):
+                    return False
+        return True
 
     # -- package management -----------------------------------------------
 
