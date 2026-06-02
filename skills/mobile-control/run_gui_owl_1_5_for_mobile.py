@@ -485,7 +485,18 @@ def main():
                         time.sleep(2)
                         continue
                 else:
-                    print("[SUPERVISOR] override had no valid tool_call — approving original")
+                    print("[SUPERVISOR] override had no valid tool_call — injecting Home correction")
+                    adb_tools.home()
+                    _sup_note = (
+                        "Action: [SUPERVISOR OVERRIDE] no valid tool_call — pressing Home\n"
+                        "<tool_call>\n"
+                        + json.dumps({"name": "mobile_use", "arguments": {"action": "system_button", "button": "Home"}}, ensure_ascii=False)
+                        + "\n</tool_call>"
+                    )
+                    history.append({"output": _sup_note, "image": screenshot_path})
+                    consecutive_waits = 0
+                    time.sleep(2)
+                    continue
             else:
                 print("[SUPERVISOR] approved")
 

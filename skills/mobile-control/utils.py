@@ -1129,7 +1129,10 @@ shown; no confirmation screen visible). Override with a `wait` action.
 
 6. APPROVE — If none of the above apply, approve.
 
-Respond with ONLY a JSON object, no markdown, no extra text:
+If you need to reason before deciding, wrap your thinking in <think>...</think> \
+tags first, then output the JSON. The JSON must be the LAST thing you output.
+
+Output ONLY a JSON object (after any <think> block), no markdown, no extra text:
 - Approve:  {"verdict": "approve"}
 - Override: {"verdict": "override", "tool_call": {"name": "mobile_use", \
 "arguments": {"action": "...", ...}}, "reason": "one sentence"}
@@ -1225,7 +1228,7 @@ class SupervisorLLM:
                     {"role": "user", "content": user_content},
                 ],
                 temperature=0,
-                max_tokens=300,
+                max_tokens=512,
                 **(dict(extra_body=_extra_body) if _extra_body else {}),
             )
             # With reasoning_split=True, content has only the JSON verdict;
@@ -1249,9 +1252,14 @@ class SupervisorLLM:
             if re.search(r'\b(approve|approved)\b', _tail) and "override" not in _tail:
                 return {"verdict": "approve"}
             if "override" in _tail:
-                print(f"[SUPERVISOR] prose override detected but cannot parse action — approving: {raw[:80]!r}")
+                print(f"[SUPERVISOR] prose override — cannot parse action JSON; defaulting to Home: {raw[:80]!r}")
+                return {
+                    "verdict": "override",
+                    "tool_call": {"name": "mobile_use", "arguments": {"action": "system_button", "button": "Home"}},
+                    "reason": "prose override (unparsed): supervisor flagged wrong action — pressing Home",
+                }
             else:
-                print(f"[SUPERVISOR] unexpected response format: {raw[:120]!r}")
+                print(f"[SUPERVISOR] unexpected response format — approving: {raw[:120]!r}")
         except Exception as _e:
             print(f"[SUPERVISOR] error — approving by default: {_e}")
         return {"verdict": "approve"}
