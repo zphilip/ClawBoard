@@ -401,13 +401,15 @@ def main():
             print(f"[VLM] Primary provider failed — switching to fallback: {_fb_model}")
             _fb_compact = bool(_fb_max_ctx and _fb_max_ctx <= 2048)
             if _fb_compact and not _compact_mode:
-                # Rebuild with compact prompt + trimmed UI nodes for the small model.
-                _fb_ui = summarise_ui_dump(_ui_xml, max_nodes=20)
+                # Rebuild with compact prompt.  Drop ui_summary (saves ~150+ tokens)
+                # and limit history to 1 step — the 2048-token model can barely fit
+                # one history image alongside the system prompt + current screenshot.
                 _fb_messages = build_messages(
                     screenshot_path, instruction, history, _fb_model,
                     foreground_pkg=_fg_label,
-                    ui_summary=_fb_ui,
+                    ui_summary="",   # omit — saves ~150 tokens for the small model
                     compact=True,
+                    history_n=1,    # at most one history image in 2048-token context
                 )
             else:
                 _fb_messages = messages

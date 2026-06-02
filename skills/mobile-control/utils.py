@@ -651,6 +651,14 @@ def build_messages(image_path, instruction, history_output, model_name,
     if ui_summary:
         instruction_prompt += f"\n\n{ui_summary}\nUse the bounds and resource IDs above to choose exact tap coordinates instead of guessing from the screenshot alone."
 
+    if compact:
+        # Compact prompt omits behavioural rules — add a brief reminder so the
+        # model doesn't give up when the required app is not yet in foreground.
+        instruction_prompt += (
+            "\n\nIf the required app is not on screen, use action=open to "
+            "launch it. Never say an app is unavailable — navigate to it."
+        )
+
     # Assemble messages
     _system_text = SYSTEM_PROMPT_COMPACT if compact else SYSTEM_PROMPT
     messages = [
@@ -845,7 +853,14 @@ class GUIOwlWrapper(LlmWrapper, MultimodalLlmWrapper):
         wait_seconds = self.RETRY_WAITING_SECONDS
         while counter > 0:
             try:
-              chat_completion_from_url = self.bot.chat.completions.create(model=self.model, messages=payload, **{})
+              # For small-context models the server default max_tokens can be
+              # very small (a few dozen tokens), causing truncated JSON output.
+              # Request enough for a complete tool_call; the server will cap at
+              # n_ctx − n_prompt_tokens regardless.
+              _gen_kwargs: dict = {}
+              if self.max_context_size:
+                  _gen_kwargs['max_tokens'] = max(self.max_context_size // 4, 256)
+              chat_completion_from_url = self.bot.chat.completions.create(model=self.model, messages=payload, **_gen_kwargs)
               return (chat_completion_from_url.choices[0].message.content, payload, chat_completion_from_url)
             except Exception as e:
                 error_str = str(e)
