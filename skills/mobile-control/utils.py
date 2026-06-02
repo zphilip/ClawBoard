@@ -1174,6 +1174,46 @@ VLM reasoning text: {action_text}
 Proposed tool_call: {tool_call_json}
 """
 
+_TASK_COMPLETE_SYSTEM = """\
+You are a mobile automation auditor. Your only job is to decide whether a \
+task has been fully and successfully completed based on the execution history \
+and the current screen.
+
+You will be given:
+- The original task instruction
+- A summary of the last steps taken (action history)
+- The foreground app currently on screen (ADB ground truth)
+- The UI elements visible on screen
+- A screenshot of the current screen (when provided — treat as PRIMARY evidence)
+- The VLM agent's conclusion text
+
+Decide: is the task ACTUALLY complete?
+
+Be strict. The task is complete only if the required outcome is verifiably \
+achieved. Key rules:
+- Navigation tasks: turn-by-turn navigation must be RUNNING, not just a pin \
+or destination set on the map.
+- Search tasks: relevant results must be visible on screen.
+- Media tasks: the content must be playing.
+- Purchase/form tasks: submission confirmation must be visible.
+- If the agent's conclusion text is consistent with what the screen shows, \
+lean toward complete. If the conclusion claims something not visible, \
+mark not complete.
+
+Output ONLY a JSON object (after any <think> block):
+- Complete:     {"complete": true,  "reason": "one sentence"}
+- Not complete: {"complete": false, "reason": "what is still missing"}
+"""
+
+_TASK_COMPLETE_USER_TMPL = """\
+Task: {task}
+Foreground app: {fg_label}
+UI elements on screen: {ui_summary}
+Steps taken ({step_count} steps, showing last 10):
+{history_summary}
+Agent's conclusion: {conclusion}
+"""
+
 
 class SupervisorLLM:
     """
@@ -1291,5 +1331,88 @@ class SupervisorLLM:
         except Exception as _e:
             print(f"[SUPERVISOR] error — approving by default: {_e}")
         return {"verdict": "approve"}
+
+    def is_task_complete(
+        self,
+        task: str,
+        fg_label: str,
+        ui_summary: str,
+        history: list,
+        conclusion: str,
+        screenshot_path: str = "",
+    ) -> dict:
+        """
+        Ask whether the overall task has been fully achieved.
+        Returns {"complete": True/False, "reason": "..."}
+        Returns {"complete": True, "reason": "error"} on failure so as not to
+        block execution when the supervisor API is unavailable.
+        """
+        history_lines = []
+        for i, h in enumerate(history[-10:], 1):
+            out = h.get("output", "")
+            first_line = out.split("\n")[0][:120] if out else "(no output)"
+            history_lines.append(f"  {i}. {first_line}")
+        history_summary = "\n".join(history_lines) if history_lines else "  (no history)"
+
+        user_text = _TASK_COMPLETE_USER_TMPL.format(
+            task=task,
+            fg_label=fg_label,
+            ui_summary=(ui_summary or "(not available)"),
+            step_count=len(history),
+            history_summary=history_summary,
+            conclusion=(conclusion or "").strip()[:500],
+        )
+
+        if self.vision and screenshot_path and os.path.exists(screenshot_path):
+            try:
+                with open(screenshot_path, "rb") as _img_f:
+                    _b64 = base64.b64encode(_img_f.read()).decode()
+                user_content: Any = [
+                    {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{_b64}"}},
+                    {"type": "text", "text": user_text},
+                ]
+                print("[SUPERVISOR] checking task completion with screenshot")
+            except Exception as _enc_err:
+                print(f"[SUPERVISOR] could not encode screenshot ({_enc_err}) — text-only")
+                user_content = user_text
+        else:
+            user_content = user_text
+
+        try:
+            _extra_body: dict = {}
+            if self.reasoning_split:
+                _extra_body["reasoning_split"] = True
+            resp = self._client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": _TASK_COMPLETE_SYSTEM},
+                    {"role": "user", "content": user_content},
+                ],
+                temperature=0,
+                max_tokens=256,
+                **(dict(extra_body=_extra_body) if _extra_body else {}),
+            )
+            raw = (resp.choices[0].message.content or "").strip()
+            if not raw:
+                print("[SUPERVISOR] empty task-complete response — assuming complete")
+                return {"complete": True, "reason": "empty response"}
+            parsed = _try_parse_json(raw)
+            if parsed is not None:
+                complete_val = parsed.get("complete")
+                reason = parsed.get("reason", "")
+                if isinstance(complete_val, bool):
+                    return {"complete": complete_val, "reason": reason}
+                if str(complete_val).lower() in ("true", "yes", "1"):
+                    return {"complete": True, "reason": reason}
+                if str(complete_val).lower() in ("false", "no", "0"):
+                    return {"complete": False, "reason": reason}
+            # Prose fallback
+            _tail = raw[-300:].lower()
+            if '"complete": false' in _tail or '"complete":false' in _tail:
+                return {"complete": False, "reason": raw[:200]}
+            print(f"[SUPERVISOR] task-complete parse failed — assuming complete: {raw[:120]!r}")
+        except Exception as _e:
+            print(f"[SUPERVISOR] task-complete error — assuming complete: {_e}")
+        return {"complete": True, "reason": "error/parse-fallback"}
 
 

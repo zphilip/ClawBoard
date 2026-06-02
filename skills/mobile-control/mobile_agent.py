@@ -176,7 +176,9 @@ FINISH_PATTERNS = [
     # description) and caused the runner to be killed prematurely after phrases like
     # "QQ Music opened, 操作完成" even though the full task was not yet done.
     r'"action":\s*"finish"',
-    r'"action":\s*"answer"',   # model uses 'answer' to signal task completion
+    # NOTE: r'"action":\s*"answer"' removed — the runner now intercepts the
+    # 'answer' action internally and calls supervisor.is_task_complete() before
+    # accepting completion. Killing the runner here would bypass that check.
 ]
 
 # Patterns that indicate a step-level success note

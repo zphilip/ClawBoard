@@ -489,15 +489,19 @@ def main():
             _sup_apps_hint = ""
             if _proposed_action == "open" and _cached_sup_app_names:
                 _sup_apps_hint = ", ".join(_cached_sup_app_names[:60])
-            _sup_verdict = supervisor.validate(
-                task=instruction,
-                fg_label=_fg_label,
-                action_text=_action_text,
-                tool_call_dict=action,
-                ui_summary=_ui_summary,
-                screenshot_path=screenshot_path,
-                installed_apps_hint=_sup_apps_hint,
-            )
+            try:
+                _sup_verdict = supervisor.validate(
+                    task=instruction,
+                    fg_label=_fg_label,
+                    action_text=_action_text,
+                    tool_call_dict=action,
+                    ui_summary=_ui_summary,
+                    screenshot_path=screenshot_path,
+                    installed_apps_hint=_sup_apps_hint,
+                )
+            except Exception as _sup_err:
+                print(f"[SUPERVISOR] error during validation ({_sup_err!r}) — approving by default")
+                _sup_verdict = {"verdict": "approve"}
             if _sup_verdict.get("verdict") == "override":
                 _reason = _sup_verdict.get("reason", "")
                 print(f"[SUPERVISOR] overriding action — {_reason}")
@@ -676,6 +680,34 @@ def main():
                 time.sleep(2)
                 continue
             print(f"[ANSWER] {conclusion}")
+            # Ask the supervisor whether the task is actually done before
+            # accepting the agent's self-reported completion.
+            if supervisor is not None:
+                try:
+                    _completion = supervisor.is_task_complete(
+                        task=instruction,
+                        fg_label=_fg_label,
+                        ui_summary=_ui_summary,
+                        history=history,
+                        conclusion=conclusion,
+                        screenshot_path=str(screenshot_path),
+                    )
+                except Exception as _comp_err:
+                    print(f"[SUPERVISOR] task-complete check error ({_comp_err!r}) — accepting completion")
+                    _completion = {"complete": True, "reason": "error"}
+                if not _completion.get("complete", True):
+                    _missing = _completion.get("reason", "task not yet complete")
+                    print(f"[SUPERVISOR] task NOT complete — {_missing}")
+                    correction = (
+                        f"Action: I made an error — the task is not finished yet. "
+                        f"{_missing} I will continue from the current screen.\n"
+                        "<tool_call>\n"
+                        '{"name": "mobile_use", "arguments": {"action": "wait", "time": 1}}\n'
+                        "</tool_call>"
+                    )
+                    history.append({"output": correction, "image": screenshot_path})
+                    continue
+                print("[SUPERVISOR] task confirmed complete")
             print("[TERMINATED] Task completed.")
             break
 
