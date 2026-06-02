@@ -680,6 +680,7 @@ def summarise_ui_dump(xml: str, max_nodes: int = 60) -> str:
 
 def build_messages(image_path, instruction, history_output, model_name,
                    history_n=4, foreground_pkg: str = "", ui_summary: str = "",
+                   installed_apps_hint: str = "", target_app_hint: str = "",
                    compact: bool = False):
     """
     Construct the multi-turn message list for the VLM.
@@ -734,6 +735,16 @@ def build_messages(image_path, instruction, history_output, model_name,
         )
     if ui_summary:
         instruction_prompt += f"\n\n{ui_summary}\nUse the bounds and resource IDs above to choose exact tap coordinates instead of guessing from the screenshot alone."
+
+    if installed_apps_hint:
+        instruction_prompt += (
+            f"\n\nInstalled apps on device (use only exact matches from this list): {installed_apps_hint}"
+        )
+    if target_app_hint:
+        instruction_prompt += (
+            f"\nTarget app candidate for this task: {target_app_hint}"
+            f"\nIf this exact app is installed, prefer action=open with that name instead of tapping a similarly named app icon."
+        )
 
     if compact:
         # Compact prompt omits behavioural rules — add a brief reminder so the

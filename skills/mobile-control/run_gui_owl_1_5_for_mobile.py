@@ -348,17 +348,38 @@ def main():
         "PicoClaw", "picoclaw", "调试", "开发者",
     ]
 
-    # Cache installed app display-names once for the supervisor's open-target check.
-    # Only fetched when supervisor is active to avoid unnecessary ADB latency.
+    # Cache installed app display-names once, then reuse them for both the
+    # supervisor and the VLM prompt constraints.
     _cached_sup_app_names: list[str] = []
-    if supervisor is not None:
-        try:
-            _inst_pkgs = adb_tools.get_package_name(all_packages=True)
-            _cached_sup_app_names = [
-                PACKAGES_NAME_DICT[p][0] for p in _inst_pkgs if p in PACKAGES_NAME_DICT
-            ]
-        except Exception:
-            pass
+    _cached_inst_app_names: list[str] = []
+    _target_app_hint: str = ""
+    try:
+        _inst_pkgs = adb_tools.get_package_name(all_packages=True)
+        _cached_inst_app_names = [
+            PACKAGES_NAME_DICT[p][0] for p in _inst_pkgs if p in PACKAGES_NAME_DICT
+        ]
+        _seen_names: set[str] = set()
+        _deduped_inst_names: list[str] = []
+        for _name in _cached_inst_app_names:
+            if _name in _seen_names:
+                continue
+            _seen_names.add(_name)
+            _deduped_inst_names.append(_name)
+        _cached_inst_app_names = _deduped_inst_names
+        _cached_sup_app_names = list(_cached_inst_app_names)
+        _norm_instruction = instruction.lower().replace(" ", "").replace("-", "")
+        _candidate_names = sorted(
+            _cached_inst_app_names,
+            key=lambda _n: len(_n),
+            reverse=True,
+        )
+        for _name in _candidate_names:
+            _norm_name = _name.lower().replace(" ", "").replace("-", "")
+            if _norm_name and _norm_name in _norm_instruction:
+                _target_app_hint = _name
+                break
+    except Exception:
+        pass
 
     termination_reason = "unknown"
     for step_id in range(args.max_steps):
@@ -399,6 +420,8 @@ def main():
             screenshot_path, instruction, history, args.model,
             foreground_pkg=_fg_label,
             ui_summary=_ui_summary,
+            installed_apps_hint=", ".join(_cached_inst_app_names[:80]),
+            target_app_hint=_target_app_hint,
             compact=_compact_mode,
         )
 
@@ -433,6 +456,8 @@ def main():
                     screenshot_path, instruction, history, _fb_model,
                     foreground_pkg=_fg_label,
                     ui_summary="",   # omit — saves ~150 tokens for the small model
+                    installed_apps_hint=", ".join(_cached_inst_app_names[:80]),
+                    target_app_hint=_target_app_hint,
                     compact=True,
                     history_n=1,    # at most one history image in 2048-token context
                 )
