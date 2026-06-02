@@ -172,8 +172,11 @@ ADB_IME = "com.android.adbkeyboard/.AdbIME"
 FINISH_PATTERNS = [
     r"\bFINISH\b",
     r"任务完成",
-    r"操作完成",
+    # NOTE: r"操作完成" was removed — it means "operation complete" (a single-step
+    # description) and caused the runner to be killed prematurely after phrases like
+    # "QQ Music opened, 操作完成" even though the full task was not yet done.
     r'"action":\s*"finish"',
+    r'"action":\s*"answer"',   # model uses 'answer' to signal task completion
 ]
 
 # Patterns that indicate a step-level success note
