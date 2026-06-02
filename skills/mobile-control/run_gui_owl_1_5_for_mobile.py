@@ -422,11 +422,38 @@ def main():
         pass
 
     termination_reason = "unknown"
+    _perf_steps = 0
+    _perf_vlm_total = 0.0
+    _perf_supervisor_total = 0.0
+    _perf_vlm_primary_total = 0.0
+    _perf_vlm_fallback_total = 0.0
     for step_id in range(args.max_steps):
         _step_t0 = time.time()
         _step_metrics: dict[str, float] = {}
+        _step_summary_emitted = False
 
         def _emit_step_summary(_outcome: str) -> None:
+            nonlocal _step_summary_emitted
+            nonlocal _perf_steps
+            nonlocal _perf_vlm_total, _perf_supervisor_total
+            nonlocal _perf_vlm_primary_total, _perf_vlm_fallback_total
+            if _step_summary_emitted:
+                return
+            _step_summary_emitted = True
+
+            _llm_primary = _step_metrics.get("vlm_primary", 0.0)
+            _llm_fallback = _step_metrics.get("vlm_fallback", 0.0)
+            _llm_total = _llm_primary + _llm_fallback
+            _sup_total = _step_metrics.get("supervisor", 0.0)
+            _den = max(_llm_total + _sup_total, 1e-9)
+            _sup_share = (_sup_total / _den) * 100.0
+
+            _perf_steps += 1
+            _perf_vlm_total += _llm_total
+            _perf_supervisor_total += _sup_total
+            _perf_vlm_primary_total += _llm_primary
+            _perf_vlm_fallback_total += _llm_fallback
+
             _parts = [f"step={step_id}", f"outcome={_outcome}", f"total={time.time() - _step_t0:.2f}s"]
             for _k in (
                 "screenshot", "ui_dump", "vlm_primary", "vlm_fallback",
@@ -435,6 +462,12 @@ def main():
                 if _k in _step_metrics:
                     _parts.append(f"{_k}={_step_metrics[_k]:.2f}s")
             _log_t("[STEP SUMMARY] " + " | ".join(_parts))
+            _log_t(
+                "[TIMING COMPARE] "
+                f"step={step_id} | llm_total={_llm_total:.2f}s "
+                f"(primary={_llm_primary:.2f}s, fallback={_llm_fallback:.2f}s) | "
+                f"supervisor={_sup_total:.2f}s | supervisor_share={_sup_share:.1f}%"
+            )
 
         print(f"\n{'='*50}")
         print(f"STEP {step_id}")
@@ -1001,6 +1034,19 @@ def main():
         print(f"[TERMINATED] Reached max_steps={args.max_steps} without explicit completion.")
 
     print(f"[TERMINATION REASON] {termination_reason}")
+    if _perf_steps > 0:
+        _avg_vlm = _perf_vlm_total / _perf_steps
+        _avg_sup = _perf_supervisor_total / _perf_steps
+        _den_total = max(_perf_vlm_total + _perf_supervisor_total, 1e-9)
+        _sup_share_total = (_perf_supervisor_total / _den_total) * 100.0
+        _log_t(
+            "[TIMING SUMMARY] "
+            f"steps={_perf_steps} | llm_total={_perf_vlm_total:.2f}s "
+            f"(primary={_perf_vlm_primary_total:.2f}s, fallback={_perf_vlm_fallback_total:.2f}s) | "
+            f"supervisor_total={_perf_supervisor_total:.2f}s | "
+            f"avg_llm_per_step={_avg_vlm:.2f}s | avg_supervisor_per_step={_avg_sup:.2f}s | "
+            f"supervisor_share_total={_sup_share_total:.1f}%"
+        )
     print("\n[DONE] Agent execution finished.")
 
     # Clean up screenshot directories after task ends
