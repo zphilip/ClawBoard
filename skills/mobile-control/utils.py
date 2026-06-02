@@ -1255,7 +1255,7 @@ class SupervisorLLM:
         self.model = model
         self.vision = vision
         self.reasoning_split = reasoning_split
-        self._client = OpenAI(api_key=api_key, base_url=base_url, timeout=20)
+        self._client = OpenAI(api_key=api_key, base_url=base_url, timeout=60)
 
     def validate(
         self,
@@ -1305,51 +1305,65 @@ class SupervisorLLM:
                 user_content = user_text
         else:
             user_content = user_text
-        try:
-            _extra_body: dict = {}
-            if self.reasoning_split:
-                _extra_body["reasoning_split"] = True
-            resp = self._client.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {"role": "system", "content": _SUPERVISOR_SYSTEM},
-                    {"role": "user", "content": user_content},
-                ],
-                temperature=0,
-                max_tokens=512,
-                **(dict(extra_body=_extra_body) if _extra_body else {}),
-            )
-            # With reasoning_split=True, content has only the JSON verdict;
-            # the chain-of-thought is in reasoning_details (we don't need it).
-            raw = (resp.choices[0].message.content or "").strip()
-            if not raw:
-                print("[SUPERVISOR] empty response from API — approving by default")
-                return {"verdict": "approve"}
-            parsed = _try_parse_json(raw)
-            if parsed:
-                v = str(parsed.get("verdict", "")).lower()
-                # Normalise past-tense forms ("approved" → "approve", etc.)
-                if v in ("approve", "approved"):
+        _extra_body: dict = {}
+        if self.reasoning_split:
+            _extra_body["reasoning_split"] = True
+        _sup_max_attempts = 3
+        for _sup_try in range(1, _sup_max_attempts + 1):
+            try:
+                print(f"[SUPERVISOR] validate attempt {_sup_try}/{_sup_max_attempts}")
+                resp = self._client.chat.completions.create(
+                    model=self.model,
+                    messages=[
+                        {"role": "system", "content": _SUPERVISOR_SYSTEM},
+                        {"role": "user", "content": user_content},
+                    ],
+                    temperature=0,
+                    max_tokens=512,
+                    **(dict(extra_body=_extra_body) if _extra_body else {}),
+                )
+                # With reasoning_split=True, content has only the JSON verdict;
+                # the chain-of-thought is in reasoning_details (we don't need it).
+                raw = (resp.choices[0].message.content or "").strip()
+                if not raw:
+                    print("[SUPERVISOR] empty response from API — approving by default")
                     return {"verdict": "approve"}
-                if v in ("override", "overridden"):
-                    return dict(parsed, verdict="override")
-            # Last-resort keyword scan — model output chain-of-thought prose
-            # instead of bare JSON (happens even with reasoning_split=True on
-            # some model versions).  Scan the final 300 chars for a verdict.
-            _tail = raw[-300:].lower()
-            if re.search(r'\b(approve|approved)\b', _tail) and "override" not in _tail:
+                parsed = _try_parse_json(raw)
+                if parsed:
+                    v = str(parsed.get("verdict", "")).lower()
+                    # Normalise past-tense forms ("approved" → "approve", etc.)
+                    if v in ("approve", "approved"):
+                        return {"verdict": "approve"}
+                    if v in ("override", "overridden"):
+                        return dict(parsed, verdict="override")
+                # Last-resort keyword scan — model output chain-of-thought prose
+                # instead of bare JSON (happens even with reasoning_split=True on
+                # some model versions).  Scan the final 300 chars for a verdict.
+                _tail = raw[-300:].lower()
+                if re.search(r'\b(approve|approved)\b', _tail) and "override" not in _tail:
+                    return {"verdict": "approve"}
+                if "override" in _tail:
+                    print(f"[SUPERVISOR] prose override — cannot parse action JSON; defaulting to Home: {raw[:80]!r}")
+                    return {
+                        "verdict": "override",
+                        "tool_call": {"name": "mobile_use", "arguments": {"action": "system_button", "button": "Home"}},
+                        "reason": "prose override (unparsed): supervisor flagged wrong action — pressing Home",
+                    }
+                else:
+                    print(f"[SUPERVISOR] unexpected response format — approving: {raw[:120]!r}")
                 return {"verdict": "approve"}
-            if "override" in _tail:
-                print(f"[SUPERVISOR] prose override — cannot parse action JSON; defaulting to Home: {raw[:80]!r}")
-                return {
-                    "verdict": "override",
-                    "tool_call": {"name": "mobile_use", "arguments": {"action": "system_button", "button": "Home"}},
-                    "reason": "prose override (unparsed): supervisor flagged wrong action — pressing Home",
-                }
-            else:
-                print(f"[SUPERVISOR] unexpected response format — approving: {raw[:120]!r}")
-        except Exception as _e:
-            print(f"[SUPERVISOR] error — approving by default: {_e}")
+            except Exception as _e:
+                _is_timeout = "timeout" in str(_e).lower() or "timed out" in str(_e).lower()
+                _is_auth = getattr(_e, "status_code", None) in (401, 403)
+                if _is_auth:
+                    print(f"[SUPERVISOR] auth error — approving by default: {_e}")
+                    return {"verdict": "approve"}
+                if _sup_try < _sup_max_attempts and _is_timeout:
+                    print(f"[SUPERVISOR] timeout on attempt {_sup_try} — retrying in 3s")
+                    time.sleep(3)
+                    continue
+                print(f"[SUPERVISOR] error — approving by default: {_e}")
+                return {"verdict": "approve"}
         return {"verdict": "approve"}
 
     def is_task_complete(
@@ -1398,41 +1412,55 @@ class SupervisorLLM:
         else:
             user_content = user_text
 
-        try:
-            _extra_body: dict = {}
-            if self.reasoning_split:
-                _extra_body["reasoning_split"] = True
-            resp = self._client.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {"role": "system", "content": _TASK_COMPLETE_SYSTEM},
-                    {"role": "user", "content": user_content},
-                ],
-                temperature=0,
-                max_tokens=256,
-                **(dict(extra_body=_extra_body) if _extra_body else {}),
-            )
-            raw = (resp.choices[0].message.content or "").strip()
-            if not raw:
-                print("[SUPERVISOR] empty task-complete response — assuming complete")
-                return {"complete": True, "reason": "empty response"}
-            parsed = _try_parse_json(raw)
-            if parsed is not None:
-                complete_val = parsed.get("complete")
-                reason = parsed.get("reason", "")
-                if isinstance(complete_val, bool):
-                    return {"complete": complete_val, "reason": reason}
-                if str(complete_val).lower() in ("true", "yes", "1"):
-                    return {"complete": True, "reason": reason}
-                if str(complete_val).lower() in ("false", "no", "0"):
-                    return {"complete": False, "reason": reason}
-            # Prose fallback
-            _tail = raw[-300:].lower()
-            if '"complete": false' in _tail or '"complete":false' in _tail:
-                return {"complete": False, "reason": raw[:200]}
-            print(f"[SUPERVISOR] task-complete parse failed — assuming complete: {raw[:120]!r}")
-        except Exception as _e:
-            print(f"[SUPERVISOR] task-complete error — assuming complete: {_e}")
+        _extra_body: dict = {}
+        if self.reasoning_split:
+            _extra_body["reasoning_split"] = True
+        _tc_max_attempts = 3
+        for _tc_try in range(1, _tc_max_attempts + 1):
+            try:
+                print(f"[SUPERVISOR] task-complete attempt {_tc_try}/{_tc_max_attempts}")
+                resp = self._client.chat.completions.create(
+                    model=self.model,
+                    messages=[
+                        {"role": "system", "content": _TASK_COMPLETE_SYSTEM},
+                        {"role": "user", "content": user_content},
+                    ],
+                    temperature=0,
+                    max_tokens=256,
+                    **(dict(extra_body=_extra_body) if _extra_body else {}),
+                )
+                raw = (resp.choices[0].message.content or "").strip()
+                if not raw:
+                    print("[SUPERVISOR] empty task-complete response — assuming complete")
+                    return {"complete": True, "reason": "empty response"}
+                parsed = _try_parse_json(raw)
+                if parsed is not None:
+                    complete_val = parsed.get("complete")
+                    reason = parsed.get("reason", "")
+                    if isinstance(complete_val, bool):
+                        return {"complete": complete_val, "reason": reason}
+                    if str(complete_val).lower() in ("true", "yes", "1"):
+                        return {"complete": True, "reason": reason}
+                    if str(complete_val).lower() in ("false", "no", "0"):
+                        return {"complete": False, "reason": reason}
+                # Prose fallback
+                _tail = raw[-300:].lower()
+                if '"complete": false' in _tail or '"complete":false' in _tail:
+                    return {"complete": False, "reason": raw[:200]}
+                print(f"[SUPERVISOR] task-complete parse failed — assuming complete: {raw[:120]!r}")
+                return {"complete": True, "reason": "parse-fallback"}
+            except Exception as _e:
+                _is_timeout = "timeout" in str(_e).lower() or "timed out" in str(_e).lower()
+                _is_auth = getattr(_e, "status_code", None) in (401, 403)
+                if _is_auth:
+                    print(f"[SUPERVISOR] task-complete auth error — assuming complete: {_e}")
+                    return {"complete": True, "reason": "error/auth"}
+                if _tc_try < _tc_max_attempts and _is_timeout:
+                    print(f"[SUPERVISOR] task-complete timeout on attempt {_tc_try} — retrying in 3s")
+                    time.sleep(3)
+                    continue
+                print(f"[SUPERVISOR] task-complete error — assuming complete: {_e}")
+                return {"complete": True, "reason": "error/parse-fallback"}
         return {"complete": True, "reason": "error/parse-fallback"}
 
 
