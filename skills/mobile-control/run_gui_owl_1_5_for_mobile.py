@@ -416,9 +416,24 @@ def main():
                 )
             else:
                 _fb_messages = messages
-            _fb_vllm = GUIOwlWrapper(_fb_api_key, _fb_base_url, _fb_model,
-                                     max_context_size=_fb_max_ctx)
-            output_text, _, _ = _fb_vllm.predict_mm(_fb_messages)
+            _fb_vllm = GUIOwlWrapper(
+                _fb_api_key,
+                _fb_base_url,
+                _fb_model,
+                max_retry=3,
+                max_context_size=_fb_max_ctx,
+            )
+            _fb_attempts = 3
+            for _fb_try in range(1, _fb_attempts + 1):
+                print(f"[VLM] fallback attempt {_fb_try}/{_fb_attempts}")
+                output_text, _, _ = _fb_vllm.predict_mm(_fb_messages)
+                if output_text != ERROR_CALLING_LLM:
+                    break
+                if _fb_try < _fb_attempts:
+                    print("[VLM] fallback attempt failed — retrying in 2s")
+                    time.sleep(2)
+            if output_text == ERROR_CALLING_LLM:
+                print("[VLM] fallback exhausted all retries")
             _provider_used = f"fallback:{_fb_model} @ {_fb_base_url}"
 
         if output_text == ERROR_CALLING_LLM:

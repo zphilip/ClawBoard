@@ -164,7 +164,7 @@ def load_supervisor_config() -> dict:
 
 
 DEFAULT_MAX_STEPS = 20
-DEFAULT_TIMEOUT = 120  # seconds for the entire run
+DEFAULT_TIMEOUT = 300  # seconds for the entire run (5 minutes)
 LOOP_THRESHOLD = 3     # same coordinate N times → inject retry hint
 ADB_IME = "com.android.adbkeyboard/.AdbIME"
 
