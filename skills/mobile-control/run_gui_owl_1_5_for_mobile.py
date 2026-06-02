@@ -655,9 +655,14 @@ def main():
         elif action_type == "type":
             any_real_action = True
             consecutive_waits = 0
-            print("[ACTION EXEC] type (start)")
-            _ok = adb_tools.type(action_parameter["text"])
-            print("[ACTION EXEC] type done" if _ok else "[ACTION EXEC] type failed")
+            _text = str(action_parameter.get("text", ""))
+            print(f"[ACTION EXEC] type {_text!r} (start)")
+            _ok = adb_tools.type_with_verification(_text, retries=2)
+            if _ok:
+                print("[ACTION EXEC] type done (verified)")
+            else:
+                print("[ACTION EXEC] type failed_or_unverified")
+                print("[WARN] Input command may have succeeded but text was not observed in UI")
 
         elif action_type in ("scroll", "swipe"):
             any_real_action = True

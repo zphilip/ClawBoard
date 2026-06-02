@@ -316,6 +316,70 @@ class AdbTools:
                     return False
         return True
 
+    @staticmethod
+    def _normalize_for_match(s: str) -> str:
+        """Normalize text for robust UI matching."""
+        return re.sub(r"\s+", "", s or "").strip()
+
+    def _ui_contains_text(self, ui_xml: str, expected_text: str) -> bool:
+        """Check whether expected text appears in raw XML or node attributes."""
+        if not ui_xml or not expected_text:
+            return False
+
+        if expected_text in ui_xml:
+            return True
+
+        expected_norm = self._normalize_for_match(expected_text)
+        if not expected_norm:
+            return False
+
+        try:
+            root = ET.fromstring(ui_xml)
+        except Exception:
+            return False
+
+        for node in root.iter("node"):
+            merged = " ".join([
+                node.attrib.get("text", ""),
+                node.attrib.get("content-desc", ""),
+                node.attrib.get("hint", ""),
+            ])
+            merged_norm = self._normalize_for_match(merged)
+            if expected_norm and expected_norm in merged_norm:
+                return True
+        return False
+
+    def type_with_verification(
+        self,
+        text: str,
+        retries: int = 2,
+        verify_wait_seconds: float = 2.0,
+        verify_interval_seconds: float = 0.4,
+    ) -> bool:
+        """
+        Type text and verify it appears in the UI dump.
+
+        Returns True only when text is observed on-screen after typing.
+        """
+        retries = max(1, int(retries))
+        for attempt in range(1, retries + 1):
+            print(f"[ADB TYPE] attempt {attempt}/{retries}: sending text {text!r}")
+            if not self.type(text):
+                print(f"[ADB TYPE] attempt {attempt} command sequence failed")
+                continue
+
+            deadline = time.time() + max(0.2, verify_wait_seconds)
+            while time.time() < deadline:
+                ui_xml = self.get_ui_dump()
+                if self._ui_contains_text(ui_xml, text):
+                    print(f"[ADB TYPE] text verified in UI after attempt {attempt}")
+                    return True
+                time.sleep(max(0.1, verify_interval_seconds))
+
+            print(f"[ADB TYPE] text not visible after attempt {attempt}")
+
+        return False
+
     # -- package management -----------------------------------------------
 
     def get_package_name(self, all_packages=False):
