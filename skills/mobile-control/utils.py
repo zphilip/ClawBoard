@@ -891,6 +891,13 @@ class GUIOwlWrapper(LlmWrapper, MultimodalLlmWrapper):
                         payload = self.convert_messages_format_to_openaiurl(messages, max_pixels=max_pixels)
                         print(f'Image too large for context, resizing to max_pixels={max_pixels} and retrying...')
                 else:
+                    # Fatal errors (quota exhausted, auth failure) will not
+                    # recover with retries — return immediately so the caller
+                    # can switch to a fallback provider right away.
+                    _status = getattr(e, 'status_code', None)
+                    if _status in (401, 403):
+                        print(f'Fatal provider error ({_status}) — not retrying; try fallback provider')
+                        return ERROR_CALLING_LLM, None, None
                     time.sleep(wait_seconds)
                 counter -= 1
                 print('Error calling LLM, will retry soon...')

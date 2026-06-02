@@ -26,6 +26,7 @@ from utils import (
     AdbTools,
     annotate_screenshot,
     build_messages,
+    ERROR_CALLING_LLM,
     resolve_app_name_via_llm,
     smart_resize,
     GUIOwlWrapper,
@@ -262,6 +263,12 @@ def main():
     _sup_reasoning_split = False
     # max_context_size for the VLM: CLI arg takes priority, then config.json.
     _vlm_max_ctx = getattr(args, 'max_context_size', None)
+    # Fallback provider credentials (populated from config.json when present).
+    _fb_base_url: str = ""
+    _fb_api_key: str = ""
+    _fb_model: str = ""
+    _fb_max_ctx: int | None = None
+
     # Always read config.json: vision flag always comes from config;
     # model/key/url only filled in from config when not supplied via CLI.
     try:
@@ -284,6 +291,14 @@ def main():
                 if _prov.get("base_url") == args.base_url or _prov.get("model") == args.model:
                     _vlm_max_ctx = _prov.get("max_context_size") or None
                     break
+        # Read fallback provider for use when the primary provider is unavailable.
+        _fp = _cfg.get("fallback_provider", {})
+        _fb_base_url = _fp.get("base_url", "")
+        _fb_api_key = _fp.get("api_key", "")
+        _fb_model = _fp.get("model", "")
+        _fb_max_ctx = _fp.get("max_context_size") or None
+        if _fb_model:
+            print(f"[VLM] Fallback provider configured: {_fb_model} @ {_fb_base_url}")
     except Exception:
         pass
 
@@ -380,6 +395,25 @@ def main():
         vllm = GUIOwlWrapper(args.api_key, args.base_url, args.model,
                              max_context_size=_vlm_max_ctx)
         output_text, _, _ = vllm.predict_mm(messages)
+
+        # If primary provider failed, try the fallback (e.g. local gui-owl).
+        if output_text == ERROR_CALLING_LLM and _fb_model:
+            print(f"[VLM] Primary provider failed — switching to fallback: {_fb_model}")
+            _fb_compact = bool(_fb_max_ctx and _fb_max_ctx <= 2048)
+            if _fb_compact and not _compact_mode:
+                # Rebuild with compact prompt + trimmed UI nodes for the small model.
+                _fb_ui = summarise_ui_dump(_ui_xml, max_nodes=20)
+                _fb_messages = build_messages(
+                    screenshot_path, instruction, history, _fb_model,
+                    foreground_pkg=_fg_label,
+                    ui_summary=_fb_ui,
+                    compact=True,
+                )
+            else:
+                _fb_messages = messages
+            _fb_vllm = GUIOwlWrapper(_fb_api_key, _fb_base_url, _fb_model,
+                                     max_context_size=_fb_max_ctx)
+            output_text, _, _ = _fb_vllm.predict_mm(_fb_messages)
 
         print(f"[MODEL OUTPUT]\n{output_text}")
 
