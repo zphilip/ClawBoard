@@ -482,12 +482,15 @@ def main():
         output_text = ERROR_CALLING_LLM
         _t_primary = time.time()
         _now = time.time()
+        _primary_attempted = False
+        _primary_failed_after_attempt = False
         if _now < _primary_cooldown_until:
             _remaining = int(_primary_cooldown_until - _now)
             print(
                 f"[VLM] primary provider in cooldown ({_remaining}s left, reason={_primary_cooldown_reason}) — skipping primary"
             )
         else:
+            _primary_attempted = True
             for _p_try in range(1, _primary_attempts + 1):
                 print(f"[VLM] primary attempt {_p_try}/{_primary_attempts}")
                 output_text, _, _ = vllm.predict_mm(messages)
@@ -496,16 +499,18 @@ def main():
                 if _p_try < _primary_attempts:
                     print("[VLM] primary attempt failed — retrying in 2s")
                     time.sleep(2)
+            _primary_failed_after_attempt = (output_text == ERROR_CALLING_LLM)
         _log_t(f"[TIMING] vlm_primary={time.time() - _t_primary:.2f}s")
         _provider_used = f"primary:{args.model} @ {args.base_url}"
 
         # If primary provider failed, try the fallback (e.g. local gui-owl).
         if output_text == ERROR_CALLING_LLM and _fb_model:
-            _primary_cooldown_until = time.time() + PRIMARY_RECOVERY_COOLDOWN_SECONDS
-            _primary_cooldown_reason = "primary_error"
-            _log_t(
-                f"[VLM] entering primary cooldown for {PRIMARY_RECOVERY_COOLDOWN_SECONDS}s"
-            )
+            if _primary_attempted and _primary_failed_after_attempt:
+                _primary_cooldown_until = time.time() + PRIMARY_RECOVERY_COOLDOWN_SECONDS
+                _primary_cooldown_reason = "primary_error"
+                _log_t(
+                    f"[VLM] entering primary cooldown for {PRIMARY_RECOVERY_COOLDOWN_SECONDS}s"
+                )
             print(f"[VLM] Primary provider failed — switching to fallback: {_fb_model}")
             _fb_compact = bool(_fb_max_ctx and _fb_max_ctx <= 2048)
             if _fb_compact and not _compact_mode:
