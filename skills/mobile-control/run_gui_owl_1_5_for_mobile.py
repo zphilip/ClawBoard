@@ -689,15 +689,16 @@ def main():
         if _has_transient_confirm_dialog:
             _log_t("[DIALOG] transient confirm dialog cues detected (may auto-dismiss quickly)")
 
-        # 1c. Memory pre-LLM fast path for transient confirmation dialogs.
-        # This is designed for short-lived popups like "退出导航" that can vanish
-        # before LLM+supervisor returns.
+        # 1c. Memory pre-LLM fast path.
+        # When memory decision is 'enforce' and there is a high-confidence cached
+        # action for the current state, skip the VLM call entirely and replay
+        # the cached action directly.  Supervisor is also skipped in this path
+        # since the action was already approved in a prior run.
         _pre_llm_action_parameter: dict | None = None
         if (
             args.memory_decision == "enforce"
             and _memory_policy is not None
             and _step_state_key
-            and _has_transient_confirm_dialog
         ):
             try:
                 _dinput_pre = DecisionInput(
@@ -724,10 +725,10 @@ def main():
                     if "action" not in _mem_args:
                         _mem_args["action"] = _mout_pre.action.action_type
                     _fastpath_action_type = _mem_args.get("action", "")
-                    # pre-LLM fastpath is specifically for transient dialog dismissal.
-                    # Only allow dialog-appropriate action types to prevent replacing
-                    # text-input or navigation actions with a stale cached click.
-                    _fastpath_allowed_types = {"click", "key", "system_button"}
+                    # Allow all safe, deterministic action types for the fastpath.
+                    # Exclude 'interact' (requires user input), 'answer'/'terminate'
+                    # (task-completion actions that still need per-run validation).
+                    _fastpath_allowed_types = {"click", "key", "system_button", "open", "wait", "type"}
                     if _fastpath_action_type not in _fastpath_allowed_types:
                         _memory_reason = "cached_action_type_not_dialog_compatible"
                         _log_t(
@@ -852,7 +853,7 @@ def main():
             print(f"[MODEL OUTPUT]\n{output_text}")
         else:
             output_text = (
-                "Action: [MEMORY FASTPATH] reuse cached action for transient dialog\n"
+                "Action: [MEMORY FASTPATH] reuse cached action for current state\n"
                 "<tool_call>\n"
                 + json.dumps({"name": "mobile_use", "arguments": _pre_llm_action_parameter}, ensure_ascii=False)
                 + "\n</tool_call>"
@@ -1090,6 +1091,11 @@ def main():
             _skip_supervisor = False
             _sup_skip_reason = ""
             _sup_apps_hint = ""
+            # Skip supervisor for memory fastpath — the action was already approved
+            # in a prior run; re-validating it every time defeats the purpose.
+            if _used_memory_fastpath:
+                _skip_supervisor = True
+                _sup_skip_reason = "memory_fastpath_cached_action"
             if _proposed_action == "open" and _cached_sup_app_names:
                 _sup_apps_hint = ", ".join(_cached_sup_app_names[:60])
 
