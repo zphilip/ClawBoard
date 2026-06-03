@@ -60,6 +60,10 @@ Phase A (this phase)
 Phase B
 - Read-only logging of signatures/outcomes, no decisions.
 
+Optional post-run convenience
+- Run `memory/post_run_report.py` after a task to print the latest summary from `memory_data/`.
+- This remains offline and does not affect agent execution.
+
 Phase C
 - Enable cache for a narrow task subset with strict verification.
 
