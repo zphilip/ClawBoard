@@ -11,6 +11,7 @@ Usage:
 """
 
 import argparse
+import copy
 import json
 import os
 import shutil
@@ -697,10 +698,10 @@ def main():
                 if _mout_pre.action is not None:
                     _memory_candidate_action = {
                         "action_type": _mout_pre.action.action_type,
-                        "arguments": dict(_mout_pre.action.arguments or {}),
+                        "arguments": copy.deepcopy(_mout_pre.action.arguments or {}),
                     }
                 if _mout_pre.use_cached_action and _mout_pre.action is not None and not _mout_pre.blocked:
-                    _mem_args = dict(_mout_pre.action.arguments or {})
+                    _mem_args = copy.deepcopy(_mout_pre.action.arguments or {})
                     if "action" not in _mem_args:
                         _mem_args["action"] = _mout_pre.action.action_type
                     if _memory_action_has_out_of_range_coords(_mem_args):
@@ -868,7 +869,7 @@ def main():
             continue
         action_parameter = action["arguments"]
         _step_action_type = str(action_parameter.get("action", ""))
-        _step_action_args = dict(action_parameter)
+        _step_action_args = copy.deepcopy(action_parameter)
         _step_state_action_sig = (
             f"{_step_state_key}|{_step_action_type}|"
             f"{json.dumps(_step_action_args, ensure_ascii=False, sort_keys=True)}"
@@ -943,7 +944,7 @@ def main():
                 if _mout.action is not None:
                     _memory_candidate_action = {
                         "action_type": _mout.action.action_type,
-                        "arguments": dict(_mout.action.arguments or {}),
+                        "arguments": copy.deepcopy(_mout.action.arguments or {}),
                     }
 
                 if args.memory_decision == "shadow":
@@ -954,7 +955,7 @@ def main():
                         )
                 elif args.memory_decision == "enforce":
                     if _mout.use_cached_action and _mout.action is not None and not _mout.blocked:
-                        _mem_args = dict(_mout.action.arguments or {})
+                        _mem_args = copy.deepcopy(_mout.action.arguments or {})
                         if "action" not in _mem_args:
                             _mem_args["action"] = _mout.action.action_type
                         if _memory_action_has_out_of_range_coords(_mem_args):
@@ -966,7 +967,7 @@ def main():
                             action = {"name": "mobile_use", "arguments": _mem_args}
                             action_parameter = action["arguments"]
                             _step_action_type = str(action_parameter.get("action", ""))
-                            _step_action_args = dict(action_parameter)
+                            _step_action_args = copy.deepcopy(action_parameter)
                             _memory_overrode_action = True
                             _log_t(
                                 f"[MEMORY] enforce override score={_memory_score:.3f} "
@@ -1068,7 +1069,7 @@ def main():
             action_parameter = _rb_override
             action["arguments"] = _rb_override
             _step_action_type = str(action_parameter.get("action", ""))
-            _step_action_args = dict(action_parameter)
+            _step_action_args = copy.deepcopy(action_parameter)
 
         # 3c. Supervisor validation — fast text LLM checks intent vs. tool_call.
         # Passes UI dump so it can verify answer claims against actual screen content.
