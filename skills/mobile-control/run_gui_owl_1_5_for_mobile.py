@@ -985,72 +985,11 @@ def main():
                         )
                 elif args.memory_decision == "enforce":
                     if _mout.use_cached_action and _mout.action is not None and not _mout.blocked:
-                        _mem_args = copy.deepcopy(_mout.action.arguments or {})
-                        if "action" not in _mem_args:
-                            _mem_args["action"] = _mout.action.action_type
-                        _cached_action_type = _mem_args.get("action", "")
-                        # Only override when the cached action type matches the proposed
-                        # action type. Never replace a 'type' with a 'click', or a
-                        # navigation action with a stale dialog-dismiss click.
-                        if _cached_action_type != _step_action_type:
-                            _memory_reason = "cached_action_type_mismatch"
-                            _log_t(
-                                f"[MEMORY] enforce override skipped: "
-                                f"cached type {_cached_action_type!r} != proposed type {_step_action_type!r}"
-                            )
-                        elif _cached_action_type == "click":
-                            _cached_coord = _mem_args.get("coordinate")
-                            _proposed_coord = action_parameter.get("coordinate")
-                            _coord_dist = _normalized_click_distance(_cached_coord, _proposed_coord)
-                            if _coord_dist is None:
-                                _memory_reason = "cached_click_coordinate_invalid"
-                                _log_t("[MEMORY] enforce override skipped: cached/proposed click coordinate invalid")
-                            elif (not _has_transient_confirm_dialog) and _coord_dist > MEMORY_CLICK_OVERRIDE_MAX_DRIFT:
-                                _memory_reason = "cached_click_too_far_from_proposed"
-                                _log_t(
-                                    f"[MEMORY] enforce override skipped: click drift too large "
-                                    f"(dist={_coord_dist:.1f}, max={MEMORY_CLICK_OVERRIDE_MAX_DRIFT:.1f})"
-                                )
-                            elif _memory_action_has_out_of_range_coords(_mem_args):
-                                _memory_reason = "cached_action_non_normalized_coords"
-                                _log_t(
-                                    "[MEMORY] enforce override skipped: cached coords are out of 0-1000 range"
-                                )
-                            else:
-                                action = {"name": "mobile_use", "arguments": _mem_args}
-                                action_parameter = action["arguments"]
-                                _step_action_type = str(action_parameter.get("action", ""))
-                                _step_action_args = copy.deepcopy(action_parameter)
-                                _memory_overrode_action = True
-                                _log_t(
-                                    f"[MEMORY] enforce override score={_memory_score:.3f} "
-                                    f"action={_step_action_args}"
-                                )
-                                _step_state_action_sig = (
-                                    f"{_step_state_key}|{_step_action_type}|"
-                                    f"{json.dumps(_step_action_args, ensure_ascii=False, sort_keys=True)}"
-                                )
-                                _step_state_action_relaxed_sig = f"{_step_state_key}|{_step_action_type}"
-                        elif _memory_action_has_out_of_range_coords(_mem_args):
-                            _memory_reason = "cached_action_non_normalized_coords"
-                            _log_t(
-                                "[MEMORY] enforce override skipped: cached coords are out of 0-1000 range"
-                            )
-                        else:
-                            action = {"name": "mobile_use", "arguments": _mem_args}
-                            action_parameter = action["arguments"]
-                            _step_action_type = str(action_parameter.get("action", ""))
-                            _step_action_args = copy.deepcopy(action_parameter)
-                            _memory_overrode_action = True
-                            _log_t(
-                                f"[MEMORY] enforce override score={_memory_score:.3f} "
-                                f"action={_step_action_args}"
-                            )
-                            _step_state_action_sig = (
-                                f"{_step_state_key}|{_step_action_type}|"
-                                f"{json.dumps(_step_action_args, ensure_ascii=False, sort_keys=True)}"
-                            )
-                            _step_state_action_relaxed_sig = f"{_step_state_key}|{_step_action_type}"
+                        _memory_reason = "post_llm_override_disabled"
+                        _log_t(
+                            f"[MEMORY] enforce hit score={_memory_score:.3f} "
+                            "but post-LLM override is disabled; keeping current LLM action"
+                        )
             except Exception as _mem_err:
                 _memory_reason = f"error:{_mem_err.__class__.__name__}"
                 _log_t(f"[MEMORY] decision error ({_mem_err!r}) — fallback to normal path")
