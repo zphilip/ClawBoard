@@ -383,12 +383,21 @@ def main():
     # Rolling window of the last 5 click coordinates.
     # Used to detect a stuck loop (same coordinate tapped 3+ times in a row).
     _recent_click_coords: list[tuple] = []
+    _last_state_action_sig = ""
+    _same_state_action_count = 0
+    _sup_approved_cache: dict[str, float] = {}
+    _SUP_APPROVE_CACHE_TTL_SECONDS = 180
+    _STATE_ACTION_LOOP_THRESHOLD = 3
 
     # Keywords in the model's action text that signal it is on the wrong screen.
     # When any of these appear the runner injects a Home-correction immediately.
     _WRONG_SCREEN_SIGNALS = [
         "调试界面", "调试工具", "debug interface", "developer",
         "PicoClaw", "picoclaw", "调试", "开发者",
+    ]
+    _TRANSIENT_DIALOG_KEYWORDS = [
+        "退出导航", "确认退出", "退出",
+        "close navigation", "exit navigation", "confirm",
     ]
 
     # Cache installed app display-names once, then reuse them for both the
@@ -462,6 +471,7 @@ def main():
         _provider_used = ""
         _step_action_type = ""
         _step_action_args: dict = {}
+        _step_state_action_sig = ""
         _memory_hit = False
         _memory_overrode_action = False
         _memory_blocked = False
@@ -585,6 +595,10 @@ def main():
         _log_t(f"[TIMING] ui_dump={_step_metrics['ui_dump']:.2f}s")
         _step_ui_fp = build_ui_fingerprint(_fg_pkg, _ui_summary)
         _step_state_key = build_state_key(_intent_sig, _step_ui_fp, "default")
+        _ui_text_lc = ((_ui_summary or "") + "\n" + (_fg_label or "")).lower()
+        _has_transient_confirm_dialog = any(k.lower() in _ui_text_lc for k in _TRANSIENT_DIALOG_KEYWORDS)
+        if _has_transient_confirm_dialog:
+            _log_t("[DIALOG] transient confirm dialog cues detected (may auto-dismiss quickly)")
 
         # 2. Build messages and call the VLM
         messages = build_messages(
@@ -722,6 +736,25 @@ def main():
         action_parameter = action["arguments"]
         _step_action_type = str(action_parameter.get("action", ""))
         _step_action_args = dict(action_parameter)
+        _step_state_action_sig = (
+            f"{_step_state_key}|{_step_action_type}|"
+            f"{json.dumps(_step_action_args, ensure_ascii=False, sort_keys=True)}"
+        )
+
+        # State-action loop detector: same scene + same action repeated several times.
+        if _step_state_action_sig and _step_state_action_sig == _last_state_action_sig:
+            _same_state_action_count += 1
+        else:
+            _same_state_action_count = 1
+            _last_state_action_sig = _step_state_action_sig
+
+        _loop_recovery_relaunch = False
+        if _same_state_action_count >= _STATE_ACTION_LOOP_THRESHOLD:
+            _log_t(
+                f"[LOOP] repeated state-action x{_same_state_action_count} detected; "
+                "will force recovery path"
+            )
+            _loop_recovery_relaunch = True
 
         # 3aa. Optional memory decision layer (default: off).
         if _memory_policy is not None and _step_state_key:
@@ -771,6 +804,10 @@ def main():
                             f"[MEMORY] enforce override score={_memory_score:.3f} "
                             f"action={_step_action_args}"
                         )
+                        _step_state_action_sig = (
+                            f"{_step_state_key}|{_step_action_type}|"
+                            f"{json.dumps(_step_action_args, ensure_ascii=False, sort_keys=True)}"
+                        )
             except Exception as _mem_err:
                 _memory_reason = f"error:{_mem_err.__class__.__name__}"
                 _log_t(f"[MEMORY] decision error ({_mem_err!r}) — fallback to normal path")
@@ -790,6 +827,11 @@ def main():
         elif _proposed_action == "answer" and not any_real_action:
             _rb_override = {"action": "system_button", "button": "Home"}
             print("[RULE] Premature answer before any real action — pressing Home first")
+
+        # (b2) Repeated same scene+action loop recovery.
+        elif _loop_recovery_relaunch:
+            _rb_override = {"action": "system_button", "button": "Home"}
+            print("[RULE] repeated same scene/action loop — forcing Home recovery")
 
         # (c) App disambiguation/recovery guard:
         # If the task has a clear target app package (e.g., QQ音乐), do not rely
@@ -829,6 +871,20 @@ def main():
                     print("[ACTION EXEC] RULE override -> Home failed")
                 else:
                     print("[ACTION EXEC] RULE override -> Home done")
+                if _loop_recovery_relaunch and _target_app_hint:
+                    print(f"[ACTION EXEC] LOOP recovery relaunch -> open {_target_app_hint!r} (start)")
+                    _opened = handle_open_action(
+                        {"action": "open", "text": _target_app_hint},
+                        instruction,
+                        adb_tools,
+                        resolver_api_key,
+                        resolver_base_url,
+                        resolver_model,
+                    )
+                    if _opened:
+                        print("[ACTION EXEC] LOOP recovery relaunch -> done")
+                    else:
+                        print("[ACTION EXEC] LOOP recovery relaunch -> failed")
                 consecutive_waits = 0
                 _emit_step_summary("rule_override_home")
                 time.sleep(2)
@@ -842,26 +898,47 @@ def main():
         # Passes UI dump so it can verify answer claims against actual screen content.
         # Only active when supervisor is configured.
         if supervisor is not None and _rb_override is None:
+            _skip_supervisor = False
+            _sup_skip_reason = ""
             _sup_apps_hint = ""
             if _proposed_action == "open" and _cached_sup_app_names:
                 _sup_apps_hint = ", ".join(_cached_sup_app_names[:60])
-            _t_supervisor = time.time()
-            try:
-                _sup_verdict = supervisor.validate(
-                    task=instruction,
-                    fg_label=_fg_label,
-                    action_text=_action_text,
-                    tool_call_dict=action,
-                    ui_summary=_ui_summary,
-                    screenshot_path=screenshot_path,
-                    installed_apps_hint=_sup_apps_hint,
-                )
-            except Exception as _sup_err:
-                print(f"[SUPERVISOR] error during validation ({_sup_err!r}) — approving by default")
-                _sup_verdict = {"verdict": "approve"}
-            _step_metrics["supervisor"] = time.time() - _t_supervisor
-            _log_t(f"[TIMING] supervisor_validate={_step_metrics['supervisor']:.2f}s")
-            if _sup_verdict.get("verdict") == "override":
+
+            # Fast-path for transient confirmation dialogs to avoid waiting 10-20s
+            # while the dialog auto-dismisses and causes stale-click loops.
+            if _has_transient_confirm_dialog and _proposed_action == "click":
+                _skip_supervisor = True
+                _sup_skip_reason = "transient_confirm_dialog_fast_path"
+
+            # Skip supervisor if the same state+action was approved recently.
+            _sup_cache_key = _step_state_action_sig
+            _cached_until = _sup_approved_cache.get(_sup_cache_key, 0.0) if _sup_cache_key else 0.0
+            if (not _skip_supervisor) and _cached_until > time.time():
+                _skip_supervisor = True
+                _sup_skip_reason = "recent_same_state_action_already_approved"
+
+            if _skip_supervisor:
+                print(f"[SUPERVISOR] skipped ({_sup_skip_reason})")
+                _step_metrics["supervisor"] = 0.0
+            else:
+                _t_supervisor = time.time()
+                try:
+                    _sup_verdict = supervisor.validate(
+                        task=instruction,
+                        fg_label=_fg_label,
+                        action_text=_action_text,
+                        tool_call_dict=action,
+                        ui_summary=_ui_summary,
+                        screenshot_path=screenshot_path,
+                        installed_apps_hint=_sup_apps_hint,
+                    )
+                except Exception as _sup_err:
+                    print(f"[SUPERVISOR] error during validation ({_sup_err!r}) — approving by default")
+                    _sup_verdict = {"verdict": "approve"}
+                _step_metrics["supervisor"] = time.time() - _t_supervisor
+                _log_t(f"[TIMING] supervisor_validate={_step_metrics['supervisor']:.2f}s")
+
+            if (not _skip_supervisor) and _sup_verdict.get("verdict") == "override":
                 _reason = _sup_verdict.get("reason", "")
                 print(f"[SUPERVISOR] overriding action — {_reason}")
                 _override_tc = _sup_verdict.get("tool_call", {})
@@ -909,6 +986,9 @@ def main():
                     continue
             else:
                 print("[SUPERVISOR] approved")
+                # Cache approve on exact same state+action for short TTL.
+                if _step_state_action_sig:
+                    _sup_approved_cache[_step_state_action_sig] = time.time() + _SUP_APPROVE_CACHE_TTL_SECONDS
 
         # 4. Rescale coordinates from 1000x1000 to actual resolution
         img = Image.open(screenshot_path)
