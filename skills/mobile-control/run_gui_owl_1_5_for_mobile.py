@@ -395,9 +395,24 @@ def main():
     _recent_click_coords: list[tuple] = []
     _last_state_action_sig = ""
     _same_state_action_count = 0
+    _last_state_action_relaxed_sig = ""
+    _same_state_action_relaxed_count = 0
+    _recent_state_action_relaxed: list[str] = []
     _sup_approved_cache: dict[str, float] = {}
     _SUP_APPROVE_CACHE_TTL_SECONDS = 180
     _STATE_ACTION_LOOP_THRESHOLD = 3
+
+    def _detect_relaxed_cycle(seq: list[str], min_period: int = 2, max_period: int = 4) -> tuple[bool, int, list[str]]:
+        """Detect whether the tail of seq forms a repeated cycle pattern."""
+        n = len(seq)
+        for period in range(min_period, max_period + 1):
+            if n < period * 2:
+                continue
+            tail1 = seq[-period:]
+            tail2 = seq[-2 * period:-period]
+            if tail1 == tail2:
+                return True, period, tail1
+        return False, 0, []
 
     # Keywords in the model's action text that signal it is on the wrong screen.
     # When any of these appear the runner injects a Home-correction immediately.
@@ -482,6 +497,7 @@ def main():
         _step_action_type = ""
         _step_action_args: dict = {}
         _step_state_action_sig = ""
+        _step_state_action_relaxed_sig = ""
         _used_memory_fastpath = False
         _memory_hit = False
         _memory_overrode_action = False
@@ -827,6 +843,7 @@ def main():
             f"{_step_state_key}|{_step_action_type}|"
             f"{json.dumps(_step_action_args, ensure_ascii=False, sort_keys=True)}"
         )
+        _step_state_action_relaxed_sig = f"{_step_state_key}|{_step_action_type}"
 
         # State-action loop detector: same scene + same action repeated several times.
         if _step_state_action_sig and _step_state_action_sig == _last_state_action_sig:
@@ -835,10 +852,38 @@ def main():
             _same_state_action_count = 1
             _last_state_action_sig = _step_state_action_sig
 
+        # Relaxed detector: ignore volatile action args (e.g. slightly changing coordinates).
+        if _step_state_action_relaxed_sig and _step_state_action_relaxed_sig == _last_state_action_relaxed_sig:
+            _same_state_action_relaxed_count += 1
+        else:
+            _same_state_action_relaxed_count = 1
+            _last_state_action_relaxed_sig = _step_state_action_relaxed_sig
+
+        if _step_state_action_relaxed_sig:
+            _recent_state_action_relaxed.append(_step_state_action_relaxed_sig)
+            if len(_recent_state_action_relaxed) > 12:
+                _recent_state_action_relaxed.pop(0)
+
+        _loop_cycle_detected, _loop_period, _loop_pattern = _detect_relaxed_cycle(_recent_state_action_relaxed)
+        _log_t(
+            "[LOOP DEBUG] "
+            f"strict_count={_same_state_action_count} "
+            f"relaxed_count={_same_state_action_relaxed_count} "
+            f"cycle_detected={_loop_cycle_detected} period={_loop_period}"
+        )
+        if _loop_cycle_detected:
+            _log_t(f"[LOOP DEBUG] cycle_pattern={_loop_pattern}")
+
         _loop_recovery_relaunch = False
-        if _same_state_action_count >= _STATE_ACTION_LOOP_THRESHOLD:
+        if (
+            _same_state_action_count >= _STATE_ACTION_LOOP_THRESHOLD
+            or _same_state_action_relaxed_count >= _STATE_ACTION_LOOP_THRESHOLD
+            or _loop_cycle_detected
+        ):
             _log_t(
-                f"[LOOP] repeated state-action x{_same_state_action_count} detected; "
+                f"[LOOP] detected (strict={_same_state_action_count}, "
+                f"relaxed={_same_state_action_relaxed_count}, "
+                f"cycle={_loop_cycle_detected}/p{_loop_period}); "
                 "will force recovery path"
             )
             _loop_recovery_relaunch = True
@@ -895,6 +940,7 @@ def main():
                             f"{_step_state_key}|{_step_action_type}|"
                             f"{json.dumps(_step_action_args, ensure_ascii=False, sort_keys=True)}"
                         )
+                        _step_state_action_relaxed_sig = f"{_step_state_key}|{_step_action_type}"
             except Exception as _mem_err:
                 _memory_reason = f"error:{_mem_err.__class__.__name__}"
                 _log_t(f"[MEMORY] decision error ({_mem_err!r}) — fallback to normal path")
