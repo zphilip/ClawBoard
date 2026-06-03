@@ -704,7 +704,18 @@ def main():
                     _mem_args = copy.deepcopy(_mout_pre.action.arguments or {})
                     if "action" not in _mem_args:
                         _mem_args["action"] = _mout_pre.action.action_type
-                    if _memory_action_has_out_of_range_coords(_mem_args):
+                    _fastpath_action_type = _mem_args.get("action", "")
+                    # pre-LLM fastpath is specifically for transient dialog dismissal.
+                    # Only allow dialog-appropriate action types to prevent replacing
+                    # text-input or navigation actions with a stale cached click.
+                    _fastpath_allowed_types = {"click", "key", "system_button"}
+                    if _fastpath_action_type not in _fastpath_allowed_types:
+                        _memory_reason = "cached_action_type_not_dialog_compatible"
+                        _log_t(
+                            f"[MEMORY] pre-LLM fastpath skipped: cached action type {_fastpath_action_type!r} "
+                            "is not a dialog-dismissal action"
+                        )
+                    elif _memory_action_has_out_of_range_coords(_mem_args):
                         _memory_reason = "cached_action_non_normalized_coords"
                         _log_t(
                             "[MEMORY] pre-LLM fastpath skipped: cached coords are out of 0-1000 range"
@@ -958,7 +969,17 @@ def main():
                         _mem_args = copy.deepcopy(_mout.action.arguments or {})
                         if "action" not in _mem_args:
                             _mem_args["action"] = _mout.action.action_type
-                        if _memory_action_has_out_of_range_coords(_mem_args):
+                        _cached_action_type = _mem_args.get("action", "")
+                        # Only override when the cached action type matches the proposed
+                        # action type. Never replace a 'type' with a 'click', or a
+                        # navigation action with a stale dialog-dismiss click.
+                        if _cached_action_type != _step_action_type:
+                            _memory_reason = "cached_action_type_mismatch"
+                            _log_t(
+                                f"[MEMORY] enforce override skipped: "
+                                f"cached type {_cached_action_type!r} != proposed type {_step_action_type!r}"
+                            )
+                        elif _memory_action_has_out_of_range_coords(_mem_args):
                             _memory_reason = "cached_action_non_normalized_coords"
                             _log_t(
                                 "[MEMORY] enforce override skipped: cached coords are out of 0-1000 range"
