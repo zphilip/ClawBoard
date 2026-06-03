@@ -77,6 +77,7 @@ class AdbTools:
         self.device = device
         self._device_flag = f" -s {device} " if device is not None else " "
         self.image_info = None
+        self._u2_disabled = False
 
     def get_foreground_package(self) -> str:
         """
@@ -120,9 +121,10 @@ class AdbTools:
         """
         xml = self._get_ui_dump_adb()
         if not xml or xml.count("<node") < 5:
-            xml_u2 = self._get_ui_dump_u2()
-            if xml_u2 and xml_u2.count("<node") > xml.count("<node"):
-                return xml_u2
+            if not self._u2_disabled:
+                xml_u2 = self._get_ui_dump_u2()
+                if xml_u2 and xml_u2.count("<node") > xml.count("<node"):
+                    return xml_u2
         return xml
 
     def _get_ui_dump_adb(self) -> str:
@@ -169,7 +171,15 @@ class AdbTools:
         except ImportError:
             return ""
         except Exception as _e:
+            _msg = str(_e)
             print(f"[UI DUMP] uiautomator2 fallback failed: {_e}")
+            if any(sig in _msg for sig in (
+                "already registered",
+                "UiAutomation not connected",
+                "UiAutomationService",
+            )):
+                self._u2_disabled = True
+                print("[UI DUMP] uiautomator2 fallback disabled for this run")
             return ""
 
     # -- helpers ----------------------------------------------------------
