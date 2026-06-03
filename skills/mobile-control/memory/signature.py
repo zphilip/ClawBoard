@@ -21,10 +21,12 @@ def build_intent_signature(instruction: str) -> str:
 
 
 def build_ui_fingerprint(foreground_pkg: str, ui_summary: str) -> str:
-    # Keep only coarse stable text to avoid brittle exact matching.
-    lines = [x.strip() for x in (ui_summary or "").splitlines() if x.strip()]
-    head = lines[:15]
-    return hash_tokens([foreground_pkg] + head)
+    # Use only the foreground package name for cross-run stability.
+    # The full UI layout text changes between runs (ads, timestamps, search
+    # history items) so including it produces different hashes on every run,
+    # defeating memory lookup.  The package alone is the stable signal for
+    # "which app/screen context are we in".
+    return hash_tokens([foreground_pkg])
 
 
 def build_state_key(intent_signature: str, ui_fingerprint: str, device_bucket: str) -> str:

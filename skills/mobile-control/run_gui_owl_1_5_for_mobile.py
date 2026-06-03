@@ -684,6 +684,7 @@ def main():
         _log_t(f"[TIMING] ui_dump={_step_metrics['ui_dump']:.2f}s")
         _step_ui_fp = build_ui_fingerprint(_fg_pkg, _ui_summary)
         _step_state_key = build_state_key(_intent_sig, _step_ui_fp, "default")
+        _log_t(f"[MEMORY KEY] state_key={_step_state_key} ui_fp={_step_ui_fp} intent={_intent_sig}")
         _ui_text_lc = ((_ui_summary or "") + "\n" + (_fg_label or "")).lower()
         _has_transient_confirm_dialog = any(k.lower() in _ui_text_lc for k in _TRANSIENT_DIALOG_KEYWORDS)
         if _has_transient_confirm_dialog:
