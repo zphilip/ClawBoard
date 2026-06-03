@@ -611,7 +611,13 @@ Rules:
 - ONLY use the answer action when the task outcome is LITERALLY VISIBLE in the current screenshot.
 - Do NOT fabricate or assume any information that is not shown on screen: distances, travel times, congestion indices, prices, ratings, status messages, or any other numbers/text.
 - If you cannot see clear confirmation that the task completed (e.g. navigation actively running, booking confirmed screen), do NOT answer — take the next required action instead.
-- Your answer text must describe only what is visible. Never extrapolate from partial information. If the screen shows a destination pin but navigation has not started, say so — do not invent route details.'''
+- Your answer text must describe only what is visible. Never extrapolate from partial information. If the screen shows a destination pin but navigation has not started, do NOT answer yet — click the start button first.
+
+## Navigation task completion rules (CRITICAL)
+- For any task that asks you to "navigate to", "导航到", "开始导航", or "set navigation": showing a list of route options (route cards with distances and travel times) is NOT task completion. Route planning is only a midway step.
+- The task is complete ONLY when you have clicked the "开始导航" / "Start Navigation" button and the screen has switched to the live turn-by-turn navigation interface (large arrow with upcoming turn instruction visible at top).
+- If you see route cards ("方案一", "方案二", etc.) or a blue "出发" / "开始导航" button anywhere on screen, you MUST click it — do NOT issue answer yet.
+- Never use answer to describe routes you could take. Only use answer after navigation is actively running.'''
 
 # Compact system prompt for small-context models (≤2048 tokens).
 # Contains only the tool schema + response format; drops behavioural rules so
