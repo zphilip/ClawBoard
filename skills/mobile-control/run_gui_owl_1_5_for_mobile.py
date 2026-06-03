@@ -23,7 +23,7 @@ from PIL import Image
 
 from packages import PACKAGES_NAME_DICT, NAME_PACKAGE_DICT, normalize_package_name
 from memory.logger import MemoryEventLogger
-from memory.models import ActionCandidate, DecisionInput, StateSignature
+from memory.models import ActionCandidate, DecisionInput, MemoryRecord, StateSignature
 from memory.policy import MemoryPolicy
 from memory.signature import build_intent_signature, build_state_key, build_ui_fingerprint
 from memory.store import JsonlMemoryStore
@@ -361,10 +361,20 @@ def main():
     _intent_sig = build_intent_signature(instruction)
     _memory_logger = MemoryEventLogger(_memory_root / "events.jsonl")
     _memory_policy: MemoryPolicy | None = None
+    _memory_store: JsonlMemoryStore | None = None
+    _MEMORY_GOOD_OUTCOMES = {"completed", "answer_confirmed_complete", "terminate_action"}
+    _MEMORY_BAD_OUTCOMES = {
+        "parse_failed",
+        "screenshot_failed",
+        "open_not_found",
+        "wait_recovery_home",
+        "wrong_screen_home_recovery",
+    }
     if args.memory_decision != "off":
         _store_path = Path(args.memory_store) if args.memory_store else (_memory_root / "records.jsonl")
         try:
-            _memory_policy = MemoryPolicy(JsonlMemoryStore(_store_path), min_score=float(args.memory_min_score))
+            _memory_store = JsonlMemoryStore(_store_path)
+            _memory_policy = MemoryPolicy(_memory_store, min_score=float(args.memory_min_score))
             _log_t(
                 f"[MEMORY] mode={args.memory_decision} store={_store_path} min_score={float(args.memory_min_score):.2f}"
             )
@@ -472,6 +482,7 @@ def main():
         _step_action_type = ""
         _step_action_args: dict = {}
         _step_state_action_sig = ""
+        _used_memory_fastpath = False
         _memory_hit = False
         _memory_overrode_action = False
         _memory_blocked = False
@@ -515,6 +526,23 @@ def main():
                 f"(primary={_llm_primary:.2f}s, fallback={_llm_fallback:.2f}s) | "
                 f"supervisor={_sup_total:.2f}s | supervisor_share={_sup_share:.1f}%"
             )
+            # Optional memory record persistence (telemetry -> actionable cache).
+            if _memory_store is not None and _step_state_key and _step_action_type:
+                try:
+                    _memory_store.append(
+                        MemoryRecord(
+                            state_key=_step_state_key,
+                            intent_key=_intent_sig,
+                            action_type=_step_action_type,
+                            action_args=dict(_step_action_args),
+                            success_count=1 if _outcome in _MEMORY_GOOD_OUTCOMES else 0,
+                            fail_count=1 if _outcome in _MEMORY_BAD_OUTCOMES else 0,
+                            forbidden=(_outcome in _MEMORY_BAD_OUTCOMES),
+                            reason=_outcome,
+                        )
+                    )
+                except Exception:
+                    pass
             try:
                 _memory_logger.log_event({
                     "type": "step_outcome",
@@ -533,6 +561,7 @@ def main():
                         "mode": args.memory_decision,
                         "hit": _memory_hit,
                         "overrode_action": _memory_overrode_action,
+                        "used_fastpath": _used_memory_fastpath,
                         "blocked": _memory_blocked,
                         "score": round(_memory_score, 4),
                         "reason": _memory_reason,
@@ -600,105 +629,163 @@ def main():
         if _has_transient_confirm_dialog:
             _log_t("[DIALOG] transient confirm dialog cues detected (may auto-dismiss quickly)")
 
-        # 2. Build messages and call the VLM
-        messages = build_messages(
-            screenshot_path, instruction, history, args.model,
-            foreground_pkg=_fg_label,
-            ui_summary=_ui_summary,
-            installed_apps_hint=", ".join(_cached_inst_app_names[:80]),
-            target_app_hint=_target_app_hint,
-            compact=_compact_mode,
-        )
-
-        vllm = GUIOwlWrapper(
-            args.api_key,
-            args.base_url,
-            args.model,
-            max_retry=1,
-            max_context_size=_vlm_max_ctx,
-        )
-        _primary_attempts = 2
-        output_text = ERROR_CALLING_LLM
-        _t_primary = time.time()
-        _now = time.time()
-        _primary_attempted = False
-        _primary_failed_after_attempt = False
-        if _now < _primary_cooldown_until:
-            _remaining = int(_primary_cooldown_until - _now)
-            print(
-                f"[VLM] primary provider in cooldown ({_remaining}s left, reason={_primary_cooldown_reason}) — skipping primary"
-            )
-        else:
-            _primary_attempted = True
-            for _p_try in range(1, _primary_attempts + 1):
-                print(f"[VLM] primary attempt {_p_try}/{_primary_attempts}")
-                output_text, _, _ = vllm.predict_mm(messages)
-                if output_text != ERROR_CALLING_LLM:
-                    break
-                if _p_try < _primary_attempts:
-                    print("[VLM] primary attempt failed — retrying in 2s")
-                    time.sleep(2)
-            _primary_failed_after_attempt = (output_text == ERROR_CALLING_LLM)
-        _step_metrics["vlm_primary"] = time.time() - _t_primary
-        _log_t(f"[TIMING] vlm_primary={_step_metrics['vlm_primary']:.2f}s")
-        _provider_used = f"primary:{args.model} @ {args.base_url}"
-
-        # If primary provider failed, try the fallback (e.g. local gui-owl).
-        if output_text == ERROR_CALLING_LLM and _fb_model:
-            if _primary_attempted and _primary_failed_after_attempt:
-                _primary_cooldown_until = time.time() + PRIMARY_RECOVERY_COOLDOWN_SECONDS
-                _primary_cooldown_reason = "primary_error"
-                _log_t(
-                    f"[VLM] entering primary cooldown for {PRIMARY_RECOVERY_COOLDOWN_SECONDS}s"
+        # 1c. Memory pre-LLM fast path for transient confirmation dialogs.
+        # This is designed for short-lived popups like "退出导航" that can vanish
+        # before LLM+supervisor returns.
+        _pre_llm_action_parameter: dict | None = None
+        if (
+            args.memory_decision == "enforce"
+            and _memory_policy is not None
+            and _step_state_key
+            and _has_transient_confirm_dialog
+        ):
+            try:
+                _dinput_pre = DecisionInput(
+                    state=StateSignature(
+                        foreground_pkg=_fg_pkg or "",
+                        ui_fingerprint=_step_ui_fp,
+                        intent_signature=_intent_sig,
+                        device_bucket="default",
+                    ),
+                    proposed_action=None,
                 )
-            print(f"[VLM] Primary provider failed — switching to fallback: {_fb_model}")
-            _fb_compact = bool(_fb_max_ctx and _fb_max_ctx <= 2048)
-            if _fb_compact and not _compact_mode:
-                # Rebuild with compact prompt.  Drop ui_summary (saves ~150+ tokens)
-                # and limit history to 1 step — the 2048-token model can barely fit
-                # one history image alongside the system prompt + current screenshot.
-                _fb_messages = build_messages(
-                    screenshot_path, instruction, history, _fb_model,
-                    foreground_pkg=_fg_label,
-                    ui_summary="",   # omit — saves ~150 tokens for the small model
-                    installed_apps_hint=", ".join(_cached_inst_app_names[:80]),
-                    target_app_hint=_target_app_hint,
-                    compact=True,
-                    history_n=1,    # at most one history image in 2048-token context
+                _mout_pre = _memory_policy.decide(_step_state_key, _intent_sig, _dinput_pre)
+                _memory_reason = _mout_pre.reason or "none"
+                _memory_score = float((_mout_pre.diagnostics or {}).get("score", 0.0) or 0.0)
+                _memory_blocked = bool(_mout_pre.blocked)
+                _memory_hit = bool(_mout_pre.action is not None)
+                if _mout_pre.action is not None:
+                    _memory_candidate_action = {
+                        "action_type": _mout_pre.action.action_type,
+                        "arguments": dict(_mout_pre.action.arguments or {}),
+                    }
+                if _mout_pre.use_cached_action and _mout_pre.action is not None and not _mout_pre.blocked:
+                    _mem_args = dict(_mout_pre.action.arguments or {})
+                    if "action" not in _mem_args:
+                        _mem_args["action"] = _mout_pre.action.action_type
+                    _pre_llm_action_parameter = _mem_args
+                    _used_memory_fastpath = True
+                    _memory_overrode_action = True
+                    _log_t(
+                        f"[MEMORY] pre-LLM fastpath score={_memory_score:.3f} action={_pre_llm_action_parameter}"
+                    )
+            except Exception as _mem_pre_err:
+                _memory_reason = f"error:{_mem_pre_err.__class__.__name__}"
+                _log_t(f"[MEMORY] pre-LLM fastpath error ({_mem_pre_err!r}) — fallback to normal path")
+
+        # 2. Build messages and call the VLM
+        if _pre_llm_action_parameter is None:
+            messages = build_messages(
+                screenshot_path, instruction, history, args.model,
+                foreground_pkg=_fg_label,
+                ui_summary=_ui_summary,
+                installed_apps_hint=", ".join(_cached_inst_app_names[:80]),
+                target_app_hint=_target_app_hint,
+                compact=_compact_mode,
+            )
+
+            vllm = GUIOwlWrapper(
+                args.api_key,
+                args.base_url,
+                args.model,
+                max_retry=1,
+                max_context_size=_vlm_max_ctx,
+            )
+            _primary_attempts = 2
+            output_text = ERROR_CALLING_LLM
+            _t_primary = time.time()
+            _now = time.time()
+            _primary_attempted = False
+            _primary_failed_after_attempt = False
+            if _now < _primary_cooldown_until:
+                _remaining = int(_primary_cooldown_until - _now)
+                print(
+                    f"[VLM] primary provider in cooldown ({_remaining}s left, reason={_primary_cooldown_reason}) — skipping primary"
                 )
             else:
-                _fb_messages = messages
-            _fb_vllm = GUIOwlWrapper(
-                _fb_api_key,
-                _fb_base_url,
-                _fb_model,
-                max_retry=1,
-                max_context_size=_fb_max_ctx,
-            )
-            _t_fallback = time.time()
-            _fb_attempts = 3
-            for _fb_try in range(1, _fb_attempts + 1):
-                print(f"[VLM] fallback attempt {_fb_try}/{_fb_attempts}")
-                output_text, _, _ = _fb_vllm.predict_mm(_fb_messages)
-                if output_text != ERROR_CALLING_LLM:
-                    break
-                if _fb_try < _fb_attempts:
-                    print("[VLM] fallback attempt failed — retrying in 2s")
-                    time.sleep(2)
+                _primary_attempted = True
+                for _p_try in range(1, _primary_attempts + 1):
+                    print(f"[VLM] primary attempt {_p_try}/{_primary_attempts}")
+                    output_text, _, _ = vllm.predict_mm(messages)
+                    if output_text != ERROR_CALLING_LLM:
+                        break
+                    if _p_try < _primary_attempts:
+                        print("[VLM] primary attempt failed — retrying in 2s")
+                        time.sleep(2)
+                _primary_failed_after_attempt = (output_text == ERROR_CALLING_LLM)
+            _step_metrics["vlm_primary"] = time.time() - _t_primary
+            _log_t(f"[TIMING] vlm_primary={_step_metrics['vlm_primary']:.2f}s")
+            _provider_used = f"primary:{args.model} @ {args.base_url}"
+
+            # If primary provider failed, try the fallback (e.g. local gui-owl).
+            if output_text == ERROR_CALLING_LLM and _fb_model:
+                if _primary_attempted and _primary_failed_after_attempt:
+                    _primary_cooldown_until = time.time() + PRIMARY_RECOVERY_COOLDOWN_SECONDS
+                    _primary_cooldown_reason = "primary_error"
+                    _log_t(
+                        f"[VLM] entering primary cooldown for {PRIMARY_RECOVERY_COOLDOWN_SECONDS}s"
+                    )
+                print(f"[VLM] Primary provider failed — switching to fallback: {_fb_model}")
+                _fb_compact = bool(_fb_max_ctx and _fb_max_ctx <= 2048)
+                if _fb_compact and not _compact_mode:
+                    # Rebuild with compact prompt.  Drop ui_summary (saves ~150+ tokens)
+                    # and limit history to 1 step — the 2048-token model can barely fit
+                    # one history image alongside the system prompt + current screenshot.
+                    _fb_messages = build_messages(
+                        screenshot_path, instruction, history, _fb_model,
+                        foreground_pkg=_fg_label,
+                        ui_summary="",   # omit — saves ~150 tokens for the small model
+                        installed_apps_hint=", ".join(_cached_inst_app_names[:80]),
+                        target_app_hint=_target_app_hint,
+                        compact=True,
+                        history_n=1,    # at most one history image in 2048-token context
+                    )
+                else:
+                    _fb_messages = messages
+                _fb_vllm = GUIOwlWrapper(
+                    _fb_api_key,
+                    _fb_base_url,
+                    _fb_model,
+                    max_retry=1,
+                    max_context_size=_fb_max_ctx,
+                )
+                _t_fallback = time.time()
+                _fb_attempts = 3
+                for _fb_try in range(1, _fb_attempts + 1):
+                    print(f"[VLM] fallback attempt {_fb_try}/{_fb_attempts}")
+                    output_text, _, _ = _fb_vllm.predict_mm(_fb_messages)
+                    if output_text != ERROR_CALLING_LLM:
+                        break
+                    if _fb_try < _fb_attempts:
+                        print("[VLM] fallback attempt failed — retrying in 2s")
+                        time.sleep(2)
+                if output_text == ERROR_CALLING_LLM:
+                    print("[VLM] fallback exhausted all retries")
+                _step_metrics["vlm_fallback"] = time.time() - _t_fallback
+                _log_t(f"[TIMING] vlm_fallback={_step_metrics['vlm_fallback']:.2f}s")
+                _provider_used = f"fallback:{_fb_model} @ {_fb_base_url}"
+            elif output_text == ERROR_CALLING_LLM:
+                print("[VLM] primary failed and no fallback provider is configured")
+
             if output_text == ERROR_CALLING_LLM:
-                print("[VLM] fallback exhausted all retries")
-            _step_metrics["vlm_fallback"] = time.time() - _t_fallback
-            _log_t(f"[TIMING] vlm_fallback={_step_metrics['vlm_fallback']:.2f}s")
-            _provider_used = f"fallback:{_fb_model} @ {_fb_base_url}"
-        elif output_text == ERROR_CALLING_LLM:
-            print("[VLM] primary failed and no fallback provider is configured")
+                print(f"[VLM] provider used: {_provider_used} (ERROR_CALLING_LLM)")
+            else:
+                print(f"[VLM] provider used: {_provider_used}")
 
-        if output_text == ERROR_CALLING_LLM:
-            print(f"[VLM] provider used: {_provider_used} (ERROR_CALLING_LLM)")
+            print(f"[MODEL OUTPUT]\n{output_text}")
         else:
+            output_text = (
+                "Action: [MEMORY FASTPATH] reuse cached action for transient dialog\n"
+                "<tool_call>\n"
+                + json.dumps({"name": "mobile_use", "arguments": _pre_llm_action_parameter}, ensure_ascii=False)
+                + "\n</tool_call>"
+            )
+            _provider_used = "memory-fastpath"
+            _step_metrics["vlm_primary"] = 0.0
+            _step_metrics["vlm_fallback"] = 0.0
+            _step_metrics["supervisor"] = 0.0
             print(f"[VLM] provider used: {_provider_used}")
-
-        print(f"[MODEL OUTPUT]\n{output_text}")
+            print(f"[MODEL OUTPUT]\n{output_text}")
 
         # 3a. Wrong-screen early exit: if the model text explicitly mentions a
         # debug/developer/wrong-app screen, press Home and restart rather than
