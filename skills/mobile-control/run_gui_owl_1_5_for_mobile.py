@@ -168,12 +168,18 @@ def rescale_coordinates(action_parameter, resized_width, resized_height):
     for key in ("coordinate", "coordinate1", "coordinate2"):
         if key in action_parameter:
             _raw_coords[key] = list(action_parameter[key])
-            action_parameter[key][0] = int(
-                action_parameter[key][0] / 1000 * resized_width
-            )
-            action_parameter[key][1] = int(
-                action_parameter[key][1] / 1000 * resized_height
-            )
+            # Backward compatibility: old memory records may store absolute pixels.
+            # If either axis exceeds 1000, treat it as already-resolved pixels.
+            if action_parameter[key][0] > 1000 or action_parameter[key][1] > 1000:
+                action_parameter[key][0] = int(action_parameter[key][0])
+                action_parameter[key][1] = int(action_parameter[key][1])
+            else:
+                action_parameter[key][0] = int(
+                    action_parameter[key][0] / 1000 * resized_width
+                )
+                action_parameter[key][1] = int(
+                    action_parameter[key][1] / 1000 * resized_height
+                )
     if _raw_coords:
         print(
             f"[COORD DEBUG] raw={_raw_coords} -> scaled={{{', '.join(f'{k}: {action_parameter[k]}' for k in _raw_coords)}}} "
@@ -240,6 +246,24 @@ def handle_open_action(
 
     # App not found — do NOT block on input(), just log and let the loop continue
     print(f"[APP NOT FOUND] Could not resolve app: {display_name!r}. Continuing loop.")
+    return False
+
+
+def _memory_action_has_out_of_range_coords(action_args: dict) -> bool:
+    """Return True if action has coordinate values outside normalized 0-1000 range."""
+    for key in ("coordinate", "coordinate1", "coordinate2"):
+        if key not in action_args:
+            continue
+        value = action_args.get(key)
+        if not isinstance(value, (list, tuple)) or len(value) != 2:
+            continue
+        try:
+            x = float(value[0])
+            y = float(value[1])
+        except (TypeError, ValueError):
+            continue
+        if x < 0 or y < 0 or x > 1000 or y > 1000:
+            return True
     return False
 
 
@@ -679,12 +703,18 @@ def main():
                     _mem_args = dict(_mout_pre.action.arguments or {})
                     if "action" not in _mem_args:
                         _mem_args["action"] = _mout_pre.action.action_type
-                    _pre_llm_action_parameter = _mem_args
-                    _used_memory_fastpath = True
-                    _memory_overrode_action = True
-                    _log_t(
-                        f"[MEMORY] pre-LLM fastpath score={_memory_score:.3f} action={_pre_llm_action_parameter}"
-                    )
+                    if _memory_action_has_out_of_range_coords(_mem_args):
+                        _memory_reason = "cached_action_non_normalized_coords"
+                        _log_t(
+                            "[MEMORY] pre-LLM fastpath skipped: cached coords are out of 0-1000 range"
+                        )
+                    else:
+                        _pre_llm_action_parameter = _mem_args
+                        _used_memory_fastpath = True
+                        _memory_overrode_action = True
+                        _log_t(
+                            f"[MEMORY] pre-LLM fastpath score={_memory_score:.3f} action={_pre_llm_action_parameter}"
+                        )
             except Exception as _mem_pre_err:
                 _memory_reason = f"error:{_mem_pre_err.__class__.__name__}"
                 _log_t(f"[MEMORY] pre-LLM fastpath error ({_mem_pre_err!r}) — fallback to normal path")
@@ -927,20 +957,26 @@ def main():
                         _mem_args = dict(_mout.action.arguments or {})
                         if "action" not in _mem_args:
                             _mem_args["action"] = _mout.action.action_type
-                        action = {"name": "mobile_use", "arguments": _mem_args}
-                        action_parameter = action["arguments"]
-                        _step_action_type = str(action_parameter.get("action", ""))
-                        _step_action_args = dict(action_parameter)
-                        _memory_overrode_action = True
-                        _log_t(
-                            f"[MEMORY] enforce override score={_memory_score:.3f} "
-                            f"action={_step_action_args}"
-                        )
-                        _step_state_action_sig = (
-                            f"{_step_state_key}|{_step_action_type}|"
-                            f"{json.dumps(_step_action_args, ensure_ascii=False, sort_keys=True)}"
-                        )
-                        _step_state_action_relaxed_sig = f"{_step_state_key}|{_step_action_type}"
+                        if _memory_action_has_out_of_range_coords(_mem_args):
+                            _memory_reason = "cached_action_non_normalized_coords"
+                            _log_t(
+                                "[MEMORY] enforce override skipped: cached coords are out of 0-1000 range"
+                            )
+                        else:
+                            action = {"name": "mobile_use", "arguments": _mem_args}
+                            action_parameter = action["arguments"]
+                            _step_action_type = str(action_parameter.get("action", ""))
+                            _step_action_args = dict(action_parameter)
+                            _memory_overrode_action = True
+                            _log_t(
+                                f"[MEMORY] enforce override score={_memory_score:.3f} "
+                                f"action={_step_action_args}"
+                            )
+                            _step_state_action_sig = (
+                                f"{_step_state_key}|{_step_action_type}|"
+                                f"{json.dumps(_step_action_args, ensure_ascii=False, sort_keys=True)}"
+                            )
+                            _step_state_action_relaxed_sig = f"{_step_state_key}|{_step_action_type}"
             except Exception as _mem_err:
                 _memory_reason = f"error:{_mem_err.__class__.__name__}"
                 _log_t(f"[MEMORY] decision error ({_mem_err!r}) — fallback to normal path")
@@ -1018,6 +1054,13 @@ def main():
                         print("[ACTION EXEC] LOOP recovery relaunch -> done")
                     else:
                         print("[ACTION EXEC] LOOP recovery relaunch -> failed")
+                # Reset loop detectors after explicit recovery to avoid
+                # repeatedly triggering on stale pre-recovery signatures.
+                _last_state_action_sig = ""
+                _same_state_action_count = 0
+                _last_state_action_relaxed_sig = ""
+                _same_state_action_relaxed_count = 0
+                _recent_state_action_relaxed.clear()
                 consecutive_waits = 0
                 _emit_step_summary("rule_override_home")
                 time.sleep(2)
