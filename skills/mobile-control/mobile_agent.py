@@ -256,6 +256,36 @@ def _debug(msg: str) -> None:
         _log(f"[DEBUG] {msg}")
 
 
+def run_post_run_report(input_path: str = "", top: int = 10) -> None:
+    """Run optional offline post-run memory report and log its output."""
+    script = Path(__file__).parent / "memory" / "post_run_report.py"
+    if not script.exists():
+        _log(f"Post-run report script not found: {script}")
+        return
+
+    cmd = [sys.executable, str(script), "--top", str(top)]
+    if input_path:
+        cmd += ["--input", input_path]
+
+    _log(f"Running post-run report: {' '.join(cmd)}")
+    try:
+        r = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=60,
+            cwd=str(Path(__file__).parent.resolve()),
+        )
+        if r.stdout.strip():
+            for line in r.stdout.splitlines():
+                _log(f"[post-run-report] {line}")
+        if r.returncode != 0:
+            err = (r.stderr or "").strip()
+            _log(f"Post-run report failed (rc={r.returncode}): {err[:400]}")
+    except Exception as e:
+        _log(f"Post-run report error: {e}")
+
+
 # ---------------------------------------------------------------------------
 # Pre-checks
 # ---------------------------------------------------------------------------
@@ -807,6 +837,12 @@ def parse_args() -> argparse.Namespace:
                    help="Print full model input/output to log")
     p.add_argument("--log-file", default="", dest="log_file",
                    help="Also write all [mobile-control] logs to this file")
+    p.add_argument("--post-run-report", action="store_true",
+                   help="Run memory/post_run_report.py automatically after task completion.")
+    p.add_argument("--post-run-report-top", type=int, default=10,
+                   help="Top N entries for auto post-run report.")
+    p.add_argument("--post-run-report-input", default="",
+                   help="Optional input path for post-run report (events.db or events.jsonl).")
     return p.parse_args()
 
 
@@ -923,6 +959,13 @@ def main() -> int:
 
     # 7. Emit result JSON (consumed by OpenClaw)
     _emit(result)
+
+    # 8. Optional offline report (stderr/log only, does not affect result JSON)
+    if args.post_run_report:
+        run_post_run_report(
+            input_path=args.post_run_report_input,
+            top=args.post_run_report_top,
+        )
 
     status_exit = {
         "success": 0,
