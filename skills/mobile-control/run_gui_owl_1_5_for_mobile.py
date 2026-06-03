@@ -23,7 +23,10 @@ from PIL import Image
 
 from packages import PACKAGES_NAME_DICT, NAME_PACKAGE_DICT, normalize_package_name
 from memory.logger import MemoryEventLogger
+from memory.models import ActionCandidate, DecisionInput, StateSignature
+from memory.policy import MemoryPolicy
 from memory.signature import build_intent_signature, build_state_key, build_ui_fingerprint
+from memory.store import JsonlMemoryStore
 from utils import (
     AdbTools,
     annotate_screenshot,
@@ -88,6 +91,12 @@ def parse_args():
     parser.add_argument("--max-context-size", type=int, default=None,
                         help="Override VLM context window size (tokens). "
                              "Activates compact mode when ≤2048.")
+    parser.add_argument("--memory-decision", choices=["off", "shadow", "enforce"], default="off",
+                        help="Memory decision mode: off, shadow (observe only), or enforce.")
+    parser.add_argument("--memory-min-score", type=float, default=0.7,
+                        help="Minimum score for memory candidates.")
+    parser.add_argument("--memory-store", type=str, default="",
+                        help="Optional memory store JSONL path for state->action records.")
     return parser.parse_args()
 
 
@@ -351,6 +360,17 @@ def main():
     history = []
     _intent_sig = build_intent_signature(instruction)
     _memory_logger = MemoryEventLogger(_memory_root / "events.jsonl")
+    _memory_policy: MemoryPolicy | None = None
+    if args.memory_decision != "off":
+        _store_path = Path(args.memory_store) if args.memory_store else (_memory_root / "records.jsonl")
+        try:
+            _memory_policy = MemoryPolicy(JsonlMemoryStore(_store_path), min_score=float(args.memory_min_score))
+            _log_t(
+                f"[MEMORY] mode={args.memory_decision} store={_store_path} min_score={float(args.memory_min_score):.2f}"
+            )
+        except Exception as _mem_init_err:
+            _memory_policy = None
+            _log_t(f"[MEMORY] init failed ({_mem_init_err!r}) — disabling memory decision")
     # Set to True once any physical action (click, swipe, type, etc.) is
     # executed.  Used to detect premature 'answer' refusals at step 0.
     any_real_action = False
@@ -442,6 +462,12 @@ def main():
         _provider_used = ""
         _step_action_type = ""
         _step_action_args: dict = {}
+        _memory_hit = False
+        _memory_overrode_action = False
+        _memory_blocked = False
+        _memory_score = 0.0
+        _memory_reason = "off"
+        _memory_candidate_action: dict = {}
 
         def _emit_step_summary(_outcome: str) -> None:
             nonlocal _step_summary_emitted
@@ -493,6 +519,15 @@ def main():
                     "provider_used": _provider_used,
                     "action_type": _step_action_type,
                     "action_args": _step_action_args,
+                    "memory": {
+                        "mode": args.memory_decision,
+                        "hit": _memory_hit,
+                        "overrode_action": _memory_overrode_action,
+                        "blocked": _memory_blocked,
+                        "score": round(_memory_score, 4),
+                        "reason": _memory_reason,
+                        "candidate_action": _memory_candidate_action,
+                    },
                     "metrics": {
                         "step_total": round(time.time() - _step_t0, 4),
                         "screenshot": round(_step_metrics.get("screenshot", 0.0), 4),
@@ -687,6 +722,58 @@ def main():
         action_parameter = action["arguments"]
         _step_action_type = str(action_parameter.get("action", ""))
         _step_action_args = dict(action_parameter)
+
+        # 3aa. Optional memory decision layer (default: off).
+        if _memory_policy is not None and _step_state_key:
+            try:
+                _dinput = DecisionInput(
+                    state=StateSignature(
+                        foreground_pkg=_fg_pkg or "",
+                        ui_fingerprint=_step_ui_fp,
+                        intent_signature=_intent_sig,
+                        device_bucket="default",
+                    ),
+                    proposed_action=ActionCandidate(
+                        action_type=_step_action_type,
+                        arguments=dict(_step_action_args),
+                        source="llm",
+                    ),
+                )
+                _mout = _memory_policy.decide(_step_state_key, _intent_sig, _dinput)
+                _memory_reason = _mout.reason or "none"
+                _memory_score = float((_mout.diagnostics or {}).get("score", 0.0) or 0.0)
+                _memory_blocked = bool(_mout.blocked)
+                _memory_hit = bool(_mout.action is not None)
+
+                if _mout.action is not None:
+                    _memory_candidate_action = {
+                        "action_type": _mout.action.action_type,
+                        "arguments": dict(_mout.action.arguments or {}),
+                    }
+
+                if args.memory_decision == "shadow":
+                    if _mout.use_cached_action and _mout.action is not None and not _mout.blocked:
+                        _log_t(
+                            f"[MEMORY] shadow hit score={_memory_score:.3f} "
+                            f"would_override={_memory_candidate_action}"
+                        )
+                elif args.memory_decision == "enforce":
+                    if _mout.use_cached_action and _mout.action is not None and not _mout.blocked:
+                        _mem_args = dict(_mout.action.arguments or {})
+                        if "action" not in _mem_args:
+                            _mem_args["action"] = _mout.action.action_type
+                        action = {"name": "mobile_use", "arguments": _mem_args}
+                        action_parameter = action["arguments"]
+                        _step_action_type = str(action_parameter.get("action", ""))
+                        _step_action_args = dict(action_parameter)
+                        _memory_overrode_action = True
+                        _log_t(
+                            f"[MEMORY] enforce override score={_memory_score:.3f} "
+                            f"action={_step_action_args}"
+                        )
+            except Exception as _mem_err:
+                _memory_reason = f"error:{_mem_err.__class__.__name__}"
+                _log_t(f"[MEMORY] decision error ({_mem_err!r}) — fallback to normal path")
 
         # 3b. Rule-based guard — catches hallucination/wrong-action without any LLM call.
         # Runs unconditionally so it works even when supervisor API is down.

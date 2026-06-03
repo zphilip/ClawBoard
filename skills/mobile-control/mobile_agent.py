@@ -482,6 +482,9 @@ def run_agent(
     supervisor_api_key: str = "",
     supervisor_base_url: str = "",
     max_context_size: Optional[int] = None,
+    memory_decision: str = "off",
+    memory_min_score: float = 0.7,
+    memory_store: str = "",
 ) -> dict:
     """
     Launch run_gui_owl_1_5_for_mobile.py in a subprocess, monitor its output,
@@ -506,6 +509,10 @@ def run_agent(
         ]
     if max_context_size is not None:
         cmd += ["--max-context-size", str(max_context_size)]
+    cmd += ["--memory-decision", memory_decision]
+    cmd += ["--memory-min-score", str(memory_min_score)]
+    if memory_store:
+        cmd += ["--memory-store", memory_store]
 
     _log(f"Launching: {' '.join(cmd)}")
 
@@ -788,6 +795,12 @@ def parse_args() -> argparse.Namespace:
                    dest="max_context_size",
                    help="VLM context window size (tokens). Activates compact mode when ≤2048. "
                         "Defaults to config.json value or 2048 for the built-in fallback model.")
+    p.add_argument("--memory-decision", choices=["off", "shadow", "enforce"], default="off",
+                   help="Memory decision mode: off (default), shadow (observe only), enforce (allow overrides).")
+    p.add_argument("--memory-min-score", type=float, default=0.7,
+                   help="Minimum memory score required for a usable memory hit.")
+    p.add_argument("--memory-store", default="",
+                   help="Optional memory store path for state->action records.")
     p.add_argument("--dry_run", action="store_true",
                    help="Only run pre-checks, skip model inference")
     p.add_argument("--debug", action="store_true",
@@ -903,6 +916,9 @@ def main() -> int:
         supervisor_api_key=sup_api_key,
         supervisor_base_url=sup_base_url,
         max_context_size=args.max_context_size or None,
+        memory_decision=args.memory_decision,
+        memory_min_score=args.memory_min_score,
+        memory_store=args.memory_store,
     )
 
     # 7. Emit result JSON (consumed by OpenClaw)
