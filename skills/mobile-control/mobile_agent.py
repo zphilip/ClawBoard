@@ -343,6 +343,32 @@ def setup_adb_keyboard(adb_path: str, device: str) -> None:
         )
 
 
+def release_uiautomation_service(adb_path: str, device: str) -> None:
+    """
+    Release ADB's UiAutomationService to prevent conflicts with uiautomator2.
+    
+    When ADB runs `uiautomator dump`, it registers a UiAutomationService that
+    can block uiautomator2 from connecting. This function attempts to release
+    that service by killing the uiautomator process.
+    
+    This should be called at task start to ensure uiautomator2 can work properly.
+    """
+    _log("Releasing ADB UiAutomationService...")
+    
+    # Method 1: Kill uiautomator process (most effective)
+    rc, out, err = _adb(
+        ["shell", "pkill", "-f", "uiautomator"],
+        adb_path=adb_path, device=device,
+    )
+    if rc == 0:
+        _log("✅ UiAutomationService released (uiautomator process killed)")
+    else:
+        _log("⚠️ No uiautomator process found (service already released)")
+    
+    # Brief delay to ensure service is fully released
+    time.sleep(0.5)
+
+
 def send_toast(adb_path: str, device: str, message: str) -> None:
     """Show a Toast notification on the device screen."""
     escaped = message.replace("'", "\\'")
@@ -917,6 +943,7 @@ def main() -> int:
 
     # 3. Screen + keyboard setup
     ensure_screen_on(args.adb_path, device)
+    release_uiautomation_service(args.adb_path, device)  # Release ADB's UiAutomationService first
     setup_adb_keyboard(args.adb_path, device)
 
     # 4. Toast notification
@@ -985,7 +1012,10 @@ def main() -> int:
     # 7. Emit result JSON (consumed by OpenClaw)
     _emit(result)
 
-    # 8. Optional offline report (stderr/log only, does not affect result JSON)
+    # 8. Cleanup: Release UiAutomationService for next run
+    release_uiautomation_service(args.adb_path, device)
+
+    # 9. Optional offline report (stderr/log only, does not affect result JSON)
     if args.post_run_report:
         run_post_run_report(
             input_path=args.post_run_report_input,

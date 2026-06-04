@@ -77,7 +77,6 @@ class AdbTools:
         self.device = device
         self._device_flag = f" -s {device} " if device is not None else " "
         self.image_info = None
-        self._u2_disabled = False
         # UI dump cache for graceful degradation
         self._last_successful_dump = ""
         self._last_dump_timestamp = 0
@@ -156,17 +155,18 @@ class AdbTools:
         for the rest of the run.
         """
         # Priority 1: Try uiautomator2 first (more reliable, no SIGKILL issues)
-        if not self._u2_disabled:
-            print(f"[UI DUMP DEBUG] 🎯 Trying uiautomator2 (primary method)")
-            xml_u2 = self._get_ui_dump_u2()
-            if xml_u2 and xml_u2.count("<node") >= 5:
-                print(f"[UI DUMP DEBUG] ✅ uiautomator2 succeeded (nodes={xml_u2.count('<node')})")
-                # Cache successful dump
-                self._last_successful_dump = xml_u2
-                self._last_dump_timestamp = time.time()
-                return xml_u2
-            else:
-                print(f"[UI DUMP DEBUG] ❌ uiautomator2 failed or returned sparse data, falling back to ADB")
+        print(f"[UI DUMP DEBUG] 🎯 Trying uiautomator2 (primary method)")
+        xml_u2 = self._get_ui_dump_u2()
+        if xml_u2 and xml_u2.count("<node") >= 5:
+            print(f"[UI DUMP DEBUG] ✅ uiautomator2 succeeded (nodes={xml_u2.count('<node')})")
+            # Cache successful dump
+            self._last_successful_dump = xml_u2
+            self._last_dump_timestamp = time.time()
+            return xml_u2
+        else:
+            if xml_u2:
+                print(f"[UI DUMP DEBUG] ❌ uiautomator2 returned sparse data ({xml_u2.count('<node')} nodes), falling back to ADB")
+            # else: error already logged in _get_ui_dump_u2
         
         # Priority 2: Fallback to ADB shell uiautomator dump with retries
         max_attempts = 4  # Initial + 3 retries
@@ -275,10 +275,14 @@ class AdbTools:
 
     def _get_ui_dump_u2(self) -> str:
         """
-        Fallback UI dump via the ``uiautomator2`` Python library.
+        Primary UI dump via the ``uiautomator2`` Python library.
         Requires ``pip install uiautomator2`` and the atx-agent running on
         the device (installed automatically on first ``u2.connect()``).
         Returns '' if the library is not installed or the connection fails.
+        
+        Note: Does NOT permanently disable on "already registered" errors.
+        These errors occur when ADB's UiAutomationService is active, but
+        uiautomator2 may succeed in subsequent attempts after ADB releases it.
         """
         try:
             import uiautomator2 as u2  # optional dependency
@@ -289,14 +293,11 @@ class AdbTools:
             return ""
         except Exception as _e:
             _msg = str(_e)
-            print(f"[UI DUMP] uiautomator2 fallback failed: {_e}")
-            if any(sig in _msg for sig in (
-                "already registered",
-                "UiAutomation not connected",
-                "UiAutomationService",
-            )):
-                self._u2_disabled = True
-                print("[UI DUMP] uiautomator2 fallback disabled for this run")
+            # Don't print full stack trace for expected conflicts
+            if "already registered" in _msg or "UiAutomationService" in _msg:
+                print(f"[UI DUMP DEBUG] ⚠️ uiautomator2 blocked by ADB UiAutomationService (will retry next step)")
+            else:
+                print(f"[UI DUMP DEBUG] ❌ uiautomator2 failed: {_e}")
             return ""
 
     # -- helpers ----------------------------------------------------------
