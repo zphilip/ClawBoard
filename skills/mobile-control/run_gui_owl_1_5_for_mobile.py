@@ -1217,6 +1217,9 @@ def main():
                             print("[ACTION EXEC] LOOP recovery relaunch -> done")
                         else:
                             print("[ACTION EXEC] LOOP recovery relaunch -> failed")
+                    except Exception as e:
+                        print(f"[ACTION EXEC] LOOP recovery failed: {e}")
+                        # Continue with normal flow even if recovery fails
                 # Reset loop detectors after explicit recovery to avoid
                 # repeatedly triggering on stale pre-recovery signatures.
                 _last_state_action_sig = ""
