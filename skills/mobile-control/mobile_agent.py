@@ -163,7 +163,7 @@ def load_supervisor_config() -> dict:
     return {}
 
 
-DEFAULT_MAX_STEPS = 20
+DEFAULT_MAX_STEPS = 30
 DEFAULT_TIMEOUT = 900  # seconds for the entire run (15 minutes)
 LOOP_THRESHOLD = 3     # same coordinate N times → inject retry hint
 ADB_IME = "com.android.adbkeyboard/.AdbIME"
@@ -518,6 +518,7 @@ def run_agent(
     memory_decision: str = "off",
     memory_min_score: float = 0.7,
     memory_store: str = "",
+    memory_replay_mode: str = "sequential",
 ) -> dict:
     """
     Launch run_gui_owl_1_5_for_mobile.py in a subprocess, monitor its output,
@@ -544,6 +545,7 @@ def run_agent(
         cmd += ["--max-context-size", str(max_context_size)]
     cmd += ["--memory-decision", memory_decision]
     cmd += ["--memory-min-score", str(memory_min_score)]
+    cmd += ["--memory-replay-mode", memory_replay_mode]
     if memory_store:
         cmd += ["--memory-store", memory_store]
 
@@ -834,6 +836,10 @@ def parse_args() -> argparse.Namespace:
                    help="Minimum memory score required for a usable memory hit.")
     p.add_argument("--memory-store", default="",
                    help="Optional memory store path for state->action records.")
+    p.add_argument("--memory-replay-mode", choices=["sequential", "single"], default="sequential",
+                   help="Memory replay mode: sequential (default, advances through cached actions "
+                        "when screen state changes, using run_id+step to track provenance) or "
+                        "single (only one cache replay per state_key per run, safest).")
     p.add_argument("--dry_run", action="store_true",
                    help="Only run pre-checks, skip model inference")
     p.add_argument("--debug", action="store_true",
@@ -958,6 +964,7 @@ def main() -> int:
         memory_decision=args.memory_decision,
         memory_min_score=args.memory_min_score,
         memory_store=args.memory_store,
+        memory_replay_mode=args.memory_replay_mode,
     )
 
     # 7. Emit result JSON (consumed by OpenClaw)

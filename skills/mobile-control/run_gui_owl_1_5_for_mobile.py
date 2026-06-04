@@ -73,7 +73,7 @@ def parse_args():
                         help="Task instruction for the agent.")
     parser.add_argument("--add_info", type=str, default="",
                         help="Supplementary knowledge (can be empty).")
-    parser.add_argument("--max_steps", type=int, default=50,
+    parser.add_argument("--max_steps", type=int, default=30,
                         help="Maximum number of interaction steps.")
     parser.add_argument("--app_resolver_api_key", type=str, default=None,
                         help="API key for the app-resolver LLM (defaults to --api_key).")
@@ -99,6 +99,10 @@ def parse_args():
                         help="Minimum score for memory candidates.")
     parser.add_argument("--memory-store", type=str, default="",
                         help="Optional memory store JSONL path for state->action records.")
+    parser.add_argument("--memory-replay-mode", choices=["sequential", "single"], default="sequential",
+                        help="Memory replay mode: sequential (default, advances through cached "
+                             "actions when screen state changes, uses run_id+step provenance) "
+                             "or single (one cache replay per state_key per run, safest).")
     return parser.parse_args()
 
 
@@ -788,16 +792,21 @@ def main():
                 )
                 # Pass the replay set so the policy skips already-replayed
                 # records and returns the next best unused cached action.
-                # IMPORTANT: only allow sequential advance (exclude_sigs) when
-                # the screen state has changed since the last replay.  If the
-                # state_key is the same, the previous action didn't navigate
-                # away, so the next cached record likely belongs to a different
-                # physical screen that shares this coarse fingerprint.
-                _allow_sequential = (
-                    bool(_memory_fastpath_replayed)
-                    and _step_state_key != _last_fastpath_state_key
-                )
-                _exclude = _memory_fastpath_replayed if _allow_sequential else None
+                # In "sequential" mode: allow sequential advance when the
+                # screen state has changed since the last replay (the policy
+                # also checks run_id+step provenance).
+                # In "single" mode: never pass exclude_sigs — each state_key
+                # gets at most one cache replay per run, then falls to VLM.
+                if args.memory_replay_mode == "sequential":
+                    _allow_sequential = (
+                        bool(_memory_fastpath_replayed)
+                        and _step_state_key != _last_fastpath_state_key
+                    )
+                    _exclude = _memory_fastpath_replayed if _allow_sequential else None
+                else:
+                    # single mode — no exclude_sigs, policy returns top match;
+                    # the runner's own replay check below blocks duplicates.
+                    _exclude = None
                 _mout_pre = _memory_policy.decide(
                     _step_state_key, _intent_sig, _dinput_pre,
                     exclude_sigs=_exclude,
@@ -829,6 +838,12 @@ def main():
                         _log_t(
                             f"[MEMORY] pre-LLM fastpath skipped: cached action type {_fastpath_action_type!r} "
                             "is not safe for replay"
+                        )
+                    elif _replay_sig in _memory_fastpath_replayed:
+                        _memory_reason = "cached_action_already_replayed_this_run"
+                        _log_t(
+                            "[MEMORY] pre-LLM fastpath skipped: cached state/action "
+                            "was already replayed in this run"
                         )
                     elif _memory_action_has_out_of_range_coords(_mem_args):
                         _memory_reason = "cached_action_non_normalized_coords"

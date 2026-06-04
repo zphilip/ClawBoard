@@ -174,7 +174,7 @@ tail -f /tmp/mobile_agent.log
 | `--base_url`    | `http://localhost:8810/v1`    | OpenAI-compatible endpoint of the GUI-Owl server         |
 | `--model`       | `gui-owl`                     | Model name as registered in the llama.cpp server         |
 | `--api_key`     | `not-needed`                  | API key (leave default for local llama.cpp)              |
-| `--max_steps`   | `20`                          | Hard cap on agent steps (prevents infinite loops)        |
+| `--max_steps`   | `30`                          | Hard cap on agent steps (prevents infinite loops)        |
 | `--timeout`     | `120`                         | Seconds before the whole run is killed                   |
 | `--add_info`    | `""`                          | Extra context injected into the instruction              |
 | `--dry_run`     | `false`                       | Only run pre-checks, skip model inference                |
