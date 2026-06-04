@@ -20,6 +20,7 @@ import subprocess
 import time
 from datetime import datetime
 from pathlib import Path
+from typing import Optional
 
 from PIL import Image
 
