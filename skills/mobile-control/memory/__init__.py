@@ -10,11 +10,13 @@ from .models import (
     MemoryRecord,
     StateSignature,
 )
+from .policy import NON_CACHEABLE_ACTIONS
 
 __all__ = [
     "ActionCandidate",
     "DecisionInput",
     "DecisionOutput",
     "MemoryRecord",
+    "NON_CACHEABLE_ACTIONS",
     "StateSignature",
 ]

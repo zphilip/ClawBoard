@@ -4,6 +4,19 @@ from .models import ActionCandidate, DecisionInput, DecisionOutput
 from .retriever import top_matches
 from .store import JsonlMemoryStore
 
+# Actions that are passive, terminal, or user-dependent.  These must never be
+# replayed from cache — they are logged for telemetry only.  Kept here (not
+# just in the runner) so stale records written before the write-time filter
+# existed are still blocked at read time.
+NON_CACHEABLE_ACTIONS: frozenset[str] = frozenset({
+    "wait",
+    "answer",
+    "terminate",
+    "interact",
+    "call_user",
+    "calluser",
+})
+
 
 class MemoryPolicy:
     """Decision policy placeholder.
@@ -18,6 +31,13 @@ class MemoryPolicy:
     def decide(self, state_key: str, intent_key: str, dinput: DecisionInput) -> DecisionOutput:
         records = self.store.load()
         ranked = top_matches(records, state_key=state_key, intent_key=intent_key, limit=5)
+
+        # Filter out non-cacheable action types at read time.  Forbidden
+        # records are kept so they can still block known-bad actions.
+        ranked = [
+            r for r in ranked
+            if r.record.forbidden or r.record.action_type not in NON_CACHEABLE_ACTIONS
+        ]
 
         if not ranked:
             return DecisionOutput(use_cached_action=False, reason="no_memory_match")

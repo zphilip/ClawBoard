@@ -25,7 +25,7 @@ from PIL import Image
 from packages import PACKAGES_NAME_DICT, NAME_PACKAGE_DICT, normalize_package_name
 from memory.logger import MemoryEventLogger
 from memory.models import ActionCandidate, DecisionInput, MemoryRecord, StateSignature
-from memory.policy import MemoryPolicy
+from memory.policy import MemoryPolicy, NON_CACHEABLE_ACTIONS
 from memory.signature import build_intent_signature, build_state_key, build_ui_fingerprint
 from memory.store import JsonlMemoryStore
 from utils import (
@@ -414,13 +414,26 @@ def main():
         "wait_recovery_home",
         "wrong_screen_home_recovery",
     }
+    # These actions are either passive, terminal, or user-dependent. Treating
+    # them as positive cache hits causes stale loops such as wait -> wait ->
+    # recovery. They can still be logged as failures/forbidden records.
+    # Shared with memory.policy.NON_CACHEABLE_ACTIONS to keep read/write
+    # filters in sync.
+    _MEMORY_NON_CACHEABLE_ACTIONS = NON_CACHEABLE_ACTIONS
     if args.memory_decision != "off":
         _store_path = Path(args.memory_store) if args.memory_store else (_memory_root / "records.jsonl")
         try:
             _memory_store = JsonlMemoryStore(_store_path)
             _memory_policy = MemoryPolicy(_memory_store, min_score=float(args.memory_min_score))
+            # Purge stale records for non-cacheable action types (e.g. wait,
+            # answer) that may have been written before the write-time filter
+            # existed.  This is a one-time cleanup per run and prevents the
+            # fastpath from replaying passive/terminal actions.
+            _purged = _memory_store.purge_actions(NON_CACHEABLE_ACTIONS)
             _log_t(
-                f"[MEMORY] mode={args.memory_decision} store={_store_path} min_score={float(args.memory_min_score):.2f}"
+                f"[MEMORY] mode={args.memory_decision} store={_store_path} "
+                f"min_score={float(args.memory_min_score):.2f}"
+                + (f" purged={_purged} stale records" if _purged else "")
             )
         except Exception as _mem_init_err:
             _memory_policy = None
@@ -442,6 +455,7 @@ def main():
     _last_state_action_relaxed_sig = ""
     _same_state_action_relaxed_count = 0
     _recent_state_action_relaxed: list[str] = []
+    _memory_fastpath_replayed: set[str] = set()
     _sup_approved_cache: dict[str, float] = {}
     _SUP_APPROVE_CACHE_TTL_SECONDS = 180
     _STATE_ACTION_LOOP_THRESHOLD = 3
@@ -589,18 +603,27 @@ def main():
             # Optional memory record persistence (telemetry -> actionable cache).
             if _memory_store is not None and _step_state_key and _step_action_type:
                 try:
-                    _memory_store.append(
-                        MemoryRecord(
-                            state_key=_step_state_key,
-                            intent_key=_intent_sig,
-                            action_type=_step_action_type,
-                            action_args=dict(_step_action_args),
-                            success_count=1 if _outcome in _MEMORY_GOOD_OUTCOMES else 0,
-                            fail_count=1 if _outcome in _MEMORY_BAD_OUTCOMES else 0,
-                            forbidden=(_outcome in _MEMORY_BAD_OUTCOMES),
-                            reason=_outcome,
-                        )
+                    _action_non_cacheable = _step_action_type in _MEMORY_NON_CACHEABLE_ACTIONS
+                    _is_good_memory = (
+                        _outcome in _MEMORY_GOOD_OUTCOMES and not _action_non_cacheable
                     )
+                    _is_bad_memory = _outcome in _MEMORY_BAD_OUTCOMES
+                    # Do not write passive/terminal actions as positive cache
+                    # records. A successful wait means only "nothing failed",
+                    # not "wait is the next best action for this screen".
+                    if _is_good_memory or _is_bad_memory:
+                        _memory_store.append(
+                            MemoryRecord(
+                                state_key=_step_state_key,
+                                intent_key=_intent_sig,
+                                action_type=_step_action_type,
+                                action_args=dict(_step_action_args),
+                                success_count=1 if _is_good_memory else 0,
+                                fail_count=1 if _is_bad_memory else 0,
+                                forbidden=_is_bad_memory,
+                                reason=_outcome,
+                            )
+                        )
                 except Exception:
                     pass
             try:
@@ -726,15 +749,24 @@ def main():
                     if "action" not in _mem_args:
                         _mem_args["action"] = _mout_pre.action.action_type
                     _fastpath_action_type = _mem_args.get("action", "")
-                    # Allow all safe, deterministic action types for the fastpath.
-                    # Exclude 'interact' (requires user input), 'answer'/'terminate'
-                    # (task-completion actions that still need per-run validation).
-                    _fastpath_allowed_types = {"click", "key", "system_button", "open", "wait", "type"}
+                    # Allow only active, deterministic actions for the fastpath.
+                    # Exclude passive waits and terminal/user-dependent actions.
+                    _fastpath_allowed_types = {"click", "key", "system_button", "open", "type"}
+                    _replay_sig = (
+                        f"{_step_state_key}|{_fastpath_action_type}|"
+                        f"{json.dumps(_mem_args, ensure_ascii=False, sort_keys=True)}"
+                    )
                     if _fastpath_action_type not in _fastpath_allowed_types:
-                        _memory_reason = "cached_action_type_not_dialog_compatible"
+                        _memory_reason = "cached_action_type_not_fastpath_safe"
                         _log_t(
                             f"[MEMORY] pre-LLM fastpath skipped: cached action type {_fastpath_action_type!r} "
-                            "is not a dialog-dismissal action"
+                            "is not safe for replay"
+                        )
+                    elif _replay_sig in _memory_fastpath_replayed:
+                        _memory_reason = "cached_action_already_replayed_this_run"
+                        _log_t(
+                            "[MEMORY] pre-LLM fastpath skipped: cached state/action "
+                            "was already replayed in this run"
                         )
                     elif _memory_action_has_out_of_range_coords(_mem_args):
                         _memory_reason = "cached_action_non_normalized_coords"
@@ -745,6 +777,7 @@ def main():
                         _pre_llm_action_parameter = _mem_args
                         _used_memory_fastpath = True
                         _memory_overrode_action = True
+                        _memory_fastpath_replayed.add(_replay_sig)
                         _log_t(
                             f"[MEMORY] pre-LLM fastpath score={_memory_score:.3f} action={_pre_llm_action_parameter}"
                         )
@@ -1427,6 +1460,17 @@ def main():
 
         else:
             print(f"[WARN] Unsupported action type: {action_type}")
+
+        # 5b. Track this action so the memory fastpath won't replay it on the
+        # next step.  Without this, the VLM produces action X, the record is
+        # written to the store, and the fastpath immediately replays X on the
+        # following step (same state_key because the screen hasn't changed).
+        if _step_state_key and _step_action_type:
+            _track_sig = (
+                f"{_step_state_key}|{_step_action_type}|"
+                f"{json.dumps(_step_action_args, ensure_ascii=False, sort_keys=True)}"
+            )
+            _memory_fastpath_replayed.add(_track_sig)
 
         # 6. Record history and annotate screenshot
         history.append({"output": output_text, "image": screenshot_path})
