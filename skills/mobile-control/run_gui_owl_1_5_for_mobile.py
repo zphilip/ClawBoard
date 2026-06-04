@@ -678,6 +678,7 @@ def main():
                                 reason=_outcome,
                                 source_run_id=_run_id,
                                 source_step=step_id,
+                                action_description=_step_action_description,
                             )
                         )
                 except Exception:
@@ -965,7 +966,7 @@ def main():
             print(f"[MODEL OUTPUT]\n{output_text}")
         else:
             output_text = (
-                "Action: [MEMORY FASTPATH] reuse cached action for current state\n"
+                f"Action: [MEMORY FASTPATH] {_cached_action_description or 'reuse cached action'}\n"
                 "<tool_call>\n"
                 + json.dumps({"name": "mobile_use", "arguments": _pre_llm_action_parameter}, ensure_ascii=False)
                 + "\n</tool_call>"
@@ -981,6 +982,7 @@ def main():
         # debug/developer/wrong-app screen, press Home and restart rather than
         # blindly executing the suggested action.
         _action_text = output_text.split("<tool_call>")[0]
+        _step_action_description = _action_text.strip()[:200]  # Capture VLM reasoning for memory cache
         if any(sig in _action_text for sig in _WRONG_SCREEN_SIGNALS):
             print(
                 "[WARN] Model output indicates wrong/debug screen — "
@@ -1013,6 +1015,7 @@ def main():
         action_parameter = action["arguments"]
         _step_action_type = str(action_parameter.get("action", ""))
         _step_action_args = copy.deepcopy(action_parameter)
+        _step_action_description = ""  # Will be captured from VLM output
         _step_state_action_sig = (
             f"{_step_state_key}|{_step_action_type}|"
             f"{json.dumps(_step_action_args, ensure_ascii=False, sort_keys=True)}"

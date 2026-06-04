@@ -18,6 +18,7 @@ class ActionCandidate:
     arguments: dict[str, Any]
     confidence: float = 0.0
     source: str = "llm"
+    action_description: str = ""
 
 
 @dataclass
@@ -34,6 +35,7 @@ class MemoryRecord:
     updated_at: float = 0.0
     source_run_id: str = ""
     source_step: int = -1
+    action_description: str = ""
 
 
 @dataclass

@@ -105,6 +105,7 @@ class MemoryPolicy:
                 arguments=candidate.record.action_args,
                 confidence=max(min(candidate.score, 1.0), 0.0),
                 source="memory",
+                action_description=getattr(candidate.record, 'action_description', ''),
             )
             return DecisionOutput(
                 use_cached_action=True,
