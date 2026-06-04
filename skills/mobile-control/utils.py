@@ -1490,8 +1490,15 @@ class SupervisorLLM:
         """
         Ask whether the overall task has been fully achieved.
         Returns {"complete": True/False, "reason": "..."}
-        Returns {"complete": True, "reason": "error"} on failure so as not to
-        block execution when the supervisor API is unavailable.
+
+        Defaults to False (not complete) when the supervisor returns empty or
+        unparseable output — a false "not complete" costs one extra step, while
+        a false "complete" ends the task prematurely one step before the goal.
+
+        Only defaults to True on genuine infrastructure errors (auth failure,
+        API timeout after retries) where the supervisor is unreachable and
+        blocking execution indefinitely is worse than accepting the agent's
+        self-reported completion.
         """
         history_lines = []
         for i, h in enumerate(history[-10:], 1):
@@ -1543,8 +1550,8 @@ class SupervisorLLM:
                 )
                 raw = (resp.choices[0].message.content or "").strip()
                 if not raw:
-                    print("[SUPERVISOR] empty task-complete response — assuming complete")
-                    return {"complete": True, "reason": "empty response"}
+                    print("[SUPERVISOR] empty task-complete response — assuming NOT complete")
+                    return {"complete": False, "reason": "empty response — supervisor could not verify completion"}
                 parsed = _try_parse_json(raw)
                 if parsed is not None:
                     complete_val = parsed.get("complete")
@@ -1555,12 +1562,16 @@ class SupervisorLLM:
                         return {"complete": True, "reason": reason}
                     if str(complete_val).lower() in ("false", "no", "0"):
                         return {"complete": False, "reason": reason}
-                # Prose fallback
+                # Prose fallback: scan for explicit signals
                 _tail = raw[-300:].lower()
                 if '"complete": false' in _tail or '"complete":false' in _tail:
                     return {"complete": False, "reason": raw[:200]}
-                print(f"[SUPERVISOR] task-complete parse failed — assuming complete: {raw[:120]!r}")
-                return {"complete": True, "reason": "parse-fallback"}
+                if '"complete": true' in _tail or '"complete":true' in _tail:
+                    return {"complete": True, "reason": raw[:200]}
+                # Model returned text but no parseable verdict — safer to
+                # require one more step than to end prematurely.
+                print(f"[SUPERVISOR] task-complete parse failed — assuming NOT complete: {raw[:120]!r}")
+                return {"complete": False, "reason": "unparseable supervisor response"}
             except Exception as _e:
                 _is_timeout = "timeout" in str(_e).lower() or "timed out" in str(_e).lower()
                 _is_auth = getattr(_e, "status_code", None) in (401, 403)
@@ -1571,8 +1582,8 @@ class SupervisorLLM:
                     print(f"[SUPERVISOR] task-complete timeout on attempt {_tc_try} — retrying in 3s")
                     time.sleep(3)
                     continue
-                print(f"[SUPERVISOR] task-complete error — assuming complete: {_e}")
-                return {"complete": True, "reason": "error/parse-fallback"}
-        return {"complete": True, "reason": "error/parse-fallback"}
+                print(f"[SUPERVISOR] task-complete error after retries — assuming complete: {_e}")
+                return {"complete": True, "reason": "error/api-unavailable"}
+        return {"complete": True, "reason": "error/exhausted-retries"}
 
 
