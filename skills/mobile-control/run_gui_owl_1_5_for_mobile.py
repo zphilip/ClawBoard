@@ -1203,10 +1203,15 @@ def main():
             _log_t(f"[LOOP DEBUG] cycle_pattern={_loop_pattern}")
 
         _loop_recovery_relaunch = False
+        # Prevent loop recovery when current action is a terminal action - this indicates task completion or user interaction
+        _current_action_is_terminal = _proposed_action in {"answer", "terminate", "interact"}
         if (
-            _same_state_action_count >= _STATE_ACTION_LOOP_THRESHOLD
-            or _same_state_action_relaxed_count >= _STATE_ACTION_LOOP_THRESHOLD
-            or _loop_cycle_detected
+            not _current_action_is_terminal and
+            (
+                _same_state_action_count >= _STATE_ACTION_LOOP_THRESHOLD
+                or _same_state_action_relaxed_count >= _STATE_ACTION_LOOP_THRESHOLD
+                or _loop_cycle_detected
+            )
         ):
             _log_t(
                 f"[LOOP] detected (strict={_same_state_action_count}, "
