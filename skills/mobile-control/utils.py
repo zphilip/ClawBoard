@@ -417,37 +417,103 @@ class AdbTools:
     def type(self, text):
         """
         Type text via ADB Keyboard (supports CJK and Latin characters).
-        Requires ADB Keyboard to be installed on the device.
-        Returns True if all commands succeed, False otherwise.
+        Falls back to standard ADB input if ADBKeyboard not available.
+        Returns True if typing succeeds, False otherwise.
         """
+        # Check if text contains non-ASCII characters (Chinese, emoji, etc.)
+        has_unicode = any(ord(c) > 127 for c in text)
+        
+        # Try ADBKeyboard first (best for Unicode)
+        if self._try_adbkeyboard_type(text):
+            return True
+        
+        # Fallback: Use standard ADB input (works for ASCII only)
+        if not has_unicode:
+            print(f"[ADB TYPE WARNING] ADBKeyboard failed, falling back to standard ADB input")
+            return self._try_standard_input_text(text)
+        
+        # Cannot fallback for Unicode text
+        print(f"[ADB TYPE ERROR] ADBKeyboard failed and text contains Unicode characters - cannot use fallback")
+        return False
+
+    def _try_adbkeyboard_type(self, text):
+        """Try typing using ADBKeyboard broadcast method."""
+        import base64
+        
         escaped_text = text.replace('"', '\\"').replace("'", "\\'")
-        command_sequence = [
+        
+        # Method 1: Direct text broadcast (may fail on Android 8+)
+        command_sequence_direct = [
             "shell ime enable com.android.adbkeyboard/.AdbIME",
             "shell ime set com.android.adbkeyboard/.AdbIME",
-            0.1,  # short delay for IME switch
+            0.1,
             f'shell am broadcast -a ADB_INPUT_TEXT --es msg "{escaped_text}"',
             0.1,
             "shell ime disable com.android.adbkeyboard/.AdbIME",
         ]
-
-        print(f"[ADB TYPE DEBUG] Starting type sequence for text: {text!r}")
+        
+        # Method 2: Base64 encoded broadcast (more reliable on newer Android)
+        try:
+            b64_text = base64.b64encode(text.encode('utf-8')).decode('ascii')
+            command_sequence_b64 = [
+                "shell ime enable com.android.adbkeyboard/.AdbIME",
+                "shell ime set com.android.adbkeyboard/.AdbIME",
+                0.1,
+                f'shell am broadcast -a ADB_INPUT_B64 --es msg "{b64_text}"',
+                0.1,
+                "shell ime disable com.android.adbkeyboard/.AdbIME",
+            ]
+        except Exception as e:
+            print(f"[ADB TYPE DEBUG] Base64 encoding failed: {e}")
+            command_sequence_b64 = None
+        
+        # Try direct method first
+        print(f"[ADB TYPE DEBUG] Attempting ADBKeyboard direct method for text: {text!r}")
+        if self._execute_command_sequence(command_sequence_direct, "ADBKeyboard direct"):
+            return True
+        
+        # Try Base64 method if available
+        if command_sequence_b64:
+            print(f"[ADB TYPE DEBUG] Attempting ADBKeyboard Base64 method")
+            if self._execute_command_sequence(command_sequence_b64, "ADBKeyboard Base64"):
+                return True
+        
+        print(f"[ADB TYPE DEBUG] ADBKeyboard methods failed")
+        return False
+    
+    def _try_standard_input_text(self, text):
+        """Fallback: Use standard adb shell input text (ASCII only)."""
+        # Standard input text requires URL-like encoding for spaces
+        encoded_text = text.replace(' ', '%s')
+        cmd = f"shell input text '{encoded_text}'"
+        
+        print(f"[ADB TYPE DEBUG] Attempting standard ADB input: {cmd[:80]}")
+        result = self._run(cmd)
+        
+        if result:
+            print(f"[ADB TYPE] ✅ Standard ADB input succeeded")
+            return True
+        else:
+            print(f"[ADB TYPE ERROR] ❌ Standard ADB input failed")
+            return False
+    
+    def _execute_command_sequence(self, command_sequence, sequence_name):
+        """Execute a command sequence and return success status."""
         success_count = 0
         total_commands = len([item for item in command_sequence if isinstance(item, str)])
         
         for idx, item in enumerate(command_sequence):
             if isinstance(item, (int, float)):
-                print(f"[ADB TYPE DEBUG] Sleeping {item}s (step {idx+1}/{len(command_sequence)})")
                 time.sleep(item)
             else:
-                print(f"[ADB TYPE DEBUG] Executing step {idx+1}/{len(command_sequence)}: {item[:80]}")
                 result = self._run(item.strip())
                 if result:
                     success_count += 1
                 else:
-                    print(f"[ADB TYPE DEBUG] Step {idx+1} FAILED")
+                    print(f"[ADB TYPE DEBUG] {sequence_name} step {idx+1} FAILED")
                     return False
         
-        print(f"[ADB TYPE DEBUG] Type sequence completed: {success_count}/{total_commands} commands succeeded")
+        print(f"[ADB TYPE DEBUG] {sequence_name} completed: {success_count}/{total_commands} commands succeeded")
         return True
 
     @staticmethod
