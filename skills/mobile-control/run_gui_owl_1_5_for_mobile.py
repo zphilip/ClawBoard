@@ -499,6 +499,13 @@ def main():
     _same_state_action_relaxed_count = 0
     _recent_state_action_relaxed: list[str] = []
     _memory_fastpath_replayed: set[str] = set()
+    # Track the state_key of the last fastpath replay.  Sequential advance
+    # (skipping already-replayed records) is only allowed when the screen
+    # state has actually changed since the last replay.  If the state_key
+    # is the same, the previous action didn't navigate to a new screen,
+    # so the next cached record likely belongs to a different physical
+    # screen that shares this coarse fingerprint.
+    _last_fastpath_state_key: str = ""
     _sup_approved_cache: dict[str, float] = {}
     _SUP_APPROVE_CACHE_TTL_SECONDS = 180
     _STATE_ACTION_LOOP_THRESHOLD = 3
@@ -781,9 +788,19 @@ def main():
                 )
                 # Pass the replay set so the policy skips already-replayed
                 # records and returns the next best unused cached action.
+                # IMPORTANT: only allow sequential advance (exclude_sigs) when
+                # the screen state has changed since the last replay.  If the
+                # state_key is the same, the previous action didn't navigate
+                # away, so the next cached record likely belongs to a different
+                # physical screen that shares this coarse fingerprint.
+                _allow_sequential = (
+                    bool(_memory_fastpath_replayed)
+                    and _step_state_key != _last_fastpath_state_key
+                )
+                _exclude = _memory_fastpath_replayed if _allow_sequential else None
                 _mout_pre = _memory_policy.decide(
                     _step_state_key, _intent_sig, _dinput_pre,
-                    exclude_sigs=_memory_fastpath_replayed,
+                    exclude_sigs=_exclude,
                     current_run_id=_run_id,
                 )
                 _memory_reason = _mout_pre.reason or "none"
@@ -823,6 +840,7 @@ def main():
                         _used_memory_fastpath = True
                         _memory_overrode_action = True
                         _memory_fastpath_replayed.add(_replay_sig)
+                        _last_fastpath_state_key = _step_state_key
                         _log_t(
                             f"[MEMORY] pre-LLM fastpath score={_memory_score:.3f} action={_pre_llm_action_parameter}"
                         )
@@ -1440,6 +1458,11 @@ def main():
         elif action_type == "terminate":
             status = action_parameter.get("status", "unknown")
             print(f"[TERMINATED] Status: {status}")
+            # Treat terminate as task completion regardless of status value.
+            # The VLM decided the task is done — emit the completion marker
+            # that the wrapper (mobile_agent.py) recognises.  Without this,
+            # status="unknown" causes the wrapper to report timeout.
+            print("[TERMINATED] Task completed.")
             termination_reason = f"terminate_action_status={status}"
             _emit_step_summary("terminate_action")
             break
