@@ -349,24 +349,42 @@ def release_uiautomation_service(adb_path: str, device: str) -> None:
     
     When ADB runs `uiautomator dump`, it registers a UiAutomationService that
     can block uiautomator2 from connecting. This function attempts to release
-    that service by killing the uiautomator process.
+    that service by killing related processes.
     
     This should be called at task start to ensure uiautomator2 can work properly.
     """
     _log("Releasing ADB UiAutomationService...")
     
-    # Method 1: Kill uiautomator process (most effective)
+    # Method 1: Kill all uiautomator-related processes
+    for proc_pattern in ["uiautomator", "atx-agent", "com.wetest.uia2"]:
+        rc, out, err = _adb(
+            ["shell", "pkill", "-f", proc_pattern],
+            adb_path=adb_path, device=device,
+        )
+        if rc == 0:
+            _log(f"✅ Killed process matching '{proc_pattern}'")
+    
+    # Method 2: Kill by PID if pkill doesn't work
     rc, out, err = _adb(
-        ["shell", "pkill", "-f", "uiautomator"],
+        ["shell", "ps", "-A"],
         adb_path=adb_path, device=device,
     )
-    if rc == 0:
-        _log("✅ UiAutomationService released (uiautomator process killed)")
-    else:
-        _log("⚠️ No uiautomator process found (service already released)")
+    if rc == 0 and out:
+        for line in out.splitlines():
+            if "uiautomator" in line.lower() or "atx-agent" in line.lower():
+                # Extract PID (second column)
+                parts = line.split()
+                if len(parts) >= 2:
+                    pid = parts[1]
+                    _adb(
+                        ["shell", "kill", "-9", pid],
+                        adb_path=adb_path, device=device,
+                    )
+                    _log(f"✅ Killed uiautomator process PID={pid}")
     
     # Brief delay to ensure service is fully released
-    time.sleep(0.5)
+    time.sleep(0.8)
+    _log("✅ UiAutomationService cleanup complete")
 
 
 def send_toast(adb_path: str, device: str, message: str) -> None:

@@ -280,25 +280,50 @@ class AdbTools:
         the device (installed automatically on first ``u2.connect()``).
         Returns '' if the library is not installed or the connection fails.
         
-        Note: Does NOT permanently disable on "already registered" errors.
-        These errors occur when ADB's UiAutomationService is active, but
-        uiautomator2 may succeed in subsequent attempts after ADB releases it.
+        Note: Checks server health and resets if unresponsive before attempting dump.
+        Retries connection if blocked by UiAutomationService.
         """
-        try:
-            import uiautomator2 as u2  # optional dependency
-            d = u2.connect(self.device) if self.device else u2.connect()
-            xml = d.dump_hierarchy()
-            return xml or ""
-        except ImportError:
-            return ""
-        except Exception as _e:
-            _msg = str(_e)
-            # Don't print full stack trace for expected conflicts
-            if "already registered" in _msg or "UiAutomationService" in _msg:
-                print(f"[UI DUMP DEBUG] ⚠️ uiautomator2 blocked by ADB UiAutomationService (will retry next step)")
-            else:
-                print(f"[UI DUMP DEBUG] ❌ uiautomator2 failed: {_e}")
-            return ""
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                import uiautomator2 as u2  # optional dependency
+                
+                # Connect to device
+                d = u2.connect(self.device) if self.device else u2.connect()
+                
+                # Check server health - reset if unresponsive
+                if not d.agent_alive:
+                    print(f"[UI DUMP DEBUG] 🔄 uiautomator2 server offline, resetting...")
+                    d.reset_uiautomator()
+                    time.sleep(1.0)  # Wait for server to restart
+                    print(f"[UI DUMP DEBUG] ✅ uiautomator2 server reset complete")
+                
+                # Now perform the UI dump
+                xml = d.dump_hierarchy()
+                return xml or ""
+                
+            except ImportError:
+                return ""
+            except Exception as _e:
+                _msg = str(_e)
+                # Check if this is a UiAutomationService conflict
+                if "already registered" in _msg or "UiAutomationService" in _msg:
+                    if attempt < max_retries - 1:
+                        # Wait and retry - service might be released soon
+                        delay = 0.5 * (attempt + 1)  # 0.5s, 1.0s, 1.5s
+                        print(f"[UI DUMP DEBUG] ⚠️ uiautomator2 blocked (attempt {attempt+1}/{max_retries}), retrying in {delay}s...")
+                        time.sleep(delay)
+                        continue
+                    else:
+                        # Last attempt failed
+                        print(f"[UI DUMP DEBUG] ⚠️ uiautomator2 blocked by ADB UiAutomationService after {max_retries} retries")
+                        return ""
+                else:
+                    # Other error, don't retry
+                    print(f"[UI DUMP DEBUG] ❌ uiautomator2 failed: {_e}")
+                    return ""
+        
+        return ""
 
     # -- helpers ----------------------------------------------------------
 
