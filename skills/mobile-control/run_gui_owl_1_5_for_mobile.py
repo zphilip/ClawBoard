@@ -777,7 +777,12 @@ def main():
                     ),
                     proposed_action=None,
                 )
-                _mout_pre = _memory_policy.decide(_step_state_key, _intent_sig, _dinput_pre)
+                # Pass the replay set so the policy skips already-replayed
+                # records and returns the next best unused cached action.
+                _mout_pre = _memory_policy.decide(
+                    _step_state_key, _intent_sig, _dinput_pre,
+                    exclude_sigs=_memory_fastpath_replayed,
+                )
                 _memory_reason = _mout_pre.reason or "none"
                 _memory_score = float((_mout_pre.diagnostics or {}).get("score", 0.0) or 0.0)
                 _memory_blocked = bool(_mout_pre.blocked)
@@ -804,12 +809,6 @@ def main():
                         _log_t(
                             f"[MEMORY] pre-LLM fastpath skipped: cached action type {_fastpath_action_type!r} "
                             "is not safe for replay"
-                        )
-                    elif _replay_sig in _memory_fastpath_replayed:
-                        _memory_reason = "cached_action_already_replayed_this_run"
-                        _log_t(
-                            "[MEMORY] pre-LLM fastpath skipped: cached state/action "
-                            "was already replayed in this run"
                         )
                     elif _memory_action_has_out_of_range_coords(_mem_args):
                         _memory_reason = "cached_action_non_normalized_coords"
@@ -1530,17 +1529,6 @@ def main():
 
         else:
             print(f"[WARN] Unsupported action type: {action_type}")
-
-        # 5b. Track this action so the memory fastpath won't replay it on the
-        # next step.  Without this, the VLM produces action X, the record is
-        # written to the store, and the fastpath immediately replays X on the
-        # following step (same state_key because the screen hasn't changed).
-        if _step_state_key and _step_action_type:
-            _track_sig = (
-                f"{_step_state_key}|{_step_action_type}|"
-                f"{json.dumps(_step_action_args, ensure_ascii=False, sort_keys=True)}"
-            )
-            _memory_fastpath_replayed.add(_track_sig)
 
         # 6. Record history and annotate screenshot
         history.append({"output": output_text, "image": screenshot_path})

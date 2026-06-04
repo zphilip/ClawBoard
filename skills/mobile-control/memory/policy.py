@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from .models import ActionCandidate, DecisionInput, DecisionOutput
 from .retriever import top_matches
 from .store import JsonlMemoryStore
@@ -18,6 +20,12 @@ NON_CACHEABLE_ACTIONS: frozenset[str] = frozenset({
 })
 
 
+def record_replay_sig(state_key: str, action_type: str, action_args: dict) -> str:
+    """Build a deterministic signature for a cached record, used to track
+    which records have already been replayed in the current run."""
+    return f"{state_key}|{action_type}|{json.dumps(action_args, ensure_ascii=False, sort_keys=True)}"
+
+
 class MemoryPolicy:
     """Decision policy placeholder.
 
@@ -28,7 +36,13 @@ class MemoryPolicy:
         self.store = store
         self.min_score = min_score
 
-    def decide(self, state_key: str, intent_key: str, dinput: DecisionInput) -> DecisionOutput:
+    def decide(
+        self,
+        state_key: str,
+        intent_key: str,
+        dinput: DecisionInput,
+        exclude_sigs: set[str] | None = None,
+    ) -> DecisionOutput:
         records = self.store.load()
         ranked = top_matches(records, state_key=state_key, intent_key=intent_key, limit=5)
 
@@ -42,31 +56,46 @@ class MemoryPolicy:
         if not ranked:
             return DecisionOutput(use_cached_action=False, reason="no_memory_match")
 
-        best = ranked[0]
-        if best.record.forbidden:
+        # Iterate through ranked records, skipping already-replayed ones.
+        # This allows the fastpath to return the next best unused cached action
+        # when the top match was already replayed earlier in the same run.
+        for candidate in ranked:
+            sig = record_replay_sig(
+                state_key, candidate.record.action_type, candidate.record.action_args,
+            )
+            if exclude_sigs and sig in exclude_sigs:
+                continue
+
+            if candidate.record.forbidden:
+                return DecisionOutput(
+                    use_cached_action=False,
+                    blocked=True,
+                    reason="action_blocked_by_negative_memory",
+                    diagnostics={"score": candidate.score},
+                )
+
+            if candidate.score < self.min_score:
+                return DecisionOutput(
+                    use_cached_action=False,
+                    reason="score_below_threshold",
+                    diagnostics={"score": candidate.score},
+                )
+
+            action = ActionCandidate(
+                action_type=candidate.record.action_type,
+                arguments=candidate.record.action_args,
+                confidence=max(min(candidate.score, 1.0), 0.0),
+                source="memory",
+            )
             return DecisionOutput(
-                use_cached_action=False,
-                blocked=True,
-                reason="action_blocked_by_negative_memory",
-                diagnostics={"score": best.score},
+                use_cached_action=True,
+                action=action,
+                reason="memory_hit",
+                diagnostics={"score": candidate.score},
             )
 
-        if best.score < self.min_score:
-            return DecisionOutput(
-                use_cached_action=False,
-                reason="score_below_threshold",
-                diagnostics={"score": best.score},
-            )
-
-        action = ActionCandidate(
-            action_type=best.record.action_type,
-            arguments=best.record.action_args,
-            confidence=max(min(best.score, 1.0), 0.0),
-            source="memory",
-        )
+        # All ranked records were excluded (already replayed this run).
         return DecisionOutput(
-            use_cached_action=True,
-            action=action,
-            reason="memory_hit",
-            diagnostics={"score": best.score},
+            use_cached_action=False,
+            reason="all_candidates_already_replayed",
         )

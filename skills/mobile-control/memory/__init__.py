@@ -10,7 +10,7 @@ from .models import (
     MemoryRecord,
     StateSignature,
 )
-from .policy import NON_CACHEABLE_ACTIONS
+from .policy import NON_CACHEABLE_ACTIONS, record_replay_sig
 
 __all__ = [
     "ActionCandidate",
