@@ -78,6 +78,9 @@ class AdbTools:
         self._device_flag = f" -s {device} " if device is not None else " "
         self.image_info = None
         self._u2_disabled = False
+        # UI dump cache for graceful degradation
+        self._last_successful_dump = ""
+        self._last_dump_timestamp = 0
 
     def get_foreground_package(self) -> str:
         """
@@ -143,20 +146,42 @@ class AdbTools:
         the screen is still loading.  Returns '' on failure
         (WebView, game engines, ADB error, etc.).
         
+        element bounds, text, and resource IDs.  Retries up to 3 times with
+        exponential backoff if dumps fail. Uses cached dump as fallback when
+        all attempts fail to provide graceful degradation. Returns '' on complete
+        failure with no cache available.
+        
         Note: We do NOT fall back to the ``uiautomator2`` Python library
         because ``adb shell uiautomator dump`` registers the UiAutomation
         service, and trying u2 immediately after causes a conflict
         (IllegalStateException: UiAutomationService already registered).
         """
-        for attempt in range(3):  # Initial attempt + 2 retries
+        max_attempts = 4  # Initial + 3 retries
+        base_delay = 0.5  # Base delay for exponential backoff
+        
+        for attempt in range(max_attempts):
             xml = self._get_ui_dump_adb()
+            
+            # Check if we got usable data
             if xml and xml.count("<node") >= 5:
+                # Cache successful dump
+                self._last_successful_dump = xml
+                self._last_dump_timestamp = time.time()
                 return xml
             
-            # Sparse or empty result — screen might still be loading
-            if attempt < 2:
-                time.sleep(0.5)
+            # Log failure and apply exponential backoff before retry
+            if attempt < max_attempts - 1:
+                delay = base_delay * (2 ** attempt)  # 0.5s, 1s, 2s, 4s
+                print(f"[UI DUMP DEBUG] ⚠️ Attempt {attempt+1}/{max_attempts} failed, retrying in {delay}s...")
+                time.sleep(delay)
         
+        # All attempts failed — use cached dump if available
+        if self._last_successful_dump and self._last_successful_dump.count("<node") >= 5:
+            cache_age = time.time() - self._last_dump_timestamp
+            print(f"[UI DUMP WARNING] 🔄 Using cached UI dump (age={cache_age:.1f}s, nodes={self._last_successful_dump.count('<node')})")
+            return self._last_successful_dump
+        
+        print(f"[UI DUMP ERROR] ❌ All {max_attempts} attempts failed and no valid cache available")
         return xml if xml else ""
 
     def _get_ui_dump_adb(self) -> str:
@@ -177,7 +202,7 @@ class AdbTools:
             
             r = subprocess.run(
                 dump_cmd,
-                capture_output=True, text=True, shell=True, timeout=8,
+                capture_output=True, text=True, shell=True, timeout=15,
             )
             
             if r.returncode != 0:
@@ -200,7 +225,7 @@ class AdbTools:
             
             pull_result = subprocess.run(
                 pull_cmd,
-                capture_output=True, text=True, shell=True, timeout=8,
+                capture_output=True, text=True, shell=True, timeout=15,
             )
             
             if pull_result.returncode != 0:
@@ -522,6 +547,7 @@ class AdbTools:
         print(f"[ADB TYPE VERIFY] ❌ All {retries} attempts failed for text: {text!r}")
         return False
 
+    @staticmethod
     def _find_element_at_coordinates(ui_xml: str, x: int, y: int) -> Optional[dict]:
         """根据屏幕坐标查找对应的UI元素，并返回其标识信息。"""
         if not ui_xml:

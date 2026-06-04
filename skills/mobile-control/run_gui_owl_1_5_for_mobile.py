@@ -49,6 +49,10 @@ from utils import (
     SupervisorLLM,
 )
 
+# Import helper function for element signature capture
+from utils import AdbTools as _AdbToolsForImport
+_find_element_at_coordinates = _AdbToolsForImport._find_element_at_coordinates
+
 
 PRIMARY_RECOVERY_COOLDOWN_SECONDS = 600  # 10 minutes
 MEMORY_CLICK_OVERRIDE_MAX_DRIFT = 120.0  # normalized 0-1000 coordinate distance
@@ -618,6 +622,9 @@ def main():
     _same_state_action_relaxed_count = 0
     _recent_state_action_relaxed: list[str] = []
     _memory_fastpath_replayed: set[str] = set()
+    # Track executed actions globally (by action type + args, without state key)
+    # to prevent replaying the same action even when UI state changes
+    _executed_actions_global: set[str] = set()
     # Track the state_key of the last fastpath replay.  Sequential advance
     # (skipping already-replayed records) is only allowed when the screen
     # state has actually changed since the last replay.  If the state_key
@@ -1089,11 +1096,20 @@ def main():
                         f"{_step_state_key}|{_fastpath_action_type}|"
                         f"{json.dumps(_mem_args, ensure_ascii=False, sort_keys=True)}"
                     )
+                    # Also create action-only signature (without state key) for global deduplication
+                    _action_only_sig = f"{_fastpath_action_type}|{json.dumps(_mem_args, ensure_ascii=False, sort_keys=True)}"
+                    
                     if _fastpath_action_type not in _fastpath_allowed_types:
                         _memory_reason = "cached_action_type_not_fastpath_safe"
                         _log_t(
                             f"[MEMORY] pre-LLM fastpath skipped: cached action type {_fastpath_action_type!r} "
                             "is not safe for replay"
+                        )
+                    elif _action_only_sig in _executed_actions_global:
+                        _memory_reason = "cached_action_already_executed_globally"
+                        _log_t(
+                            f"[MEMORY] pre-LLM fastpath skipped: action {_fastpath_action_type!r} with args "
+                            f"{_mem_args} was already executed in this run (different state)"
                         )
                     elif _replay_sig in _memory_fastpath_replayed:
                         _memory_reason = "cached_action_already_replayed_this_run"
@@ -1148,6 +1164,7 @@ def main():
                         _used_memory_fastpath = True
                         _memory_overrode_action = True
                         _memory_fastpath_replayed.add(_replay_sig)
+                        _executed_actions_global.add(_action_only_sig)
                         _last_fastpath_state_key = _step_state_key
                         _log_t(
                             f"[MEMORY] pre-LLM fastpath score={_memory_score:.3f} action={_pre_llm_action_parameter}"
@@ -1307,6 +1324,9 @@ def main():
         action_parameter = action["arguments"]
         _step_action_type = str(action_parameter.get("action", ""))
         _step_action_args = copy.deepcopy(action_parameter)
+        # Track this action globally to prevent memory from replaying it later
+        _current_action_only_sig = f"{_step_action_type}|{json.dumps(_step_action_args, ensure_ascii=False, sort_keys=True)}"
+        _executed_actions_global.add(_current_action_only_sig)
         # _step_action_description already captured at line ~1140 from output_text
         _step_state_action_sig = (
             f"{_step_state_key}|{_step_action_type}|"
@@ -1476,6 +1496,9 @@ def main():
                 f"\n{json.dumps({'name': 'mobile_use', 'arguments': _rb_override}, ensure_ascii=False)}\n"
             )
             history.append({"output": _rb_note, "image": screenshot_path})
+            # Track rule override action globally
+            _rule_action_sig = f"{_rb_override.get('action', '')}|{json.dumps(_rb_override, ensure_ascii=False, sort_keys=True)}"
+            _executed_actions_global.add(_rule_action_sig)
             if _rb_override.get("action") == "system_button" and _rb_override.get("button") == "Home":
                 print("[ACTION EXEC] RULE override -> Home (start)")
                 if not adb_tools.home():
@@ -1589,9 +1612,12 @@ def main():
                 if _override_tc and "arguments" in _override_tc:
                     action = _override_tc
                     action_parameter = action["arguments"]
+                    # Track supervisor override action globally
+                    _sup_action_sig = f"{action_parameter.get('action', '')}|{json.dumps(action_parameter, ensure_ascii=False, sort_keys=True)}"
+                    _executed_actions_global.add(_sup_action_sig)
                     _sup_note = (
                         f"Action: [SUPERVISOR OVERRIDE] {_reason}\n"
-                        f"<tool_call>\n{json.dumps(_override_tc, ensure_ascii=False)}\n</tool_call>"
+                        f"\n{json.dumps(_override_tc, ensure_ascii=False)}\n"
                     )
                     history.append({"output": _sup_note, "image": screenshot_path})
                     if action_parameter.get("action") == "system_button" and action_parameter.get("button") == "Home":
