@@ -818,11 +818,13 @@ def main():
                 _memory_score = float((_mout_pre.diagnostics or {}).get("score", 0.0) or 0.0)
                 _memory_blocked = bool(_mout_pre.blocked)
                 _memory_hit = bool(_mout_pre.action is not None)
+                _cached_action_description = ""
                 if _mout_pre.action is not None:
                     _memory_candidate_action = {
                         "action_type": _mout_pre.action.action_type,
                         "arguments": copy.deepcopy(_mout_pre.action.arguments or {}),
                     }
+                    _cached_action_description = getattr(_mout_pre.action, 'action_description', '')
                 if _mout_pre.use_cached_action and _mout_pre.action is not None and not _mout_pre.blocked:
                     _mem_args = copy.deepcopy(_mout_pre.action.arguments or {})
                     if "action" not in _mem_args:
