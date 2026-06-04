@@ -387,6 +387,61 @@ def release_uiautomation_service(adb_path: str, device: str) -> None:
     _log("✅ UiAutomationService cleanup complete")
 
 
+def initialize_uiautomator2(adb_path: str, device: str) -> None:
+    """
+    Initialize uiautomator2 on the device by running 'python -m uiautomator2 init'.
+    
+    This installs the atx-agent server on the device (~5MB) which is required for
+    uiautomator2 to work. The init process also:
+    - Installs app-uiautomator-test.apk and app-uiautomator.apk
+    - Starts the atx-agent daemon on the device
+    - Verifies the server is running
+    
+    This should be called once at task setup to ensure uiautomator2 is ready.
+    Subsequent calls are fast if already initialized.
+    """
+    _log("Initializing uiautomator2 on device...")
+    
+    try:
+        import subprocess
+        
+        # Build the init command
+        device_flag = f"-s {device}" if device else ""
+        init_cmd = f"python3 -m uiautomator2 {device_flag} init"
+        
+        _log(f"Running: {init_cmd}")
+        
+        # Run the init command
+        result = subprocess.run(
+            init_cmd,
+            shell=True,
+            capture_output=True,
+            text=True,
+            timeout=60  # Init can take up to 60s on first run
+        )
+        
+        if result.returncode == 0:
+            _log("✅ uiautomator2 initialized successfully")
+            # Log key info from output
+            for line in result.stdout.splitlines():
+                if any(keyword in line.lower() for keyword in [
+                    "success", "installed", "version", "atx-agent"
+                ]):
+                    _log(f"   {line.strip()}")
+        else:
+            _log(f"⚠️ uiautomator2 init failed (rc={result.returncode})")
+            if result.stderr:
+                _log(f"   Error: {result.stderr[:200]}")
+            _log("   Will attempt to use uiautomator2 anyway (may auto-init on connect)")
+    
+    except ImportError:
+        _log("⚠️ uiautomator2 not installed (pip install uiautomator2)")
+    except subprocess.TimeoutExpired:
+        _log("⚠️ uiautomator2 init timed out (60s)")
+    except Exception as e:
+        _log(f"⚠️ uiautomator2 init exception: {e}")
+
+
 def send_toast(adb_path: str, device: str, message: str) -> None:
     """Show a Toast notification on the device screen."""
     escaped = message.replace("'", "\\'")
@@ -962,6 +1017,7 @@ def main() -> int:
     # 3. Screen + keyboard setup
     ensure_screen_on(args.adb_path, device)
     release_uiautomation_service(args.adb_path, device)  # Release ADB's UiAutomationService first
+    initialize_uiautomator2(args.adb_path, device)  # Initialize uiautomator2 (installs atx-agent)
     setup_adb_keyboard(args.adb_path, device)
 
     # 4. Toast notification

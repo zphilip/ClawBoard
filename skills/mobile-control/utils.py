@@ -97,12 +97,6 @@ class AdbTools:
             import uiautomator2 as u2
             d = u2.connect(self.device) if self.device else u2.connect()
             
-            # Check server health
-            if not d.agent_alive:
-                print(f"[FG PKG DEBUG] 🔄 uiautomator2 server offline, resetting...")
-                d.reset_uiautomator()
-                time.sleep(1.0)
-            
             # Execute dumpsys via uiautomator2 (no need for "adb -s XXX shell" prefix)
             print(f"[FG PKG DEBUG] 🎯 Using uiautomator2 shell (primary method)")
             output, exit_code = d.shell("dumpsys activity activities")
@@ -320,7 +314,7 @@ class AdbTools:
         the device (installed automatically on first ``u2.connect()``).
         Returns '' if the library is not installed or the connection fails.
         
-        Note: Checks server health and resets if unresponsive before attempting dump.
+        Note: Simple approach - just try to connect and dump directly.
         Retries connection if blocked by UiAutomationService.
         """
         max_retries = 3
@@ -328,17 +322,8 @@ class AdbTools:
             try:
                 import uiautomator2 as u2  # optional dependency
                 
-                # Connect to device
+                # Connect to device and dump directly
                 d = u2.connect(self.device) if self.device else u2.connect()
-                
-                # Check server health - reset if unresponsive
-                if not d.agent_alive:
-                    print(f"[UI DUMP DEBUG] 🔄 uiautomator2 server offline, resetting...")
-                    d.reset_uiautomator()
-                    time.sleep(1.0)  # Wait for server to restart
-                    print(f"[UI DUMP DEBUG] ✅ uiautomator2 server reset complete")
-                
-                # Now perform the UI dump
                 xml = d.dump_hierarchy()
                 return xml or ""
                 
