@@ -140,22 +140,35 @@ class AdbTools:
     def get_ui_dump(self) -> str:
         """
         Dump the current UI accessibility hierarchy and return the raw XML
-        string.  Uses ``adb shell uiautomator dump`` which returns XML with
-        element bounds, text, and resource IDs.  Retries up to 2 times if
-        the first dump returns sparse XML (< 5 nodes), which can happen if
-        the screen is still loading.  Returns '' on failure
-        (WebView, game engines, ADB error, etc.).
+        string. Uses a multi-tier fallback strategy for maximum reliability:
         
-        element bounds, text, and resource IDs.  Retries up to 3 times with
-        exponential backoff if dumps fail. Uses cached dump as fallback when
-        all attempts fail to provide graceful degradation. Returns '' on complete
-        failure with no cache available.
+        1. Try ``uiautomator2`` Python library (primary method - more stable)
+        2. If uiautomator2 fails, try ``adb shell uiautomator dump`` with exponential backoff (4 attempts)
+        3. If all attempts fail, use cached dump from last successful attempt
+        4. Return empty string if all methods fail
         
-        Note: We do NOT fall back to the ``uiautomator2`` Python library
-        because ``adb shell uiautomator dump`` registers the UiAutomation
-        service, and trying u2 immediately after causes a conflict
-        (IllegalStateException: UiAutomationService already registered).
+        Returns XML with element bounds, text, and resource IDs.
+        Handles WebView, game engines, ADB errors gracefully.
+        
+        Note: uiautomator2 is tried first as it's more reliable and doesn't
+        suffer from SIGKILL issues. ADB dump is used as fallback. Once
+        uiautomator2 fails with "already registered" error, it's disabled
+        for the rest of the run.
         """
+        # Priority 1: Try uiautomator2 first (more reliable, no SIGKILL issues)
+        if not self._u2_disabled:
+            print(f"[UI DUMP DEBUG] 🎯 Trying uiautomator2 (primary method)")
+            xml_u2 = self._get_ui_dump_u2()
+            if xml_u2 and xml_u2.count("<node") >= 5:
+                print(f"[UI DUMP DEBUG] ✅ uiautomator2 succeeded (nodes={xml_u2.count('<node')})")
+                # Cache successful dump
+                self._last_successful_dump = xml_u2
+                self._last_dump_timestamp = time.time()
+                return xml_u2
+            else:
+                print(f"[UI DUMP DEBUG] ❌ uiautomator2 failed or returned sparse data, falling back to ADB")
+        
+        # Priority 2: Fallback to ADB shell uiautomator dump with retries
         max_attempts = 4  # Initial + 3 retries
         base_delay = 0.5  # Base delay for exponential backoff
         
@@ -164,6 +177,7 @@ class AdbTools:
             
             # Check if we got usable data
             if xml and xml.count("<node") >= 5:
+                print(f"[UI DUMP DEBUG] ✅ ADB dump succeeded on attempt {attempt+1} (nodes={xml.count('<node')})")
                 # Cache successful dump
                 self._last_successful_dump = xml
                 self._last_dump_timestamp = time.time()
@@ -172,17 +186,19 @@ class AdbTools:
             # Log failure and apply exponential backoff before retry
             if attempt < max_attempts - 1:
                 delay = base_delay * (2 ** attempt)  # 0.5s, 1s, 2s, 4s
-                print(f"[UI DUMP DEBUG] ⚠️ Attempt {attempt+1}/{max_attempts} failed, retrying in {delay}s...")
+                print(f"[UI DUMP DEBUG] ⚠️ ADB attempt {attempt+1}/{max_attempts} failed, retrying in {delay}s...")
                 time.sleep(delay)
         
-        # All attempts failed — use cached dump if available
+        print(f"[UI DUMP DEBUG] ❌ All ADB attempts failed ({max_attempts} tries)")
+        
+        # Last resort: use cached dump if available
         if self._last_successful_dump and self._last_successful_dump.count("<node") >= 5:
             cache_age = time.time() - self._last_dump_timestamp
             print(f"[UI DUMP WARNING] 🔄 Using cached UI dump (age={cache_age:.1f}s, nodes={self._last_successful_dump.count('<node')})")
             return self._last_successful_dump
         
-        print(f"[UI DUMP ERROR] ❌ All {max_attempts} attempts failed and no valid cache available")
-        return xml if xml else ""
+        print(f"[UI DUMP ERROR] ❌ All methods failed (uiautomator2, ADB x{max_attempts}, cache) - no UI data available")
+        return ""
 
     def _get_ui_dump_adb(self) -> str:
         """
