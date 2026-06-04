@@ -91,27 +91,30 @@ def build_state_key(intent_signature: str, ui_fingerprint: str, device_bucket: s
 # Canonical intent key — groups semantically similar instructions
 # ---------------------------------------------------------------------------
 
-# Common action verbs / prefixes that don't change the intent.
-_ACTION_PREFIXES_ZH = [
-    "帮我", "请帮我", "请", "帮忙",
-    "打开", "开启", "启动", "运行",
-    "关闭", "退出", "结束",
-    "发送", "发", "给",
-    "搜索", "查", "查找", "搜",
-    "设置", "设定",
-    "播放", "放",
-    "导航", "带我去",
+# Tier 1: Polite / helper prefixes — always safe to strip iteratively.
+# These carry no action semantics, just politeness.
+_POLITE_PREFIXES_ZH = ["请帮我", "帮我", "请", "帮忙"]
+_POLITE_PREFIXES_EN = ["help me", "please"]
+
+# Tier 2: Synonymous action verb groups — normalise to a canonical verb.
+# Two instructions with different action verbs (播放 vs 搜索) are
+# genuinely different intents, so we normalise rather than strip.
+# Each group maps to its first member (the canonical form).
+_VERB_SYNONYMS_ZH: list[list[str]] = [
+    ["打开", "开启", "启动", "运行"],   # open / launch
+    ["关闭", "退出", "结束"],           # close / quit
+    ["搜索", "查", "查找", "搜"],       # search
+    ["设置", "设定"],                   # settings
+    ["导航", "带我去"],                # navigate
 ]
 
-_ACTION_PREFIXES_EN = [
-    "please", "help me",
-    "open", "launch", "start", "run",
-    "close", "quit", "exit",
-    "send", "type",
-    "search", "find", "look up",
-    "set", "configure",
-    "play",
-    "navigate",
+_VERB_SYNONYMS_EN: list[list[str]] = [
+    ["open", "launch", "start", "run"],
+    ["close", "quit", "exit"],
+    ["search", "find", "look up"],
+    ["set", "configure"],
+    ["play"],
+    ["navigate"],
 ]
 
 # Prepositions / particles that don't affect intent
@@ -123,15 +126,19 @@ def build_canonical_intent_key(instruction: str) -> str:
     """Build a canonical intent key that groups similar instructions.
 
     Strategy:
-      1. Iteratively strip common action prefixes ("打开", "open", "帮我", "please")
-      2. Strip noise words
-      3. Normalise whitespace and case
-      4. Hash the result
+      1. Strip noise words
+      2. Iteratively strip polite helpers ("帮我", "please") — multiple passes
+      3. Strip at most ONE action verb ("打开", "open") — single pass
+      4. Normalise whitespace and case, then hash
+
+    The key design decision: action verbs are stripped only once because
+    they carry real semantic meaning.  "播放音乐" (play music) and
+    "搜索音乐" (search music) must produce different keys.
 
     Examples that should map to the same key:
-      - "打开微信" / "开微信" / "帮我打开微信"  → "微信" core
-      - "导航回家" / "帮我导航回家"             → "回家" core
-      - "Open WeChat" / "Please open WeChat"   → "wechat" core
+      - "打开微信" / "帮我打开微信"           → "微信" core
+      - "导航回家" / "帮我导航回家"           → "回家" core
+      - "Open WeChat" / "Please open WeChat"  → "wechat" core
 
     NOTE: This is a lightweight heuristic.  It won't perfectly group every
     semantically equivalent instruction, but it significantly improves hit
@@ -147,36 +154,42 @@ def build_canonical_intent_key(instruction: str) -> str:
     for noise in _NOISE_WORDS_EN:
         text = re.sub(r'\b' + re.escape(noise) + r'\b', '', text, flags=re.IGNORECASE)
 
-    # Iteratively strip action prefixes (Chinese — longest first).
-    # Multiple passes so "帮我打开微信" → strip "帮我" → "打开微信" → strip "打开" → "微信"
-    # Guard: never strip if it would leave the text empty (the last prefix IS the intent).
-    _sorted_zh = sorted(_ACTION_PREFIXES_ZH, key=len, reverse=True)
+    # --- Pass 1: Iteratively strip polite helpers (Chinese) ---
+    _sorted_polite_zh = sorted(_POLITE_PREFIXES_ZH, key=len, reverse=True)
     _changed = True
     while _changed:
         _changed = False
         text = text.strip()
         if len(text) <= 1:
             break
-        for prefix in _sorted_zh:
+        for prefix in _sorted_polite_zh:
             if text.startswith(prefix) and len(text) > len(prefix):
                 text = text[len(prefix):]
                 _changed = True
                 break
 
-    # Iteratively strip action prefixes (English — longest first)
-    _sorted_en = sorted(_ACTION_PREFIXES_EN, key=len, reverse=True)
+    # --- Pass 1b: Iteratively strip polite helpers (English) ---
+    _sorted_polite_en = sorted(_POLITE_PREFIXES_EN, key=len, reverse=True)
     _changed = True
     while _changed:
         _changed = False
         text = text.strip()
         if len(text) <= 1:
             break
-        for prefix in _sorted_en:
+        for prefix in _sorted_polite_en:
             _pl = prefix.lower()
             if text.startswith(_pl) and len(text) > len(_pl):
                 text = text[len(_pl):]
                 _changed = True
                 break
+
+    # --- Pass 2: Normalise synonymous action verbs (single pass) ---
+    # Map different verbs that mean the same thing to a canonical form,
+    # so "open WeChat" and "launch WeChat" produce the same key.
+    # We do NOT strip verbs — that would collapse "play music" and
+    # "search music" into the same key (both would become just "music").
+    text = text.strip()
+    text = _normalise_synonymous_verbs(text)
 
     # Final normalisation
     text = re.sub(r'\s+', ' ', text).strip()
@@ -187,3 +200,43 @@ def build_canonical_intent_key(instruction: str) -> str:
         text = normalize_text(instruction)
 
     return hash_tokens([text])
+
+
+def _normalise_synonymous_verbs(text: str) -> str:
+    """Replace synonymous leading verbs with a canonical form.
+
+    E.g.  "开启微信" → "打开微信",  "launch youtube" → "open youtube"
+
+    Important: match the *longest* synonym first to avoid partial replacement.
+    Also check the canonical form first — if the text already starts with it,
+    skip replacement to avoid corrupting the text.
+    """
+    for group in _VERB_SYNONYMS_ZH:
+        canonical = group[0]
+        # Build a longest-first list of all verb forms (canonical + synonyms)
+        all_forms = sorted([canonical] + group[1:], key=len, reverse=True)
+        matched_form = None
+        for form in all_forms:
+            if text.startswith(form) and len(text) > len(form):
+                matched_form = form
+                break
+        if matched_form and matched_form != canonical:
+            text = canonical + text[len(matched_form):]
+            return text
+        # If matched_form == canonical, text is already normal — skip
+
+    # English — word-boundary matching, longest first
+    for group in _VERB_SYNONYMS_EN:
+        canonical = group[0]
+        all_forms = sorted([canonical] + group[1:], key=len, reverse=True)
+        matched_form = None
+        for form in all_forms:
+            pattern = r'^' + re.escape(form) + r'\b'
+            if re.match(pattern, text):
+                matched_form = form
+                break
+        if matched_form and matched_form != canonical:
+            text = re.sub(r'^' + re.escape(matched_form) + r'\b', canonical, text, count=1)
+            return text
+
+    return text
