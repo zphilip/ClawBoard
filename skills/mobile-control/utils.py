@@ -86,21 +86,61 @@ class AdbTools:
         Return the package name of the app currently in the foreground
         (e.g. 'com.baidu.BaiduMap').  Returns '' on failure.
 
-        Uses `dumpsys activity activities` which works across Android 8–14.
-        Falls back to `dumpsys window windows` for devices where the first
-        command returns nothing useful.
+        Uses uiautomator2's d.shell() as primary method (cleaner, no subprocess).
+        Falls back to ADB subprocess for compatibility.
         Includes detailed logging for debugging.
         """
-        device_flag = f" -s {self.device}" if self.device else ""
-        
         print(f"[FG PKG DEBUG] Detecting foreground package...")
+        
+        # Priority 1: Try uiautomator2 shell command (cleaner API)
+        try:
+            import uiautomator2 as u2
+            d = u2.connect(self.device) if self.device else u2.connect()
+            
+            # Check server health
+            if not d.agent_alive:
+                print(f"[FG PKG DEBUG] 🔄 uiautomator2 server offline, resetting...")
+                d.reset_uiautomator()
+                time.sleep(1.0)
+            
+            # Execute dumpsys via uiautomator2 (no need for "adb -s XXX shell" prefix)
+            print(f"[FG PKG DEBUG] 🎯 Using uiautomator2 shell (primary method)")
+            output, exit_code = d.shell("dumpsys activity activities")
+            
+            if exit_code == 0 and output:
+                output_lines = output.splitlines()
+                print(f"[FG PKG DEBUG] ✅ uiautomator2 shell succeeded: {len(output_lines)} lines")
+                
+                for line_num, line in enumerate(output_lines, 1):
+                    if any(k in line for k in (
+                        "mResumedActivity", "topResumedActivity",
+                        "mCurrentFocus", "mFocusedApp",
+                    )):
+                        m = re.search(r'\s+([\w.]+)/[.\w]+', line)
+                        if m:
+                            pkg = m.group(1)
+                            print(f"[FG PKG DEBUG] ✅ Found package at line {line_num}: {pkg}")
+                            print(f"[FG PKG DEBUG] Context: {line.strip()[:120]}")
+                            return pkg
+                
+                print(f"[FG PKG DEBUG] ⚠️ uiautomator2: No matching lines in dumpsys output")
+            else:
+                print(f"[FG PKG DEBUG] ⚠️ uiautomator2 shell failed: exit_code={exit_code}")
+        
+        except ImportError:
+            print(f"[FG PKG DEBUG] ⚠️ uiautomator2 not installed, falling back to ADB")
+        except Exception as e:
+            print(f"[FG PKG DEBUG] ⚠️ uiautomator2 failed: {e}, falling back to ADB")
+        
+        # Priority 2: Fallback to ADB subprocess (traditional method)
+        device_flag = f" -s {self.device}" if self.device else ""
         
         for probe_idx, probe_cmd in enumerate((
             f"{self.adb_path}{device_flag} shell dumpsys activity activities",
             f"{self.adb_path}{device_flag} shell dumpsys window windows",
         ), 1):
             try:
-                print(f"[FG PKG DEBUG] Probe #{probe_idx}: {probe_cmd[:80]}...")
+                print(f"[FG PKG DEBUG] Probe #{probe_idx} (ADB fallback): {probe_cmd[:80]}...")
                 
                 result = subprocess.run(
                     probe_cmd, capture_output=True, text=True,
