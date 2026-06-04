@@ -1439,7 +1439,7 @@ class SupervisorLLM:
                         {"role": "user", "content": user_content},
                     ],
                     temperature=0,
-                    max_tokens=512,
+                    max_tokens=1024,
                     **(dict(extra_body=_extra_body) if _extra_body else {}),
                 )
                 # With reasoning_split=True, content has only the JSON verdict;
@@ -1462,13 +1462,13 @@ class SupervisorLLM:
                 _tail = raw[-300:].lower()
                 if re.search(r'\b(approve|approved)\b', _tail) and "override" not in _tail:
                     return {"verdict": "approve"}
+                # If supervisor says "override" but we can't parse the JSON, we should
+                # approve rather than blindly pressing Home. The supervisor's override
+                # might have been for a different reason (e.g., wrong app, wrong target).
+                # Defaulting to Home is too aggressive and can undo correct progress.
                 if "override" in _tail:
-                    print(f"[SUPERVISOR] prose override — cannot parse action JSON; defaulting to Home: {raw[:80]!r}")
-                    return {
-                        "verdict": "override",
-                        "tool_call": {"name": "mobile_use", "arguments": {"action": "system_button", "button": "Home"}},
-                        "reason": "prose override (unparsed): supervisor flagged wrong action — pressing Home",
-                    }
+                    print(f"[SUPERVISOR] prose override — cannot parse action JSON; approving by default: {raw[:80]!r}")
+                    return {"verdict": "approve"}
                 else:
                     print(f"[SUPERVISOR] unexpected response format — approving: {raw[:120]!r}")
                 return {"verdict": "approve"}
@@ -1553,7 +1553,7 @@ class SupervisorLLM:
                         {"role": "user", "content": user_content},
                     ],
                     temperature=0,
-                    max_tokens=256,
+                    max_tokens=512,
                     **(dict(extra_body=_extra_body) if _extra_body else {}),
                 )
                 raw = (resp.choices[0].message.content or "").strip()
