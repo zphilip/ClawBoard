@@ -85,3 +85,105 @@ def build_ui_fingerprint(foreground_pkg: str, ui_summary: str) -> str:
 
 def build_state_key(intent_signature: str, ui_fingerprint: str, device_bucket: str) -> str:
     return f"{intent_signature}:{ui_fingerprint}:{device_bucket}"
+
+
+# ---------------------------------------------------------------------------
+# Canonical intent key — groups semantically similar instructions
+# ---------------------------------------------------------------------------
+
+# Common action verbs / prefixes that don't change the intent.
+_ACTION_PREFIXES_ZH = [
+    "帮我", "请帮我", "请", "帮忙",
+    "打开", "开启", "启动", "运行",
+    "关闭", "退出", "结束",
+    "发送", "发", "给",
+    "搜索", "查", "查找", "搜",
+    "设置", "设定",
+    "播放", "放",
+    "导航", "带我去",
+]
+
+_ACTION_PREFIXES_EN = [
+    "please", "help me",
+    "open", "launch", "start", "run",
+    "close", "quit", "exit",
+    "send", "type",
+    "search", "find", "look up",
+    "set", "configure",
+    "play",
+    "navigate",
+]
+
+# Prepositions / particles that don't affect intent
+_NOISE_WORDS_ZH = {"的", "了", "一下", "一个", "吧", "呢", "啊", "哦", "嘛", "哈"}
+_NOISE_WORDS_EN = {"the", "a", "an", "my", "for me", "on my phone"}
+
+
+def build_canonical_intent_key(instruction: str) -> str:
+    """Build a canonical intent key that groups similar instructions.
+
+    Strategy:
+      1. Iteratively strip common action prefixes ("打开", "open", "帮我", "please")
+      2. Strip noise words
+      3. Normalise whitespace and case
+      4. Hash the result
+
+    Examples that should map to the same key:
+      - "打开微信" / "开微信" / "帮我打开微信"  → "微信" core
+      - "导航回家" / "帮我导航回家"             → "回家" core
+      - "Open WeChat" / "Please open WeChat"   → "wechat" core
+
+    NOTE: This is a lightweight heuristic.  It won't perfectly group every
+    semantically equivalent instruction, but it significantly improves hit
+    rates compared to hashing the raw instruction string.
+    """
+    text = (instruction or "").strip().lower()
+
+    # Remove noise words (Chinese)
+    for noise in _NOISE_WORDS_ZH:
+        text = text.replace(noise, "")
+
+    # Remove noise words (English) — whole-word only
+    for noise in _NOISE_WORDS_EN:
+        text = re.sub(r'\b' + re.escape(noise) + r'\b', '', text, flags=re.IGNORECASE)
+
+    # Iteratively strip action prefixes (Chinese — longest first).
+    # Multiple passes so "帮我打开微信" → strip "帮我" → "打开微信" → strip "打开" → "微信"
+    # Guard: never strip if it would leave the text empty (the last prefix IS the intent).
+    _sorted_zh = sorted(_ACTION_PREFIXES_ZH, key=len, reverse=True)
+    _changed = True
+    while _changed:
+        _changed = False
+        text = text.strip()
+        if len(text) <= 1:
+            break
+        for prefix in _sorted_zh:
+            if text.startswith(prefix) and len(text) > len(prefix):
+                text = text[len(prefix):]
+                _changed = True
+                break
+
+    # Iteratively strip action prefixes (English — longest first)
+    _sorted_en = sorted(_ACTION_PREFIXES_EN, key=len, reverse=True)
+    _changed = True
+    while _changed:
+        _changed = False
+        text = text.strip()
+        if len(text) <= 1:
+            break
+        for prefix in _sorted_en:
+            _pl = prefix.lower()
+            if text.startswith(_pl) and len(text) > len(_pl):
+                text = text[len(_pl):]
+                _changed = True
+                break
+
+    # Final normalisation
+    text = re.sub(r'\s+', ' ', text).strip()
+    text = re.sub(r'[,，.。!！?？:：;；]', '', text)  # strip punctuation
+
+    if not text:
+        # Fallback: use the raw normalised instruction if stripping removed everything
+        text = normalize_text(instruction)
+
+    return hash_tokens([text])

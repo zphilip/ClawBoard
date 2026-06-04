@@ -1,0 +1,410 @@
+"""Plan recording and replay engine for mobile-control.
+
+Responsibilities:
+  1. **Record**: After a successful LLM-driven run, collect the executed
+     (action_type, action_args, foreground_pkg_before, foreground_pkg_after)
+     tuples into a TaskPlan and persist it via PlanStore.
+
+  2. **Replay**: Given a plan, execute each step via ADB, verifying that
+     the foreground package after each step matches the expected package.
+     On verification failure, signal the runner to fall back to the VLM
+     for that step only, then attempt to resume the plan.
+
+This module is intentionally **decoupled from the VLM / supervisor**.
+It only knows about ADB actions (through the ``adb_tools`` interface)
+and plan storage (through ``PlanStore``).
+
+Usage in the runner (pseudo-code)::
+
+    executor = PlanExecutor(plan_store, adb_tools)
+
+    # At run start:
+    plan = executor.find_plan(intent_key)
+    if plan:
+        executor.start_replay(plan)
+
+    # Inside the step loop:
+    if executor.is_replaying():
+        step = executor.next_step()
+        if step:
+            ok = executor.execute_and_verify(step)
+            if ok:
+                # step done, continue to next step
+                ...
+            else:
+                # verification failed — fall back to VLM for this step
+                executor.pause_replay()
+                ...
+        else:
+            # plan exhausted — fall through to normal VLM path
+            executor.end_replay()
+
+    # At run end (success):
+    executor.record_plan(intent_key, instruction, collected_steps, run_id)
+"""
+from __future__ import annotations
+
+import json
+import time
+from dataclasses import asdict
+from pathlib import Path
+from typing import Any, TYPE_CHECKING
+
+from .models import PlanStep, TaskPlan
+from .plan_store import PlanStore
+
+if TYPE_CHECKING:
+    # AdbTools is imported at runtime; the type hint is only for IDE support.
+    from utils import AdbTools  # pragma: no cover
+
+
+# Actions that are safe to replay blindly.  Excludes passive / terminal /
+# user-dependent actions (same set as policy.NON_CACHEABLE_ACTIONS).
+_REPLAYABLE_ACTION_TYPES: frozenset[str] = frozenset({
+    "click",
+    "type",
+    "open",
+    "system_button",
+    "key",
+    "swipe",
+    "scroll",
+    "long_press",
+})
+
+# How long (seconds) to wait after executing a step before checking the
+# foreground package for verification.
+_POST_ACTION_SETTLE_SECONDS: float = 1.5
+
+# Maximum consecutive plan-step failures before giving up on replay.
+_MAX_CONSECUTIVE_FAILURES: int = 2
+
+
+class RecordedStep:
+    """Transient container for a step executed during the current run.
+
+    The runner populates these as it goes; at the end of a successful run
+    they are converted into ``PlanStep`` objects and stored.
+    """
+
+    __slots__ = (
+        "step_index", "action_type", "action_args",
+        "pre_action_pkg", "post_action_pkg", "action_description",
+    )
+
+    def __init__(
+        self,
+        step_index: int,
+        action_type: str,
+        action_args: dict[str, Any],
+        pre_action_pkg: str = "",
+        post_action_pkg: str = "",
+        action_description: str = "",
+    ):
+        self.step_index = step_index
+        self.action_type = action_type
+        self.action_args = action_args
+        self.pre_action_pkg = pre_action_pkg
+        self.post_action_pkg = post_action_pkg
+        self.action_description = action_description
+
+
+class PlanExecutor:
+    """Manages plan lookup, step-by-step replay, and plan recording."""
+
+    def __init__(
+        self,
+        store: PlanStore,
+        adb_tools: Any,  # AdbTools — duck-typed to avoid circular import
+        settle_seconds: float = _POST_ACTION_SETTLE_SECONDS,
+    ):
+        self.store = store
+        self.adb = adb_tools
+        self.settle_seconds = settle_seconds
+
+        # Replay state (reset per run)
+        self._replay_plan: TaskPlan | None = None
+        self._replay_cursor: int = 0          # next step index to execute
+        self._replay_active: bool = False
+        self._consecutive_failures: int = 0
+        self._paused: bool = False
+
+        # Recording state (populated during the run)
+        self._recorded_steps: list[RecordedStep] = []
+
+    # ------------------------------------------------------------------
+    # Plan lookup
+    # ------------------------------------------------------------------
+
+    def find_plan(self, intent_key: str) -> TaskPlan | None:
+        """Look up the best stored plan for *intent_key*.
+
+        Returns None when no plan exists or the best plan has a low score.
+        """
+        plan = self.store.find_best(intent_key, min_success=1)
+        if plan is None:
+            return None
+        total = plan.success_count + plan.fail_count
+        score = plan.success_count / max(total, 1)
+        if score < 0.6:
+            # Too unreliable — don't replay
+            return None
+        return plan
+
+    # ------------------------------------------------------------------
+    # Replay control
+    # ------------------------------------------------------------------
+
+    def start_replay(self, plan: TaskPlan) -> None:
+        """Begin replaying *plan* from step 0."""
+        self._replay_plan = plan
+        self._replay_cursor = 0
+        self._replay_active = True
+        self._consecutive_failures = 0
+        self._paused = False
+
+    def is_replaying(self) -> bool:
+        return self._replay_active and not self._paused
+
+    def pause_replay(self) -> None:
+        """Temporarily pause replay (e.g. to let VLM handle one step)."""
+        self._paused = True
+
+    def resume_replay(self) -> None:
+        """Resume replay after a VLM-handled step.
+
+        Only resumes if the current plan step's expected_pkg matches the
+        actual foreground package — i.e. the VLM got us back on track.
+        """
+        if not self._paused or self._replay_plan is None:
+            return
+        if self._replay_cursor >= len(self._replay_plan.steps):
+            self.end_replay()
+            return
+        # Verify we're where the plan expects us to be
+        try:
+            current_pkg = self.adb.get_foreground_package() or ""
+        except Exception:
+            current_pkg = ""
+        next_step = self._replay_plan.steps[self._replay_cursor]
+        if next_step.pre_action_pkg and current_pkg != next_step.pre_action_pkg:
+            # VLM didn't get us to the expected screen — abandon replay
+            self.end_replay()
+            return
+        self._paused = False
+        self._consecutive_failures = 0
+
+    def end_replay(self) -> None:
+        """Stop replay entirely (plan exhausted or abandoned)."""
+        self._replay_active = False
+        self._paused = False
+
+    @property
+    def replay_plan(self) -> TaskPlan | None:
+        return self._replay_plan
+
+    @property
+    def replay_cursor(self) -> int:
+        return self._replay_cursor
+
+    # ------------------------------------------------------------------
+    # Step execution
+    # ------------------------------------------------------------------
+
+    def next_step(self) -> PlanStep | None:
+        """Return the next plan step to execute, or None if plan is exhausted."""
+        if not self._replay_plan or self._replay_cursor >= len(self._replay_plan.steps):
+            return None
+        return self._replay_plan.steps[self._replay_cursor]
+
+    def execute_and_verify(self, step: PlanStep) -> bool:
+        """Execute one plan step via ADB and verify the result.
+
+        Returns True if the step executed successfully and the foreground
+        package matches the expected value.  Returns False otherwise.
+        """
+        if step.action_type not in _REPLAYABLE_ACTION_TYPES:
+            return False
+
+        try:
+            ok = self._execute_action(step)
+        except Exception:
+            ok = False
+
+        if not ok:
+            self._consecutive_failures += 1
+            if self._consecutive_failures >= _MAX_CONSECUTIVE_FAILURES:
+                self.end_replay()
+            return False
+
+        # Settle time — let the UI react before checking foreground pkg
+        time.sleep(self.settle_seconds)
+
+        # Verification: check foreground package
+        try:
+            actual_pkg = self.adb.get_foreground_package() or ""
+        except Exception:
+            actual_pkg = ""
+
+        verified = True
+        if step.expected_pkg and actual_pkg:
+            if actual_pkg != step.expected_pkg:
+                verified = False
+
+        if verified:
+            self._replay_cursor += 1
+            self._consecutive_failures = 0
+            # Advance cursor past plan end → signals completion on next next_step()
+            return True
+        else:
+            self._consecutive_failures += 1
+            if self._consecutive_failures >= _MAX_CONSECUTIVE_FAILURES:
+                self.end_replay()
+            return False
+
+    # ------------------------------------------------------------------
+    # Action dispatch (minimal — reuses ADB directly)
+    # ------------------------------------------------------------------
+
+    def _execute_action(self, step: PlanStep) -> bool:
+        """Execute a single action via ADB.  Returns True on success."""
+        atype = step.action_type
+        args = step.action_args
+
+        if atype == "click":
+            coord = args.get("coordinate")
+            if not coord or len(coord) != 2:
+                return False
+            return bool(self.adb.click(int(coord[0]), int(coord[1])))
+
+        if atype == "long_press":
+            coord = args.get("coordinate")
+            if not coord or len(coord) != 2:
+                return False
+            return bool(self.adb.long_press(int(coord[0]), int(coord[1])))
+
+        if atype == "type":
+            text = str(args.get("text", ""))
+            if not text:
+                return False
+            return bool(self.adb.type_with_verification(text, retries=2))
+
+        if atype in ("swipe", "scroll"):
+            c1 = args.get("coordinate")
+            c2 = args.get("coordinate2")
+            if not c1 or not c2:
+                return False
+            return bool(self.adb.slide(
+                int(c1[0]), int(c1[1]), int(c2[0]), int(c2[1]),
+            ))
+
+        if atype == "system_button":
+            button = args.get("button", "")
+            if button == "Home":
+                return bool(self.adb.home())
+            if button == "Back":
+                return bool(self.adb.back())
+            return False
+
+        if atype == "key":
+            keycode = args.get("keycode") or args.get("key", "")
+            if not keycode:
+                return False
+            rc, _, _ = self.adb._run_adb(["shell", "input", "keyevent", str(keycode)])
+            return rc == 0
+
+        if atype == "open":
+            # Delegate to the runner's handle_open_action via a simple
+            # monkey-patch pattern — the runner must set self._open_handler.
+            handler = getattr(self, "_open_handler", None)
+            if handler:
+                return bool(handler(args))
+            return False
+
+        return False
+
+    # ------------------------------------------------------------------
+    # Recording
+    # ------------------------------------------------------------------
+
+    def record_step(
+        self,
+        step_index: int,
+        action_type: str,
+        action_args: dict[str, Any],
+        pre_action_pkg: str = "",
+        post_action_pkg: str = "",
+        action_description: str = "",
+    ) -> None:
+        """Record a step executed during the current run for later plan creation."""
+        if action_type not in _REPLAYABLE_ACTION_TYPES:
+            return
+        self._recorded_steps.append(RecordedStep(
+            step_index=step_index,
+            action_type=action_type,
+            action_args=dict(action_args),
+            pre_action_pkg=pre_action_pkg,
+            post_action_pkg=post_action_pkg,
+            action_description=action_description,
+        ))
+
+    def build_and_store_plan(
+        self,
+        intent_key: str,
+        instruction: str,
+        run_id: str,
+        device_bucket: str = "default",
+    ) -> TaskPlan | None:
+        """Convert recorded steps into a TaskPlan and persist it.
+
+        Only called after a successful run.  Returns the stored plan, or
+        None if there are no recordable steps.
+        """
+        if not self._recorded_steps:
+            return None
+
+        plan_steps: list[PlanStep] = []
+        for rec in self._recorded_steps:
+            plan_steps.append(PlanStep(
+                step_index=rec.step_index,
+                action_type=rec.action_type,
+                action_args=rec.action_args,
+                expected_pkg=rec.post_action_pkg,
+                action_description=rec.action_description,
+                pre_action_pkg=rec.pre_action_pkg,
+            ))
+
+        now = time.time()
+        plan = TaskPlan(
+            intent_key=intent_key,
+            instruction_sample=instruction[:300],
+            steps=plan_steps,
+            success_count=1,
+            fail_count=0,
+            last_verified=now,
+            created_at=now,
+            source_run_id=run_id,
+            device_bucket=device_bucket,
+        )
+
+        # Upsert: replace older plans for the same intent so the store
+        # always has the freshest recording.
+        self.store.upsert_by_intent(plan)
+        return plan
+
+    def clear_recording(self) -> None:
+        """Discard any recorded steps (e.g. after a failed run)."""
+        self._recorded_steps.clear()
+
+    def note_plan_success(self, intent_key: str) -> None:
+        """Increment success counter for a plan that just replayed fully."""
+        try:
+            self.store.increment_success(intent_key)
+        except Exception:
+            pass
+
+    def note_plan_failure(self, intent_key: str) -> None:
+        """Increment fail counter for a plan that failed during replay."""
+        try:
+            self.store.increment_fail(intent_key)
+        except Exception:
+            pass

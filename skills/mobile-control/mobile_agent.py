@@ -519,6 +519,7 @@ def run_agent(
     memory_min_score: float = 0.7,
     memory_store: str = "",
     memory_replay_mode: str = "sequential",
+    plan_store: str = "",
 ) -> dict:
     """
     Launch run_gui_owl_1_5_for_mobile.py in a subprocess, monitor its output,
@@ -548,6 +549,8 @@ def run_agent(
     cmd += ["--memory-replay-mode", memory_replay_mode]
     if memory_store:
         cmd += ["--memory-store", memory_store]
+    if plan_store:
+        cmd += ["--plan-store", plan_store]
 
     # Redact API keys in log output for security
     cmd_for_logging = cmd.copy()
@@ -844,10 +847,13 @@ def parse_args() -> argparse.Namespace:
                    help="Minimum memory score required for a usable memory hit.")
     p.add_argument("--memory-store", default="",
                    help="Optional memory store path for state->action records.")
-    p.add_argument("--memory-replay-mode", choices=["sequential", "single"], default="sequential",
+    p.add_argument("--memory-replay-mode", choices=["sequential", "single", "plan"], default="sequential",
                    help="Memory replay mode: sequential (default, advances through cached actions "
-                        "when screen state changes, using run_id+step to track provenance) or "
-                        "single (only one cache replay per state_key per run, safest).")
+                        "when screen state changes, using run_id+step to track provenance), "
+                        "single (only one cache replay per state_key per run, safest), or "
+                        "plan (replay entire task-level plans without LLM calls).")
+    p.add_argument("--plan-store", default="",
+                   help="Path to task plan JSONL store (defaults to memory_data/plans.jsonl).")
     p.add_argument("--dry_run", action="store_true",
                    help="Only run pre-checks, skip model inference")
     p.add_argument("--debug", action="store_true",
@@ -973,6 +979,7 @@ def main() -> int:
         memory_min_score=args.memory_min_score,
         memory_store=args.memory_store,
         memory_replay_mode=args.memory_replay_mode,
+        plan_store=args.plan_store,
     )
 
     # 7. Emit result JSON (consumed by OpenClaw)

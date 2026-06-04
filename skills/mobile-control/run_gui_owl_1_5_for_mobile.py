@@ -26,8 +26,15 @@ from PIL import Image
 from packages import PACKAGES_NAME_DICT, NAME_PACKAGE_DICT, normalize_package_name
 from memory.logger import MemoryEventLogger
 from memory.models import ActionCandidate, DecisionInput, MemoryRecord, StateSignature
+from memory.plan_executor import PlanExecutor
+from memory.plan_store import PlanStore
 from memory.policy import MemoryPolicy, NON_CACHEABLE_ACTIONS
-from memory.signature import build_intent_signature, build_state_key, build_ui_fingerprint
+from memory.signature import (
+    build_canonical_intent_key,
+    build_intent_signature,
+    build_state_key,
+    build_ui_fingerprint,
+)
 from memory.store import JsonlMemoryStore
 from utils import (
     AdbTools,
@@ -100,10 +107,13 @@ def parse_args():
                         help="Minimum score for memory candidates.")
     parser.add_argument("--memory-store", type=str, default="",
                         help="Optional memory store JSONL path for state->action records.")
-    parser.add_argument("--memory-replay-mode", choices=["sequential", "single"], default="sequential",
+    parser.add_argument("--memory-replay-mode", choices=["sequential", "single", "plan"], default="sequential",
                         help="Memory replay mode: sequential (default, advances through cached "
-                             "actions when screen state changes, uses run_id+step provenance) "
-                             "or single (one cache replay per state_key per run, safest).")
+                             "actions when screen state changes, uses run_id+step provenance), "
+                             "single (one cache replay per state_key per run, safest), or "
+                             "plan (replay entire task-level plans without LLM calls).")
+    parser.add_argument("--plan-store", type=str, default="",
+                        help="Path to task plan JSONL store (defaults to memory_data/plans.jsonl).")
     return parser.parse_args()
 
 
@@ -486,6 +496,54 @@ def main():
         except Exception as _mem_init_err:
             _memory_policy = None
             _log_t(f"[MEMORY] init failed ({_mem_init_err!r}) — disabling memory decision")
+    # ------------------------------------------------------------------
+    # Task-level plan executor (replay entire recorded plans without LLM)
+    # Plan recording is ALWAYS active (builds plans from every successful run).
+    # Plan replay only activates when --memory-replay-mode=plan.
+    # ------------------------------------------------------------------
+    _canonical_intent_key = build_canonical_intent_key(instruction)
+    _plan_store_path = (
+        Path(args.plan_store) if getattr(args, 'plan_store', '')
+        else (_memory_root / "plans.jsonl")
+    )
+    _plan_executor: PlanExecutor | None = None
+    _plan_replay_active = False
+    _plan_intent_key: str = ""
+    try:
+        _plan_store = PlanStore(_plan_store_path)
+        _plan_executor = PlanExecutor(_plan_store, adb_tools)
+        # Wire up the open handler so plan replay can launch apps
+        _plan_executor._open_handler = lambda ap: handle_open_action(
+            ap, instruction, adb_tools,
+            resolver_api_key, resolver_base_url, resolver_model,
+        )
+        if args.memory_replay_mode == "plan":
+            _plan_found = _plan_executor.find_plan(_canonical_intent_key)
+            if _plan_found:
+                _plan_executor.start_replay(_plan_found)
+                _plan_replay_active = True
+                _plan_intent_key = _canonical_intent_key
+                _log_t(
+                    f"[PLAN] replay started: intent_key={_canonical_intent_key} "
+                    f"steps={len(_plan_found.steps)} "
+                    f"success_count={_plan_found.success_count} "
+                    f"fail_count={_plan_found.fail_count}"
+                )
+            else:
+                _log_t(
+                    f"[PLAN] no stored plan for intent_key={_canonical_intent_key} "
+                    "— will record a new plan if this run succeeds"
+                )
+        else:
+            # Non-plan mode: still record steps for future plan building,
+            # but do not attempt replay.
+            _log_t(
+                f"[PLAN] recording enabled (mode={args.memory_replay_mode}) "
+                f"intent_key={_canonical_intent_key}"
+            )
+    except Exception as _plan_init_err:
+        _plan_executor = None
+        _log_t(f"[PLAN] init failed ({_plan_init_err!r}) — plan recording disabled")
     # Set to True once any physical action (click, swipe, type, etc.) is
     # executed.  Used to detect premature 'answer' refusals at step 0.
     any_real_action = False
@@ -770,6 +828,92 @@ def main():
         _has_transient_confirm_dialog = any(k.lower() in _ui_text_lc for k in _TRANSIENT_DIALOG_KEYWORDS)
         if _has_transient_confirm_dialog:
             _log_t("[DIALOG] transient confirm dialog cues detected (may auto-dismiss quickly)")
+
+        # ------------------------------------------------------------------
+        # 1c-plan. Task-level plan replay (highest priority).
+        # When a stored plan exists for this intent, execute the next step
+        # directly via ADB without calling the VLM.  Verification is done
+        # by checking the foreground package after each step.
+        # ------------------------------------------------------------------
+        _plan_step_executed = False
+        if _plan_executor is not None and _plan_executor.is_replaying():
+            _plan_step = _plan_executor.next_step()
+            if _plan_step is not None:
+                _plan_t0 = time.time()
+                _log_t(
+                    f"[PLAN] executing step {_plan_executor.replay_cursor}/"
+                    f"{len(_plan_executor.replay_plan.steps) - 1}: "
+                    f"{_plan_step.action_type} {_plan_step.action_args}"
+                )
+                _plan_pre_pkg = _fg_pkg or ""
+                _plan_ok = _plan_executor.execute_and_verify(_plan_step)
+                _plan_elapsed = time.time() - _plan_t0
+
+                if _plan_ok:
+                    _plan_step_executed = True
+                    any_real_action = True
+                    _step_action_type = _plan_step.action_type
+                    _step_action_args = dict(_plan_step.action_args)
+                    _step_action_description = f"[PLAN REPLAY] {_plan_step.action_description or _plan_step.action_type}"
+                    _provider_used = "plan-replay"
+                    _step_metrics["vlm_primary"] = 0.0
+                    _step_metrics["vlm_fallback"] = 0.0
+                    _step_metrics["supervisor"] = 0.0
+                    _step_metrics["action"] = _plan_elapsed
+                    _used_memory_fastpath = True  # reuse flag for telemetry
+                    _memory_overrode_action = True
+                    _log_t(
+                        f"[PLAN] step {_plan_executor.replay_cursor - 1} OK "
+                        f"({_plan_elapsed:.2f}s) — VLM skipped"
+                    )
+                    # Build a synthetic output_text for history recording
+                    _plan_action_param = dict(_plan_step.action_args)
+                    if "action" not in _plan_action_param:
+                        _plan_action_param["action"] = _plan_step.action_type
+                    output_text = (
+                        f"Action: [PLAN REPLAY] {_plan_step.action_description or 'replay cached action'}\n"
+                        "<tool_call>\n"
+                        + json.dumps({"name": "mobile_use", "arguments": _plan_action_param}, ensure_ascii=False)
+                        + "\n"
+                    )
+                    # Rescale coordinates for history/annotation
+                    try:
+                        img = Image.open(screenshot_path)
+                        _rh, _rw = smart_resize(img.height, img.width, factor=16, min_pixels=3136, max_pixels=1003520 * 200)
+                        action_parameter = rescale_coordinates(copy.deepcopy(_plan_action_param), _rw, _rh)
+                    except Exception:
+                        action_parameter = _plan_action_param
+                    action = {"name": "mobile_use", "arguments": action_parameter}
+                    # Record history and annotate screenshot
+                    history.append({"output": output_text, "image": screenshot_path})
+                    try:
+                        annotate_screenshot(
+                            screenshot_path,
+                            action_parameter,
+                            os.path.join(anno_dir, f"screenshot_anno_{step_id}.png"),
+                        )
+                    except Exception:
+                        pass
+                    _emit_step_summary("plan_replay_completed")
+                    _log_t(f"[STEP END] step={step_id} total={time.time() - _step_t0:.2f}s")
+                    # Check if plan is now exhausted (all steps done)
+                    if _plan_executor.next_step() is None:
+                        _log_t("[PLAN] all steps replayed successfully — auto-terminating")
+                        termination_reason = "plan_replay_complete"
+                        print("[TERMINATED] Task completed.")
+                        _plan_executor.end_replay()
+                        time.sleep(2)
+                        break  # exit the step loop
+                    time.sleep(2)
+                    continue
+                else:
+                    _log_t(
+                        f"[PLAN] step {_plan_executor.replay_cursor} FAILED "
+                        f"({_plan_elapsed:.2f}s) — falling back to VLM"
+                    )
+                    # Pause replay so VLM handles this step;
+                    # resume_replay() will be called after VLM succeeds.
+                    _plan_executor.pause_replay()
 
         # 1c. Memory pre-LLM fast path.
         # When memory decision is 'enforce' and there is a high-confidence cached
@@ -1598,6 +1742,33 @@ def main():
             action_parameter,
             os.path.join(anno_dir, f"screenshot_anno_{step_id}.png"),
         )
+
+        # 6b. Record step for plan building (only for LLM-driven steps,
+        #     not plan-replay steps which are already in the stored plan).
+        if _plan_executor is not None and not _plan_step_executed:
+            try:
+                _post_pkg = adb_tools.get_foreground_package() or ""
+                _plan_executor.record_step(
+                    step_index=step_id,
+                    action_type=_step_action_type,
+                    action_args=dict(_step_action_args),
+                    pre_action_pkg=_fg_pkg or "",
+                    post_action_pkg=_post_pkg,
+                    action_description=_step_action_description[:200] if _step_action_description else "",
+                )
+            except Exception:
+                pass
+
+        # 6c. If plan replay was paused and VLM just handled a step,
+        #     try to resume replay for the remaining steps.
+        if (_plan_executor is not None
+                and not _plan_executor.is_replaying()
+                and _plan_executor._paused
+                and _plan_replay_active):
+            _plan_executor.resume_replay()
+            if _plan_executor.is_replaying():
+                _log_t("[PLAN] replay resumed after VLM-handled step")
+
         _emit_step_summary("completed")
         _log_t(f"[STEP END] step={step_id} total={time.time() - _step_t0:.2f}s")
         time.sleep(2)
@@ -1620,6 +1791,40 @@ def main():
             f"supervisor_share_total={_sup_share_total:.1f}%"
         )
     print("\n[DONE] Agent execution finished.")
+
+    # ------------------------------------------------------------------
+    # Plan recording / counter update at run end
+    # ------------------------------------------------------------------
+    _run_succeeded = termination_reason in (
+        "answer_confirmed_complete",
+        "plan_replay_complete",
+    ) or termination_reason.startswith("terminate_action")
+
+    if _plan_executor is not None:
+        try:
+            if _plan_replay_active and _run_succeeded:
+                # Plan replay completed all steps successfully
+                _plan_executor.note_plan_success(_canonical_intent_key)
+                _log_t(f"[PLAN] replay succeeded — incremented success counter for {_canonical_intent_key}")
+            elif _plan_replay_active and not _run_succeeded:
+                # Plan replay failed mid-way
+                _plan_executor.note_plan_failure(_canonical_intent_key)
+                _log_t(f"[PLAN] replay failed — incremented fail counter for {_canonical_intent_key}")
+            elif not _plan_replay_active and _run_succeeded:
+                # LLM-driven run succeeded — record a new plan for future replay
+                _new_plan = _plan_executor.build_and_store_plan(
+                    intent_key=_canonical_intent_key,
+                    instruction=instruction,
+                    run_id=_run_id,
+                    device_bucket="default",
+                )
+                if _new_plan:
+                    _log_t(
+                        f"[PLAN] recorded new plan: intent_key={_canonical_intent_key} "
+                        f"steps={len(_new_plan.steps)}"
+                    )
+        except Exception as _plan_end_err:
+            _log_t(f"[PLAN] end-of-run error ({_plan_end_err!r})")
 
     # Clean up screenshot directories after task ends
     _cleanup()
