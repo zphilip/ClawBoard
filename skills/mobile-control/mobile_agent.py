@@ -549,7 +549,15 @@ def run_agent(
     if memory_store:
         cmd += ["--memory-store", memory_store]
 
-    _log(f"Launching: {' '.join(cmd)}")
+    # Redact API keys in log output for security
+    cmd_for_logging = cmd.copy()
+    for i, arg in enumerate(cmd_for_logging):
+        if arg == "--api_key" and i + 1 < len(cmd_for_logging):
+            cmd_for_logging[i + 1] = "<REDACTED>"
+        elif arg == "--supervisor_api_key" and i + 1 < len(cmd_for_logging):
+            cmd_for_logging[i + 1] = "<REDACTED>"
+    
+    _log(f"Launching: {' '.join(cmd_for_logging)}")
 
     # Clean up any leftover screenshots/task-dirs from previous runs before
     # starting fresh.  This runs at the START so stale data cannot be reused
