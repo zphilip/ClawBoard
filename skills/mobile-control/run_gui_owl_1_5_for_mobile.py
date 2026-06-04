@@ -665,6 +665,8 @@ def main():
                                 fail_count=1 if _is_bad_memory else 0,
                                 forbidden=_is_bad_memory,
                                 reason=_outcome,
+                                source_run_id=_run_id,
+                                source_step=step_id,
                             )
                         )
                 except Exception:
@@ -782,6 +784,7 @@ def main():
                 _mout_pre = _memory_policy.decide(
                     _step_state_key, _intent_sig, _dinput_pre,
                     exclude_sigs=_memory_fastpath_replayed,
+                    current_run_id=_run_id,
                 )
                 _memory_reason = _mout_pre.reason or "none"
                 _memory_score = float((_mout_pre.diagnostics or {}).get("score", 0.0) or 0.0)

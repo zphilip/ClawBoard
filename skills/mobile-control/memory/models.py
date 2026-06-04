@@ -32,6 +32,8 @@ class MemoryRecord:
     forbidden: bool = False
     reason: str = ""
     updated_at: float = 0.0
+    source_run_id: str = ""
+    source_step: int = -1
 
 
 @dataclass

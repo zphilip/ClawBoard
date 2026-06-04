@@ -42,6 +42,7 @@ class MemoryPolicy:
         intent_key: str,
         dinput: DecisionInput,
         exclude_sigs: set[str] | None = None,
+        current_run_id: str = "",
     ) -> DecisionOutput:
         records = self.store.load()
         ranked = top_matches(records, state_key=state_key, intent_key=intent_key, limit=5)
@@ -57,14 +58,32 @@ class MemoryPolicy:
             return DecisionOutput(use_cached_action=False, reason="no_memory_match")
 
         # Iterate through ranked records, skipping already-replayed ones.
-        # This allows the fastpath to return the next best unused cached action
-        # when the top match was already replayed earlier in the same run.
+        # IMPORTANT: only skip if there are MULTIPLE candidates above threshold.
+        # When there's only one candidate and it's excluded, fall through to VLM
+        # rather than advancing to a lower-score record — that record likely came
+        # from a different screen context that shares this coarse fingerprint.
+        #
+        # Example: state_key 0f12 matches both the Baidu home screen and the
+        # place detail page. Records for click [907,137] (搜索) and click [892,631]
+        # (到这去) both score 1.0 but belong to different screens. Blindly
+        # advancing to the next record replays an action on the wrong screen.
+        first_excluded = False
         for candidate in ranked:
             sig = record_replay_sig(
                 state_key, candidate.record.action_type, candidate.record.action_args,
             )
             if exclude_sigs and sig in exclude_sigs:
+                first_excluded = True
                 continue
+
+            # If we already skipped an excluded record, only advance to this
+            # candidate if it's from the same recording run (same source_run_id).
+            # Different runs may have recorded actions on different screens that
+            # share this coarse fingerprint.
+            if first_excluded:
+                candidate_run_id = getattr(candidate.record, 'source_run_id', '')
+                if not candidate_run_id or candidate_run_id != current_run_id:
+                    continue
 
             if candidate.record.forbidden:
                 return DecisionOutput(
@@ -94,8 +113,12 @@ class MemoryPolicy:
                 diagnostics={"score": candidate.score},
             )
 
-        # All ranked records were excluded (already replayed this run).
+        if first_excluded:
+            return DecisionOutput(
+                use_cached_action=False,
+                reason="best_candidate_already_replayed",
+            )
         return DecisionOutput(
             use_cached_action=False,
-            reason="all_candidates_already_replayed",
+            reason="all_candidates_below_threshold",
         )
