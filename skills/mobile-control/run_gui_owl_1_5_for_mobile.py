@@ -768,6 +768,28 @@ def main():
                 f"(primary={_llm_primary:.2f}s, fallback={_llm_fallback:.2f}s) | "
                 f"supervisor={_sup_total:.2f}s | supervisor_share={_sup_share:.1f}%"
             )
+            
+            # Enhanced step summary with action details
+            if _step_action_type:
+                _action_detail = f"type={_step_action_type}"
+                if _step_action_args:
+                    if _step_action_type == "type":
+                        _action_detail += f" text={_step_action_args.get('text', '')!r}"
+                    elif _step_action_type == "click":
+                        _coord = _step_action_args.get("coordinate", [])
+                        if len(_coord) >= 2:
+                            _action_detail += f" coord={_coord}"
+                    elif _step_action_type == "system_button":
+                        _action_detail += f" button={_step_action_args.get('button', '')}"
+                
+                _provider_info = f"provider={_provider_used}"
+                _memory_info = ""
+                if _used_memory_fastpath:
+                    _memory_info = " [MEMORY FASTPATH]"
+                elif _memory_overrode_action:
+                    _memory_info = " [MEMORY OVERRIDE]"
+                
+                _log_t(f"[STEP ACTION] {_action_detail} | {_provider_info}{_memory_info}")
             # Optional memory record persistence (telemetry -> actionable cache).
             if _memory_store is not None and _step_state_key and _step_action_type:
                 try:
@@ -1644,9 +1666,9 @@ def main():
                 _stuck_note = (
                     "Action: [RECOVERY] I have tapped the same coordinate 3 times "
                     "with no change. Pressing Back to escape the stuck state.\n"
-                    "<tool_call>\n"
+                    "\n"
                     '{"name": "mobile_use", "arguments": {"action": "system_button", "button": "Back"}}\n'
-                    "</tool_call>"
+                    ""
                 )
                 history.append({"output": _stuck_note, "image": screenshot_path})
                 adb_tools.back()
@@ -1679,15 +1701,79 @@ def main():
             any_real_action = True
             consecutive_waits = 0
             _text = str(action_parameter.get("text", ""))
-            print(f"[ACTION EXEC] type {_text!r} (start)")
+            print(f"\n[ACTION EXEC] === TYPE ACTION START ===")
+            print(f"[ACTION EXEC] Text to type: {_text!r}")
+            
+            # Get UI state before typing
+            _pre_ui_xml = adb_tools.get_ui_dump()
+            _pre_text_count = _pre_ui_xml.count("<node") if _pre_ui_xml else 0
+            print(f"[ACTION EXEC] Pre-type UI state: {_pre_text_count} nodes")
+            
             _ok = adb_tools.type_with_verification(_text, retries=2)
+            
+            # Get UI state after typing for comparison
+            _post_ui_xml = adb_tools.get_ui_dump()
+            _post_text_count = _post_ui_xml.count("<node") if _post_ui_xml else 0
+            print(f"[ACTION EXEC] Post-type UI state: {_post_text_count} nodes")
+            
             if _ok:
-                print("[ACTION EXEC] type done (verified)")
+                print("[ACTION EXEC] ✅ TYPE DONE (verified in UI)")
+                
+                # Show where text was found
+                try:
+                    import xml.etree.ElementTree as ET
+                    root = ET.fromstring(_post_ui_xml)
+                    found_nodes = []
+                    for node in root.iter("node"):
+                        node_text = node.attrib.get("text", "")
+                        node_desc = node.attrib.get("content-desc", "")
+                        if _text in node_text or _text in node_desc:
+                            bounds = node.attrib.get("bounds", "")
+                            found_nodes.append({
+                                'text': node_text[:50],
+                                'desc': node_desc[:50],
+                                'bounds': bounds
+                            })
+                    
+                    if found_nodes:
+                        print(f"[ACTION EXEC] Text found in {len(found_nodes)} node(s):")
+                        for i, n in enumerate(found_nodes[:3], 1):  # Show first 3
+                            print(f"[ACTION EXEC]   Node {i}: text={n['text']!r}, desc={n['desc']!r}, bounds={n['bounds']}")
+                except Exception as e:
+                    print(f"[ACTION EXEC] Could not parse post-type UI: {e}")
             else:
-                print("[ACTION EXEC] type failed_or_unverified")
+                print("[ACTION EXEC] ❌ TYPE FAILED OR UNVERIFIED")
                 print("[WARN] Input command may have succeeded but text was not observed in UI")
+                
+                # Debug: show current search bar content
+                try:
+                    import xml.etree.ElementTree as ET
+                    root = ET.fromstring(_post_ui_xml)
+                    search_fields = []
+                    for node in root.iter("node"):
+                        class_name = node.attrib.get("class", "").lower()
+                        if "edit" in class_name or "input" in class_name or "search" in class_name.lower():
+                            text = node.attrib.get("text", "")
+                            hint = node.attrib.get("hint", "")
+                            bounds = node.attrib.get("bounds", "")
+                            if text or hint:
+                                search_fields.append({
+                                    'class': node.attrib.get("class", ""),
+                                    'text': text[:80],
+                                    'hint': hint[:80],
+                                    'bounds': bounds
+                                })
+                    
+                    if search_fields:
+                        print(f"[ACTION EXEC DEBUG] Found {len(search_fields)} input/search field(s):")
+                        for i, sf in enumerate(search_fields[:3], 1):
+                            print(f"[ACTION EXEC DEBUG]   Field {i}: class={sf['class']}, text={sf['text']!r}, hint={sf['hint']!r}")
+                except Exception as e:
+                    print(f"[ACTION EXEC DEBUG] Could not analyze input fields: {e}")
+            
             _step_metrics["action"] = time.time() - _t_action
             _log_t(f"[TIMING] action_type={_step_metrics['action']:.2f}s")
+            print(f"[ACTION EXEC] === TYPE ACTION END (took {_step_metrics['action']:.2f}s) ===\n")
 
         elif action_type in ("scroll", "swipe"):
             _t_action = time.time()
@@ -1737,10 +1823,10 @@ def main():
                 _correction = (
                     "Action: I have been waiting too long on the wrong screen. "
                     "Pressing Home to navigate to the correct app.\n"
-                    "<tool_call>\n"
+                    "\n"
                     '{"name": "mobile_use", "arguments": '
                     '{"action": "system_button", "button": "Home"}}\n'
-                    "</tool_call>"
+                    ""
                 )
                 history.append({"output": _correction, "image": screenshot_path})
                 print("[ACTION EXEC] wait-recovery -> Home (start)")
@@ -1788,7 +1874,7 @@ def main():
                 continue
 
         elif action_type == "answer":
-            conclusion = output_text.split("<tool_call>")[0].strip()
+            conclusion = output_text.split("")[0].strip()
             # Guard: if the model gives 'answer' before performing any real
             # actions it is refusing rather than completing the task.
             # Inject a self-correction into history, press Home, and continue.

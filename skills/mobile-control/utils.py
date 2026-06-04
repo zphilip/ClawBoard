@@ -87,27 +87,51 @@ class AdbTools:
         Uses `dumpsys activity activities` which works across Android 8–14.
         Falls back to `dumpsys window windows` for devices where the first
         command returns nothing useful.
+        Includes detailed logging for debugging.
         """
         device_flag = f" -s {self.device}" if self.device else ""
-        for probe_cmd in (
+        
+        print(f"[FG PKG DEBUG] Detecting foreground package...")
+        
+        for probe_idx, probe_cmd in enumerate((
             f"{self.adb_path}{device_flag} shell dumpsys activity activities",
             f"{self.adb_path}{device_flag} shell dumpsys window windows",
-        ):
+        ), 1):
             try:
+                print(f"[FG PKG DEBUG] Probe #{probe_idx}: {probe_cmd[:80]}...")
+                
                 result = subprocess.run(
                     probe_cmd, capture_output=True, text=True,
                     shell=True, timeout=6,
                 )
-                for line in result.stdout.splitlines():
+                
+                if result.returncode != 0:
+                    err = (result.stderr or "").strip()[:150]
+                    print(f"[FG PKG DEBUG] ❌ Probe #{probe_idx} failed: rc={result.returncode}, err={err}")
+                    continue
+                
+                output_lines = result.stdout.splitlines()
+                print(f"[FG PKG DEBUG] Probe #{probe_idx}: {len(output_lines)} lines returned")
+                
+                for line_num, line in enumerate(output_lines, 1):
                     if any(k in line for k in (
                         "mResumedActivity", "topResumedActivity",
                         "mCurrentFocus", "mFocusedApp",
                     )):
                         m = re.search(r'\s+([\w.]+)/[.\w]+', line)
                         if m:
-                            return m.group(1)
-            except Exception:
+                            pkg = m.group(1)
+                            print(f"[FG PKG DEBUG] ✅ Found package at line {line_num}: {pkg}")
+                            print(f"[FG PKG DEBUG] Context: {line.strip()[:120]}")
+                            return pkg
+                
+                print(f"[FG PKG DEBUG] ⚠️  Probe #{probe_idx}: No matching lines found")
+                
+            except Exception as e:
+                print(f"[FG PKG DEBUG] ❌ Probe #{probe_idx} exception: {e}")
                 pass
+        
+        print(f"[FG PKG DEBUG] ❌ No foreground package detected")
         return ""
 
     def get_ui_dump(self) -> str:
@@ -139,29 +163,73 @@ class AdbTools:
         """
         Dump UI hierarchy via ``adb shell uiautomator dump``.
         Returns the raw XML string or '' on failure.
+        Includes detailed logging for debugging.
         """
         device_flag = f" -s {self.device}" if self.device else ""
         remote = "/sdcard/window_dump.xml"
+        
+        print(f"[UI DUMP DEBUG] Starting UI dump (device={self.device or 'default'})")
+        
         try:
             # Write XML to device storage
+            dump_cmd = f"{self.adb_path}{device_flag} shell uiautomator dump {remote}"
+            print(f"[UI DUMP DEBUG] Running: {dump_cmd}")
+            
             r = subprocess.run(
-                f"{self.adb_path}{device_flag} shell uiautomator dump {remote}",
+                dump_cmd,
                 capture_output=True, text=True, shell=True, timeout=8,
             )
-            if "ERROR" in r.stdout or "ERROR" in r.stderr:
+            
+            if r.returncode != 0:
+                err = (r.stderr or r.stdout or "").strip()[:200]
+                print(f"[UI DUMP DEBUG] ❌ Dump command failed: rc={r.returncode}, err={err}")
                 return ""
+            
+            if "ERROR" in r.stdout or "ERROR" in r.stderr:
+                print(f"[UI DUMP DEBUG] ❌ Dump command returned ERROR")
+                return ""
+            
+            print(f"[UI DUMP DEBUG] ✅ Dump command succeeded")
+            
             # Pull to a temp file
             with tempfile.NamedTemporaryFile(suffix=".xml", delete=False) as tf:
                 local = tf.name
-            subprocess.run(
-                f"{self.adb_path}{device_flag} pull {remote} {local}",
+            
+            pull_cmd = f"{self.adb_path}{device_flag} pull {remote} {local}"
+            print(f"[UI DUMP DEBUG] Pulling: {pull_cmd}")
+            
+            pull_result = subprocess.run(
+                pull_cmd,
                 capture_output=True, text=True, shell=True, timeout=8,
             )
+            
+            if pull_result.returncode != 0:
+                err = (pull_result.stderr or pull_result.stdout or "").strip()[:200]
+                print(f"[UI DUMP DEBUG] ❌ Pull command failed: rc={pull_result.returncode}, err={err}")
+                os.unlink(local)
+                return ""
+            
+            print(f"[UI DUMP DEBUG] ✅ Pull command succeeded")
+            
             with open(local, encoding="utf-8", errors="replace") as f:
                 xml = f.read()
+            
+            xml_size = len(xml)
+            node_count = xml.count("<node")
+            print(f"[UI DUMP DEBUG] 📊 XML size={xml_size} bytes, nodes={node_count}")
+            
             os.unlink(local)
+            
+            if node_count == 0:
+                print(f"[UI DUMP DEBUG] ⚠️  WARNING: No nodes found in UI dump!")
+                if xml_size > 0:
+                    print(f"[UI DUMP DEBUG] First 300 chars: {xml[:300]}")
+            
             return xml
-        except Exception:
+        except Exception as e:
+            print(f"[UI DUMP DEBUG] ❌ Exception: {e}")
+            import traceback
+            traceback.print_exc()
             return ""
 
     def _get_ui_dump_u2(self) -> str:
@@ -193,9 +261,11 @@ class AdbTools:
     # -- helpers ----------------------------------------------------------
 
     def _run(self, args):
-        """Run an ADB command string."""
+        """Run an ADB command string with detailed logging."""
         cmd = self.adb_path + self._device_flag + args
         try:
+            # Log the exact command being executed
+            print(f"[ADB CMD] {cmd}")
             res = subprocess.run(
                 cmd,
                 capture_output=True,
@@ -205,15 +275,23 @@ class AdbTools:
             )
             if res.returncode != 0:
                 err = (res.stderr or res.stdout or "").strip()[:180]
-                print(f"[ADB] command failed (rc={res.returncode}): {args} | {err}")
+                print(f"[ADB FAIL] rc={res.returncode} | cmd={args} | err={err}")
                 return False
-            return True
+            else:
+                # Log successful execution with output snippet
+                out = (res.stdout or "").strip()[:100]
+                if out:
+                    print(f"[ADB OK] rc=0 | cmd={args[:60]} | out={out}")
+                else:
+                    print(f"[ADB OK] rc=0 | cmd={args[:60]}")
+                return True
         except subprocess.TimeoutExpired:
-            print(f"[ADB] command timeout (>10s): {args}")
+            print(f"[ADB TIMEOUT] cmd timed out (>10s): {args}")
             return False
         except Exception as _e:
-            print(f"[ADB] command error: {args} | {_e}")
+            print(f"[ADB ERROR] {_e} | cmd={args}")
             return False
+
 
     def _load_image_info(self, path):
         """Cache the width and height of the screenshot."""
@@ -315,6 +393,7 @@ class AdbTools:
         """
         Type text via ADB Keyboard (supports CJK and Latin characters).
         Requires ADB Keyboard to be installed on the device.
+        Returns True if all commands succeed, False otherwise.
         """
         escaped_text = text.replace('"', '\\"').replace("'", "\\'")
         command_sequence = [
@@ -326,12 +405,24 @@ class AdbTools:
             "shell ime disable com.android.adbkeyboard/.AdbIME",
         ]
 
-        for item in command_sequence:
+        print(f"[ADB TYPE DEBUG] Starting type sequence for text: {text!r}")
+        success_count = 0
+        total_commands = len([item for item in command_sequence if isinstance(item, str)])
+        
+        for idx, item in enumerate(command_sequence):
             if isinstance(item, (int, float)):
+                print(f"[ADB TYPE DEBUG] Sleeping {item}s (step {idx+1}/{len(command_sequence)})")
                 time.sleep(item)
             else:
-                if not self._run(item.strip()):
+                print(f"[ADB TYPE DEBUG] Executing step {idx+1}/{len(command_sequence)}: {item[:80]}")
+                result = self._run(item.strip())
+                if result:
+                    success_count += 1
+                else:
+                    print(f"[ADB TYPE DEBUG] Step {idx+1} FAILED")
                     return False
+        
+        print(f"[ADB TYPE DEBUG] Type sequence completed: {success_count}/{total_commands} commands succeeded")
         return True
 
     @staticmethod
@@ -378,24 +469,57 @@ class AdbTools:
         Type text and verify it appears in the UI dump.
 
         Returns True only when text is observed on-screen after typing.
+        Includes detailed logging for debugging text input issues.
         """
         retries = max(1, int(retries))
+        print(f"[ADB TYPE VERIFY] Starting verification for text: {text!r} (retries={retries})")
+        
         for attempt in range(1, retries + 1):
-            print(f"[ADB TYPE] attempt {attempt}/{retries}: sending text {text!r}")
+            print(f"\n[ADB TYPE] === ATTEMPT {attempt}/{retries} ===")
+            print(f"[ADB TYPE] Sending text: {text!r}")
+            
             if not self.type(text):
-                print(f"[ADB TYPE] attempt {attempt} command sequence failed")
+                print(f"[ADB TYPE] ❌ Attempt {attempt} FAILED: command sequence error")
                 continue
 
+            print(f"[ADB TYPE] ✅ Command sequence succeeded, starting verification...")
             deadline = time.time() + max(0.2, verify_wait_seconds)
+            verification_checks = 0
+            
             while time.time() < deadline:
+                verification_checks += 1
                 ui_xml = self.get_ui_dump()
+                
+                # Log UI dump size for debugging
+                ui_size = len(ui_xml) if ui_xml else 0
+                print(f"[ADB TYPE VERIFY] Check #{verification_checks}: UI dump size={ui_size} bytes")
+                
                 if self._ui_contains_text(ui_xml, text):
-                    print(f"[ADB TYPE] text verified in UI after attempt {attempt}")
+                    print(f"[ADB TYPE] ✅ Text VERIFIED in UI after {verification_checks} checks (attempt {attempt})")
+                    
+                    # Show where the text was found
+                    if ui_xml:
+                        try:
+                            root = ET.fromstring(ui_xml)
+                            for node in root.iter("node"):
+                                node_text = node.attrib.get("text", "")
+                                node_desc = node.attrib.get("content-desc", "")
+                                if text in node_text or text in node_desc:
+                                    print(f"[ADB TYPE DEBUG] Found in node: text={node_text!r}, desc={node_desc!r}")
+                        except Exception:
+                            pass
+                    
                     return True
+                
                 time.sleep(max(0.1, verify_interval_seconds))
 
-            print(f"[ADB TYPE] text not visible after attempt {attempt}")
+            print(f"[ADB TYPE] ❌ Text NOT visible after {verification_checks} checks (attempt {attempt})")
+            
+            # Dump a snippet of UI for debugging
+            if ui_xml and len(ui_xml) > 0:
+                print(f"[ADB TYPE DEBUG] UI dump snippet (first 500 chars):\n{ui_xml[:500]}")
 
+        print(f"[ADB TYPE VERIFY] ❌ All {retries} attempts failed for text: {text!r}")
         return False
 
     def _find_element_at_coordinates(ui_xml: str, x: int, y: int) -> Optional[dict]:
