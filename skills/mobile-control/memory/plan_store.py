@@ -127,6 +127,7 @@ def _serialise_plan(plan: TaskPlan) -> dict[str, Any]:
                 "expected_pkg": s.expected_pkg,
                 "action_description": s.action_description,
                 "pre_action_pkg": s.pre_action_pkg,
+                "post_action_ui_fp": s.post_action_ui_fp,
             }
             for s in plan.steps
         ],
@@ -148,6 +149,7 @@ def _deserialise_plan(obj: dict[str, Any]) -> TaskPlan:
             expected_pkg=s.get("expected_pkg", ""),
             action_description=s.get("action_description", ""),
             pre_action_pkg=s.get("pre_action_pkg", ""),
+            post_action_ui_fp=s.get("post_action_ui_fp", ""),
         )
         for i, s in enumerate(obj.get("steps", []))
     ]

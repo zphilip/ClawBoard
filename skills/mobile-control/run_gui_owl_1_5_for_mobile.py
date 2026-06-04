@@ -511,7 +511,13 @@ def main():
     _plan_intent_key: str = ""
     try:
         _plan_store = PlanStore(_plan_store_path)
-        _plan_executor = PlanExecutor(_plan_store, adb_tools)
+        _plan_screenshot_dir = str(_memory_root / "plan_screenshots")
+        _plan_executor = PlanExecutor(
+            _plan_store, adb_tools,
+            ui_summariser=summarise_ui_dump,
+            ui_fp_builder=build_ui_fingerprint,
+            screenshot_dir=_plan_screenshot_dir,
+        )
         # Wire up the open handler so plan replay can launch apps
         _plan_executor._open_handler = lambda ap: handle_open_action(
             ap, instruction, adb_tools,
@@ -907,9 +913,11 @@ def main():
                     time.sleep(2)
                     continue
                 else:
+                    _verify_detail = getattr(_plan_executor, 'last_verify_detail', '')
                     _log_t(
                         f"[PLAN] step {_plan_executor.replay_cursor} FAILED "
                         f"({_plan_elapsed:.2f}s) — falling back to VLM"
+                        + (f" [{_verify_detail}]" if _verify_detail else "")
                     )
                     # Pause replay so VLM handles this step;
                     # resume_replay() will be called after VLM succeeds.
@@ -1746,9 +1754,18 @@ def main():
 
         # 6b. Record step for plan building (only for LLM-driven steps,
         #     not plan-replay steps which are already in the stored plan).
+        #     Also captures a post-action UI fingerprint for future replay verification.
         if _plan_executor is not None and not _plan_step_executed:
             try:
                 _post_pkg = adb_tools.get_foreground_package() or ""
+                # Take a post-action UI dump and build fingerprint for plan verification
+                _post_action_ui_fp = ""
+                try:
+                    _post_xml = adb_tools.get_ui_dump()
+                    _post_summary = summarise_ui_dump(_post_xml)
+                    _post_action_ui_fp = build_ui_fingerprint(_post_pkg, _post_summary)
+                except Exception:
+                    pass
                 _plan_executor.record_step(
                     step_index=step_id,
                     action_type=_step_action_type,
@@ -1756,6 +1773,7 @@ def main():
                     pre_action_pkg=_fg_pkg or "",
                     post_action_pkg=_post_pkg,
                     action_description=_step_action_description[:200] if _step_action_description else "",
+                    post_action_ui_fp=_post_action_ui_fp,
                 )
             except Exception:
                 pass

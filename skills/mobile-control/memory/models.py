@@ -71,6 +71,7 @@ class PlanStep:
     expected_pkg: str = ""                 # foreground package expected AFTER this step
     action_description: str = ""           # human-readable summary (from VLM reasoning)
     pre_action_pkg: str = ""               # foreground package BEFORE this step (for extra validation)
+    post_action_ui_fp: str = ""            # UI fingerprint AFTER this step (for visual verification during replay)
 
 
 @dataclass

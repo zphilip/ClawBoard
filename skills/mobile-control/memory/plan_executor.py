@@ -75,8 +75,16 @@ _REPLAYABLE_ACTION_TYPES: frozenset[str] = frozenset({
 # foreground package for verification.
 _POST_ACTION_SETTLE_SECONDS: float = 1.5
 
+# Extra settle time for type actions — the app needs time to show
+# search suggestions / autocomplete results after text is entered.
+_POST_TYPE_SETTLE_SECONDS: float = 3.0
+
 # Maximum consecutive plan-step failures before giving up on replay.
 _MAX_CONSECUTIVE_FAILURES: int = 2
+
+# Minimum UI change required after a type action (new interactive elements).
+# If fewer than this many new elements appear, the type is considered unverified.
+_MIN_NEW_UI_ELEMENTS_AFTER_TYPE: int = 2
 
 
 class RecordedStep:
@@ -89,6 +97,7 @@ class RecordedStep:
     __slots__ = (
         "step_index", "action_type", "action_args",
         "pre_action_pkg", "post_action_pkg", "action_description",
+        "post_action_ui_fp",
     )
 
     def __init__(
@@ -99,6 +108,7 @@ class RecordedStep:
         pre_action_pkg: str = "",
         post_action_pkg: str = "",
         action_description: str = "",
+        post_action_ui_fp: str = "",
     ):
         self.step_index = step_index
         self.action_type = action_type
@@ -106,6 +116,7 @@ class RecordedStep:
         self.pre_action_pkg = pre_action_pkg
         self.post_action_pkg = post_action_pkg
         self.action_description = action_description
+        self.post_action_ui_fp = post_action_ui_fp
 
 
 class PlanExecutor:
@@ -116,10 +127,16 @@ class PlanExecutor:
         store: PlanStore,
         adb_tools: Any,  # AdbTools — duck-typed to avoid circular import
         settle_seconds: float = _POST_ACTION_SETTLE_SECONDS,
+        ui_summariser: Any = None,  # callable(xml) -> summary string (optional)
+        ui_fp_builder: Any = None,  # callable(pkg, summary) -> fp string (optional)
+        screenshot_dir: str | Path = "",  # where to save post-action screenshots
     ):
         self.store = store
         self.adb = adb_tools
         self.settle_seconds = settle_seconds
+        self._ui_summariser = ui_summariser
+        self._ui_fp_builder = ui_fp_builder
+        self._screenshot_dir = Path(screenshot_dir) if screenshot_dir else None
 
         # Replay state (reset per run)
         self._replay_plan: TaskPlan | None = None
@@ -130,6 +147,9 @@ class PlanExecutor:
 
         # Recording state (populated during the run)
         self._recorded_steps: list[RecordedStep] = []
+
+        # Last verification detail (for logging / debugging)
+        self.last_verify_detail: str = ""
 
     # ------------------------------------------------------------------
     # Plan lookup
@@ -219,8 +239,16 @@ class PlanExecutor:
     def execute_and_verify(self, step: PlanStep) -> bool:
         """Execute one plan step via ADB and verify the result.
 
-        Returns True if the step executed successfully and the foreground
-        package matches the expected value.  Returns False otherwise.
+        Verification is done in three layers:
+          1. Foreground package check (was the correct app still active?)
+          2. Post-action screenshot + UI dump (saved for debugging)
+          3. UI fingerprint comparison (did the UI change as expected?)
+
+        For ``type`` actions, an extra settle delay is applied and the UI
+        is checked for new interactive elements (search suggestions).
+
+        Returns True if the step executed successfully and passed all
+        applicable verification checks.  Returns False otherwise.
         """
         if step.action_type not in _REPLAYABLE_ACTION_TYPES:
             return False
@@ -236,24 +264,92 @@ class PlanExecutor:
                 self.end_replay()
             return False
 
-        # Settle time — let the UI react before checking foreground pkg
-        time.sleep(self.settle_seconds)
+        # Settle time — type actions need extra wait for search results
+        settle = self.settle_seconds
+        if step.action_type == "type":
+            settle = max(settle, _POST_TYPE_SETTLE_SECONDS)
+        time.sleep(settle)
 
-        # Verification: check foreground package
+        # Verification layer 1: check foreground package
         try:
             actual_pkg = self.adb.get_foreground_package() or ""
         except Exception:
             actual_pkg = ""
 
-        verified = True
+        pkg_ok = True
         if step.expected_pkg and actual_pkg:
             if actual_pkg != step.expected_pkg:
-                verified = False
+                pkg_ok = False
+
+        if not pkg_ok:
+            self._consecutive_failures += 1
+            if self._consecutive_failures >= _MAX_CONSECUTIVE_FAILURES:
+                self.end_replay()
+            return False
+
+        # Verification layer 2: post-action screenshot + UI dump
+        # Take a screenshot for debugging (saved to plan_screenshots/)
+        post_screenshot_path = ""
+        if self._screenshot_dir is not None:
+            try:
+                self._screenshot_dir.mkdir(parents=True, exist_ok=True)
+                _ts = int(time.time() * 1000)
+                post_screenshot_path = str(
+                    self._screenshot_dir / f"plan_step_{step.step_index}_{_ts}.png"
+                )
+                self.adb.get_screenshot(post_screenshot_path)
+            except Exception:
+                pass
+
+        # Verification layer 3: UI fingerprint comparison
+        ui_fp_ok = True
+        if step.post_action_ui_fp and self._ui_summariser and self._ui_fp_builder:
+            try:
+                _post_xml = self.adb.get_ui_dump()
+                _post_summary = self._ui_summariser(_post_xml)
+                _post_fp = self._ui_fp_builder(actual_pkg, _post_summary)
+                if _post_fp != step.post_action_ui_fp:
+                    ui_fp_ok = False
+            except Exception:
+                # UI verification failed — treat as unverified
+                ui_fp_ok = False
+
+        # For type actions: extra check — did new interactive elements appear?
+        # (search suggestions / autocomplete results)
+        type_ok = True
+        if step.action_type == "type" and self._ui_summariser:
+            try:
+                _post_xml = self.adb.get_ui_dump()
+                _post_summary = self._ui_summariser(_post_xml)
+                _typed_text = step.action_args.get("text", "")
+                # Count lines (interactive elements) in post-action UI
+                _new_lines = [l for l in (_post_summary or "").splitlines() if l.strip()]
+                # The typed text itself may be one element; we need OTHER new elements
+                # (suggestions) to confirm the search actually triggered.
+                _non_text_elements = [
+                    l for l in _new_lines
+                    if _typed_text.lower() not in l.lower()
+                ]
+                if len(_non_text_elements) < _MIN_NEW_UI_ELEMENTS_AFTER_TYPE:
+                    type_ok = False
+            except Exception:
+                pass
+
+        verified = pkg_ok and ui_fp_ok and type_ok
+
+        # Build detail string for logging
+        _parts = []
+        if not pkg_ok:
+            _parts.append(f"pkg_mismatch(expected={step.expected_pkg}, actual={actual_pkg})")
+        if not ui_fp_ok:
+            _parts.append("ui_fp_mismatch")
+        if not type_ok:
+            _parts.append("type_no_search_results")
+        self.last_verify_detail = "; ".join(_parts) if _parts else "all_passed"
 
         if verified:
             self._replay_cursor += 1
             self._consecutive_failures = 0
-            # Advance cursor past plan end → signals completion on next next_step()
             return True
         else:
             self._consecutive_failures += 1
@@ -334,6 +430,7 @@ class PlanExecutor:
         pre_action_pkg: str = "",
         post_action_pkg: str = "",
         action_description: str = "",
+        post_action_ui_fp: str = "",
     ) -> None:
         """Record a step executed during the current run for later plan creation."""
         if action_type not in _REPLAYABLE_ACTION_TYPES:
@@ -345,6 +442,7 @@ class PlanExecutor:
             pre_action_pkg=pre_action_pkg,
             post_action_pkg=post_action_pkg,
             action_description=action_description,
+            post_action_ui_fp=post_action_ui_fp,
         ))
 
     def build_and_store_plan(
@@ -371,6 +469,7 @@ class PlanExecutor:
                 expected_pkg=rec.post_action_pkg,
                 action_description=rec.action_description,
                 pre_action_pkg=rec.pre_action_pkg,
+                post_action_ui_fp=rec.post_action_ui_fp,
             ))
 
         now = time.time()
