@@ -324,6 +324,55 @@ def _bucket_coord(coord: object) -> str:
     return f"{int(x)},{int(y)}"
 
 
+def _validate_coordinate_drift(cached_action_args: dict, 
+                             target_element_sig: Optional[dict],
+                             current_ui_xml: str,
+                             current_screenshot_path: str,
+                             max_drift_threshold: float = MEMORY_CLICK_OVERRIDE_MAX_DRIFT) -> bool:
+    """验证缓存坐标与当前屏幕上目标元素位置之间的漂移是否在可接受范围内。"""
+    if not target_element_sig or not current_ui_xml:
+        return True  # 无法验证，假设有效
+        
+    try:
+        from utils import _find_matching_element
+        # 获取当前屏幕上的目标元素
+        current_element = _find_matching_element(target_element_sig, current_ui_xml)
+        if not current_element:
+            return False  # 目标元素不存在，不应使用缓存坐标
+            
+        # 获取缓存的归一化坐标
+        cached_coord = cached_action_args.get("coordinate", [0, 0])
+        
+        # 获取当前截图尺寸
+        from PIL import Image
+        img = Image.open(current_screenshot_path)
+        current_width, current_height = img.size
+        
+        # 计算当前元素中心的归一化坐标 (0-1000)
+        bounds = current_element["bounds"]
+        center_x = (bounds[0] + bounds[2]) // 2
+        center_y = (bounds[1] + bounds[3]) // 2
+        normalized_current_x = center_x * 1000 / current_width
+        normalized_current_y = center_y * 1000 / current_height
+        
+        # 计算漂移距离
+        drift_distance = _normalized_click_distance(
+            [normalized_current_x, normalized_current_y], 
+            cached_coord
+        )
+        
+        # 检查是否超过阈值
+        if drift_distance is not None and drift_distance <= max_drift_threshold:
+            return True
+        else:
+            _log_t(f"[MEMORY] Coordinate drift too large: {drift_distance} > {max_drift_threshold}")
+            return False
+            
+    except Exception as e:
+        _log_t(f"[MEMORY] Error validating coordinate drift: {e}")
+        return False
+
+
 def _bucketed_action_sig(action_type: str, action_args: dict) -> str:
     """Build a relaxed signature with bucketed coordinates.
 
@@ -731,6 +780,29 @@ def main():
                     # records. A successful wait means only "nothing failed",
                     # not "wait is the next best action for this screen".
                     if _is_good_memory or _is_bad_memory:
+                        # 新增：为点击动作捕获元素签名用于漂移验证
+                        target_element_sig = None
+                        original_screen_res = None
+                        if _step_action_type == "click" and _is_good_memory:
+                            try:
+                                # 获取当前UI dump
+                                ui_xml = adb_tools.get_ui_dump()
+                                if ui_xml:
+                                    # 根据缓存的坐标查找对应的UI元素
+                                    click_coord = _step_action_args.get("coordinate", [0, 0])
+                                    # 转换为实际像素坐标（需要知道截图尺寸）
+                                    from PIL import Image
+                                    img = Image.open(screenshot_path)
+                                    actual_x = int(click_coord[0] / 1000 * img.width)
+                                    actual_y = int(click_coord[1] / 1000 * img.height)
+                                    
+                                    # 查找包含该坐标的UI元素
+                                    from utils import _find_element_at_coordinates
+                                    target_element_sig = _find_element_at_coordinates(ui_xml, actual_x, actual_y)
+                                    original_screen_res = (img.width, img.height)
+                            except Exception as e:
+                                _log_t(f"[MEMORY] Failed to capture element signature: {e}")
+                        
                         _memory_store.append(
                             MemoryRecord(
                                 state_key=_step_state_key,
@@ -744,6 +816,8 @@ def main():
                                 source_run_id=_run_id,
                                 source_step=step_id,
                                 action_description=_step_action_description,
+                                target_element_signature=target_element_sig,
+                                original_screen_resolution=original_screen_res,
                             )
                         )
                 except Exception:
@@ -1009,6 +1083,43 @@ def main():
                         _log_t(
                             "[MEMORY] pre-LLM fastpath skipped: cached coords are out of 0-1000 range"
                         )
+                    elif (_fastpath_action_type == "click" and 
+                          hasattr(_mout_pre.action, 'target_element_signature') and 
+                          _mout_pre.action.target_element_signature is not None):
+                        # 添加漂移验证检查
+                        try:
+                            # 获取当前UI dump
+                            _current_ui_xml = adb_tools.get_ui_dump()
+                            if _current_ui_xml:
+                                _drift_valid = _validate_coordinate_drift(
+                                    _mem_args,
+                                    _mout_pre.action.target_element_signature,
+                                    _current_ui_xml,
+                                    screenshot_path
+                                )
+                                if not _drift_valid:
+                                    _memory_reason = "cached_action_coordinate_drift_too_large"
+                                    _log_t(
+                                        "[MEMORY] pre-LLM fastpath skipped: coordinate drift exceeds threshold"
+                                    )
+                                else:
+                                    _pre_llm_action_parameter = _mem_args
+                                    _used_memory_fastpath = True
+                                    _memory_overrode_action = True
+                                    _memory_fastpath_replayed.add(_replay_sig)
+                                    _last_fastpath_state_key = _step_state_key
+                                    _log_t(
+                                        f"[MEMORY] pre-LLM fastpath score={_memory_score:.3f} action={_pre_llm_action_parameter}"
+                                    )
+                            else:
+                                # 无法获取UI dump，安全起见跳过缓存
+                                _memory_reason = "cached_action_cannot_validate_drift"
+                                _log_t(
+                                    "[MEMORY] pre-LLM fastpath skipped: cannot validate coordinate drift without UI dump"
+                                )
+                        except Exception as e:
+                            _memory_reason = f"cached_action_drift_validation_error:{e.__class__.__name__}"
+                            _log_t(f"[MEMORY] pre-LLM fastpath skipped: drift validation error ({e!r})")
                     else:
                         _pre_llm_action_parameter = _mem_args
                         _used_memory_fastpath = True

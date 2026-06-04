@@ -36,6 +36,8 @@ class MemoryRecord:
     source_run_id: str = ""
     source_step: int = -1
     action_description: str = ""
+    target_element_signature: dict[str, Any] | None = None  # For drift validation
+    original_screen_resolution: tuple[int, int] | None = None  # For drift validation
 
 
 @dataclass

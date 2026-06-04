@@ -398,7 +398,138 @@ class AdbTools:
 
         return False
 
-    # -- package management -----------------------------------------------
+    def _find_element_at_coordinates(ui_xml: str, x: int, y: int) -> Optional[dict]:
+        """根据屏幕坐标查找对应的UI元素，并返回其标识信息。"""
+        if not ui_xml:
+            return None
+            
+        try:
+            root = ET.fromstring(ui_xml)
+            best_match = None
+            min_distance = float('inf')
+            
+            for node in root.iter("node"):
+                bounds_str = node.attrib.get("bounds", "")
+                if not bounds_str:
+                    continue
+                    
+                # 解析边界 [left,top][right,bottom]
+                match = re.search(r'\[(\d+),(\d+)\]\[(\d+),(\d+)\]', bounds_str)
+                if not match:
+                    continue
+                    
+                left, top, right, bottom = map(int, match.groups())
+                
+                # 检查坐标是否在元素边界内
+                if left <= x <= right and top <= y <= bottom:
+                    # 返回元素的标识信息
+                    return {
+                        "resource_id": node.attrib.get("resource-id", ""),
+                        "text": node.attrib.get("text", ""),
+                        "content_desc": node.attrib.get("content-desc", ""),
+                        "class": node.attrib.get("class", ""),
+                        "bounds": [left, top, right, bottom]
+                    }
+                    
+            # 如果没有找到完全包含坐标的元素，找最近的元素
+            for node in root.iter("node"):
+                bounds_str = node.attrib.get("bounds", "")
+                if not bounds_str:
+                    continue
+                    
+                match = re.search(r'\[(\d+),(\d+)\]\[(\d+),(\d+)\]', bounds_str)
+                if not match:
+                    continue
+                    
+                left, top, right, bottom = map(int, match.groups())
+                
+                # 计算到元素中心的距离
+                center_x = (left + right) // 2
+                center_y = (top + bottom) // 2
+                distance = ((x - center_x) ** 2 + (y - center_y) ** 2) ** 0.5
+                
+                if distance < min_distance:
+                    min_distance = distance
+                    best_match = {
+                        "resource_id": node.attrib.get("resource-id", ""),
+                        "text": node.attrib.get("text", ""),
+                        "content_desc": node.attrib.get("content-desc", ""),
+                        "class": node.attrib.get("class", ""),
+                        "bounds": [left, top, right, bottom]
+                    }
+                    
+            return best_match
+        except Exception as e:
+            print(f"[ERROR] Failed to parse UI XML: {e}")
+            return None
+    
+    
+    def _find_matching_element(target_sig: dict, current_ui_xml: str) -> Optional[dict]:
+        """在当前UI中查找与目标签名匹配的元素。"""
+        if not current_ui_xml:
+            return None
+            
+        try:
+            root = ET.fromstring(current_ui_xml)
+            
+            # 优先级1: 通过resource-id匹配
+            resource_id = target_sig.get("resource_id", "")
+            if resource_id:
+                for node in root.iter("node"):
+                    if node.attrib.get("resource-id") == resource_id:
+                        bounds_str = node.attrib.get("bounds", "")
+                        if bounds_str:
+                            match = re.search(r'\[(\d+),(\d+)\]\[(\d+),(\d+)\]', bounds_str)
+                            if match:
+                                left, top, right, bottom = map(int, match.groups())
+                                return {
+                                    "resource_id": resource_id,
+                                    "text": node.attrib.get("text", ""),
+                                    "content_desc": node.attrib.get("content-desc", ""),
+                                    "class": node.attrib.get("class", ""),
+                                    "bounds": [left, top, right, bottom]
+                                }
+            
+            # 优先级2: 通过text匹配
+            text = target_sig.get("text", "")
+            if text:
+                for node in root.iter("node"):
+                    if node.attrib.get("text") == text:
+                        bounds_str = node.attrib.get("bounds", "")
+                        if bounds_str:
+                            match = re.search(r'\[(\d+),(\d+)\]\[(\d+),(\d+)\]', bounds_str)
+                            if match:
+                                left, top, right, bottom = map(int, match.groups())
+                                return {
+                                    "resource_id": node.attrib.get("resource-id", ""),
+                                    "text": text,
+                                    "content_desc": node.attrib.get("content-desc", ""),
+                                    "class": node.attrib.get("class", ""),
+                                    "bounds": [left, top, right, bottom]
+                                }
+            
+            # 优先级3: 通过content-desc匹配
+            content_desc = target_sig.get("content_desc", "")
+            if content_desc:
+                for node in root.iter("node"):
+                    if node.attrib.get("content-desc") == content_desc:
+                        bounds_str = node.attrib.get("bounds", "")
+                        if bounds_str:
+                            match = re.search(r'\[(\d+),(\d+)\]\[(\d+),(\d+)\]', bounds_str)
+                            if match:
+                                left, top, right, bottom = map(int, match.groups())
+                                return {
+                                    "resource_id": node.attrib.get("resource-id", ""),
+                                    "text": node.attrib.get("text", ""),
+                                    "content_desc": content_desc,
+                                    "class": node.attrib.get("class", ""),
+                                    "bounds": [left, top, right, bottom]
+                                }
+                                
+            return None
+        except Exception as e:
+            print(f"[ERROR] Failed to find matching element: {e}")
+            return None
 
     def get_package_name(self, all_packages=False):
         """
