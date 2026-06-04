@@ -9,6 +9,9 @@ _VOLATILE_TEXT_PATTERNS = [
     r"\b\d{1,2}:\d{2}\b",             # clock text
     r"\b\d+%\b",                      # battery/progress percentages
     r"\b\d+\s*(秒|分钟|小时|s|sec|min)\b",  # countdowns/durations
+    r"\b\d+\.\d+\s*km\b",            # distance with decimals
+    r"\b\d+\s*公里\b",                # distance in Chinese
+    r"\b¥\d+",                        # prices
 ]
 
 
@@ -41,7 +44,8 @@ def build_ui_fingerprint(foreground_pkg: str, ui_summary: str) -> str:
     screens (status bar, nav buttons) or change dynamically (timestamps, ads),
     making the fingerprint too coarse and unstable.
     
-    Pixel bounds are stripped since they vary between runs and screen sizes.
+    Enhanced to also include key non-clickable elements that define screen state
+    (like search results, navigation titles) while filtering volatile content.
     """
     stable_lines: list[str] = []
     for raw_line in (ui_summary or "").splitlines():
@@ -49,10 +53,19 @@ def build_ui_fingerprint(foreground_pkg: str, ui_summary: str) -> str:
         if not line or line.startswith("ui elements on screen"):
             continue
         
-        # Only include interactive elements (clickable/long-clickable).
-        # This makes the fingerprint more specific to the screen's action model
-        # rather than persistent UI elements that appear on all screens.
-        if "clickable" not in line:
+        # Include both interactive elements AND key state-defining elements
+        # Key state elements: search results, navigation titles, route info
+        is_interactive = "clickable" in line or "long-clickable" in line
+        is_state_element = (
+            "text=" in line or 
+            "content-desc=" in line or
+            "search" in line.lower() or
+            "route" in line.lower() or
+            "navigation" in line.lower() or
+            "destination" in line.lower()
+        )
+        
+        if not (is_interactive or is_state_element):
             continue
         
         for pattern in _VOLATILE_TEXT_PATTERNS:
@@ -65,6 +78,8 @@ def build_ui_fingerprint(foreground_pkg: str, ui_summary: str) -> str:
 
     # Cap the number of elements to avoid tiny dynamic tail changes dominating
     # the fingerprint while still distinguishing real app screens.
+    # Sort to ensure consistent ordering regardless of UI dump order
+    stable_lines.sort()
     return hash_tokens([foreground_pkg, *stable_lines[:40]])
 
 

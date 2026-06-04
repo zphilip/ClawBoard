@@ -1183,7 +1183,7 @@ def main():
                 print("[SUPERVISOR] skipped (rule override already applied)")
             _rb_note = (
                 f"Action: [RULE OVERRIDE] {_rb_override}\n"
-                f"<tool_call>\n{json.dumps({'name': 'mobile_use', 'arguments': _rb_override}, ensure_ascii=False)}\n</tool_call>"
+                f"\n{json.dumps({'name': 'mobile_use', 'arguments': _rb_override}, ensure_ascii=False)}\n"
             )
             history.append({"output": _rb_note, "image": screenshot_path})
             if _rb_override.get("action") == "system_button" and _rb_override.get("button") == "Home":
@@ -1196,24 +1196,27 @@ def main():
                     # Force-close the app before reopening to clear stuck state
                     # (e.g., authentication dialogs, popups). Without this, the
                     # app resumes in the same blocked state and the loop continues.
-                    if _target_pkg_hint:
-                        _force_cmd = f"{adb_tools.adb_path}{adb_tools._device_flag}shell am force-stop {_target_pkg_hint}"
-                        print(f"[ACTION EXEC] LOOP recovery -> force-stop {_target_pkg_hint}")
-                        subprocess.run(_force_cmd, capture_output=True, text=True, shell=True, timeout=5)
-                        time.sleep(0.5)  # brief delay for force-stop to complete
-                    print(f"[ACTION EXEC] LOOP recovery relaunch -> open {_target_app_hint!r} (start)")
-                    _opened = handle_open_action(
-                        {"action": "open", "text": _target_app_hint},
-                        instruction,
-                        adb_tools,
-                        resolver_api_key,
-                        resolver_base_url,
-                        resolver_model,
-                    )
-                    if _opened:
-                        print("[ACTION EXEC] LOOP recovery relaunch -> done")
-                    else:
-                        print("[ACTION EXEC] LOOP recovery relaunch -> failed")
+                    try:
+                        if _target_pkg_hint:
+                            _force_cmd = f"{adb_tools.adb_path}{adb_tools._device_flag}shell am force-stop {_target_pkg_hint}"
+                            print(f"[ACTION EXEC] LOOP recovery -> force-stop {_target_pkg_hint}")
+                            # Use the imported subprocess module
+                            import subprocess as sp
+                            sp.run(_force_cmd, capture_output=True, text=True, shell=True, timeout=5)
+                            time.sleep(0.5)  # brief delay for force-stop to complete
+                        print(f"[ACTION EXEC] LOOP recovery relaunch -> open {_target_app_hint!r} (start)")
+                        _opened = handle_open_action(
+                            {"action": "open", "text": _target_app_hint},
+                            instruction,
+                            adb_tools,
+                            resolver_api_key,
+                            resolver_base_url,
+                            resolver_model,
+                        )
+                        if _opened:
+                            print("[ACTION EXEC] LOOP recovery relaunch -> done")
+                        else:
+                            print("[ACTION EXEC] LOOP recovery relaunch -> failed")
                 # Reset loop detectors after explicit recovery to avoid
                 # repeatedly triggering on stale pre-recovery signatures.
                 _last_state_action_sig = ""

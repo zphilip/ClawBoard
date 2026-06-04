@@ -57,33 +57,30 @@ class MemoryPolicy:
         if not ranked:
             return DecisionOutput(use_cached_action=False, reason="no_memory_match")
 
-        # Iterate through ranked records, skipping already-replayed ones.
-        # IMPORTANT: only skip if there are MULTIPLE candidates above threshold.
-        # When there's only one candidate and it's excluded, fall through to VLM
-        # rather than advancing to a lower-score record — that record likely came
-        # from a different screen context that shares this coarse fingerprint.
-        #
-        # Example: state_key 0f12 matches both the Baidu home screen and the
-        # place detail page. Records for click [907,137] (搜索) and click [892,631]
-        # (到这去) both score 1.0 but belong to different screens. Blindly
-        # advancing to the next record replays an action on the wrong screen.
-        first_excluded = False
+        # Enhanced replay logic: 
+        # 1. If we have high-confidence matches (>0.9), be more aggressive about reuse
+        # 2. Only skip replayed actions when we have multiple good alternatives
+        # 3. Allow single high-confidence actions to be replayed if no alternatives exist
+        
+        high_confidence_threshold = 0.9
+        high_confidence_candidates = [r for r in ranked if r.score >= high_confidence_threshold]
+        
+        # Check if we have multiple candidates above threshold
+        valid_candidates = [r for r in ranked if r.score >= self.min_score]
+        has_multiple_options = len(valid_candidates) > 1
+
         for candidate in ranked:
             sig = record_replay_sig(
                 state_key, candidate.record.action_type, candidate.record.action_args,
             )
-            if exclude_sigs and sig in exclude_sigs:
-                first_excluded = True
+            
+            # Skip already replayed actions only if we have multiple good options
+            should_skip_replayed = (
+                exclude_sigs and sig in exclude_sigs and has_multiple_options
+            )
+            
+            if should_skip_replayed:
                 continue
-
-            # If we already skipped an excluded record, only advance to this
-            # candidate if it's from the same recording run (same source_run_id).
-            # Different runs may have recorded actions on different screens that
-            # share this coarse fingerprint.
-            if first_excluded:
-                candidate_run_id = getattr(candidate.record, 'source_run_id', '')
-                if not candidate_run_id or candidate_run_id != current_run_id:
-                    continue
 
             if candidate.record.forbidden:
                 return DecisionOutput(
@@ -94,11 +91,15 @@ class MemoryPolicy:
                 )
 
             if candidate.score < self.min_score:
-                return DecisionOutput(
-                    use_cached_action=False,
-                    reason="score_below_threshold",
-                    diagnostics={"score": candidate.score},
-                )
+                # If this is the only candidate and it's been replayed, still consider it
+                # if we have no other options and it's reasonably confident
+                if (not has_multiple_options and 
+                    exclude_sigs and sig in exclude_sigs and 
+                    candidate.score >= 0.6):
+                    # Allow lower confidence replay when no alternatives exist
+                    pass
+                else:
+                    continue
 
             action = ActionCandidate(
                 action_type=candidate.record.action_type,
@@ -114,10 +115,11 @@ class MemoryPolicy:
                 diagnostics={"score": candidate.score},
             )
 
-        if first_excluded:
+        # If we get here, no suitable candidate was found
+        if exclude_sigs and any(record_replay_sig(state_key, r.record.action_type, r.record.action_args) in exclude_sigs for r in ranked):
             return DecisionOutput(
                 use_cached_action=False,
-                reason="best_candidate_already_replayed",
+                reason="all_candidates_excluded_or_below_threshold",
             )
         return DecisionOutput(
             use_cached_action=False,
