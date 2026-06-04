@@ -1032,6 +1032,7 @@ def main():
             _loop_recovery_relaunch = True
 
         # 3aa. Optional memory decision layer (default: off).
+        _memory_confirmed_vlm = False
         if _memory_policy is not None and _step_state_key:
             try:
                 _dinput = DecisionInput(
@@ -1067,11 +1068,26 @@ def main():
                         )
                 elif args.memory_decision == "enforce":
                     if _mout.use_cached_action and _mout.action is not None and not _mout.blocked:
-                        _memory_reason = "post_llm_override_disabled"
-                        _log_t(
-                            f"[MEMORY] enforce hit score={_memory_score:.3f} "
-                            "but post-LLM override is disabled; keeping current LLM action"
-                        )
+                        # Check if VLM independently agreed with the cached action.
+                        # When both memory and VLM produce the same action for the same
+                        # state, the supervisor check is redundant — the action was already
+                        # validated in a prior run and confirmed by the VLM.
+                        _cached_type = _mout.action.action_type
+                        _cached_args = _mout.action.arguments or {}
+                        _vlm_bucketed = _bucketed_action_sig(_step_action_type, _step_action_args)
+                        _cached_bucketed = _bucketed_action_sig(_cached_type, _cached_args)
+                        if _step_action_type == _cached_type and _vlm_bucketed == _cached_bucketed:
+                            _memory_confirmed_vlm = True
+                            _log_t(
+                                f"[MEMORY] enforce confirmed VLM score={_memory_score:.3f} "
+                                f"action={_step_action_type} — supervisor will be skipped"
+                            )
+                        else:
+                            _memory_reason = "post_llm_override_disabled"
+                            _log_t(
+                                f"[MEMORY] enforce hit score={_memory_score:.3f} "
+                                "but VLM action differs from cached; keeping current LLM action"
+                            )
             except Exception as _mem_err:
                 _memory_reason = f"error:{_mem_err.__class__.__name__}"
                 _log_t(f"[MEMORY] decision error ({_mem_err!r}) — fallback to normal path")
@@ -1192,6 +1208,13 @@ def main():
             if (not _skip_supervisor) and _cached_until > time.time():
                 _skip_supervisor = True
                 _sup_skip_reason = "recent_same_state_action_already_approved"
+
+            # Skip supervisor when post-LLM memory confirmed the VLM action.
+            # Both memory (validated in a prior run) and VLM independently agree
+            # on the same action for the same state — supervisor is redundant.
+            if (not _skip_supervisor) and _memory_confirmed_vlm:
+                _skip_supervisor = True
+                _sup_skip_reason = "memory_confirmed_vlm_action"
 
             if _skip_supervisor:
                 print(f"[SUPERVISOR] skipped ({_sup_skip_reason})")
