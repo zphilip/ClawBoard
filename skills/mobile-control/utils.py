@@ -113,19 +113,16 @@ class AdbTools:
     def get_ui_dump(self) -> str:
         """
         Dump the current UI accessibility hierarchy and return the raw XML
-        string.  Tries ``adb shell uiautomator dump`` first; if that returns
-        empty or very sparse XML (< 5 ``<node`` elements), falls back to the
-        ``uiautomator2`` Python library (optional — install with
-        ``pip install uiautomator2``).  Returns '' when both methods fail
+        string.  Uses ``adb shell uiautomator dump`` which returns XML with
+        element bounds, text, and resource IDs.  Returns '' on failure
         (WebView, game engines, ADB error, etc.).
+        
+        Note: We do NOT fall back to the ``uiautomator2`` Python library
+        because ``adb shell uiautomator dump`` registers the UiAutomation
+        service, and trying u2 immediately after causes a conflict
+        (IllegalStateException: UiAutomationService already registered).
         """
-        xml = self._get_ui_dump_adb()
-        if not xml or xml.count("<node") < 5:
-            if not self._u2_disabled:
-                xml_u2 = self._get_ui_dump_u2()
-                if xml_u2 and xml_u2.count("<node") > xml.count("<node"):
-                    return xml_u2
-        return xml
+        return self._get_ui_dump_adb()
 
     def _get_ui_dump_adb(self) -> str:
         """
