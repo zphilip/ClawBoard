@@ -876,8 +876,11 @@ def main():
                     _plan_action_param = dict(_plan_step.action_args)
                     if "action" not in _plan_action_param:
                         _plan_action_param["action"] = _plan_step.action_type
+                    # Use stored description, stripping any [PLAN REPLAY] prefix
+                    # from prior replays to avoid "[PLAN REPLAY] [PLAN REPLAY]..."
+                    _plan_desc = (_plan_step.action_description or '').replace('[PLAN REPLAY] ', '')
                     output_text = (
-                        f"Action: [PLAN REPLAY] {_plan_step.action_description or 'replay cached action'}\n"
+                        f"Action: [PLAN REPLAY] {_plan_desc or 'replay cached action'}\n"
                         "<tool_call>\n"
                         + json.dumps({"name": "mobile_use", "arguments": _plan_action_param}, ensure_ascii=False)
                         + "\n"
@@ -1170,7 +1173,7 @@ def main():
         action_parameter = action["arguments"]
         _step_action_type = str(action_parameter.get("action", ""))
         _step_action_args = copy.deepcopy(action_parameter)
-        _step_action_description = ""  # Will be captured from VLM output
+        # _step_action_description already captured at line ~1140 from output_text
         _step_state_action_sig = (
             f"{_step_state_key}|{_step_action_type}|"
             f"{json.dumps(_step_action_args, ensure_ascii=False, sort_keys=True)}"
