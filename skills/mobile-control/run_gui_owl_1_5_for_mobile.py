@@ -1172,6 +1172,14 @@ def main():
                 else:
                     print("[ACTION EXEC] RULE override -> Home done")
                 if _loop_recovery_relaunch and _target_app_hint:
+                    # Force-close the app before reopening to clear stuck state
+                    # (e.g., authentication dialogs, popups). Without this, the
+                    # app resumes in the same blocked state and the loop continues.
+                    if _target_pkg_hint:
+                        _force_cmd = f"{adb_tools.adb_path}{adb_tools._device_flag}shell am force-stop {_target_pkg_hint}"
+                        print(f"[ACTION EXEC] LOOP recovery -> force-stop {_target_pkg_hint}")
+                        subprocess.run(_force_cmd, capture_output=True, text=True, shell=True, timeout=5)
+                        time.sleep(0.5)  # brief delay for force-stop to complete
                     print(f"[ACTION EXEC] LOOP recovery relaunch -> open {_target_app_hint!r} (start)")
                     _opened = handle_open_action(
                         {"action": "open", "text": _target_app_hint},
