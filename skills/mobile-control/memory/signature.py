@@ -35,14 +35,30 @@ def build_ui_fingerprint(foreground_pkg: str, ui_summary: str) -> str:
     as the same state and can replay stale actions forever. Include a compact,
     normalized slice of the UI dump so cache hits require the same app and the
     same visible/interactable scene.
+    
+    Only clickable/long-clickable elements are included in the fingerprint.
+    Text-only elements (labels, descriptions) are often persistent across
+    screens (status bar, nav buttons) or change dynamically (timestamps, ads),
+    making the fingerprint too coarse and unstable.
+    
+    Pixel bounds are stripped since they vary between runs and screen sizes.
     """
     stable_lines: list[str] = []
     for raw_line in (ui_summary or "").splitlines():
         line = normalize_text(raw_line)
         if not line or line.startswith("ui elements on screen"):
             continue
+        
+        # Only include interactive elements (clickable/long-clickable).
+        # This makes the fingerprint more specific to the screen's action model
+        # rather than persistent UI elements that appear on all screens.
+        if "clickable" not in line:
+            continue
+        
         for pattern in _VOLATILE_TEXT_PATTERNS:
             line = re.sub(pattern, "<volatile>", line)
+        # Strip pixel bounds — they vary between runs and screen sizes.
+        line = re.sub(r"bounds=\[[\d,]+\]\[[\d,]+\]", "", line)
         line = re.sub(r"\s+", " ", line).strip()
         if line:
             stable_lines.append(line)
