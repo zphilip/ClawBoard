@@ -287,6 +287,49 @@ def _normalized_click_distance(a: object, b: object) -> float | None:
     return (dx * dx + dy * dy) ** 0.5
 
 
+_COORD_BUCKET_SIZE = 100  # round to nearest 100 in 0-1000 normalized space
+
+
+def _bucket_coord(coord: object) -> str:
+    """Round a normalized (0-1000) [x, y] coordinate to a coarse bucket string.
+
+    Used by the relaxed loop detector so that clicks on different buttons
+    (hundreds of pixels apart) are distinguished, while coordinate jitter
+    on the same button (±10-20 units) collapses to the same bucket.
+
+    Returns '' when the input is not a valid 2-element coordinate list.
+    """
+    if not isinstance(coord, (list, tuple)) or len(coord) != 2:
+        return ""
+    try:
+        x = round(float(coord[0]) / _COORD_BUCKET_SIZE) * _COORD_BUCKET_SIZE
+        y = round(float(coord[1]) / _COORD_BUCKET_SIZE) * _COORD_BUCKET_SIZE
+    except (TypeError, ValueError):
+        return ""
+    return f"{int(x)},{int(y)}"
+
+
+def _bucketed_action_sig(action_type: str, action_args: dict) -> str:
+    """Build a relaxed signature with bucketed coordinates.
+
+    For coordinate-based actions (click, long_press, swipe), appends a
+    bucketed coordinate suffix so that taps on different screen regions
+    produce different signatures.  For non-coordinate actions (type, wait,
+    open, system_button, etc.), returns just the action type — same as
+    the old relaxed sig.
+    """
+    coord_keys = ("coordinate", "coordinate1", "coordinate2")
+    buckets: list[str] = []
+    for key in coord_keys:
+        if key in action_args:
+            b = _bucket_coord(action_args[key])
+            if b:
+                buckets.append(b)
+    if buckets:
+        return f"{action_type}|{'|'.join(buckets)}"
+    return action_type
+
+
 def main():
     args = parse_args()
 
@@ -939,7 +982,11 @@ def main():
             f"{_step_state_key}|{_step_action_type}|"
             f"{json.dumps(_step_action_args, ensure_ascii=False, sort_keys=True)}"
         )
-        _step_state_action_relaxed_sig = f"{_step_state_key}|{_step_action_type}"
+        # Relaxed detector: bucket coordinates so that jitter on the same
+        # button (±10-20 units) collapses to one bucket, while clicks on
+        # different buttons (hundreds of units apart) stay distinct.
+        _bucketed_sig = _bucketed_action_sig(_step_action_type, _step_action_args)
+        _step_state_action_relaxed_sig = f"{_step_state_key}|{_bucketed_sig}"
 
         # State-action loop detector: same scene + same action repeated several times.
         if _step_state_action_sig and _step_state_action_sig == _last_state_action_sig:
