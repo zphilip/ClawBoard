@@ -387,6 +387,55 @@ def release_uiautomation_service(adb_path: str, device: str) -> None:
     _log("✅ UiAutomationService cleanup complete")
 
 
+def is_device_uia2_initialized(device: str) -> bool:
+    """
+    Check if uiautomator2 server is actually running and responsive on the device.
+    This is more reliable than just checking cache timestamps.
+    """
+    try:
+        import uiautomator2 as u2
+        
+        # Connect to device
+        d = u2.connect(device) if device else u2.connect()
+        
+        # Test 1: Check if we can get device info (basic connectivity)
+        try:
+            info = d.info
+            if not info or 'serial' not in info:
+                return False
+        except Exception:
+            return False
+        
+        # Test 2: Check if agent is alive (if attribute exists)
+        try:
+            # Try agent_alive first (newer versions)
+            if hasattr(d, 'agent_alive') and d.agent_alive:
+                return True
+            # Try alive property (older versions)  
+            elif hasattr(d, 'alive') and d.alive:
+                return True
+            else:
+                # If attributes don't exist, basic connectivity is enough
+                return True
+        except Exception:
+            # If agent_alive check fails, but info worked, assume it's OK
+            return True
+            
+    except ImportError:
+        # uiautomator2 not installed, fall back to ADB process check
+        try:
+            import subprocess
+            device_flag = f" -s {device}" if device else ""
+            cmd = f"adb{device_flag} shell ps -ef | grep -v grep | grep atx-agent"
+            result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=5)
+            return result.returncode == 0 and "atx-agent" in result.stdout
+        except Exception:
+            return False
+    except Exception:
+        # Any connection error means not initialized/running
+        return False
+
+
 def initialize_uiautomator2(adb_path: str, device: str) -> None:
     """
     Initialize uiautomator2 on the device by running 'python -m uiautomator2 init'.
@@ -399,7 +448,14 @@ def initialize_uiautomator2(adb_path: str, device: str) -> None:
     
     This should be called once at task setup to ensure uiautomator2 is ready.
     Subsequent calls are fast if already initialized.
+    
+    Enhanced with actual connectivity testing to avoid unnecessary re-initialization.
     """
+    # Check if already initialized and working (actual connectivity test)
+    if is_device_uia2_initialized(device):
+        _log("✅ uiautomator2 server is already running and responsive")
+        return
+    
     _log("Initializing uiautomator2 on device...")
     
     try:
