@@ -40,19 +40,17 @@ from memory.store import JsonlMemoryStore
 from utils import (
     AdbTools,
     annotate_screenshot,
-    build_messages,
-    ERROR_CALLING_LLM,
     find_element_at_coordinates,
     find_matching_element,
     parse_action,
     repair_json,
     resolve_app_name_via_llm,
     smart_resize,
-    GUIOwlWrapper,
     summarise_ui_dump,
     SupervisorLLM,
 )
 
+from runner.actions import action_display_name
 from runner.coords import (
     action_has_out_of_range_coords,
     bucketed_action_sig,
@@ -60,9 +58,10 @@ from runner.coords import (
     rescale_coordinates,
     validate_coordinate_drift,
 )
+from runner.guards import decide_rule_override, launcher_pkgs
+from runner.providers import ProviderConfig, VLMProvider, VLMResult
 
 
-PRIMARY_RECOVERY_COOLDOWN_SECONDS = 600  # 10 minutes
 MEMORY_CLICK_OVERRIDE_MAX_DRIFT = 120.0  # normalized 0-1000 coordinate distance
 
 
@@ -305,6 +304,27 @@ def main():
     # VLM's context window is very small (≤2048 tokens).
     _compact_mode = bool(_vlm_max_ctx and _vlm_max_ctx <= 2048)
     _ui_max_nodes = 20 if _compact_mode else 60
+
+    # VLM provider with primary + optional fallback chain.
+    _vlm_provider = VLMProvider(
+        primary=ProviderConfig(
+            api_key=args.api_key,
+            base_url=args.base_url,
+            model=args.model,
+            max_context_size=_vlm_max_ctx,
+        ),
+        fallback=(
+            ProviderConfig(
+                api_key=_fb_api_key,
+                base_url=_fb_base_url,
+                model=_fb_model,
+                max_context_size=_fb_max_ctx,
+            )
+            if _fb_model
+            else None
+        ),
+        compact_mode=_compact_mode,
+    )
     if _compact_mode:
         print(f"[VLM] Compact mode ON (max_context_size={_vlm_max_ctx}): using compact system prompt, UI dump limited to {_ui_max_nodes} nodes")
 
@@ -404,10 +424,6 @@ def main():
     any_real_action = False
     # Counts consecutive `wait` actions — used to detect a stuck agent.
     consecutive_waits = 0
-    # If the primary provider fails, suppress primary attempts for this
-    # cooldown window and use fallback directly for faster recovery.
-    _primary_cooldown_until = 0.0
-    _primary_cooldown_reason = ""
     # Rolling window of the last 5 click coordinates.
     # Used to detect a stuck loop (same coordinate tapped 3+ times in a row).
     _recent_click_coords: list[tuple] = []
@@ -450,16 +466,7 @@ def main():
     _target_app_hint: str = ""
     _target_pkg_hint: str = ""
     _installed_pkg_set: set[str] = set()
-    _launcher_pkgs = {
-        "net.oneplus.launcher",
-        "com.android.launcher",
-        "com.android.launcher3",
-        "com.miui.home",
-        "com.huawei.android.launcher",
-        "com.oppo.launcher",
-        "com.vivo.launcher",
-        "com.samsung.android.launcher",
-    }
+    _launcher_pkgs = launcher_pkgs()
     try:
         _inst_pkgs = adb_tools.get_package_name(all_packages=True)
         _installed_pkg_set = set(_inst_pkgs)
@@ -967,104 +974,19 @@ def main():
                 _memory_reason = f"error:{_mem_pre_err.__class__.__name__}"
                 _log_t(f"[MEMORY] pre-LLM fastpath error ({_mem_pre_err!r}) — fallback to normal path")
 
-        # 2. Build messages and call the VLM
+        # 2. Call the VLM (delegated to VLMProvider for primary + fallback chain).
         if _pre_llm_action_parameter is None:
-            messages = build_messages(
+            _vlm_result = _vlm_provider.call(
                 screenshot_path, instruction, history, args.model,
                 foreground_pkg=_fg_label,
                 ui_summary=_ui_summary,
                 installed_apps_hint=", ".join(_cached_inst_app_names[:80]),
                 target_app_hint=_target_app_hint,
-                compact=_compact_mode,
             )
-
-            vllm = GUIOwlWrapper(
-                args.api_key,
-                args.base_url,
-                args.model,
-                max_retry=1,
-                max_context_size=_vlm_max_ctx,
-            )
-            _primary_attempts = 2
-            output_text = ERROR_CALLING_LLM
-            _t_primary = time.time()
-            _now = time.time()
-            _primary_attempted = False
-            _primary_failed_after_attempt = False
-            if _now < _primary_cooldown_until:
-                _remaining = int(_primary_cooldown_until - _now)
-                print(
-                    f"[VLM] primary provider in cooldown ({_remaining}s left, reason={_primary_cooldown_reason}) — skipping primary"
-                )
-            else:
-                _primary_attempted = True
-                for _p_try in range(1, _primary_attempts + 1):
-                    print(f"[VLM] primary attempt {_p_try}/{_primary_attempts}")
-                    output_text, _, _ = vllm.predict_mm(messages)
-                    if output_text != ERROR_CALLING_LLM:
-                        break
-                    if _p_try < _primary_attempts:
-                        print("[VLM] primary attempt failed — retrying in 2s")
-                        time.sleep(2)
-                _primary_failed_after_attempt = (output_text == ERROR_CALLING_LLM)
-            _step_metrics["vlm_primary"] = time.time() - _t_primary
-            _log_t(f"[TIMING] vlm_primary={_step_metrics['vlm_primary']:.2f}s")
-            _provider_used = f"primary:{args.model} @ {args.base_url}"
-
-            # If primary provider failed, try the fallback (e.g. local gui-owl).
-            if output_text == ERROR_CALLING_LLM and _fb_model:
-                if _primary_attempted and _primary_failed_after_attempt:
-                    _primary_cooldown_until = time.time() + PRIMARY_RECOVERY_COOLDOWN_SECONDS
-                    _primary_cooldown_reason = "primary_error"
-                    _log_t(
-                        f"[VLM] entering primary cooldown for {PRIMARY_RECOVERY_COOLDOWN_SECONDS}s"
-                    )
-                print(f"[VLM] Primary provider failed — switching to fallback: {_fb_model}")
-                _fb_compact = bool(_fb_max_ctx and _fb_max_ctx <= 2048)
-                if _fb_compact and not _compact_mode:
-                    # Rebuild with compact prompt.  Drop ui_summary (saves ~150+ tokens)
-                    # and limit history to 1 step — the 2048-token model can barely fit
-                    # one history image alongside the system prompt + current screenshot.
-                    _fb_messages = build_messages(
-                        screenshot_path, instruction, history, _fb_model,
-                        foreground_pkg=_fg_label,
-                        ui_summary="",   # omit — saves ~150 tokens for the small model
-                        installed_apps_hint=", ".join(_cached_inst_app_names[:80]),
-                        target_app_hint=_target_app_hint,
-                        compact=True,
-                        history_n=1,    # at most one history image in 2048-token context
-                    )
-                else:
-                    _fb_messages = messages
-                _fb_vllm = GUIOwlWrapper(
-                    _fb_api_key,
-                    _fb_base_url,
-                    _fb_model,
-                    max_retry=1,
-                    max_context_size=_fb_max_ctx,
-                )
-                _t_fallback = time.time()
-                _fb_attempts = 3
-                for _fb_try in range(1, _fb_attempts + 1):
-                    print(f"[VLM] fallback attempt {_fb_try}/{_fb_attempts}")
-                    output_text, _, _ = _fb_vllm.predict_mm(_fb_messages)
-                    if output_text != ERROR_CALLING_LLM:
-                        break
-                    if _fb_try < _fb_attempts:
-                        print("[VLM] fallback attempt failed — retrying in 2s")
-                        time.sleep(2)
-                if output_text == ERROR_CALLING_LLM:
-                    print("[VLM] fallback exhausted all retries")
-                _step_metrics["vlm_fallback"] = time.time() - _t_fallback
-                _log_t(f"[TIMING] vlm_fallback={_step_metrics['vlm_fallback']:.2f}s")
-                _provider_used = f"fallback:{_fb_model} @ {_fb_base_url}"
-            elif output_text == ERROR_CALLING_LLM:
-                print("[VLM] primary failed and no fallback provider is configured")
-
-            if output_text == ERROR_CALLING_LLM:
-                print(f"[VLM] provider used: {_provider_used} (ERROR_CALLING_LLM)")
-            else:
-                print(f"[VLM] provider used: {_provider_used}")
+            output_text = _vlm_result.output_text
+            _step_metrics["vlm_primary"] = _vlm_result.primary_seconds
+            _step_metrics["vlm_fallback"] = _vlm_result.fallback_seconds
+            _provider_used = _vlm_result.provider_label
 
             print(f"[MODEL OUTPUT]\n{output_text}")
         else:
@@ -1236,51 +1158,19 @@ def main():
                 _memory_reason = f"error:{_mem_err.__class__.__name__}"
                 _log_t(f"[MEMORY] decision error ({_mem_err!r}) — fallback to normal path")
 
-        # 3b. Rule-based guard — catches hallucination/wrong-action without any LLM call.
-        # Runs unconditionally so it works even when supervisor API is down.
-        _rb_override: dict | None = None
+        # 3b. Rule-based guard — delegates to runner.guards for the pure
+        # decision logic; override application stays here because it mutates
+        # history, calls adb_tools, and interacts with supervisor.
         _proposed_action = action_parameter.get("action", "")
-
-        # (a) Intent/action mismatch: VLM says "Home/主页" but tool_call is a click
-        _home_keywords = ("home", "主页", "主屏幕", "返回桌面", "按home", "按主页")
-        if _proposed_action == "click" and any(kw in _action_text.lower() for kw in _home_keywords):
-            _rb_override = {"action": "system_button", "button": "Home"}
-            print("[RULE] Intent/action mismatch: description says Home but action is click — correcting to Home")
-
-        # (b) Premature answer with no real action taken
-        elif _proposed_action == "answer" and not any_real_action:
-            _rb_override = {"action": "system_button", "button": "Home"}
-            print("[RULE] Premature answer before any real action — pressing Home first")
-
-        # (b2) Repeated same scene+action loop recovery.
-        # Prevent loop recovery when current action is a terminal action - this indicates task completion or user interaction
-        elif _loop_recovery_relaunch and _proposed_action not in {"answer", "terminate", "interact"}:
-            _rb_override = {"action": "system_button", "button": "Home"}
-            print("[RULE] repeated same scene/action loop — forcing Home recovery")
-
-        # (c) App disambiguation/recovery guard:
-        # If the task has a clear target app package (e.g., QQ音乐), do not rely
-        # on ambiguous launcher icon taps (e.g., QQ vs QQ音乐). Force an exact
-        # open target action when on launcher or when stuck in a wrong foreground app.
-        elif _target_pkg_hint and _target_app_hint:
-            _fg_pkg_clean = (_fg_pkg or "").strip()
-            _on_launcher = _fg_pkg_clean in _launcher_pkgs
-            _in_wrong_app = bool(_fg_pkg_clean and not _on_launcher and _fg_pkg_clean != _target_pkg_hint)
-
-            if _on_launcher and _proposed_action == "click":
-                _rb_override = {"action": "open", "text": _target_app_hint}
-                print(
-                    f"[RULE] On launcher with target app {_target_app_hint} — "
-                    "replacing ambiguous click with exact open"
-                )
-            elif _in_wrong_app and _proposed_action in (
-                "wait", "click", "type", "scroll", "swipe", "long_press"
-            ):
-                _rb_override = {"action": "open", "text": _target_app_hint}
-                print(
-                    f"[RULE] Wrong foreground app {_fg_pkg_clean}; "
-                    f"forcing open target {_target_app_hint} ({_target_pkg_hint})"
-                )
+        _rb_override = decide_rule_override(
+            _proposed_action,
+            _action_text,
+            any_real_action=any_real_action,
+            loop_recovery_relaunch=_loop_recovery_relaunch,
+            target_pkg_hint=_target_pkg_hint,
+            target_app_hint=_target_app_hint,
+            fg_pkg=_fg_pkg or "",
+        )
 
         if _rb_override:
             if supervisor is not None:
