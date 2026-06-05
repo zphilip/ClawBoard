@@ -586,7 +586,21 @@ def _find_runner_script() -> Optional[str]:
     return None
 
 
-SCREENSHOTS_DIR = Path(__file__).parent / "screenshots"
+SCREENSHOTS_ROOT = Path(__file__).parent / "screenshots"
+
+
+def _make_run_screenshots_dir() -> Path:
+    """Create a unique per-run subdirectory under the screenshots root.
+
+    Uses timestamp + PID so concurrent runs never share a directory,
+    eliminating the stale-race between rmtree and mkdir that existed
+    with the old shared flat directory.
+    """
+    _ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    _pid = os.getpid()
+    run_dir = SCREENSHOTS_ROOT / f"run_{_ts}_{_pid}"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    return run_dir
 
 
 def _take_screenshot(adb_path: str, device: Optional[str], dest: Path,
@@ -709,13 +723,11 @@ def run_agent(
     
     _log(f"Launching: {' '.join(cmd_for_logging)}")
 
-    # Clean up any leftover screenshots/task-dirs from previous runs before
-    # starting fresh.  This runs at the START so stale data cannot be reused
-    # even when the previous run was killed before its own end-of-task cleanup.
-    screenshots_dir = SCREENSHOTS_DIR
-    if screenshots_dir.exists():
-        shutil.rmtree(screenshots_dir, ignore_errors=True)
-    screenshots_dir.mkdir(parents=True, exist_ok=True)
+    # Each run gets its own subdirectory — zero chance of colliding with
+    # another concurrent instance.  Old run directories are cleaned by
+    # clean_mobile_control_data.sh rather than at launch time, so a
+    # concurrent run's screenshots are never deleted mid-flight.
+    screenshots_dir = _make_run_screenshots_dir()
 
     start = time.time()
     actions: list[str] = []
@@ -900,9 +912,9 @@ def run_agent(
         else:
             end_reason = f"runner_exit_without_completion rc=0; last_line={last_runner_line[:120]!r}"
 
-    # Clean up all screenshots after the task ends (success or failure).
-    # Use rmtree to also remove subdirectories created by the runner
-    # (task_dir / anno_dir live inside screenshots/ now).
+    # Clean up only this run's screenshots — other concurrent runs are
+    # unaffected.  The runner's own _cleanup() handles the task_dir /
+    # anno_dir subdirectories inside screenshots/.
     try:
         if screenshots_dir.exists():
             shutil.rmtree(screenshots_dir, ignore_errors=True)
