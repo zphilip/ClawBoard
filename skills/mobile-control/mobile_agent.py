@@ -948,7 +948,7 @@ def run_agent(
             if _fg_match:
                 current_fg_app = _fg_match.group(1).strip()
 
-            # Parse action from tool_call blocks
+            # Parse action from tool_call or plan-replay blocks
             action_summary = _extract_action_summary(line)
             if action_summary:
                 last_action = action_summary
@@ -963,7 +963,8 @@ def run_agent(
                 shot_rel = str(shot_path) if shot_ok else None
 
                 # Emit live progress so the agent can narrate to the user
-                _msg = f"Step {step}: {action_summary}"
+                _prefix = "[plan replay] " if line.startswith("[PLAN REPLAY ACTION]") else ""
+                _msg = f"Step {step}: {_prefix}{action_summary}"
                 if current_fg_app:
                     _msg += f"  [Foreground: {current_fg_app}]"
                 _emit_progress(

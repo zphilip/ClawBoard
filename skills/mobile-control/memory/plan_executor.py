@@ -405,8 +405,7 @@ class PlanExecutor:
             keycode = args.get("keycode") or args.get("key", "")
             if not keycode:
                 return False
-            rc, _, _ = self.adb._run_adb(["shell", "input", "keyevent", str(keycode)])
-            return rc == 0
+            return bool(self.adb._run_safe(f"shell input keyevent {keycode}"))
 
         if atype == "open":
             # Delegate to the runner's handle_open_action via a simple

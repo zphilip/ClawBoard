@@ -980,13 +980,20 @@ def main():
                     _plan_action_param = dict(_plan_step.action_args)
                     if "action" not in _plan_action_param:
                         _plan_action_param["action"] = _plan_step.action_type
+                    # Emit an action line the wrapper's stdout monitor can parse
+                    # so the user gets live progress narration during plan replay.
+                    _plan_action_json = json.dumps(
+                        {"name": "mobile_use", "arguments": _plan_action_param},
+                        ensure_ascii=False,
+                    )
+                    print(f"[PLAN REPLAY ACTION] {_plan_action_json}", flush=True)
                     # Use stored description, stripping any [PLAN REPLAY] prefix
                     # from prior replays to avoid "[PLAN REPLAY] [PLAN REPLAY]..."
                     _plan_desc = (_plan_step.action_description or '').replace('[PLAN REPLAY] ', '')
                     output_text = (
                         f"Action: [PLAN REPLAY] {_plan_desc or 'replay cached action'}\n"
                         "<tool_call>\n"
-                        + json.dumps({"name": "mobile_use", "arguments": _plan_action_param}, ensure_ascii=False)
+                        + _plan_action_json
                         + "\n"
                     )
                     # Rescale coordinates for history/annotation
