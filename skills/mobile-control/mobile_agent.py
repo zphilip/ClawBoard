@@ -388,53 +388,130 @@ def release_uiautomation_service(adb_path: str, device: str) -> None:
 
 
 def is_device_uia2_initialized(device: str, adb_path: str = "adb") -> bool:
+    """Check whether the uiautomator2 atx-agent is running on *device*.
+
+    Uses three detection layers, tried in order of speed / reliability:
+
+    1. **HTTP health check** — forward port 9008 and ping the atx-agent
+       HTTP server.  Fast (< 1 s), works regardless of whether the
+       ``uiautomator2`` Python library is installed in the current venv.
+
+    2. **Python library** — import ``uiautomator2``, connect, and verify
+       that ``d.info`` responds and the agent reports itself alive.
+
+    3. **ADB fallback** — check that the uiautomator APKs are installed
+       AND the atx-agent process is running via ``ps -A``.
+
+    Returns True as soon as any layer confirms the server is alive.
     """
-    Check if uiautomator2 server is actually running and responsive on the device.
-    This is more reliable than just checking cache timestamps.
-    """
+    import subprocess as _sp
+
+    _device_flag = ["-s", device] if device else []
+
+    # ------------------------------------------------------------------
+    # Layer 1 — HTTP health check (no Python library dependency)
+    # ------------------------------------------------------------------
+    try:
+        # Forward device port 9008 → localhost 9008
+        _fwd_cmd = [adb_path] + _device_flag + ["forward", "tcp:9008", "tcp:9008"]
+        _fwd_result = _sp.run(_fwd_cmd, capture_output=True, text=True, timeout=5)
+        if _fwd_result.returncode == 0:
+            import socket as _sock
+            _s = _sock.socket(_sock.AF_INET, _sock.SOCK_STREAM)
+            _s.settimeout(2)
+            try:
+                _s.connect(("127.0.0.1", 9008))
+                _s.sendall(b"GET /ping HTTP/1.0\r\n\r\n")
+                _resp = _s.recv(256)
+                _s.close()
+                # atx-agent responds to any HTTP request — a response
+                # means the server is alive.
+                if _resp:
+                    return True
+            except (_sock.timeout, ConnectionRefusedError, OSError):
+                pass
+            finally:
+                try:
+                    _s.close()
+                except OSError:
+                    pass
+            # Clean up the forward so it doesn't linger.
+            _rm_cmd = [adb_path] + _device_flag + ["forward", "--remove", "tcp:9008"]
+            _sp.run(_rm_cmd, capture_output=True, text=True, timeout=5)
+    except Exception:
+        pass
+
+    # ------------------------------------------------------------------
+    # Layer 2 — Python uiautomator2 library
+    # ------------------------------------------------------------------
     try:
         import uiautomator2 as u2
 
-        # Connect to device
         d = u2.connect(device) if device else u2.connect()
 
-        # Test 1: Check if we can get device info (basic connectivity)
+        # Quick connectivity test: get device info
         try:
             info = d.info
             if not info or 'serial' not in info:
-                return False
+                return False  # connected but response malformed
         except Exception:
-            return False
+            return False  # server not reachable via library
 
-        # Test 2: Check if agent is alive (if attribute exists)
+        # Check if agent reports itself as alive
         try:
-            # Try agent_alive first (newer versions)
             if hasattr(d, 'agent_alive') and d.agent_alive:
                 return True
-            # Try alive property (older versions)
             elif hasattr(d, 'alive') and d.alive:
                 return True
-            else:
-                # If attributes don't exist, basic connectivity is enough
-                return True
-        except Exception:
-            # If agent_alive check fails, but info worked, assume it's OK
+            # If neither attribute exists but info worked, server is OK
             return True
+        except Exception:
+            return True  # info worked → assume OK
 
     except ImportError:
-        # uiautomator2 library not installed — fall back to checking whether
-        # the atx-agent APK is installed on the device via ADB.
-        try:
-            import subprocess as _sp
-            device_flag = ["-s", device] if device else []
-            cmd = [adb_path] + device_flag + ["shell", "pm", "list", "packages",
-                   "com.github.uiautomator"]
-            result = _sp.run(cmd, capture_output=True, text=True, timeout=5)
-            return result.returncode == 0 and "com.github.uiautomator" in result.stdout
-        except Exception:
-            return False
+        pass  # library not installed — fall through to ADB check
     except Exception:
-        # Any connection error means not initialized/running
+        pass  # connection failed — fall through to ADB check
+
+    # ------------------------------------------------------------------
+    # Layer 3 — ADB: check APKs installed AND atx-agent process running
+    # ------------------------------------------------------------------
+    try:
+        # 3a. Are the uiautomator APKs installed?
+        _pm_cmd = [adb_path] + _device_flag + [
+            "shell", "pm", "list", "packages", "com.github.uiautomator",
+        ]
+        _pm_result = _sp.run(_pm_cmd, capture_output=True, text=True, timeout=5)
+        _pkgs_ok = (
+            _pm_result.returncode == 0
+            and "com.github.uiautomator" in _pm_result.stdout
+        )
+        if not _pkgs_ok:
+            return False
+
+        # 3b. Is the atx-agent process running?  Android's toolbox
+        #     supports both 'ps -A' (modern) and 'ps' (legacy).
+        for _ps_flag in ("-A", ""):
+            _ps_cmd = [adb_path] + _device_flag + [
+                "shell", "ps", _ps_flag,
+            ] if _ps_flag else [adb_path] + _device_flag + ["shell", "ps"]
+            _ps_result = _sp.run(_ps_cmd, capture_output=True, text=True, timeout=5)
+            if _ps_result.returncode == 0 and "atx-agent" in _ps_result.stdout:
+                return True
+            if _ps_result.returncode == 0 and _ps_flag == "":
+                # Legacy 'ps' also worked — check for uiautomator in dumpsys
+                break
+
+        # 3c. Last resort: check dumpsys for uiautomator instrumentation
+        _dump_cmd = [adb_path] + _device_flag + [
+            "shell", "dumpsys", "activity", "services",
+        ]
+        _dump_result = _sp.run(_dump_cmd, capture_output=True, text=True, timeout=5)
+        if _dump_result.returncode == 0 and "uiautomator" in _dump_result.stdout:
+            return True
+
+        return False
+    except Exception:
         return False
 
 
