@@ -67,6 +67,156 @@ from PIL import Image, ImageDraw
 #    are connected, obtain the device ID via `adb devices` and pass it
 #    as the `device` argument.
 # ---------------------------------------------------------------------------
+# Module-level UI-element helpers
+# ---------------------------------------------------------------------------
+
+def find_element_at_coordinates(ui_xml: str, x: int, y: int) -> Optional[dict]:
+    """Look up the UI element at screen coordinates *(x, y)*.
+
+    Searches the uiautomator XML dump for the element whose bounding box
+    contains the point.  Falls back to the nearest element by centre distance
+    when no element exactly contains the point.
+
+    Returns a dict with keys ``resource_id``, ``text``, ``content_desc``,
+    ``class``, and ``bounds``, or ``None`` when the XML cannot be parsed.
+    """
+    if not ui_xml:
+        return None
+
+    try:
+        root = ET.fromstring(ui_xml)
+        best_match = None
+        min_distance = float('inf')
+
+        for node in root.iter("node"):
+            bounds_str = node.attrib.get("bounds", "")
+            if not bounds_str:
+                continue
+
+            match = re.search(r'\[(\d+),(\d+)\]\[(\d+),(\d+)\]', bounds_str)
+            if not match:
+                continue
+
+            left, top, right, bottom = map(int, match.groups())
+
+            if left <= x <= right and top <= y <= bottom:
+                return {
+                    "resource_id": node.attrib.get("resource-id", ""),
+                    "text": node.attrib.get("text", ""),
+                    "content_desc": node.attrib.get("content-desc", ""),
+                    "class": node.attrib.get("class", ""),
+                    "bounds": [left, top, right, bottom],
+                }
+
+        # No element exactly contains the point — find nearest by centre.
+        for node in root.iter("node"):
+            bounds_str = node.attrib.get("bounds", "")
+            if not bounds_str:
+                continue
+
+            match = re.search(r'\[(\d+),(\d+)\]\[(\d+),(\d+)\]', bounds_str)
+            if not match:
+                continue
+
+            left, top, right, bottom = map(int, match.groups())
+            centre_x = (left + right) // 2
+            centre_y = (top + bottom) // 2
+            distance = ((x - centre_x) ** 2 + (y - centre_y) ** 2) ** 0.5
+
+            if distance < min_distance:
+                min_distance = distance
+                best_match = {
+                    "resource_id": node.attrib.get("resource-id", ""),
+                    "text": node.attrib.get("text", ""),
+                    "content_desc": node.attrib.get("content-desc", ""),
+                    "class": node.attrib.get("class", ""),
+                    "bounds": [left, top, right, bottom],
+                }
+
+        return best_match
+    except Exception as e:
+        print(f"[ERROR] Failed to parse UI XML: {e}")
+        return None
+
+
+def find_matching_element(target_sig: dict, current_ui_xml: str) -> Optional[dict]:
+    """Find the UI element in *current_ui_xml* that matches *target_sig*.
+
+    Tries three matching strategies in priority order:
+      1. Exact ``resource-id`` match.
+      2. Exact ``text`` match.
+      3. Exact ``content-desc`` match.
+
+    Returns a dict with the matched element's attributes and bounds, or
+    ``None`` when no match is found or the XML cannot be parsed.
+    """
+    if not current_ui_xml:
+        return None
+
+    try:
+        root = ET.fromstring(current_ui_xml)
+
+        # Priority 1: resource-id match
+        resource_id = target_sig.get("resource_id", "")
+        if resource_id:
+            for node in root.iter("node"):
+                if node.attrib.get("resource-id") == resource_id:
+                    bounds_str = node.attrib.get("bounds", "")
+                    if bounds_str:
+                        match = re.search(r'\[(\d+),(\d+)\]\[(\d+),(\d+)\]', bounds_str)
+                        if match:
+                            left, top, right, bottom = map(int, match.groups())
+                            return {
+                                "resource_id": resource_id,
+                                "text": node.attrib.get("text", ""),
+                                "content_desc": node.attrib.get("content-desc", ""),
+                                "class": node.attrib.get("class", ""),
+                                "bounds": [left, top, right, bottom],
+                            }
+
+        # Priority 2: text match
+        text = target_sig.get("text", "")
+        if text:
+            for node in root.iter("node"):
+                if node.attrib.get("text") == text:
+                    bounds_str = node.attrib.get("bounds", "")
+                    if bounds_str:
+                        match = re.search(r'\[(\d+),(\d+)\]\[(\d+),(\d+)\]', bounds_str)
+                        if match:
+                            left, top, right, bottom = map(int, match.groups())
+                            return {
+                                "resource_id": node.attrib.get("resource-id", ""),
+                                "text": text,
+                                "content_desc": node.attrib.get("content-desc", ""),
+                                "class": node.attrib.get("class", ""),
+                                "bounds": [left, top, right, bottom],
+                            }
+
+        # Priority 3: content-desc match
+        content_desc = target_sig.get("content_desc", "")
+        if content_desc:
+            for node in root.iter("node"):
+                if node.attrib.get("content-desc") == content_desc:
+                    bounds_str = node.attrib.get("bounds", "")
+                    if bounds_str:
+                        match = re.search(r'\[(\d+),(\d+)\]\[(\d+),(\d+)\]', bounds_str)
+                        if match:
+                            left, top, right, bottom = map(int, match.groups())
+                            return {
+                                "resource_id": node.attrib.get("resource-id", ""),
+                                "text": node.attrib.get("text", ""),
+                                "content_desc": content_desc,
+                                "class": node.attrib.get("class", ""),
+                                "bounds": [left, top, right, bottom],
+                            }
+
+        return None
+    except Exception as e:
+        print(f"[ERROR] Failed to find matching element: {e}")
+        return None
+
+
+# ---------------------------------------------------------------------------
 
 
 class AdbTools:
@@ -359,7 +509,12 @@ class AdbTools:
     # -- helpers ----------------------------------------------------------
 
     def _run(self, args):
-        """Run an ADB command string with detailed logging."""
+        """Run an ADB command string with detailed logging.
+
+        Uses ``shell=True`` — only use this for commands that need shell
+        features (redirects, pipes).  For simple ADB subcommands prefer
+        ``_run_safe`` which avoids the shell entirely.
+        """
         cmd = self.adb_path + self._device_flag + args
         try:
             # Log the exact command being executed
@@ -377,6 +532,45 @@ class AdbTools:
                 return False
             else:
                 # Log successful execution with output snippet
+                out = (res.stdout or "").strip()[:100]
+                if out:
+                    print(f"[ADB OK] rc=0 | cmd={args[:60]} | out={out}")
+                else:
+                    print(f"[ADB OK] rc=0 | cmd={args[:60]}")
+                return True
+        except subprocess.TimeoutExpired:
+            print(f"[ADB TIMEOUT] cmd timed out (>10s): {args}")
+            return False
+        except Exception as _e:
+            print(f"[ADB ERROR] {_e} | cmd={args}")
+            return False
+
+    def _run_safe(self, args: str):
+        """Run an ADB command WITHOUT a shell — tokenised list form.
+
+        Identical contract to ``_run`` but builds a proper argument list
+        from *args* (space-separated tokens) and passes it directly to
+        ``subprocess.run`` with ``shell=False``.  This eliminates shell
+        injection risk for actions whose arguments are already controlled
+        (integers, fixed keycodes, app package names).
+        """
+        cmd_list = [self.adb_path]
+        if self.device:
+            cmd_list += ["-s", self.device]
+        cmd_list += args.split()
+        try:
+            print(f"[ADB CMD] {' '.join(cmd_list)}")
+            res = subprocess.run(
+                cmd_list,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if res.returncode != 0:
+                err = (res.stderr or res.stdout or "").strip()[:180]
+                print(f"[ADB FAIL] rc={res.returncode} | cmd={args} | err={err}")
+                return False
+            else:
                 out = (res.stdout or "").strip()[:100]
                 if out:
                     print(f"[ADB OK] rc=0 | cmd={args[:60]} | out={out}")
@@ -466,23 +660,23 @@ class AdbTools:
 
     def click(self, x, y):
         """Tap at screen coordinate (x, y)."""
-        return self._run(f"shell input tap {x} {y}")
+        return self._run_safe(f"shell input tap {x} {y}")
 
     def long_press(self, x, y, duration=800):
         """Long-press at (x, y) for *duration* milliseconds."""
-        return self._run(f"shell input swipe {x} {y} {x} {y} {duration}")
+        return self._run_safe(f"shell input swipe {x} {y} {x} {y} {duration}")
 
     def slide(self, x1, y1, x2, y2, slide_time=800):
         """Swipe from (x1, y1) to (x2, y2) over *slide_time* milliseconds."""
-        return self._run(f"shell input swipe {x1} {y1} {x2} {y2} {slide_time}")
+        return self._run_safe(f"shell input swipe {x1} {y1} {x2} {y2} {slide_time}")
 
     def back(self):
         """Press the Back button."""
-        return self._run("shell input keyevent 4")
+        return self._run_safe("shell input keyevent 4")
 
     def home(self):
         """Press the Home button to return to the home screen."""
-        return self._run(
+        return self._run_safe(
             "shell am start -a android.intent.action.MAIN "
             "-c android.intent.category.HOME"
         )
@@ -689,136 +883,13 @@ class AdbTools:
     @staticmethod
     def _find_element_at_coordinates(ui_xml: str, x: int, y: int) -> Optional[dict]:
         """根据屏幕坐标查找对应的UI元素，并返回其标识信息。"""
-        if not ui_xml:
-            return None
-            
-        try:
-            root = ET.fromstring(ui_xml)
-            best_match = None
-            min_distance = float('inf')
-            
-            for node in root.iter("node"):
-                bounds_str = node.attrib.get("bounds", "")
-                if not bounds_str:
-                    continue
-                    
-                # 解析边界 [left,top][right,bottom]
-                match = re.search(r'\[(\d+),(\d+)\]\[(\d+),(\d+)\]', bounds_str)
-                if not match:
-                    continue
-                    
-                left, top, right, bottom = map(int, match.groups())
-                
-                # 检查坐标是否在元素边界内
-                if left <= x <= right and top <= y <= bottom:
-                    # 返回元素的标识信息
-                    return {
-                        "resource_id": node.attrib.get("resource-id", ""),
-                        "text": node.attrib.get("text", ""),
-                        "content_desc": node.attrib.get("content-desc", ""),
-                        "class": node.attrib.get("class", ""),
-                        "bounds": [left, top, right, bottom]
-                    }
-                    
-            # 如果没有找到完全包含坐标的元素，找最近的元素
-            for node in root.iter("node"):
-                bounds_str = node.attrib.get("bounds", "")
-                if not bounds_str:
-                    continue
-                    
-                match = re.search(r'\[(\d+),(\d+)\]\[(\d+),(\d+)\]', bounds_str)
-                if not match:
-                    continue
-                    
-                left, top, right, bottom = map(int, match.groups())
-                
-                # 计算到元素中心的距离
-                center_x = (left + right) // 2
-                center_y = (top + bottom) // 2
-                distance = ((x - center_x) ** 2 + (y - center_y) ** 2) ** 0.5
-                
-                if distance < min_distance:
-                    min_distance = distance
-                    best_match = {
-                        "resource_id": node.attrib.get("resource-id", ""),
-                        "text": node.attrib.get("text", ""),
-                        "content_desc": node.attrib.get("content-desc", ""),
-                        "class": node.attrib.get("class", ""),
-                        "bounds": [left, top, right, bottom]
-                    }
-                    
-            return best_match
-        except Exception as e:
-            print(f"[ERROR] Failed to parse UI XML: {e}")
-            return None
-    
-    
+        return find_element_at_coordinates(ui_xml, x, y)
+
+
+    @staticmethod
     def _find_matching_element(target_sig: dict, current_ui_xml: str) -> Optional[dict]:
         """在当前UI中查找与目标签名匹配的元素。"""
-        if not current_ui_xml:
-            return None
-            
-        try:
-            root = ET.fromstring(current_ui_xml)
-            
-            # 优先级1: 通过resource-id匹配
-            resource_id = target_sig.get("resource_id", "")
-            if resource_id:
-                for node in root.iter("node"):
-                    if node.attrib.get("resource-id") == resource_id:
-                        bounds_str = node.attrib.get("bounds", "")
-                        if bounds_str:
-                            match = re.search(r'\[(\d+),(\d+)\]\[(\d+),(\d+)\]', bounds_str)
-                            if match:
-                                left, top, right, bottom = map(int, match.groups())
-                                return {
-                                    "resource_id": resource_id,
-                                    "text": node.attrib.get("text", ""),
-                                    "content_desc": node.attrib.get("content-desc", ""),
-                                    "class": node.attrib.get("class", ""),
-                                    "bounds": [left, top, right, bottom]
-                                }
-            
-            # 优先级2: 通过text匹配
-            text = target_sig.get("text", "")
-            if text:
-                for node in root.iter("node"):
-                    if node.attrib.get("text") == text:
-                        bounds_str = node.attrib.get("bounds", "")
-                        if bounds_str:
-                            match = re.search(r'\[(\d+),(\d+)\]\[(\d+),(\d+)\]', bounds_str)
-                            if match:
-                                left, top, right, bottom = map(int, match.groups())
-                                return {
-                                    "resource_id": node.attrib.get("resource-id", ""),
-                                    "text": text,
-                                    "content_desc": node.attrib.get("content-desc", ""),
-                                    "class": node.attrib.get("class", ""),
-                                    "bounds": [left, top, right, bottom]
-                                }
-            
-            # 优先级3: 通过content-desc匹配
-            content_desc = target_sig.get("content_desc", "")
-            if content_desc:
-                for node in root.iter("node"):
-                    if node.attrib.get("content-desc") == content_desc:
-                        bounds_str = node.attrib.get("bounds", "")
-                        if bounds_str:
-                            match = re.search(r'\[(\d+),(\d+)\]\[(\d+),(\d+)\]', bounds_str)
-                            if match:
-                                left, top, right, bottom = map(int, match.groups())
-                                return {
-                                    "resource_id": node.attrib.get("resource-id", ""),
-                                    "text": node.attrib.get("text", ""),
-                                    "content_desc": content_desc,
-                                    "class": node.attrib.get("class", ""),
-                                    "bounds": [left, top, right, bottom]
-                                }
-                                
-            return None
-        except Exception as e:
-            print(f"[ERROR] Failed to find matching element: {e}")
-            return None
+        return find_matching_element(target_sig, current_ui_xml)
 
     def get_package_name(self, all_packages=False):
         """
@@ -849,7 +920,7 @@ class AdbTools:
 
     def open_app(self, package_name):
         """Launch an app by its package name."""
-        self._run(
+        self._run_safe(
             f"shell monkey -p {package_name} "
             "-c android.intent.category.LAUNCHER 1"
         )

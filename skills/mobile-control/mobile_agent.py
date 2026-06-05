@@ -500,14 +500,6 @@ def initialize_uiautomator2(adb_path: str, device: str) -> None:
 
 def send_toast(adb_path: str, device: str, message: str) -> None:
     """Show a Toast notification on the device screen."""
-    escaped = message.replace("'", "\\'")
-    script = (
-        f"am broadcast -a ADB_INPUT_TEXT --es msg '{escaped}' "
-        "com.android.adbkeyboard 2>/dev/null; "
-        f"echo 'AI正在接管操作... {escaped}' | "
-        "am broadcast -a ADB_INPUT_TEXT --es msg 2>/dev/null; true"
-    )
-    # Simpler fallback: use a toast via cmd notification (Android 11+)
     _adb(
         ["shell", "cmd", "notification", "post", "-S", "bigtext", "-t",
          "OpenClaw AI", "MobileAgent", message],

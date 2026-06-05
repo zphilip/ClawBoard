@@ -42,16 +42,14 @@ from utils import (
     annotate_screenshot,
     build_messages,
     ERROR_CALLING_LLM,
+    find_element_at_coordinates,
+    find_matching_element,
     resolve_app_name_via_llm,
     smart_resize,
     GUIOwlWrapper,
     summarise_ui_dump,
     SupervisorLLM,
 )
-
-# Import helper function for element signature capture
-from utils import AdbTools as _AdbToolsForImport
-_find_element_at_coordinates = _AdbToolsForImport._find_element_at_coordinates
 
 
 PRIMARY_RECOVERY_COOLDOWN_SECONDS = 600  # 10 minutes
@@ -339,9 +337,8 @@ def _validate_coordinate_drift(cached_action_args: dict,
         return True  # 无法验证，假设有效
         
     try:
-        from utils import _find_matching_element
         # 获取当前屏幕上的目标元素
-        current_element = _find_matching_element(target_element_sig, current_ui_xml)
+        current_element = find_matching_element(target_element_sig, current_ui_xml)
         if not current_element:
             return False  # 目标元素不存在，不应使用缓存坐标
             
@@ -634,6 +631,7 @@ def main():
     _last_fastpath_state_key: str = ""
     _sup_approved_cache: dict[str, float] = {}
     _SUP_APPROVE_CACHE_TTL_SECONDS = 180
+    _SUP_APPROVE_CACHE_MAX_SIZE = 200
     _STATE_ACTION_LOOP_THRESHOLD = 3
 
     def _detect_relaxed_cycle(seq: list[str], min_period: int = 2, max_period: int = 4) -> tuple[bool, int, list[str]]:
@@ -827,8 +825,7 @@ def main():
                                     actual_y = int(click_coord[1] / 1000 * img.height)
                                     
                                     # 查找包含该坐标的UI元素
-                                    from utils import _find_element_at_coordinates
-                                    target_element_sig = _find_element_at_coordinates(ui_xml, actual_x, actual_y)
+                                    target_element_sig = find_element_at_coordinates(ui_xml, actual_x, actual_y)
                                     original_screen_res = (img.width, img.height)
                             except Exception as e:
                                 _log_t(f"[MEMORY] Failed to capture element signature: {e}")
@@ -1572,10 +1569,15 @@ def main():
 
             # Skip supervisor if the same state+action was approved recently.
             _sup_cache_key = _step_state_action_sig
-            _cached_until = _sup_approved_cache.get(_sup_cache_key, 0.0) if _sup_cache_key else 0.0
-            if (not _skip_supervisor) and _cached_until > time.time():
-                _skip_supervisor = True
-                _sup_skip_reason = "recent_same_state_action_already_approved"
+            if _sup_cache_key and not _skip_supervisor:
+                _cached_until = _sup_approved_cache.get(_sup_cache_key, 0.0)
+                _now = time.time()
+                if _cached_until > _now:
+                    _skip_supervisor = True
+                    _sup_skip_reason = "recent_same_state_action_already_approved"
+                elif _cached_until > 0:
+                    # Expired — remove stale entry so the dict stays lean.
+                    del _sup_approved_cache[_sup_cache_key]
 
             # Skip supervisor when post-LLM memory confirmed the VLM action.
             # Both memory (validated in a prior run) and VLM independently agree
@@ -1658,7 +1660,22 @@ def main():
                 print("[SUPERVISOR] approved")
                 # Cache approve on exact same state+action for short TTL.
                 if _step_state_action_sig:
-                    _sup_approved_cache[_step_state_action_sig] = time.time() + _SUP_APPROVE_CACHE_TTL_SECONDS
+                    # Enforce a max-size cap to prevent unbounded growth in
+                    # long-running sessions.  Evict expired entries first;
+                    # if still above limit, evict the oldest (by expiry).
+                    if len(_sup_approved_cache) >= _SUP_APPROVE_CACHE_MAX_SIZE:
+                        _prune_now = time.time()
+                        _prune_expired = [k for k, v in _sup_approved_cache.items()
+                                          if v <= _prune_now]
+                        for _k in _prune_expired:
+                            del _sup_approved_cache[_k]
+                        if len(_sup_approved_cache) >= _SUP_APPROVE_CACHE_MAX_SIZE:
+                            _oldest = min(_sup_approved_cache,
+                                          key=_sup_approved_cache.__getitem__)
+                            del _sup_approved_cache[_oldest]
+                    _sup_approved_cache[_step_state_action_sig] = (
+                        time.time() + _SUP_APPROVE_CACHE_TTL_SECONDS
+                    )
 
         # 4. Rescale coordinates from 1000x1000 to actual resolution
         img = Image.open(screenshot_path)
