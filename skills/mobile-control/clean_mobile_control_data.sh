@@ -107,6 +107,7 @@ done < <(find "$SCRIPT_DIR" -mindepth 1 -maxdepth 1 -type d \( -name 'screenshot
 # Optional extended cleanup
 if [[ "$ALL_MODE" -eq 1 ]]; then
   safe_remove "$SCRIPT_DIR/skill_trace.log"
+  safe_remove "$SCRIPT_DIR/.uia2_init_cache"
   safe_remove "$SCRIPT_DIR/__pycache__"
 
   while IFS= read -r -d '' pyc; do

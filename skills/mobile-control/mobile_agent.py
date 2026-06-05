@@ -441,34 +441,52 @@ def is_device_uia2_initialized(device: str, adb_path: str = "adb") -> bool:
 def initialize_uiautomator2(adb_path: str, device: str) -> None:
     """
     Initialize uiautomator2 on the device by running 'python -m uiautomator2 init'.
-    
+
     This installs the atx-agent server on the device (~5MB) which is required for
     uiautomator2 to work. The init process also:
     - Installs app-uiautomator-test.apk and app-uiautomator.apk
     - Starts the atx-agent daemon on the device
     - Verifies the server is running
-    
+
     This should be called once at task setup to ensure uiautomator2 is ready.
     Subsequent calls are fast if already initialized.
-    
-    Enhanced with actual connectivity testing to avoid unnecessary re-initialization.
+
+    Uses a file-based cache so a successful init is remembered across runs
+    even when the uiautomator2 Python library is not importable in the
+    current venv (the init command runs via subprocess and may use a
+    different Python interpreter).
     """
-    # Check if already initialized and working (actual connectivity test)
+    _cache_file = Path(__file__).parent / ".uia2_init_cache"
+
+    # Layer 1: file-cache — if we successfully initted recently, skip
+    # the expensive connectivity test and init.  Cache TTL is 24 hours.
+    _cache_ttl = 24 * 3600
+    try:
+        if _cache_file.exists():
+            _cache_age = time.time() - _cache_file.stat().st_mtime
+            if _cache_age < _cache_ttl:
+                _log(f"✅ uiautomator2 init cache hit (age={_cache_age:.0f}s) — skipping init")
+                return
+    except OSError:
+        pass
+
+    # Layer 2: connectivity test — check if the atx-agent is responding
     if is_device_uia2_initialized(device, adb_path=adb_path):
         _log("✅ uiautomator2 server is already running and responsive")
+        _touch_uia2_cache(_cache_file)
         return
-    
+
     _log("Initializing uiautomator2 on device...")
-    
+
     try:
         import subprocess
-        
+
         # Build the init command
         device_flag = f"-s {device}" if device else ""
         init_cmd = f"python3 -m uiautomator2 {device_flag} init"
-        
+
         _log(f"Running: {init_cmd}")
-        
+
         # Run the init command
         result = subprocess.run(
             init_cmd,
@@ -477,9 +495,10 @@ def initialize_uiautomator2(adb_path: str, device: str) -> None:
             text=True,
             timeout=60  # Init can take up to 60s on first run
         )
-        
+
         if result.returncode == 0:
             _log("✅ uiautomator2 initialized successfully")
+            _touch_uia2_cache(_cache_file)
             # Log key info from output
             for line in result.stdout.splitlines():
                 if any(keyword in line.lower() for keyword in [
@@ -491,13 +510,24 @@ def initialize_uiautomator2(adb_path: str, device: str) -> None:
             if result.stderr:
                 _log(f"   Error: {result.stderr[:200]}")
             _log("   Will attempt to use uiautomator2 anyway (may auto-init on connect)")
-    
+
     except ImportError:
         _log("⚠️ uiautomator2 not installed (pip install uiautomator2)")
     except subprocess.TimeoutExpired:
         _log("⚠️ uiautomator2 init timed out (60s)")
     except Exception as e:
         _log(f"⚠️ uiautomator2 init exception: {e}")
+
+
+def _touch_uia2_cache(cache_file: Path) -> None:
+    """Create or update the uiautomator2 init cache file."""
+    try:
+        cache_file.parent.mkdir(parents=True, exist_ok=True)
+        cache_file.write_text(
+            f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+        )
+    except OSError:
+        pass  # non-essential — failure just means the check runs next time
 
 
 def send_toast(adb_path: str, device: str, message: str) -> None:

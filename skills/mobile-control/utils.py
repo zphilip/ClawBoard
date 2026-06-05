@@ -596,7 +596,7 @@ class AdbTools:
         """
         deadline = time.time() + timeout
         while time.time() < deadline:
-            rc, out, _ = _adb_direct(
+            rc, out, _ = AdbTools._adb_direct(
                 self.adb_path, self.device, ["devices"], timeout=5,
             )
             if rc == 0 and out:
@@ -611,22 +611,22 @@ class AdbTools:
         return False
 
 
-def _adb_direct(adb_path: str, device: str | None, args: list[str],
-                timeout: int = 10) -> tuple[int, str, str]:
-    """Run adb with list args (no shell).  Standalone helper so it can be
-    called from methods that need adb output without self._run overhead."""
-    import subprocess as _sp
-    cmd = [adb_path]
-    if device:
-        cmd += ["-s", device]
-    cmd += args
-    try:
-        r = _sp.run(cmd, capture_output=True, text=True, timeout=timeout)
-        return r.returncode, r.stdout.strip(), r.stderr.strip()
-    except _sp.TimeoutExpired:
-        return -1, "", "timeout"
-    except FileNotFoundError:
-        return -1, "", "adb binary not found"
+    def _adb_direct(adb_path: str, device: str | None, args: list[str],
+                    timeout: int = 10) -> tuple[int, str, str]:
+        """Run adb with list args (no shell).  Standalone helper so it can be
+        called from methods that need adb output without self._run overhead."""
+        import subprocess as _sp
+        cmd = [adb_path]
+        if device:
+            cmd += ["-s", device]
+        cmd += args
+        try:
+            r = _sp.run(cmd, capture_output=True, text=True, timeout=timeout)
+            return r.returncode, r.stdout.strip(), r.stderr.strip()
+        except _sp.TimeoutExpired:
+            return -1, "", "timeout"
+        except FileNotFoundError:
+            return -1, "", "adb binary not found"
 
 
     def _load_image_info(self, path):
