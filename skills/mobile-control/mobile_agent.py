@@ -387,17 +387,17 @@ def release_uiautomation_service(adb_path: str, device: str) -> None:
     _log("✅ UiAutomationService cleanup complete")
 
 
-def is_device_uia2_initialized(device: str) -> bool:
+def is_device_uia2_initialized(device: str, adb_path: str = "adb") -> bool:
     """
     Check if uiautomator2 server is actually running and responsive on the device.
     This is more reliable than just checking cache timestamps.
     """
     try:
         import uiautomator2 as u2
-        
+
         # Connect to device
         d = u2.connect(device) if device else u2.connect()
-        
+
         # Test 1: Check if we can get device info (basic connectivity)
         try:
             info = d.info
@@ -405,13 +405,13 @@ def is_device_uia2_initialized(device: str) -> bool:
                 return False
         except Exception:
             return False
-        
+
         # Test 2: Check if agent is alive (if attribute exists)
         try:
             # Try agent_alive first (newer versions)
             if hasattr(d, 'agent_alive') and d.agent_alive:
                 return True
-            # Try alive property (older versions)  
+            # Try alive property (older versions)
             elif hasattr(d, 'alive') and d.alive:
                 return True
             else:
@@ -420,15 +420,17 @@ def is_device_uia2_initialized(device: str) -> bool:
         except Exception:
             # If agent_alive check fails, but info worked, assume it's OK
             return True
-            
+
     except ImportError:
-        # uiautomator2 not installed, fall back to ADB process check
+        # uiautomator2 library not installed — fall back to checking whether
+        # the atx-agent APK is installed on the device via ADB.
         try:
-            import subprocess
-            device_flag = f" -s {device}" if device else ""
-            cmd = f"adb{device_flag} shell ps -ef | grep -v grep | grep atx-agent"
-            result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=5)
-            return result.returncode == 0 and "atx-agent" in result.stdout
+            import subprocess as _sp
+            device_flag = ["-s", device] if device else []
+            cmd = [adb_path] + device_flag + ["shell", "pm", "list", "packages",
+                   "com.github.uiautomator"]
+            result = _sp.run(cmd, capture_output=True, text=True, timeout=5)
+            return result.returncode == 0 and "com.github.uiautomator" in result.stdout
         except Exception:
             return False
     except Exception:
@@ -452,7 +454,7 @@ def initialize_uiautomator2(adb_path: str, device: str) -> None:
     Enhanced with actual connectivity testing to avoid unnecessary re-initialization.
     """
     # Check if already initialized and working (actual connectivity test)
-    if is_device_uia2_initialized(device):
+    if is_device_uia2_initialized(device, adb_path=adb_path):
         _log("✅ uiautomator2 server is already running and responsive")
         return
     

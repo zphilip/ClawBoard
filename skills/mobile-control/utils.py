@@ -584,6 +584,50 @@ class AdbTools:
             print(f"[ADB ERROR] {_e} | cmd={args}")
             return False
 
+    def wait_for_device(self, timeout: int = 60) -> bool:
+        """Block until the ADB device is back online.
+
+        When the USB cable is unplugged mid-run, individual ADB commands
+        fail repeatedly and the agent loops uselessly.  Call this at the
+        top of each step to pause until the device reconnects (or the
+        timeout expires).
+
+        Returns True if the device came back, False on timeout.
+        """
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            rc, out, _ = _adb_direct(
+                self.adb_path, self.device, ["devices"], timeout=5,
+            )
+            if rc == 0 and out:
+                lines = [l for l in out.splitlines() if "\t" in l]
+                online = [l.split("\t")[0] for l in lines
+                          if "device" in l.split("\t")[1]]
+                if online:
+                    print(f"[ADB] Device {online[0]} reconnected after {timeout - (deadline - time.time()):.0f}s")
+                    return True
+            time.sleep(2)
+        print(f"[ADB] Device did not reappear within {timeout}s")
+        return False
+
+
+def _adb_direct(adb_path: str, device: str | None, args: list[str],
+                timeout: int = 10) -> tuple[int, str, str]:
+    """Run adb with list args (no shell).  Standalone helper so it can be
+    called from methods that need adb output without self._run overhead."""
+    import subprocess as _sp
+    cmd = [adb_path]
+    if device:
+        cmd += ["-s", device]
+    cmd += args
+    try:
+        r = _sp.run(cmd, capture_output=True, text=True, timeout=timeout)
+        return r.returncode, r.stdout.strip(), r.stderr.strip()
+    except _sp.TimeoutExpired:
+        return -1, "", "timeout"
+    except FileNotFoundError:
+        return -1, "", "adb binary not found"
+
 
     def _load_image_info(self, path):
         """Cache the width and height of the screenshot."""

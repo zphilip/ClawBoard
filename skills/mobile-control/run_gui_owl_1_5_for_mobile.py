@@ -904,13 +904,16 @@ def main():
             _fg_label = ""
         print(f"{'='*50}")
 
-        # 1. Capture screenshot
+        # 1. Capture screenshot — if it fails the device may have been
+        #    unplugged; wait for reconnection instead of looping uselessly.
         _t_screenshot = time.time()
         _ts = datetime.now().strftime('%Y%m%d_%H%M%S_%f')[:19]
         screenshot_path = os.path.join(task_dir, f"screenshot_{step_id}_{_ts}.png")
         if not adb_tools.get_screenshot(screenshot_path):
-            print("[ERROR] Failed to capture screenshot. Retrying...")
+            print("[ERROR] Failed to capture screenshot — device may be disconnected.")
             _emit_step_summary("screenshot_failed")
+            if adb_tools.wait_for_device(timeout=30):
+                print("[ADB] Device reappeared — retrying screenshot on next iteration")
             time.sleep(1)
             continue
         _step_metrics["screenshot"] = time.time() - _t_screenshot
@@ -1119,18 +1122,18 @@ def main():
                         _log_t(
                             "[MEMORY] pre-LLM fastpath skipped: cached coords are out of 0-1000 range"
                         )
-                    elif (_fastpath_action_type == "click" and 
-                          hasattr(_mout_pre.action, 'target_element_signature') and 
+                    elif (_fastpath_action_type == "click" and
+                          hasattr(_mout_pre.action, 'target_element_signature') and
                           _mout_pre.action.target_element_signature is not None):
-                        # 添加漂移验证检查
+                        # 添加漂移验证检查 — reuse the UI dump already captured
+                        # at step start (line ~922) instead of calling get_ui_dump()
+                        # again over ADB.
                         try:
-                            # 获取当前UI dump
-                            _current_ui_xml = adb_tools.get_ui_dump()
-                            if _current_ui_xml:
+                            if _ui_xml:
                                 _drift_valid = _validate_coordinate_drift(
                                     _mem_args,
                                     _mout_pre.action.target_element_signature,
-                                    _current_ui_xml,
+                                    _ui_xml,
                                     screenshot_path
                                 )
                                 if not _drift_valid:
