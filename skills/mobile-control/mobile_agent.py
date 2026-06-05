@@ -346,33 +346,55 @@ def setup_adb_keyboard(adb_path: str, device: str) -> None:
 def release_uiautomation_service(adb_path: str, device: str) -> None:
     """
     Release ADB's UiAutomationService to prevent conflicts with uiautomator2.
-    
-    When ADB runs `uiautomator dump`, it registers a UiAutomationService that
-    can block uiautomator2 from connecting. This function attempts to release
-    that service by killing related processes.
-    
-    This should be called at task start to ensure uiautomator2 can work properly.
+
+    When ADB runs ``uiautomator dump`` it registers a UiAutomationService
+    that can block uiautomator2 from connecting.  This function kills the
+    ADB uiautomator dump process WITHOUT touching the uiautomator2 server
+    (atx-agent) or its APK processes (com.github.uiautomator*).
+
+    IMPORTANT: This must NOT kill atx-agent — that IS the uiautomator2
+    server we rely on.  Only kill the ADB ``/system/bin/uiautomator``
+    dump process and the wetest uia2 compatibility layer.
     """
+
+    # Patterns that match ONLY ADB's uiautomator dump process, NOT
+    # uiautomator2's atx-agent server or its Java APK processes.
+    #
+    #  "uiautomator dump"  — matches the ADB dump command line
+    #  "com.wetest.uia2"   — wetest ATX compatibility layer (safe to kill)
+    #
+    # We deliberately do NOT kill:
+    #  "atx-agent"         — this IS the uiautomator2 server
+    #  "com.github.uiautomator" — uiautomator2 APK (matched if we used bare "uiautomator")
+
     _log("Releasing ADB UiAutomationService...")
-    
-    # Method 1: Kill all uiautomator-related processes
-    for proc_pattern in ["uiautomator", "atx-agent", "com.wetest.uia2"]:
+
+    # Method 1: pkill with targeted patterns
+    for proc_pattern in ["uiautomator dump", "com.wetest.uia2"]:
         rc, out, err = _adb(
             ["shell", "pkill", "-f", proc_pattern],
             adb_path=adb_path, device=device,
         )
         if rc == 0:
             _log(f"✅ Killed process matching '{proc_pattern}'")
-    
-    # Method 2: Kill by PID if pkill doesn't work
+
+    # Method 2: PID scan as fallback — only kill the ADB uiautomator
+    # binary, not atx-agent or the uiautomator2 APK.
     rc, out, err = _adb(
         ["shell", "ps", "-A"],
         adb_path=adb_path, device=device,
     )
     if rc == 0 and out:
         for line in out.splitlines():
-            if "uiautomator" in line.lower() or "atx-agent" in line.lower():
-                # Extract PID (second column)
+            _lower = line.lower()
+            # "uiautomator" alone in ps = /system/bin/uiautomator (ADB dump)
+            # "com.github.uiautomator" = uiautomator2 APK — do NOT kill
+            is_adb_dump = (
+                "uiautomator" in _lower
+                and "com.github.uiautomator" not in _lower
+                and "atx-agent" not in _lower
+            )
+            if is_adb_dump:
                 parts = line.split()
                 if len(parts) >= 2:
                     pid = parts[1]
@@ -380,8 +402,8 @@ def release_uiautomation_service(adb_path: str, device: str) -> None:
                         ["shell", "kill", "-9", pid],
                         adb_path=adb_path, device=device,
                     )
-                    _log(f"✅ Killed uiautomator process PID={pid}")
-    
+                    _log(f"✅ Killed ADB uiautomator process PID={pid}")
+
     # Brief delay to ensure service is fully released
     time.sleep(0.8)
     _log("✅ UiAutomationService cleanup complete")
@@ -1183,10 +1205,12 @@ def main() -> int:
 
     _log(f"Using device: {device}")
 
-    # 3. Screen + keyboard setup
+    # 3. Screen + uiautomator2 setup
+    # Order matters: initialize uiautomator2 FIRST (it needs atx-agent alive),
+    # THEN release ADB's conflicting UiAutomationService.
     ensure_screen_on(args.adb_path, device)
-    release_uiautomation_service(args.adb_path, device)  # Release ADB's UiAutomationService first
-    initialize_uiautomator2(args.adb_path, device)  # Initialize uiautomator2 (installs atx-agent)
+    initialize_uiautomator2(args.adb_path, device)         # start atx-agent if needed
+    release_uiautomation_service(args.adb_path, device)    # kill ONLY ADB's dump binary
     setup_adb_keyboard(args.adb_path, device)
 
     # 4. Toast notification
