@@ -39,6 +39,28 @@ class MemoryRecord:
     target_element_signature: dict[str, Any] | None = None  # For drift validation
     original_screen_resolution: tuple[int, int] | None = None  # For drift validation
 
+    _TUPLE_FIELDS: tuple[str, ...] = ("original_screen_resolution",)
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize to a JSON-safe dict with stable field types.
+
+        JSON has no native tuple type — ``__dict__`` would silently convert
+        tuples to lists, breaking downstream code that expects tuples on
+        reload.  This method is intentionally a shallow copy so that
+        ``target_element_signature`` (a nested dict) round-trips correctly.
+        """
+        d = dict(self.__dict__)
+        return d
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> "MemoryRecord":
+        """Deserialize from a dict, restoring tuple fields from JSON lists."""
+        for field_name in cls._TUPLE_FIELDS:
+            value = d.get(field_name)
+            if isinstance(value, list):
+                d[field_name] = tuple(value)
+        return cls(**d)
+
 
 @dataclass
 class DecisionInput:

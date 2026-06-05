@@ -242,70 +242,76 @@ class AdbTools:
         """
         device_flag = f" -s {self.device}" if self.device else ""
         remote = "/sdcard/window_dump.xml"
-        
+        local = ""  # track temp file for guaranteed cleanup
+
         print(f"[UI DUMP DEBUG] Starting UI dump (device={self.device or 'default'})")
-        
+
         try:
             # Write XML to device storage
             dump_cmd = f"{self.adb_path}{device_flag} shell uiautomator dump {remote}"
             print(f"[UI DUMP DEBUG] Running: {dump_cmd}")
-            
+
             r = subprocess.run(
                 dump_cmd,
                 capture_output=True, text=True, shell=True, timeout=15,
             )
-            
+
             if r.returncode != 0:
                 err = (r.stderr or r.stdout or "").strip()[:200]
                 print(f"[UI DUMP DEBUG] ❌ Dump command failed: rc={r.returncode}, err={err}")
                 return ""
-            
+
             if "ERROR" in r.stdout or "ERROR" in r.stderr:
                 print(f"[UI DUMP DEBUG] ❌ Dump command returned ERROR")
                 return ""
-            
+
             print(f"[UI DUMP DEBUG] ✅ Dump command succeeded")
-            
+
             # Pull to a temp file
             with tempfile.NamedTemporaryFile(suffix=".xml", delete=False) as tf:
                 local = tf.name
-            
+
             pull_cmd = f"{self.adb_path}{device_flag} pull {remote} {local}"
             print(f"[UI DUMP DEBUG] Pulling: {pull_cmd}")
-            
+
             pull_result = subprocess.run(
                 pull_cmd,
                 capture_output=True, text=True, shell=True, timeout=15,
             )
-            
+
             if pull_result.returncode != 0:
                 err = (pull_result.stderr or pull_result.stdout or "").strip()[:200]
                 print(f"[UI DUMP DEBUG] ❌ Pull command failed: rc={pull_result.returncode}, err={err}")
-                os.unlink(local)
                 return ""
-            
+
             print(f"[UI DUMP DEBUG] ✅ Pull command succeeded")
-            
+
             with open(local, encoding="utf-8", errors="replace") as f:
                 xml = f.read()
-            
+
             xml_size = len(xml)
             node_count = xml.count("<node")
             print(f"[UI DUMP DEBUG] 📊 XML size={xml_size} bytes, nodes={node_count}")
-            
-            os.unlink(local)
-            
+
             if node_count == 0:
                 print(f"[UI DUMP DEBUG] ⚠️  WARNING: No nodes found in UI dump!")
                 if xml_size > 0:
                     print(f"[UI DUMP DEBUG] First 300 chars: {xml[:300]}")
-            
+
             return xml
         except Exception as e:
             print(f"[UI DUMP DEBUG] ❌ Exception: {e}")
             import traceback
             traceback.print_exc()
             return ""
+        finally:
+            # Guarantee temp file cleanup on all exit paths (success, error,
+            # early return, or unexpected exception).
+            if local:
+                try:
+                    os.unlink(local)
+                except OSError:
+                    pass
 
     def _get_ui_dump_u2(self) -> str:
         """

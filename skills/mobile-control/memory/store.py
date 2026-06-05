@@ -22,7 +22,7 @@ class JsonlMemoryStore:
                 continue
             try:
                 obj = json.loads(line)
-                records.append(MemoryRecord(**obj))
+                records.append(MemoryRecord.from_dict(obj))
             except Exception:
                 continue
         return records
@@ -30,7 +30,7 @@ class JsonlMemoryStore:
     def append(self, record: MemoryRecord) -> None:
         record.updated_at = time.time()
         with self.path.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(record.__dict__, ensure_ascii=False) + "\n")
+            f.write(json.dumps(record.to_dict(), ensure_ascii=False) + "\n")
 
     def purge_actions(self, action_types: frozenset[str] | set[str]) -> int:
         """Remove all records whose action_type is in *action_types*.
@@ -44,5 +44,5 @@ class JsonlMemoryStore:
         if removed > 0:
             with self.path.open("w", encoding="utf-8") as f:
                 for record in kept:
-                    f.write(json.dumps(record.__dict__, ensure_ascii=False) + "\n")
+                    f.write(json.dumps(record.to_dict(), ensure_ascii=False) + "\n")
         return removed
