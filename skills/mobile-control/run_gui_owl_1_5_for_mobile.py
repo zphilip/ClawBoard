@@ -40,12 +40,15 @@ from memory.store import JsonlMemoryStore
 from utils import (
     AdbTools,
     annotate_screenshot,
+    build_messages,
+    ERROR_CALLING_LLM,
     find_element_at_coordinates,
     find_matching_element,
     parse_action,
     repair_json,
     resolve_app_name_via_llm,
     smart_resize,
+    GUIOwlWrapper,
     summarise_ui_dump,
     SupervisorLLM,
 )
@@ -1605,7 +1608,7 @@ def main():
                 continue
 
         elif action_type == "answer":
-            conclusion = output_text.split("")[0].strip()
+            conclusion = output_text.split("<tool_call>")[0].strip()
             # Guard: if the model gives 'answer' before performing any real
             # actions it is refusing rather than completing the task.
             # Inject a self-correction into history, press Home, and continue.
