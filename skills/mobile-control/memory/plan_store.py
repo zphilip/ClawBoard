@@ -24,12 +24,27 @@ class PlanStore:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         if not self.path.exists():
             self.path.touch()
+        # In-memory cache — avoids O(n) re-read + re-parse on every lookup.
+        self._cache: list[TaskPlan] | None = None
+        self._cache_mtime: float = 0.0
+
+    def _invalidate_cache(self) -> None:
+        self._cache = None
+        self._cache_mtime = 0.0
 
     # ------------------------------------------------------------------
     # I/O helpers
     # ------------------------------------------------------------------
 
     def load(self) -> list[TaskPlan]:
+        # Return cached plans when the file hasn't changed since last read.
+        try:
+            _mtime = self.path.stat().st_mtime
+        except OSError:
+            _mtime = 0.0
+        if self._cache is not None and _mtime == self._cache_mtime:
+            return self._cache
+
         plans: list[TaskPlan] = []
         for line in self.path.read_text(encoding="utf-8").splitlines():
             line = line.strip()
@@ -40,12 +55,16 @@ class PlanStore:
                 plans.append(_deserialise_plan(obj))
             except Exception:
                 continue
+
+        self._cache = plans
+        self._cache_mtime = _mtime
         return plans
 
     def _rewrite_all(self, plans: list[TaskPlan]) -> None:
         with self.path.open("w", encoding="utf-8") as f:
             for plan in plans:
                 f.write(json.dumps(_serialise_plan(plan), ensure_ascii=False) + "\n")
+        self._invalidate_cache()
 
     # ------------------------------------------------------------------
     # Public API
@@ -55,6 +74,7 @@ class PlanStore:
         plan.created_at = plan.created_at or time.time()
         with self.path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(_serialise_plan(plan), ensure_ascii=False) + "\n")
+        self._invalidate_cache()
 
     def upsert_by_intent(self, plan: TaskPlan) -> None:
         """Replace the first plan with the same intent_key, or append."""

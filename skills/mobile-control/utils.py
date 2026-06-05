@@ -217,6 +217,73 @@ def find_matching_element(target_sig: dict, current_ui_xml: str) -> Optional[dic
 
 
 # ---------------------------------------------------------------------------
+# JSON parsing helpers (shared by both runner variants)
+# ---------------------------------------------------------------------------
+
+def repair_json(s: str) -> str:
+    """Close unclosed arrays/objects in a truncated JSON string."""
+    s = s.strip().rstrip(', \n\t')
+    stack = []
+    in_string = False
+    escape = False
+    for ch in s:
+        if escape:
+            escape = False
+            continue
+        if ch == '\\' and in_string:
+            escape = True
+            continue
+        if ch == '"':
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if ch in '{[':
+            stack.append(ch)
+        elif ch == '}' and stack and stack[-1] == '{':
+            stack.pop()
+        elif ch == ']' and stack and stack[-1] == '[':
+            stack.pop()
+    closing = {'[': ']', '{': '}'}
+    for opener in reversed(stack):
+        s += closing[opener]
+    return s
+
+
+def parse_action(output_text: str) -> dict:
+    """Extract the action dict from a VLM output text.
+
+    Expects a ``<tool_call>`` block containing JSON with nested
+    ``arguments``.  Falls back to JSON repair for truncated outputs.
+
+    Raises ``ValueError`` when no parseable action is found.
+    """
+    if "<tool_call>" not in output_text:
+        raise ValueError(
+            f"Failed to parse action from model output: "
+            f"no <tool_call> block found"
+        )
+    try:
+        tool_call_block = output_text.split("<tool_call>\n")[1]
+        json_str = tool_call_block.split("}}\n")[0] + "}}"
+        return json.loads(json_str)
+    except (IndexError, json.JSONDecodeError):
+        pass
+
+    # Fallback: try repairing truncated JSON
+    try:
+        tool_call_block = output_text.split("<tool_call>")[1].strip()
+        repaired = repair_json(tool_call_block)
+        result = json.loads(repaired)
+        if "arguments" in result and "action" in result.get("arguments", {}):
+            return result
+    except (IndexError, json.JSONDecodeError):
+        pass
+
+    raise ValueError(f"Failed to parse action from model output: {output_text!r}")
+
+
+# ---------------------------------------------------------------------------
 
 
 class AdbTools:

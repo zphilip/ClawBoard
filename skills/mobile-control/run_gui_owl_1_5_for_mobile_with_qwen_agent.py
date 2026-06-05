@@ -23,6 +23,8 @@ from utils import (
     AdbTools,
     annotate_screenshot,
     build_messages,
+    parse_action,
+    repair_json,
     resolve_app_name_via_llm,
     smart_resize,
     GUIOwlWrapper
@@ -56,65 +58,6 @@ def parse_args():
     parser.add_argument("--app_resolver_model", type=str, default="qwen-plus",
                         help="Model name for the app-resolver LLM.")
     return parser.parse_args()
-
-
-def _repair_json(s):
-    """Close unclosed arrays/objects in a truncated JSON string."""
-    s = s.strip().rstrip(', \n\t')
-    stack = []
-    in_string = False
-    escape = False
-    for ch in s:
-        if escape:
-            escape = False
-            continue
-        if ch == '\\' and in_string:
-            escape = True
-            continue
-        if ch == '"':
-            in_string = not in_string
-            continue
-        if in_string:
-            continue
-        if ch in '{[':
-            stack.append(ch)
-        elif ch == '}' and stack and stack[-1] == '{':
-            stack.pop()
-        elif ch == ']' and stack and stack[-1] == '[':
-            stack.pop()
-    closing = {'[': ']', '{': '}'}
-    for opener in reversed(stack):
-        s += closing[opener]
-    return s
-
-
-def parse_action(output_text):
-    """
-    Extract the action dict from the model's output text.
-    Expects a <tool_call> block containing JSON with nested 'arguments'.
-    Falls back to JSON repair for truncated outputs.
-    """
-    if "<tool_call>" not in output_text:
-        raise ValueError(f"Failed to parse action from model output: no <tool_call> block found")
-    try:
-        tool_call_block = output_text.split("<tool_call>\n")[1]
-        json_str = tool_call_block.split("}}\n")[0] + "}}"
-        return json.loads(json_str)
-    except (IndexError, json.JSONDecodeError):
-        pass
-
-    # Fallback: try repairing truncated JSON
-    try:
-        tool_call_block = output_text.split("<tool_call>")[1].strip()
-        repaired = _repair_json(tool_call_block)
-        result = json.loads(repaired)
-        # Validate minimum required fields
-        if "arguments" in result and "action" in result.get("arguments", {}):
-            return result
-    except (IndexError, json.JSONDecodeError):
-        pass
-
-    raise ValueError(f"Failed to parse action from model output: {output_text!r}")
 
 
 def rescale_coordinates(action_parameter, resized_width, resized_height):

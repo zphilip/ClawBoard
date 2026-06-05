@@ -44,11 +44,21 @@ from utils import (
     ERROR_CALLING_LLM,
     find_element_at_coordinates,
     find_matching_element,
+    parse_action,
+    repair_json,
     resolve_app_name_via_llm,
     smart_resize,
     GUIOwlWrapper,
     summarise_ui_dump,
     SupervisorLLM,
+)
+
+from runner.coords import (
+    action_has_out_of_range_coords,
+    bucketed_action_sig,
+    detect_relaxed_cycle,
+    rescale_coordinates,
+    validate_coordinate_drift,
 )
 
 
@@ -120,92 +130,6 @@ def parse_args():
     return parser.parse_args()
 
 
-def _repair_json(s):
-    """Close unclosed arrays/objects in a truncated JSON string."""
-    s = s.strip().rstrip(', \n\t')
-    stack = []
-    in_string = False
-    escape = False
-    for ch in s:
-        if escape:
-            escape = False
-            continue
-        if ch == '\\' and in_string:
-            escape = True
-            continue
-        if ch == '"':
-            in_string = not in_string
-            continue
-        if in_string:
-            continue
-        if ch in '{[':
-            stack.append(ch)
-        elif ch == '}' and stack and stack[-1] == '{':
-            stack.pop()
-        elif ch == ']' and stack and stack[-1] == '[':
-            stack.pop()
-    closing = {'[': ']', '{': '}'}
-    for opener in reversed(stack):
-        s += closing[opener]
-    return s
-
-
-def parse_action(output_text):
-    """
-    Extract the action dict from the model's output text.
-    Expects a <tool_call> block containing JSON with nested 'arguments'.
-    Falls back to JSON repair for truncated outputs.
-    """
-    if "<tool_call>" not in output_text:
-        raise ValueError(f"Failed to parse action from model output: no <tool_call> block found")
-    try:
-        tool_call_block = output_text.split("<tool_call>\n")[1]
-        json_str = tool_call_block.split("}}\n")[0] + "}}"
-        return json.loads(json_str)
-    except (IndexError, json.JSONDecodeError):
-        pass
-
-    # Fallback: try repairing truncated JSON
-    try:
-        tool_call_block = output_text.split("<tool_call>")[1].strip()
-        repaired = _repair_json(tool_call_block)
-        result = json.loads(repaired)
-        # Validate minimum required fields
-        if "arguments" in result and "action" in result.get("arguments", {}):
-            return result
-    except (IndexError, json.JSONDecodeError):
-        pass
-
-    raise ValueError(f"Failed to parse action from model output: {output_text!r}")
-
-
-def rescale_coordinates(action_parameter, resized_width, resized_height):
-    """
-    Convert normalized (0-1000) coordinates to actual pixel coordinates
-    based on the resized image dimensions.
-    """
-    _raw_coords: dict[str, list[int]] = {}
-    for key in ("coordinate", "coordinate1", "coordinate2"):
-        if key in action_parameter:
-            _raw_coords[key] = list(action_parameter[key])
-            # Backward compatibility: old memory records may store absolute pixels.
-            # If either axis exceeds 1000, treat it as already-resolved pixels.
-            if action_parameter[key][0] > 1000 or action_parameter[key][1] > 1000:
-                action_parameter[key][0] = int(action_parameter[key][0])
-                action_parameter[key][1] = int(action_parameter[key][1])
-            else:
-                action_parameter[key][0] = int(
-                    action_parameter[key][0] / 1000 * resized_width
-                )
-                action_parameter[key][1] = int(
-                    action_parameter[key][1] / 1000 * resized_height
-                )
-    if _raw_coords:
-        print(
-            f"[COORD DEBUG] raw={_raw_coords} -> scaled={{{', '.join(f'{k}: {action_parameter[k]}' for k in _raw_coords)}}} "
-            f"(resized={resized_width}x{resized_height})"
-        )
-    return action_parameter
 
 
 def handle_open_action(
@@ -268,132 +192,6 @@ def handle_open_action(
     print(f"[APP NOT FOUND] Could not resolve app: {display_name!r}. Continuing loop.")
     return False
 
-
-def _memory_action_has_out_of_range_coords(action_args: dict) -> bool:
-    """Return True if action has coordinate values outside normalized 0-1000 range."""
-    for key in ("coordinate", "coordinate1", "coordinate2"):
-        if key not in action_args:
-            continue
-        value = action_args.get(key)
-        if not isinstance(value, (list, tuple)) or len(value) != 2:
-            continue
-        try:
-            x = float(value[0])
-            y = float(value[1])
-        except (TypeError, ValueError):
-            continue
-        if x < 0 or y < 0 or x > 1000 or y > 1000:
-            return True
-    return False
-
-
-def _normalized_click_distance(a: object, b: object) -> float | None:
-    """Distance between two normalized click coordinates (0-1000 space)."""
-    if not isinstance(a, (list, tuple)) or not isinstance(b, (list, tuple)):
-        return None
-    if len(a) != 2 or len(b) != 2:
-        return None
-    try:
-        ax = float(a[0])
-        ay = float(a[1])
-        bx = float(b[0])
-        by = float(b[1])
-    except (TypeError, ValueError):
-        return None
-    dx = ax - bx
-    dy = ay - by
-    return (dx * dx + dy * dy) ** 0.5
-
-
-_COORD_BUCKET_SIZE = 100  # round to nearest 100 in 0-1000 normalized space
-
-
-def _bucket_coord(coord: object) -> str:
-    """Round a normalized (0-1000) [x, y] coordinate to a coarse bucket string.
-
-    Used by the relaxed loop detector so that clicks on different buttons
-    (hundreds of pixels apart) are distinguished, while coordinate jitter
-    on the same button (±10-20 units) collapses to the same bucket.
-
-    Returns '' when the input is not a valid 2-element coordinate list.
-    """
-    if not isinstance(coord, (list, tuple)) or len(coord) != 2:
-        return ""
-    try:
-        x = round(float(coord[0]) / _COORD_BUCKET_SIZE) * _COORD_BUCKET_SIZE
-        y = round(float(coord[1]) / _COORD_BUCKET_SIZE) * _COORD_BUCKET_SIZE
-    except (TypeError, ValueError):
-        return ""
-    return f"{int(x)},{int(y)}"
-
-
-def _validate_coordinate_drift(cached_action_args: dict, 
-                             target_element_sig: Optional[dict],
-                             current_ui_xml: str,
-                             current_screenshot_path: str,
-                             max_drift_threshold: float = MEMORY_CLICK_OVERRIDE_MAX_DRIFT) -> bool:
-    """验证缓存坐标与当前屏幕上目标元素位置之间的漂移是否在可接受范围内。"""
-    if not target_element_sig or not current_ui_xml:
-        return True  # 无法验证，假设有效
-        
-    try:
-        # 获取当前屏幕上的目标元素
-        current_element = find_matching_element(target_element_sig, current_ui_xml)
-        if not current_element:
-            return False  # 目标元素不存在，不应使用缓存坐标
-            
-        # 获取缓存的归一化坐标
-        cached_coord = cached_action_args.get("coordinate", [0, 0])
-        
-        # 获取当前截图尺寸
-        from PIL import Image
-        img = Image.open(current_screenshot_path)
-        current_width, current_height = img.size
-        
-        # 计算当前元素中心的归一化坐标 (0-1000)
-        bounds = current_element["bounds"]
-        center_x = (bounds[0] + bounds[2]) // 2
-        center_y = (bounds[1] + bounds[3]) // 2
-        normalized_current_x = center_x * 1000 / current_width
-        normalized_current_y = center_y * 1000 / current_height
-        
-        # 计算漂移距离
-        drift_distance = _normalized_click_distance(
-            [normalized_current_x, normalized_current_y], 
-            cached_coord
-        )
-        
-        # 检查是否超过阈值
-        if drift_distance is not None and drift_distance <= max_drift_threshold:
-            return True
-        else:
-            _log_t(f"[MEMORY] Coordinate drift too large: {drift_distance} > {max_drift_threshold}")
-            return False
-            
-    except Exception as e:
-        _log_t(f"[MEMORY] Error validating coordinate drift: {e}")
-        return False
-
-
-def _bucketed_action_sig(action_type: str, action_args: dict) -> str:
-    """Build a relaxed signature with bucketed coordinates.
-
-    For coordinate-based actions (click, long_press, swipe), appends a
-    bucketed coordinate suffix so that taps on different screen regions
-    produce different signatures.  For non-coordinate actions (type, wait,
-    open, system_button, etc.), returns just the action type — same as
-    the old relaxed sig.
-    """
-    coord_keys = ("coordinate", "coordinate1", "coordinate2")
-    buckets: list[str] = []
-    for key in coord_keys:
-        if key in action_args:
-            b = _bucket_coord(action_args[key])
-            if b:
-                buckets.append(b)
-    if buckets:
-        return f"{action_type}|{'|'.join(buckets)}"
-    return action_type
 
 
 def main():
@@ -633,18 +431,6 @@ def main():
     _SUP_APPROVE_CACHE_TTL_SECONDS = 180
     _SUP_APPROVE_CACHE_MAX_SIZE = 200
     _STATE_ACTION_LOOP_THRESHOLD = 3
-
-    def _detect_relaxed_cycle(seq: list[str], min_period: int = 2, max_period: int = 4) -> tuple[bool, int, list[str]]:
-        """Detect whether the tail of seq forms a repeated cycle pattern."""
-        n = len(seq)
-        for period in range(min_period, max_period + 1):
-            if n < period * 2:
-                continue
-            tail1 = seq[-period:]
-            tail2 = seq[-2 * period:-period]
-            if tail1 == tail2:
-                return True, period, tail1
-        return False, 0, []
 
     # Keywords in the model's action text that signal it is on the wrong screen.
     # When any of these appear the runner injects a Home-correction immediately.
@@ -1124,7 +910,7 @@ def main():
                             "[MEMORY] pre-LLM fastpath skipped: cached state/action "
                             "was already replayed in this run"
                         )
-                    elif _memory_action_has_out_of_range_coords(_mem_args):
+                    elif action_has_out_of_range_coords(_mem_args):
                         _memory_reason = "cached_action_non_normalized_coords"
                         _log_t(
                             "[MEMORY] pre-LLM fastpath skipped: cached coords are out of 0-1000 range"
@@ -1137,11 +923,12 @@ def main():
                         # again over ADB.
                         try:
                             if _ui_xml:
-                                _drift_valid = _validate_coordinate_drift(
+                                _drift_valid = validate_coordinate_drift(
                                     _mem_args,
                                     _mout_pre.action.target_element_signature,
                                     _ui_xml,
-                                    screenshot_path
+                                    screenshot_path,
+                                    log_func=_log_t,
                                 )
                                 if not _drift_valid:
                                     _memory_reason = "cached_action_coordinate_drift_too_large"
@@ -1342,7 +1129,7 @@ def main():
         # Relaxed detector: bucket coordinates so that jitter on the same
         # button (±10-20 units) collapses to one bucket, while clicks on
         # different buttons (hundreds of units apart) stay distinct.
-        _bucketed_sig = _bucketed_action_sig(_step_action_type, _step_action_args)
+        _bucketed_sig = bucketed_action_sig(_step_action_type, _step_action_args)
         _step_state_action_relaxed_sig = f"{_step_state_key}|{_bucketed_sig}"
 
         # State-action loop detector: same scene + same action repeated several times.
@@ -1364,7 +1151,7 @@ def main():
             if len(_recent_state_action_relaxed) > 12:
                 _recent_state_action_relaxed.pop(0)
 
-        _loop_cycle_detected, _loop_period, _loop_pattern = _detect_relaxed_cycle(_recent_state_action_relaxed)
+        _loop_cycle_detected, _loop_period, _loop_pattern = detect_relaxed_cycle(_recent_state_action_relaxed)
         _log_t(
             "[LOOP DEBUG] "
             f"strict_count={_same_state_action_count} "
@@ -1431,8 +1218,8 @@ def main():
                         # validated in a prior run and confirmed by the VLM.
                         _cached_type = _mout.action.action_type
                         _cached_args = _mout.action.arguments or {}
-                        _vlm_bucketed = _bucketed_action_sig(_step_action_type, _step_action_args)
-                        _cached_bucketed = _bucketed_action_sig(_cached_type, _cached_args)
+                        _vlm_bucketed = bucketed_action_sig(_step_action_type, _step_action_args)
+                        _cached_bucketed = bucketed_action_sig(_cached_type, _cached_args)
                         if _step_action_type == _cached_type and _vlm_bucketed == _cached_bucketed:
                             _memory_confirmed_vlm = True
                             _log_t(
