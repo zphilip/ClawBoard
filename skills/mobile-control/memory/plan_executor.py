@@ -132,6 +132,30 @@ class RecordedStep:
         self.target_element_signature = target_element_signature
 
 
+def _step_is_duplicate(prev: "PlanStep", rec: "RecordedStep") -> bool:
+    """Return True if *rec* is identical to *prev* and should be skipped.
+
+    Compares action_type and the semantically meaningful parts of
+    action_args, ignoring jitter in coordinates for click actions.
+    """
+    if prev.action_type != rec.action_type:
+        return False
+    if prev.action_type == "type":
+        return prev.action_args.get("text") == rec.action_args.get("text")
+    if prev.action_type in ("open", "system_button", "key"):
+        return prev.action_args == rec.action_args
+    # For click / long_press / swipe — compare bucketed coords so jitter
+    # (±10-20 units) on the same button collapses.
+    return _bucketed_action_sig(prev.action_type, prev.action_args) == \
+           _bucketed_action_sig(rec.action_type, rec.action_args)
+
+
+def _bucketed_action_sig(action_type: str, action_args: dict) -> str:
+    """Coarse action signature with bucketed coordinates (imported lazily)."""
+    from runner.coords import bucketed_action_sig
+    return bucketed_action_sig(action_type, action_args)
+
+
 class PlanExecutor:
     """Manages plan lookup, step-by-step replay, and plan recording."""
 
@@ -370,7 +394,7 @@ class PlanExecutor:
         ui_fp_ok = True
         _skip_fp_check = (
             _element_matched
-            or step.action_type == "open"
+            or step.action_type in ("open", "type")
             or (
                 step.action_type == "system_button"
                 and step.action_args.get("button") in ("Home", "Back")
@@ -533,6 +557,12 @@ class PlanExecutor:
 
         plan_steps: list[PlanStep] = []
         for rec in self._recorded_steps:
+            # Deduplicate consecutive identical steps — a VLM retry loop
+            # (e.g. typing the same text 3 times in a row) should only
+            # produce one plan step.  Compare action_type + action_args
+            # against the previous step; skip if identical.
+            if plan_steps and _step_is_duplicate(plan_steps[-1], rec):
+                continue
             plan_steps.append(PlanStep(
                 step_index=rec.step_index,
                 action_type=rec.action_type,
