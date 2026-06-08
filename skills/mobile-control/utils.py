@@ -2069,16 +2069,33 @@ class SupervisorLLM:
                     max_tokens=1024,
                     **(dict(extra_body=_extra_body) if _extra_body else {}),
                 )
-                # With reasoning_split=True, content has only the JSON verdict;
-                # the chain-of-thought is in reasoning_details (we don't need it).
+                # With reasoning_split=True, the verdict JSON should be in content
+                # and the chain-of-thought in reasoning_details/reasoning_content.
+                # Some model versions put everything in reasoning and leave
+                # content empty — fall back to reasoning text in that case.
                 raw = (resp.choices[0].message.content or "").strip()
                 if not raw:
-                    if _sup_try < _sup_max_attempts:
-                        print(f"[SUPERVISOR] empty response — retrying ({_sup_try}/{_sup_max_attempts})")
-                        time.sleep(2)
-                        continue
-                    print("[SUPERVISOR] empty response after retries — approving by default")
-                    return {"verdict": "approve"}
+                    # Try to recover the verdict from reasoning text
+                    _reasoning = (
+                        getattr(resp.choices[0].message, 'reasoning_content', None)
+                        or getattr(resp.choices[0].message, 'reasoning_details', None)
+                        or ""
+                    )
+                    if isinstance(_reasoning, list):
+                        _reasoning = " ".join(
+                            getattr(r, 'text', str(r)) for r in _reasoning
+                        )
+                    _reasoning = str(_reasoning).strip()
+                    if _reasoning:
+                        print("[SUPERVISOR] content empty — scanning reasoning for verdict")
+                        raw = _reasoning
+                    else:
+                        if _sup_try < _sup_max_attempts:
+                            print(f"[SUPERVISOR] empty response — retrying ({_sup_try}/{_sup_max_attempts})")
+                            time.sleep(2)
+                            continue
+                        print("[SUPERVISOR] empty response after retries — approving by default")
+                        return {"verdict": "approve"}
                 parsed = _try_parse_json(raw)
                 if parsed:
                     v = str(parsed.get("verdict", "")).lower()
@@ -2191,12 +2208,25 @@ class SupervisorLLM:
                 )
                 raw = (resp.choices[0].message.content or "").strip()
                 if not raw:
-                    if _tc_try < _tc_max_attempts:
-                        print(f"[SUPERVISOR] empty task-complete response — retrying ({_tc_try}/{_tc_max_attempts})")
-                        time.sleep(2)
-                        continue
-                    print("[SUPERVISOR] empty task-complete response after retries — assuming NOT complete")
-                    return {"complete": False, "reason": "empty response — supervisor could not verify completion"}
+                    _reasoning = (
+                        getattr(resp.choices[0].message, 'reasoning_content', None)
+                        or getattr(resp.choices[0].message, 'reasoning_details', None)
+                        or ""
+                    )
+                    if isinstance(_reasoning, list):
+                        _reasoning = " ".join(
+                            getattr(r, 'text', str(r)) for r in _reasoning
+                        )
+                    _reasoning = str(_reasoning).strip()
+                    if _reasoning:
+                        raw = _reasoning
+                    else:
+                        if _tc_try < _tc_max_attempts:
+                            print(f"[SUPERVISOR] empty task-complete response — retrying ({_tc_try}/{_tc_max_attempts})")
+                            time.sleep(2)
+                            continue
+                        print("[SUPERVISOR] empty task-complete response after retries — assuming NOT complete")
+                        return {"complete": False, "reason": "empty response — supervisor could not verify completion"}
                 parsed = _try_parse_json(raw)
                 if parsed is not None:
                     complete_val = parsed.get("complete")
