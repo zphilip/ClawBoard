@@ -88,14 +88,20 @@ class PlanStep:
     Stores the action to replay plus a lightweight verification signal
     (expected foreground package after the action) so the runner can
     confirm the step worked without calling the VLM.
+
+    For click actions, ``target_element_signature`` captures the UI
+    element that was targeted (resource-id, text, bounds).  On replay
+    the executor attempts to locate this element on the current screen
+    and tap its centre — coordinates become resilient to layout drift.
     """
     step_index: int
     action_type: str                       # click, type, open, system_button, swipe, key ...
     action_args: dict[str, Any]            # normalised 0-1000 coordinates, text, button ...
     expected_pkg: str = ""                 # foreground package expected AFTER this step
     action_description: str = ""           # human-readable summary (from VLM reasoning)
-    pre_action_pkg: str = ""               # foreground package BEFORE this step (for extra validation)
-    post_action_ui_fp: str = ""            # UI fingerprint AFTER this step (for visual verification during replay)
+    pre_action_pkg: str = ""               # foreground package BEFORE this step
+    post_action_ui_fp: str = ""            # UI fingerprint AFTER this step
+    target_element_signature: dict[str, Any] | None = None  # For element-based targeting
 
 
 @dataclass

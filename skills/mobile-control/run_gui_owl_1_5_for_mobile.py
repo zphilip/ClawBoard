@@ -1734,6 +1734,19 @@ def main():
                     _post_action_ui_fp = build_ui_fingerprint(_post_pkg, _post_summary)
                 except Exception:
                     pass
+                # Capture target element signature for click actions so
+                # plan replay can use element-based targeting later.
+                _plan_target_el: dict | None = None
+                if _step_action_type == "click" and _ui_xml:
+                    try:
+                        _coord = _step_action_args.get("coordinate", [0, 0])
+                        if len(_coord) >= 2:
+                            _plan_target_el = find_element_at_coordinates(
+                                _ui_xml, int(_coord[0]), int(_coord[1]),
+                            )
+                    except Exception:
+                        pass
+
                 _plan_executor.record_step(
                     step_index=step_id,
                     action_type=_step_action_type,
@@ -1742,6 +1755,7 @@ def main():
                     post_action_pkg=_post_pkg,
                     action_description=_step_action_description[:200] if _step_action_description else "",
                     post_action_ui_fp=_post_action_ui_fp,
+                    target_element_signature=_plan_target_el,
                 )
             except Exception:
                 pass

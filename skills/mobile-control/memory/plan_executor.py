@@ -53,6 +53,17 @@ from typing import Any, TYPE_CHECKING
 from .models import PlanStep, TaskPlan
 from .plan_store import PlanStore
 
+# Lazy import to avoid circular dependency at module load time.
+_find_matching_element = None
+
+
+def _get_find_matching_element():
+    global _find_matching_element
+    if _find_matching_element is None:
+        from utils import find_matching_element as _fme
+        _find_matching_element = _fme
+    return _find_matching_element
+
 if TYPE_CHECKING:
     # AdbTools is imported at runtime; the type hint is only for IDE support.
     from utils import AdbTools  # pragma: no cover
@@ -97,7 +108,7 @@ class RecordedStep:
     __slots__ = (
         "step_index", "action_type", "action_args",
         "pre_action_pkg", "post_action_pkg", "action_description",
-        "post_action_ui_fp",
+        "post_action_ui_fp", "target_element_signature",
     )
 
     def __init__(
@@ -109,6 +120,7 @@ class RecordedStep:
         post_action_pkg: str = "",
         action_description: str = "",
         post_action_ui_fp: str = "",
+        target_element_signature: dict[str, Any] | None = None,
     ):
         self.step_index = step_index
         self.action_type = action_type
@@ -117,6 +129,7 @@ class RecordedStep:
         self.post_action_pkg = post_action_pkg
         self.action_description = action_description
         self.post_action_ui_fp = post_action_ui_fp
+        self.target_element_signature = target_element_signature
 
 
 class PlanExecutor:
@@ -239,19 +252,51 @@ class PlanExecutor:
     def execute_and_verify(self, step: PlanStep) -> bool:
         """Execute one plan step via ADB and verify the result.
 
-        Verification is done in three layers:
-          1. Foreground package check (was the correct app still active?)
-          2. Post-action screenshot + UI dump (saved for debugging)
-          3. UI fingerprint comparison (did the UI change as expected?)
+        For click actions with a ``target_element_signature``, the
+        executor attempts to locate the same UI element on the current
+        screen (by resource-id, then text, then content-desc) and
+        clicks its centre.  This makes click steps resilient to layout
+        drift between runs.
 
-        For ``type`` actions, an extra settle delay is applied and the UI
-        is checked for new interactive elements (search suggestions).
-
-        Returns True if the step executed successfully and passed all
-        applicable verification checks.  Returns False otherwise.
+        Verification layers:
+          1. Foreground package check
+          2. (click with element match) element-found confirmation
+          3. UI fingerprint comparison (skipped for Home/Back/open,
+             AND for clicks that matched their target element)
         """
         if step.action_type not in _REPLAYABLE_ACTION_TYPES:
             return False
+
+        # ── Element-based targeting for clicks ────────────────────────
+        _element_matched = False
+        if (
+            step.action_type == "click"
+            and step.target_element_signature is not None
+        ):
+            try:
+                _ui_xml = self.adb.get_ui_dump()
+                _fme = _get_find_matching_element()
+                _current_el = _fme(step.target_element_signature, _ui_xml)
+                if _current_el:
+                    _bounds = _current_el["bounds"]
+                    _cx = (_bounds[0] + _bounds[2]) // 2
+                    _cy = (_bounds[1] + _bounds[3]) // 2
+                    # Override stored coords with current element centre.
+                    step.action_args["coordinate"] = [_cx, _cy]
+                    _element_matched = True
+                    print(
+                        f"[PLAN] element match: "
+                        f"id={_current_el.get('resource_id','')} "
+                        f"text={_current_el.get('text','')[:40]} "
+                        f"centre=({_cx},{_cy})"
+                    )
+                else:
+                    print(
+                        "[PLAN] element NOT found on current screen "
+                        "— falling back to stored coordinates"
+                    )
+            except Exception as _el_err:
+                print(f"[PLAN] element lookup error ({_el_err}) — falling back")
 
         try:
             ok = self._execute_action(step)
@@ -287,9 +332,7 @@ class PlanExecutor:
                 self.end_replay()
             return False
 
-        # Verification layer 2: post-action screenshot + UI dump
-        # Take a screenshot for debugging (saved to plan_screenshots/)
-        post_screenshot_path = ""
+        # Verification layer 2: post-action screenshot
         if self._screenshot_dir is not None:
             try:
                 self._screenshot_dir.mkdir(parents=True, exist_ok=True)
@@ -302,12 +345,14 @@ class PlanExecutor:
                 pass
 
         # Verification layer 3: UI fingerprint comparison.
-        # SKIP for actions whose post-action screen ALWAYS differs between
-        # runs: Home/Back (different launcher widgets), open (different
-        # ads and splash screens).  Package check (layer 1) is sufficient.
+        # SKIP for:
+        #   - Home/Back (launcher screens differ every run)
+        #   - open        (post-launch ads / splash screens differ)
+        #   - click with element match (element lookup IS verification)
         ui_fp_ok = True
         _skip_fp_check = (
-            step.action_type == "open"
+            _element_matched
+            or step.action_type == "open"
             or (
                 step.action_type == "system_button"
                 and step.action_args.get("button") in ("Home", "Back")
@@ -321,21 +366,16 @@ class PlanExecutor:
                 if _post_fp != step.post_action_ui_fp:
                     ui_fp_ok = False
             except Exception:
-                # UI verification failed — treat as unverified
                 ui_fp_ok = False
 
         # For type actions: extra check — did new interactive elements appear?
-        # (search suggestions / autocomplete results)
         type_ok = True
         if step.action_type == "type" and self._ui_summariser:
             try:
                 _post_xml = self.adb.get_ui_dump()
                 _post_summary = self._ui_summariser(_post_xml)
                 _typed_text = step.action_args.get("text", "")
-                # Count lines (interactive elements) in post-action UI
                 _new_lines = [l for l in (_post_summary or "").splitlines() if l.strip()]
-                # The typed text itself may be one element; we need OTHER new elements
-                # (suggestions) to confirm the search actually triggered.
                 _non_text_elements = [
                     l for l in _new_lines
                     if _typed_text.lower() not in l.lower()
@@ -355,6 +395,8 @@ class PlanExecutor:
             _parts.append("ui_fp_mismatch")
         if not type_ok:
             _parts.append("type_no_search_results")
+        if _element_matched:
+            _parts.append("element_matched")
         self.last_verify_detail = "; ".join(_parts) if _parts else "all_passed"
 
         if verified:
@@ -440,6 +482,7 @@ class PlanExecutor:
         post_action_pkg: str = "",
         action_description: str = "",
         post_action_ui_fp: str = "",
+        target_element_signature: dict[str, Any] | None = None,
     ) -> None:
         """Record a step executed during the current run for later plan creation."""
         if action_type not in _REPLAYABLE_ACTION_TYPES:
@@ -452,6 +495,7 @@ class PlanExecutor:
             post_action_pkg=post_action_pkg,
             action_description=action_description,
             post_action_ui_fp=post_action_ui_fp,
+            target_element_signature=target_element_signature,
         ))
 
     def build_and_store_plan(
@@ -479,6 +523,7 @@ class PlanExecutor:
                 action_description=rec.action_description,
                 pre_action_pkg=rec.pre_action_pkg,
                 post_action_ui_fp=rec.post_action_ui_fp,
+                target_element_signature=rec.target_element_signature,
             ))
 
         now = time.time()
