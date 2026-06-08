@@ -205,24 +205,34 @@ class PlanExecutor:
     def resume_replay(self) -> None:
         """Resume replay after a VLM-handled step.
 
-        Only resumes if the current plan step's expected_pkg matches the
-        actual foreground package — i.e. the VLM got us back on track.
+        Advances the cursor past the step that failed (the VLM handled it),
+        then scans forward to find the next step whose pre_action_pkg
+        matches the current foreground package.  If the VLM got us to a
+        different screen than the plan expected, we skip ahead to the
+        right position instead of retrying the same failing step forever.
         """
         if not self._paused or self._replay_plan is None:
             return
+        # Advance past the failed step — the VLM already handled it.
+        self._replay_cursor += 1
         if self._replay_cursor >= len(self._replay_plan.steps):
             self.end_replay()
             return
-        # Verify we're where the plan expects us to be
+        # Find the next step that matches our current screen.
         try:
             current_pkg = self.adb.get_foreground_package() or ""
         except Exception:
             current_pkg = ""
-        next_step = self._replay_plan.steps[self._replay_cursor]
-        if next_step.pre_action_pkg and current_pkg != next_step.pre_action_pkg:
-            # VLM didn't get us to the expected screen — abandon replay
-            self.end_replay()
-            return
+        if current_pkg:
+            for i in range(self._replay_cursor, len(self._replay_plan.steps)):
+                step = self._replay_plan.steps[i]
+                if step.pre_action_pkg and step.pre_action_pkg == current_pkg:
+                    self._replay_cursor = i
+                    break
+            else:
+                # No step matches the current screen — abandon replay.
+                self.end_replay()
+                return
         self._paused = False
         self._consecutive_failures = 0
 
@@ -293,10 +303,18 @@ class PlanExecutor:
                 else:
                     print(
                         "[PLAN] element NOT found on current screen "
-                        "— falling back to stored coordinates"
+                        "— skipping step (screen has changed, stored coords are stale)"
                     )
+                    self._consecutive_failures += 1
+                    if self._consecutive_failures >= _MAX_CONSECUTIVE_FAILURES:
+                        self.end_replay()
+                    return False
             except Exception as _el_err:
-                print(f"[PLAN] element lookup error ({_el_err}) — falling back")
+                print(f"[PLAN] element lookup error ({_el_err}) — skipping step")
+                self._consecutive_failures += 1
+                if self._consecutive_failures >= _MAX_CONSECUTIVE_FAILURES:
+                    self.end_replay()
+                return False
 
         try:
             ok = self._execute_action(step)
