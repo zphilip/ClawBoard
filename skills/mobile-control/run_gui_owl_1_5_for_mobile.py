@@ -959,44 +959,57 @@ def main():
                         _log_t(
                             "[MEMORY] pre-LLM fastpath skipped: cached coords are out of 0-1000 range"
                         )
-                    elif (_fastpath_action_type == "click" and
-                          hasattr(_mout_pre.action, 'target_element_signature') and
-                          _mout_pre.action.target_element_signature is not None):
-                        # 添加漂移验证检查 — reuse the UI dump already captured
-                        # at step start (line ~922) instead of calling get_ui_dump()
-                        # again over ADB.
-                        try:
-                            if _ui_xml:
-                                _drift_valid = validate_coordinate_drift(
-                                    _mem_args,
-                                    _mout_pre.action.target_element_signature,
-                                    _ui_xml,
-                                    screenshot_path,
-                                    log_func=_log_t,
-                                )
-                                if not _drift_valid:
-                                    _memory_reason = "cached_action_coordinate_drift_too_large"
-                                    _log_t(
-                                        "[MEMORY] pre-LLM fastpath skipped: coordinate drift exceeds threshold"
+                    elif _fastpath_action_type == "click":
+                        # Click actions MUST have a target_element_signature so
+                        # we can validate coordinate drift against the current
+                        # screen.  Old memory records written before the
+                        # element-signature code existed have no signature and
+                        # must NOT be replayed — a cached click coordinate that
+                        # was valid on a different screen 4 days ago can land
+                        # anywhere on today's screen.
+                        if (hasattr(_mout_pre.action, 'target_element_signature') and
+                                _mout_pre.action.target_element_signature is not None):
+                            # Drift validation — reuse the UI dump already captured
+                            # at step start instead of calling get_ui_dump() again
+                            # over ADB.
+                            try:
+                                if _ui_xml:
+                                    _drift_valid = validate_coordinate_drift(
+                                        _mem_args,
+                                        _mout_pre.action.target_element_signature,
+                                        _ui_xml,
+                                        screenshot_path,
+                                        log_func=_log_t,
                                     )
+                                    if not _drift_valid:
+                                        _memory_reason = "cached_action_coordinate_drift_too_large"
+                                        _log_t(
+                                            "[MEMORY] pre-LLM fastpath skipped: coordinate drift exceeds threshold"
+                                        )
+                                    else:
+                                        _pre_llm_action_parameter = _mem_args
+                                        _used_memory_fastpath = True
+                                        _memory_overrode_action = True
+                                        _memory_fastpath_replayed.add(_replay_sig)
+                                        _last_fastpath_state_key = _step_state_key
+                                        _log_t(
+                                            f"[MEMORY] pre-LLM fastpath score={_memory_score:.3f} action={_pre_llm_action_parameter}"
+                                        )
                                 else:
-                                    _pre_llm_action_parameter = _mem_args
-                                    _used_memory_fastpath = True
-                                    _memory_overrode_action = True
-                                    _memory_fastpath_replayed.add(_replay_sig)
-                                    _last_fastpath_state_key = _step_state_key
+                                    _memory_reason = "cached_action_cannot_validate_drift"
                                     _log_t(
-                                        f"[MEMORY] pre-LLM fastpath score={_memory_score:.3f} action={_pre_llm_action_parameter}"
+                                        "[MEMORY] pre-LLM fastpath skipped: cannot validate coordinate drift without UI dump"
                                     )
-                            else:
-                                # 无法获取UI dump，安全起见跳过缓存
-                                _memory_reason = "cached_action_cannot_validate_drift"
-                                _log_t(
-                                    "[MEMORY] pre-LLM fastpath skipped: cannot validate coordinate drift without UI dump"
-                                )
-                        except Exception as e:
-                            _memory_reason = f"cached_action_drift_validation_error:{e.__class__.__name__}"
-                            _log_t(f"[MEMORY] pre-LLM fastpath skipped: drift validation error ({e!r})")
+                            except Exception as e:
+                                _memory_reason = f"cached_action_drift_validation_error:{e.__class__.__name__}"
+                                _log_t(f"[MEMORY] pre-LLM fastpath skipped: drift validation error ({e!r})")
+                        else:
+                            _memory_reason = "cached_click_missing_element_signature"
+                            _log_t(
+                                "[MEMORY] pre-LLM fastpath skipped: cached click has no "
+                                "target_element_signature (record is too old — delete "
+                                "records.jsonl to start fresh)"
+                            )
                     else:
                         _pre_llm_action_parameter = _mem_args
                         _used_memory_fastpath = True
