@@ -1351,8 +1351,15 @@ def main():
                 if _override_tc and "arguments" in _override_tc:
                     action = _override_tc
                     action_parameter = action["arguments"]
+                    # Update step tracking to reflect the override action,
+                    # NOT the VLM's rejected proposal.  Without this the
+                    # memory store and plan recorder learn the wrong
+                    # action as a "success", and memory_confirmed_vlm
+                    # later skips the supervisor for the same bad action.
+                    _step_action_type = str(action_parameter.get("action", ""))
+                    _step_action_args = copy.deepcopy(action_parameter)
                     # Track supervisor override action globally
-                    _sup_action_sig = f"{action_parameter.get('action', '')}|{json.dumps(action_parameter, ensure_ascii=False, sort_keys=True)}"
+                    _sup_action_sig = f"{_step_action_type}|{json.dumps(_step_action_args, ensure_ascii=False, sort_keys=True)}"
                     _executed_actions_global.add(_sup_action_sig)
                     _sup_note = (
                         f"Action: [SUPERVISOR OVERRIDE] {_reason}\n"
