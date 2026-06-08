@@ -546,6 +546,10 @@ def main():
     _cache_fastpath_steps = 0       # memory pre-LLM fastpath
     _cache_plan_replay_steps = 0    # plan replay (VLM skipped)
     _cache_vlm_normal_steps = 0     # normal VLM call (primary or fallback)
+    # Supervisor feedback injection — when the supervisor overrides an action
+    # because the VLM is going against the task goal, the override reason is
+    # injected into the next VLM call so the model course-corrects.
+    _supervisor_feedback: str = ""
     for step_id in range(args.max_steps):
         _step_t0 = time.time()
         _step_metrics: dict[str, float] = {}
@@ -1041,8 +1045,17 @@ def main():
 
         # 2. Call the VLM (delegated to VLMProvider for primary + fallback chain).
         if _pre_llm_action_parameter is None:
+            # Inject supervisor feedback from previous overrides so the VLM
+            # knows why its action was rejected and course-corrects.
+            _effective_instruction = instruction
+            if _supervisor_feedback:
+                _effective_instruction = (
+                    f"{instruction}\n\n[IMPORTANT] Your previous action was "
+                    f"overridden: {_supervisor_feedback}"
+                )
+                _supervisor_feedback = ""  # clear after injection
             _vlm_result = _vlm_provider.call(
-                screenshot_path, instruction, history, args.model,
+                screenshot_path, _effective_instruction, history, args.model,
                 foreground_pkg=_fg_label,
                 ui_summary=_ui_summary,
                 installed_apps_hint=", ".join(_cached_inst_app_names[:80]),
@@ -1365,6 +1378,10 @@ def main():
             if (not _skip_supervisor) and _sup_verdict.get("verdict") == "override":
                 _reason = _sup_verdict.get("reason", "")
                 print(f"[SUPERVISOR] overriding action — {_reason}")
+                # Inject the override reason as feedback so the VLM
+                # knows why its action was wrong and course-corrects on
+                # the next step instead of repeating the same mistake.
+                _supervisor_feedback = _reason
                 _override_tc = _sup_verdict.get("tool_call", {})
                 if _override_tc and "arguments" in _override_tc:
                     action = _override_tc
