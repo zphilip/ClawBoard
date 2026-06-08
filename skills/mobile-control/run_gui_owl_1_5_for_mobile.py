@@ -527,6 +527,10 @@ def main():
     _perf_supervisor_total = 0.0
     _perf_vlm_primary_total = 0.0
     _perf_vlm_fallback_total = 0.0
+    # Cache-hit counters — aggregated across all steps.
+    _cache_fastpath_steps = 0       # memory pre-LLM fastpath
+    _cache_plan_replay_steps = 0    # plan replay (VLM skipped)
+    _cache_vlm_normal_steps = 0     # normal VLM call (primary or fallback)
     for step_id in range(args.max_steps):
         _step_t0 = time.time()
         _step_metrics: dict[str, float] = {}
@@ -551,6 +555,7 @@ def main():
             nonlocal _perf_steps
             nonlocal _perf_vlm_total, _perf_supervisor_total
             nonlocal _perf_vlm_primary_total, _perf_vlm_fallback_total
+            nonlocal _cache_fastpath_steps, _cache_plan_replay_steps, _cache_vlm_normal_steps
             if _step_summary_emitted:
                 return
             _step_summary_emitted = True
@@ -567,6 +572,14 @@ def main():
             _perf_supervisor_total += _sup_total
             _perf_vlm_primary_total += _llm_primary
             _perf_vlm_fallback_total += _llm_fallback
+
+            # Classify this step for the end-of-run cache-hit summary.
+            if _used_memory_fastpath and _provider_used == "plan-replay":
+                _cache_plan_replay_steps += 1
+            elif _used_memory_fastpath and _provider_used == "memory-fastpath":
+                _cache_fastpath_steps += 1
+            else:
+                _cache_vlm_normal_steps += 1
 
             _parts = [f"step={step_id}", f"outcome={_outcome}", f"total={time.time() - _step_t0:.2f}s"]
             for _k in (
@@ -1742,6 +1755,30 @@ def main():
         print(f"[TERMINATED] Reached max_steps={args.max_steps} without explicit completion.")
 
     print(f"[TERMINATION REASON] {termination_reason}")
+
+    # ── Cache-Hit Summary ──────────────────────────────────────────────
+    if _perf_steps > 0:
+        _cache_total = _cache_fastpath_steps + _cache_plan_replay_steps + _cache_vlm_normal_steps
+        _cache_hit_total = _cache_fastpath_steps + _cache_plan_replay_steps
+        _cache_hit_pct = (_cache_hit_total / max(_cache_total, 1)) * 100.0
+        _bar_width = 40
+        _hit_bars = int(_bar_width * _cache_hit_pct / 100)
+        _miss_bars = _bar_width - _hit_bars
+
+        print()
+        print("╔" + "═" * 58 + "╗")
+        print("║" + "  📊 CACHE-HIT SUMMARY".ljust(58) + "║")
+        print("╠" + "═" * 58 + "╣")
+        print(f"║  Plan-replay steps (VLM skipped):   {_cache_plan_replay_steps:>3d}".ljust(58) + "║")
+        print(f"║  Memory-fastpath steps (VLM skipped):{_cache_fastpath_steps:>3d}".ljust(58) + "║")
+        print(f"║  Normal VLM steps:                  {_cache_vlm_normal_steps:>3d}".ljust(58) + "║")
+        print(f"║  ─────────────────────────────────".ljust(58) + "║")
+        print(f"║  Total steps:                       {_cache_total:>3d}".ljust(58) + "║")
+        print(f"║  Cache HIT:  {_cache_hit_pct:5.1f}%  [{'█' * _hit_bars}{'░' * _miss_bars}]".ljust(58) + "║")
+        print(f"║  Cache MISS: {100.0 - _cache_hit_pct:5.1f}%  VLM calls: {_cache_vlm_normal_steps}".ljust(58) + "║")
+        print("╚" + "═" * 58 + "╝")
+        print()
+
     if _perf_steps > 0:
         _avg_vlm = _perf_vlm_total / _perf_steps
         _avg_sup = _perf_supervisor_total / _perf_steps
