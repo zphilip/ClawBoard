@@ -1227,7 +1227,14 @@ Rules:
 - For any task that asks you to "navigate to", "导航到", "开始导航", or "set navigation": showing a list of route options (route cards with distances and travel times) is NOT task completion. Route planning is only a midway step.
 - The task is complete ONLY when you have clicked the "开始导航" / "Start Navigation" button and the screen has switched to the live turn-by-turn navigation interface (large arrow with upcoming turn instruction visible at top).
 - If you see route cards ("方案一", "方案二", etc.) or a blue "出发" / "开始导航" button anywhere on screen, you MUST click it — do NOT issue answer yet.
-- Never use answer to describe routes you could take. Only use answer after navigation is actively running.'''
+- Never use answer to describe routes you could take. Only use answer after navigation is actively running.
+
+## ⚠️  Navigation = Driving / Walking / Transit — NOT Ride-Hailing (CRITICAL)
+- "导航" (navigate / navigation) ALWAYS means free self-driving routes: **驾车** (driving), **步行** (walking), or **公共交通** (public transit / bus / metro).
+- It does NOT mean paid ride services: 叫车 (call a car), 打车 (taxi / hail), 专车 (premium car), 拼车 (carpool / share), 顺风车 (ride-share). These are PAID services — do NOT click them unless the instruction explicitly asks for a taxi or ride.
+- If the map app shows tabs like "驾车 | 打车 | 公交 | 步行", ALWAYS select the **驾车** (driving) tab first, unless the instruction specifies a different mode (e.g. "步行导航" → walk, "公交" → transit).
+- When entering a destination, DO NOT tap any ride-hailing option that appears in the suggestions dropdown (e.g. "打车去南岸花城" with a price estimate).  Look for and tap the plain destination name or the "导航" / "路线" / "Directions" button instead.
+- If you see a prominent "呼叫" / "立即叫车" / "打车" button with a price (¥), do NOT tap it — look for the free navigation path: search bar → enter destination → select route → "开始导航".'''
 
 # Compact system prompt for small-context models (≤2048 tokens).
 # Contains only the tool schema + response format; drops behavioural rules so

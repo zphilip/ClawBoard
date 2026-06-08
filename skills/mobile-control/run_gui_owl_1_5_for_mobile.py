@@ -395,14 +395,25 @@ def main():
             ap, instruction, adb_tools,
             resolver_api_key, resolver_base_url, resolver_model,
         )
-        if args.memory_replay_mode == "plan":
-            _plan_found = _plan_executor.find_plan(_canonical_intent_key)
+        # Auto-promotion: when a plan exists with 2+ successful completions,
+        # switch to plan replay regardless of the explicit mode.  This means
+        # the first 1-2 runs use the VLM normally, and subsequent runs skip
+        # the VLM entirely.
+        _plan_found = _plan_executor.find_plan(_canonical_intent_key)
+        _auto_promote = (
+            _plan_found is not None
+            and _plan_found.success_count >= 2
+            and args.memory_replay_mode in ("sequential", "plan")
+        )
+
+        if args.memory_replay_mode == "plan" or _auto_promote:
             if _plan_found:
                 _plan_executor.start_replay(_plan_found)
                 _plan_replay_active = True
                 _plan_intent_key = _canonical_intent_key
+                _tag = " [AUTO-PROMOTED]" if _auto_promote and args.memory_replay_mode != "plan" else ""
                 _log_t(
-                    f"[PLAN] replay started: intent_key={_canonical_intent_key} "
+                    f"[PLAN] replay started{_tag}: intent_key={_canonical_intent_key} "
                     f"steps={len(_plan_found.steps)} "
                     f"success_count={_plan_found.success_count} "
                     f"fail_count={_plan_found.fail_count}"
@@ -413,11 +424,12 @@ def main():
                     "— will record a new plan if this run succeeds"
                 )
         else:
-            # Non-plan mode: still record steps for future plan building,
-            # but do not attempt replay.
+            # Recording-only mode: collect steps for future plan building,
+            # but do not attempt replay yet.
             _log_t(
                 f"[PLAN] recording enabled (mode={args.memory_replay_mode}) "
                 f"intent_key={_canonical_intent_key}"
+                + (f" success_count={_plan_found.success_count}" if _plan_found else "")
             )
     except Exception as _plan_init_err:
         _plan_executor = None

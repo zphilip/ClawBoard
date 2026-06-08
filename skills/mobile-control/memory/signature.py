@@ -5,13 +5,51 @@ import re
 from typing import Iterable
 
 
+# Patterns that match transient / ad / per-run data.  These are applied
+# to individual text tokens inside UI element labels so that "跳过 02",
+# "跳过 03", etc. all collapse to the same placeholder.
 _VOLATILE_TEXT_PATTERNS = [
-    r"\b\d{1,2}:\d{2}\b",             # clock text
-    r"\b\d+%\b",                      # battery/progress percentages
-    r"\b\d+\s*(秒|分钟|小时|s|sec|min)\b",  # countdowns/durations
-    r"\b\d+\.\d+\s*km\b",            # distance with decimals
-    r"\b\d+\s*公里\b",                # distance in Chinese
-    r"\b¥\d+",                        # prices
+    # Clock / time patterns
+    r"\b\d{1,2}:\d{2}\b",                          # clock text  "02:07"
+    r"\b\d{1,2}:\d{2}:\d{2}\b",                    # clock with secs
+    # Percentages & numbers
+    r"\b\d+%\b",                                     # battery / progress
+    r"\b\d+\.\d+\s*km\b",                           # distance with decimals
+    r"\b\d+\.\d+\s*公里\b",                          # Chinese distance
+    r"\b\d+\s*公里\b",                                # integer distance
+    r"\b\d+\s*米\b",                                  # metres
+    # Duration / countdown
+    r"\b\d+\s*(秒|分钟|小时|min|mins|h|s|sec)\b",    # durations
+    # Ad skip buttons: "跳过 02", "跳过", "skip ad", "skip 3s"
+    r"\b(跳过|skip)\s*\d*\s*(s|秒|ad|ads)?\b",
+    # Timer emoji + digits: "⏳16", "⏳ 16"
+    r"[⏳⏰🔔⌛]\s*\d+",
+    # Prices
+    r"\b[¥￥]\d+",
+    # ETA / arrival estimates
+    r"\b\d{1,2}:\d{2}\s*(到达|arrive|arrival)",
+    r"\b(预计|est\.?)\s*\d{1,2}:\d{2}\b",
+    # Pure-numeric standalone labels (step counters, badge counts)
+    r"^\d{1,4}$",
+]
+
+# Lines whose text (after normalisation) matches any of these keywords
+# are EXCLUDED entirely from the fingerprint.  They typically correspond
+# to ad banners, promo cards, or suggestions that differ every run.
+_AD_EXCLUSION_KEYWORDS = [
+    "跳过", "skip", "广告", "ad", "promo", "promotion",
+    "推荐", "recommend", "热门", "hot", "活动", "campaign",
+    "领券", "coupon", "优惠", "discount", "红包", "red packet",
+    "签到", "check-in", "打卡",
+    # Timer / countdown overlays
+    "⏳", "跳过广告",
+]
+
+# Suggestions / search autocomplete — strip the suggestion text but keep
+# the element structure (bounds, resource-id) for fingerprinting.
+_SUGGESTION_KEYWORDS = [
+    "suggestion", "suggest", "autocomplete",
+    "搜索发现", "热搜", "搜索历史",
 ]
 
 
@@ -52,33 +90,47 @@ def build_ui_fingerprint(foreground_pkg: str, ui_summary: str) -> str:
         line = normalize_text(raw_line)
         if not line or line.startswith("ui elements on screen"):
             continue
-        
-        # Include both interactive elements AND key state-defining elements
-        # Key state elements: search results, navigation titles, route info
+
+        # Exclude ad / promo / suggestion lines entirely — their text
+        # changes every run and produces a different fingerprint.
+        if any(kw in line for kw in _AD_EXCLUSION_KEYWORDS):
+            continue
+
+        # Include both interactive elements AND key state-defining elements.
         is_interactive = "clickable" in line or "long-clickable" in line
         is_state_element = (
-            "text=" in line or 
+            "text=" in line or
             "content-desc=" in line or
             "search" in line.lower() or
             "route" in line.lower() or
             "navigation" in line.lower() or
             "destination" in line.lower()
         )
-        
+
         if not (is_interactive or is_state_element):
             continue
-        
+
+        # For suggestion / autocomplete text, keep only the element structure
+        # (class, resource-id, bounds) and strip the suggestion labels.
+        if any(kw in line for kw in _SUGGESTION_KEYWORDS):
+            line = re.sub(r'"text=[^"]*"', '"text=<suggestion>"', line)
+            line = re.sub(r'"content-desc=[^"]*"', '"content-desc=<suggestion>"', line)
+
+        # Collapse volatile text (clock, countdown, distance, price, etc.)
         for pattern in _VOLATILE_TEXT_PATTERNS:
             line = re.sub(pattern, "<volatile>", line)
         # Strip pixel bounds — they vary between runs and screen sizes.
         line = re.sub(r"bounds=\[[\d,]+\]\[[\d,]+\]", "", line)
+        # Collapse multiple <volatile> tags into one.
+        line = re.sub(r"(<volatile>\s*){2,}", "<volatile>", line)
         line = re.sub(r"\s+", " ", line).strip()
         if line:
             stable_lines.append(line)
 
-    # Cap the number of elements to avoid tiny dynamic tail changes dominating
-    # the fingerprint while still distinguishing real app screens.
-    # Sort to ensure consistent ordering regardless of UI dump order
+    # Cap the number of elements to avoid tiny dynamic tail changes
+    # dominating the fingerprint while still distinguishing real app
+    # screens.  Sort to ensure consistent ordering regardless of UI
+    # dump order.
     stable_lines.sort()
     return hash_tokens([foreground_pkg, *stable_lines[:40]])
 
