@@ -170,7 +170,9 @@ ADB_IME = "com.android.adbkeyboard/.AdbIME"
 
 # Patterns that imply the task completed
 FINISH_PATTERNS = [
-    r"\bFINISH\b",
+    # NOTE: r"\bFINISH\b" removed — it matched the English word "finish" in
+    # VLM prose like "Wait for the advertisement to finish its countdown",
+    # causing the wrapper to declare the task complete prematurely.
     # NOTE: r"任务完成" removed — it appears in VLM prose descriptions like
     # "通过百度地图成功导航到南岸花城...任务完成" before the task is actually
     # done (e.g. navigation not yet started). The runner now relies on the
