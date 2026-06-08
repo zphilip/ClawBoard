@@ -2053,8 +2053,8 @@ class SupervisorLLM:
         _extra_body: dict = {}
         if self.reasoning_split:
             _extra_body["reasoning_split"] = True
-        _sup_max_attempts = 2  # reduced from 3 — empty API responses ~30s each
-        _sup_req_timeout = 15  # per-request timeout (seconds)
+        _sup_max_attempts = 3
+        _sup_req_timeout = 30  # per-request timeout (seconds)
         for _sup_try in range(1, _sup_max_attempts + 1):
             try:
                 print(f"[SUPERVISOR] validate attempt {_sup_try}/{_sup_max_attempts}")
@@ -2173,8 +2173,8 @@ class SupervisorLLM:
         _extra_body: dict = {}
         if self.reasoning_split:
             _extra_body["reasoning_split"] = True
-        _tc_max_attempts = 2  # reduced from 3
-        _tc_req_timeout = 15  # per-request timeout (seconds)
+        _tc_max_attempts = 3
+        _tc_req_timeout = 30  # per-request timeout (seconds)
         for _tc_try in range(1, _tc_max_attempts + 1):
             try:
                 print(f"[SUPERVISOR] task-complete attempt {_tc_try}/{_tc_max_attempts}")

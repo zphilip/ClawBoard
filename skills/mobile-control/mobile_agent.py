@@ -896,6 +896,7 @@ def run_agent(
 
     current_step_output: list[str] = []
     current_fg_app: str = ""
+    _task_terminated = False  # set when completion detected; keep reading to drain
 
     try:
         for raw_line in proc.stdout:  # type: ignore[union-attr]
@@ -909,10 +910,12 @@ def run_agent(
                 runner_termination_reason = line.split("]", 1)[-1].strip()
 
             # Explicit task completion signal from runner.
+            # Don't break — continue reading so the cache-hit summary,
+            # timing summary, and [DONE] line are captured.
             if line.strip() == "[TERMINATED] Task completed.":
                 status = "success"
                 end_reason = "runner_terminated_completed"
-                break
+                _task_terminated = True
 
             # Hard timeout
             if elapsed > timeout:
@@ -931,17 +934,22 @@ def run_agent(
                 except Exception:
                     pass
 
+            # After task termination, skip all action/step processing —
+            # just forward lines so the cache-hit summary, timing summary,
+            # and [DONE] marker are visible.
+            if _task_terminated:
+                continue
+
             # Step counter
             if re.match(r"^={10,}$", line):
                 if current_step_output:
-                    # Check for permission dialogs between steps
                     handle_permission_dialog(adb_path, device)
                 current_step_output = []
             if re.match(r"^STEP\s+\d+", line):
                 m = re.search(r"\d+", line)
                 step = int(m.group(0)) if m else step
                 current_step_output = []
-                current_fg_app = ""  # reset per step; will be filled by [Foreground] line
+                current_fg_app = ""
 
             current_step_output.append(line)
 
@@ -989,9 +997,6 @@ def run_agent(
                             f"tapped {LOOP_THRESHOLD} times. "
                             "Injecting retry hint..."
                         )
-                        # We can't easily inject into an already-running process,
-                        # but we log the warning; the retry hint will be in add_info
-                        # on the next invocation if the user retries.
                         loop_hint_injected = True
                 else:
                     last_coords = []
@@ -1025,28 +1030,6 @@ def run_agent(
         proc.terminate()
         status = "error"
         end_reason = "keyboard_interrupt"
-
-    # Drain any remaining stdout from the runner.  When the wrapper
-    # detects a termination marker it breaks out of the reading loop
-    # early, but the runner still prints the cache-hit summary and
-    # timing summary AFTER that marker (post-loop cleanup code).
-    # Without this drain those lines are lost.
-    try:
-        for raw_line in proc.stdout:  # type: ignore[union-attr]
-            line = raw_line.rstrip()
-            if line:
-                last_runner_line = line
-            if line.startswith("[TERMINATION REASON]"):
-                runner_termination_reason = line.split("]", 1)[-1].strip()
-            print(line, file=sys.stderr)
-            if _LOG_FILE:
-                try:
-                    _LOG_FILE.write(line + "\n")
-                    _LOG_FILE.flush()
-                except Exception:
-                    pass
-    except Exception:
-        pass
 
     # Wait for process to exit
     try:
