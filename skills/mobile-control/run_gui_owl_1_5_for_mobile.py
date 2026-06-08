@@ -196,6 +196,25 @@ def handle_open_action(
 
 
 
+# Required argument keys for each action type.  Used to validate
+# supervisor override tool_calls before accepting them.
+_REQUIRED_ACTION_FIELDS: dict[str, tuple[str, ...]] = {
+    "click": ("coordinate",),
+    "long_press": ("coordinate",),
+    "swipe": ("coordinate", "coordinate2"),
+    "scroll": ("coordinate", "coordinate2"),
+    "type": ("text",),
+    "system_button": ("button",),
+    "open": ("text",),
+}
+
+
+def _missing_required_fields(action_type: str, args: dict) -> list[str]:
+    """Return a list of required field names missing from *args*."""
+    required = _REQUIRED_ACTION_FIELDS.get(action_type, ())
+    return [k for k in required if k not in args]
+
+
 def _vlm_wants_to_exit(action_text: str) -> bool:
     """Return True if the VLM's reasoning indicates it wants to exit/close/cancel.
 
@@ -1384,39 +1403,51 @@ def main():
                 _supervisor_feedback = _reason
                 _override_tc = _sup_verdict.get("tool_call", {})
                 if _override_tc and "arguments" in _override_tc:
-                    action = _override_tc
-                    action_parameter = action["arguments"]
-                    # Update step tracking to reflect the override action,
-                    # NOT the VLM's rejected proposal.  Without this the
-                    # memory store and plan recorder learn the wrong
-                    # action as a "success", and memory_confirmed_vlm
-                    # later skips the supervisor for the same bad action.
-                    _step_action_type = str(action_parameter.get("action", ""))
-                    _step_action_args = copy.deepcopy(action_parameter)
-                    # Track supervisor override action globally
-                    _sup_action_sig = f"{_step_action_type}|{json.dumps(_step_action_args, ensure_ascii=False, sort_keys=True)}"
-                    _executed_actions_global.add(_sup_action_sig)
-                    _sup_note = (
-                        f"Action: [SUPERVISOR OVERRIDE] {_reason}\n"
-                        f"\n{json.dumps(_override_tc, ensure_ascii=False)}\n"
-                    )
-                    history.append({"output": _sup_note, "image": screenshot_path})
-                    if action_parameter.get("action") == "system_button" and action_parameter.get("button") == "Home":
-                        print("[ACTION EXEC] SUPERVISOR override -> Home (start)")
-                        if not adb_tools.home():
-                            print("[ACTION EXEC] SUPERVISOR override -> Home failed")
-                        else:
-                            print("[ACTION EXEC] SUPERVISOR override -> Home done")
-                        consecutive_waits = 0
-                        _emit_step_summary("supervisor_override_home")
-                        time.sleep(2)
-                        continue
-                    elif action_parameter.get("action") == "wait":
-                        # Supervisor wants the agent to re-examine the screen
-                        print("[SUPERVISOR] forcing re-examine (wait) before answer")
-                        _emit_step_summary("supervisor_forced_wait")
-                        time.sleep(2)
-                        continue
+                    # Validate the override has required fields for its action type.
+                    # A supervisor hallucination (e.g. long_press without coordinate)
+                    # should be caught here rather than crashing the runner.
+                    _ov_args = _override_tc.get("arguments", {})
+                    _ov_type = _ov_args.get("action", "")
+                    _ov_missing = _missing_required_fields(_ov_type, _ov_args)
+                    if _ov_missing:
+                        print(
+                            f"[SUPERVISOR] override rejected — missing required "
+                            f"fields {_ov_missing} for action {_ov_type!r}"
+                        )
+                    else:
+                        action = _override_tc
+                        action_parameter = action["arguments"]
+                        # Update step tracking to reflect the override action,
+                        # NOT the VLM's rejected proposal.  Without this the
+                        # memory store and plan recorder learn the wrong
+                        # action as a "success", and memory_confirmed_vlm
+                        # later skips the supervisor for the same bad action.
+                        _step_action_type = str(action_parameter.get("action", ""))
+                        _step_action_args = copy.deepcopy(action_parameter)
+                        # Track supervisor override action globally
+                        _sup_action_sig = f"{_step_action_type}|{json.dumps(_step_action_args, ensure_ascii=False, sort_keys=True)}"
+                        _executed_actions_global.add(_sup_action_sig)
+                        _sup_note = (
+                            f"Action: [SUPERVISOR OVERRIDE] {_reason}\n"
+                            f"\n{json.dumps(_override_tc, ensure_ascii=False)}\n"
+                        )
+                        history.append({"output": _sup_note, "image": screenshot_path})
+                        if action_parameter.get("action") == "system_button" and action_parameter.get("button") == "Home":
+                            print("[ACTION EXEC] SUPERVISOR override -> Home (start)")
+                            if not adb_tools.home():
+                                print("[ACTION EXEC] SUPERVISOR override -> Home failed")
+                            else:
+                                print("[ACTION EXEC] SUPERVISOR override -> Home done")
+                            consecutive_waits = 0
+                            _emit_step_summary("supervisor_override_home")
+                            time.sleep(2)
+                            continue
+                        elif action_parameter.get("action") == "wait":
+                            # Supervisor wants the agent to re-examine the screen
+                            print("[SUPERVISOR] forcing re-examine (wait) before answer")
+                            _emit_step_summary("supervisor_forced_wait")
+                            time.sleep(2)
+                            continue
                 else:
                     print("[SUPERVISOR] override had no valid tool_call — injecting Home correction")
                     print("[ACTION EXEC] SUPERVISOR fallback -> Home (start)")
