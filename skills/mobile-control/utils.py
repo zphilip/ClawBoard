@@ -1229,6 +1229,13 @@ Rules:
 - If you see route cards ("方案一", "方案二", etc.) or a blue "出发" / "开始导航" button anywhere on screen, you MUST click it — do NOT issue answer yet.
 - Never use answer to describe routes you could take. Only use answer after navigation is actively running.
 
+## 🚨 Enter the destination BEFORE navigating (CRITICAL)
+- **You MUST type the destination into the search bar BEFORE clicking any route button.**  Never assume a destination is pre-filled from a previous session — it may be stale, wrong, or a completely different place.
+- The correct flow is:  open the map app → tap the search bar → **type the exact destination from the instruction** → select the matching suggestion from the dropdown → wait for routes to appear → select 驾车 → click "开始导航".
+- If you see a route panel with a destination already shown (e.g. "驾车前往 XXX"), verify that XXX matches the instruction EXACTLY before clicking 出发/开始导航.  If it doesn't match, or you're unsure, go back and type the destination yourself.
+- When typing a destination, always use ``action=type`` with the exact text from the instruction.  Do NOT use ``action=open`` to open a pre-filled route URL — that bypasses destination entry.
+- After typing, look at the search-suggestion dropdown and tap the suggestion that matches the destination text most closely.  Do NOT tap a ride-hailing suggestion that shows a price (¥).
+
 ## ⚠️  Navigation = Driving / Walking / Transit — NOT Ride-Hailing (CRITICAL)
 - "导航" (navigate / navigation) ALWAYS means free self-driving routes: **驾车** (driving), **步行** (walking), or **公共交通** (public transit / bus / metro).
 - It does NOT mean paid ride services: 叫车 (call a car), 打车 (taxi / hail), 专车 (premium car), 拼车 (carpool / share), 顺风车 (ride-share). These are PAID services — do NOT click them unless the instruction explicitly asks for a taxi or ride.
@@ -2055,7 +2062,11 @@ class SupervisorLLM:
                 # the chain-of-thought is in reasoning_details (we don't need it).
                 raw = (resp.choices[0].message.content or "").strip()
                 if not raw:
-                    print("[SUPERVISOR] empty response from API — approving by default")
+                    if _sup_try < _sup_max_attempts:
+                        print(f"[SUPERVISOR] empty response — retrying ({_sup_try}/{_sup_max_attempts})")
+                        time.sleep(2)
+                        continue
+                    print("[SUPERVISOR] empty response after retries — approving by default")
                     return {"verdict": "approve"}
                 parsed = _try_parse_json(raw)
                 if parsed:
@@ -2167,7 +2178,11 @@ class SupervisorLLM:
                 )
                 raw = (resp.choices[0].message.content or "").strip()
                 if not raw:
-                    print("[SUPERVISOR] empty task-complete response — assuming NOT complete")
+                    if _tc_try < _tc_max_attempts:
+                        print(f"[SUPERVISOR] empty task-complete response — retrying ({_tc_try}/{_tc_max_attempts})")
+                        time.sleep(2)
+                        continue
+                    print("[SUPERVISOR] empty task-complete response after retries — assuming NOT complete")
                     return {"complete": False, "reason": "empty response — supervisor could not verify completion"}
                 parsed = _try_parse_json(raw)
                 if parsed is not None:

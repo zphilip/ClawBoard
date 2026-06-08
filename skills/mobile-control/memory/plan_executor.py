@@ -301,9 +301,16 @@ class PlanExecutor:
             except Exception:
                 pass
 
-        # Verification layer 3: UI fingerprint comparison
+        # Verification layer 3: UI fingerprint comparison.
+        # SKIP for system_button Home/Back — launcher screens and post-back
+        # states always differ between runs (different widgets, suggestions,
+        # notifications).  Package check (layer 1) is sufficient.
         ui_fp_ok = True
-        if step.post_action_ui_fp and self._ui_summariser and self._ui_fp_builder:
+        _skip_fp_check = (
+            step.action_type == "system_button"
+            and step.action_args.get("button") in ("Home", "Back")
+        )
+        if not _skip_fp_check and step.post_action_ui_fp and self._ui_summariser and self._ui_fp_builder:
             try:
                 _post_xml = self.adb.get_ui_dump()
                 _post_summary = self._ui_summariser(_post_xml)
