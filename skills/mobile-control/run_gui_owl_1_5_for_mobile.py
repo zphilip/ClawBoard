@@ -1736,10 +1736,16 @@ def main():
                     pass
                 # Capture target element signature for click actions so
                 # plan replay can use element-based targeting later.
+                # IMPORTANT: use action_parameter (already rescaled to actual
+                # pixels at line ~1412) NOT _step_action_args (normalised
+                # 0-1000 coords).  Passing normalised coords to
+                # find_element_at_coordinates causes it to fall back to the
+                # nearest element (often the root FrameLayout), producing a
+                # useless signature that never matches during replay.
                 _plan_target_el: dict | None = None
                 if _step_action_type == "click" and _ui_xml:
                     try:
-                        _coord = _step_action_args.get("coordinate", [0, 0])
+                        _coord = action_parameter.get("coordinate", [0, 0])
                         if len(_coord) >= 2:
                             _plan_target_el = find_element_at_coordinates(
                                 _ui_xml, int(_coord[0]), int(_coord[1]),
