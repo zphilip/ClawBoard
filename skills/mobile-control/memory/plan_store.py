@@ -77,11 +77,21 @@ class PlanStore:
         self._invalidate_cache()
 
     def upsert_by_intent(self, plan: TaskPlan) -> None:
-        """Replace the first plan with the same intent_key, or append."""
+        """Replace the first plan with the same intent_key, merging counters.
+
+        When a new LLM-driven recording overwrites an existing plan, the
+        accumulated replay success/fail history is preserved so the
+        auto-promotion threshold (2+ successes) survives updates.
+        """
         plans = self.load()
         replaced = False
         for i, existing in enumerate(plans):
             if existing.intent_key == plan.intent_key:
+                # Merge accumulated replay track record into the new plan
+                plan.success_count += existing.success_count
+                plan.fail_count += existing.fail_count
+                plan.last_verified = max(plan.last_verified, existing.last_verified)
+                plan.created_at = existing.created_at  # preserve original creation
                 plans[i] = plan
                 replaced = True
                 break
