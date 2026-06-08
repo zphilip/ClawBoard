@@ -215,6 +215,18 @@ def _missing_required_fields(action_type: str, args: dict) -> list[str]:
     return [k for k in required if k not in args]
 
 
+def _goal_conflict_in_feedback(feedback: str) -> bool:
+    """Return True if the supervisor feedback indicates the VLM is working
+    against the task goal (e.g. trying to exit when task is to navigate)."""
+    _text = feedback.lower()
+    _conflict_signals = [
+        "task requires", "not exiting", "not exit",
+        "should not", "going against", "而不是", "而非",
+        "应先", "必须先",
+    ]
+    return any(s in _text for s in _conflict_signals)
+
+
 def _vlm_wants_to_exit(action_text: str) -> bool:
     """Return True if the VLM's reasoning indicates it wants to exit/close/cancel.
 
@@ -1797,6 +1809,31 @@ def main():
 
         else:
             print(f"[WARN] Unsupported action type: {action_type}")
+
+        # 5b. Proactive task-completion check: when the supervisor overrides
+        # an action because the VLM is going against the task goal, the task
+        # may already be done.  Ask the supervisor if we should just finish.
+        if (supervisor is not None
+                and _supervisor_feedback
+                and _goal_conflict_in_feedback(_supervisor_feedback)):
+            try:
+                _completion = supervisor.is_task_complete(
+                    task=instruction,
+                    fg_label=_fg_label,
+                    ui_summary=_ui_summary,
+                    history=history,
+                    conclusion=_action_text[:500],
+                    screenshot_path=str(screenshot_path),
+                )
+                if _completion.get("complete", False):
+                    print("[SUPERVISOR] task confirmed complete after goal-conflict override")
+                    print("[TERMINATED] Task completed.")
+                    termination_reason = "proactive_completion_check"
+                    _emit_step_summary("answer_confirmed_complete")
+                    time.sleep(1)
+                    break
+            except Exception:
+                pass
 
         # 6. Record history and annotate screenshot
         history.append({"output": output_text, "image": screenshot_path})
