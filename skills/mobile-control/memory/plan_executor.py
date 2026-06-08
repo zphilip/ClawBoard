@@ -575,9 +575,20 @@ class PlanExecutor:
                 continue
             # Deduplicate consecutive identical steps — a VLM retry loop
             # (e.g. typing the same text 3 times in a row) should only
-            # produce one plan step.  Compare action_type + action_args
-            # against the previous step; skip if identical.
+            # produce one plan step.  Overwrite the previous duplicate
+            # rather than skipping, so the LAST attempt (the one that
+            # actually worked) is the one that survives.
             if plan_steps and _step_is_duplicate(plan_steps[-1], rec):
+                plan_steps[-1] = PlanStep(
+                    step_index=rec.step_index,
+                    action_type=rec.action_type,
+                    action_args=rec.action_args,
+                    expected_pkg=rec.post_action_pkg,
+                    action_description=rec.action_description,
+                    pre_action_pkg=rec.pre_action_pkg,
+                    post_action_ui_fp=rec.post_action_ui_fp,
+                    target_element_signature=rec.target_element_signature,
+                )
                 continue
             plan_steps.append(PlanStep(
                 step_index=rec.step_index,
