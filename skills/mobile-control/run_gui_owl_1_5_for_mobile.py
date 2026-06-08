@@ -196,6 +196,21 @@ def handle_open_action(
 
 
 
+def _vlm_wants_to_exit(action_text: str) -> bool:
+    """Return True if the VLM's reasoning indicates it wants to exit/close/cancel.
+
+    Used to prevent the transient-dialog fast-path from skipping supervisor
+    validation when the VLM is actively trying to exit navigation (counter to
+    the task goal).
+    """
+    _text_lc = action_text.lower()
+    _exit_keywords = [
+        "退出导航", "退出", "exit navigation", "exit", "关闭", "close",
+        "取消", "cancel", "结束", "end", "停止", "stop",
+    ]
+    return any(kw in _text_lc for kw in _exit_keywords)
+
+
 def main():
     args = parse_args()
 
@@ -1300,7 +1315,10 @@ def main():
 
             # Fast-path for transient confirmation dialogs to avoid waiting 10-20s
             # while the dialog auto-dismisses and causes stale-click loops.
-            if _has_transient_confirm_dialog and _proposed_action == "click":
+            # Only skip when the VLM is NOT trying to exit/cancel — if the VLM
+            # wants to confirm the exit, the supervisor must still validate.
+            if (_has_transient_confirm_dialog and _proposed_action == "click"
+                    and not _vlm_wants_to_exit(_action_text)):
                 _skip_supervisor = True
                 _sup_skip_reason = "transient_confirm_dialog_fast_path"
 
