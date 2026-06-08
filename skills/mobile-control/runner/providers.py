@@ -16,7 +16,7 @@ from utils import build_messages, ERROR_CALLING_LLM, GUIOwlWrapper
 
 # Cooldown applied when the primary provider returns persistent errors,
 # so every step doesn't waste time retrying a broken endpoint.
-PRIMARY_RECOVERY_COOLDOWN_SECONDS = 600  # 10 minutes
+PRIMARY_RECOVERY_COOLDOWN_SECONDS = 120  # 2 minutes
 
 
 @dataclass
@@ -60,6 +60,7 @@ class VLMProvider:
         # Cooldown state
         self._cooldown_until: float = 0.0
         self._cooldown_reason: str = ""
+        self._consecutive_fallback_steps: int = 0
 
     # ------------------------------------------------------------------
     # Public API
@@ -108,12 +109,23 @@ class VLMProvider:
 
         if _now < self._cooldown_until:
             _remaining = int(self._cooldown_until - _now)
-            primary_in_cooldown = True
-            print(
-                f"[VLM] primary provider in cooldown "
-                f"({_remaining}s left, reason={self._cooldown_reason}) "
-                f"— skipping primary"
-            )
+            # Force a primary retry after 3 consecutive fallback steps —
+            # the primary error may have been transient and 10 min of
+            # fallback decisions is worse than one failed primary attempt.
+            if self._consecutive_fallback_steps >= 3:
+                print(
+                    f"[VLM] forcing primary retry after "
+                    f"{self._consecutive_fallback_steps} fallback steps "
+                    f"(cooldown had {_remaining}s left)"
+                )
+                self._cooldown_until = 0.0
+            else:
+                primary_in_cooldown = True
+                print(
+                    f"[VLM] primary provider in cooldown "
+                    f"({_remaining}s left, reason={self._cooldown_reason}) "
+                    f"— skipping primary"
+                )
         else:
             for _p_try in range(1, 3):  # 2 attempts
                 print(f"[VLM] primary attempt {_p_try}/2")
@@ -185,6 +197,13 @@ class VLMProvider:
             print(f"[VLM] provider used: {provider_label} (ERROR_CALLING_LLM)")
         else:
             print(f"[VLM] provider used: {provider_label}")
+
+        # Track consecutive fallback usage so we can force a primary retry
+        # after N steps of inferior fallback decisions.
+        if "fallback:" in provider_label:
+            self._consecutive_fallback_steps += 1
+        else:
+            self._consecutive_fallback_steps = 0
 
         return VLMResult(
             output_text=output_text,
