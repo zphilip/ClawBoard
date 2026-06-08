@@ -1229,12 +1229,12 @@ Rules:
 - If you see route cards ("方案一", "方案二", etc.) or a blue "出发" / "开始导航" button anywhere on screen, you MUST click it — do NOT issue answer yet.
 - Never use answer to describe routes you could take. Only use answer after navigation is actively running.
 
-## 🚨 Enter the destination BEFORE navigating (CRITICAL)
-- **You MUST type the destination into the search bar BEFORE clicking any route button.**  Never assume a destination is pre-filled from a previous session — it may be stale, wrong, or a completely different place.
-- The correct flow is:  open the map app → tap the search bar → **type the exact destination from the instruction** → select the matching suggestion from the dropdown → wait for routes to appear → select 驾车 → click "开始导航".
-- If you see a route panel with a destination already shown (e.g. "驾车前往 XXX"), verify that XXX matches the instruction EXACTLY before clicking 出发/开始导航.  If it doesn't match, or you're unsure, go back and type the destination yourself.
-- When typing a destination, always use ``action=type`` with the exact text from the instruction.  Do NOT use ``action=open`` to open a pre-filled route URL — that bypasses destination entry.
-- After typing, look at the search-suggestion dropdown and tap the suggestion that matches the destination text most closely.  Do NOT tap a ride-hailing suggestion that shows a price (¥).
+## 🚨 Verify the destination BEFORE navigating (CRITICAL)
+- **Always verify the destination shown on screen matches the instruction exactly before clicking 出发/开始导航.**  There are two valid flows:
+- **Flow A — Search bar (when no route is shown):**  tap the search bar → **type the exact destination** using ``action=type`` → select the matching suggestion from the dropdown (NOT a ride-hailing one with ¥ price) → wait for routes → select 驾车 if not already selected → click "开始导航".  When using this flow, typing the destination is MANDATORY.
+- **Flow B — Pre-filled route (when a route panel is already visible):**  if you see a route panel with a destination label (e.g. "驾车前往 南岸花城"), READ the destination text carefully.  If it matches the instruction EXACTLY, you may click 出发/开始导航 directly.  If it does NOT match, or you are unsure, fall back to Flow A (search bar → type).
+- The key rule: **verify first, click second.**  Never click 出发/开始导航 without confirming the destination text is correct.  The destination may be stale from a previous session.
+- After typing into the search bar, look at the suggestion dropdown and tap the one that matches most closely.  Do NOT tap a ride-hailing suggestion that shows a price (¥).
 
 ## ⚠️  Navigation = Driving / Walking / Transit — NOT Ride-Hailing (CRITICAL)
 - "导航" (navigate / navigation) ALWAYS means free self-driving routes: **驾车** (driving), **步行** (walking), or **公共交通** (public transit / bus / metro).
