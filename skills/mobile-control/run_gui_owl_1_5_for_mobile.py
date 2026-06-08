@@ -716,6 +716,7 @@ def main():
         _log_t(f"[STEP START] step={step_id}")
 
         # ADB foreground-app check — get ground truth before screenshot + VLM.
+        # If the device disappeared, wait for reconnection before proceeding.
         _fg_pkg = adb_tools.get_foreground_package()
         if _fg_pkg:
             _fg_names = PACKAGES_NAME_DICT.get(_fg_pkg, [])
@@ -723,6 +724,11 @@ def main():
             print(f"[Foreground] {_fg_label}")
         else:
             _fg_label = ""
+            _log_t("[WARN] foreground check failed — device may be disconnected")
+            if not adb_tools.wait_for_device(timeout=30):
+                _log_t("[ERROR] device did not reappear — aborting run")
+                termination_reason = "device_disconnected"
+                break
         print(f"{'='*50}")
 
         # 1. Capture screenshot — if it fails the device may have been

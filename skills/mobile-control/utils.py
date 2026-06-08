@@ -1470,7 +1470,15 @@ def pil_to_base64(image):
 def image_to_base64(image_path, max_pixels=None):
     if isinstance(image_path, str) and image_path.startswith("file://"):
         image_path = image_path[7:]
-    dummy_image = Image.open(image_path)
+    try:
+        dummy_image = Image.open(image_path)
+        # Force-load the image data so truncated/corrupt files are caught
+        # here rather than deep inside the VLM call stack.
+        dummy_image.load()
+    except Exception as _img_err:
+        print(f"[WARN] Cannot read screenshot {image_path!r}: {_img_err} — "
+              "returning 1×1 placeholder so the VLM call doesn't crash")
+        dummy_image = Image.new("RGB", (1, 1))
     if max_pixels is not None:
         MIN_PIXELS = 3136
         resized_height, resized_width = smart_resize(
