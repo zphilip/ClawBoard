@@ -79,7 +79,9 @@ class PlanStore:
     def upsert_by_intent(self, plan: TaskPlan) -> None:
         """Replace the first plan with the same intent_key, merging counters.
 
-        When a new LLM-driven recording overwrites an existing plan, the
+        Only replaces steps when the new plan is shorter (fewer steps) or
+        equal length — a more efficient path is always preferred.  When the
+        new plan is longer, the old steps are kept.  In all cases the
         accumulated replay success/fail history is preserved so the
         auto-promotion threshold (2+ successes) survives updates.
         """
@@ -87,12 +89,19 @@ class PlanStore:
         replaced = False
         for i, existing in enumerate(plans):
             if existing.intent_key == plan.intent_key:
-                # Merge accumulated replay track record into the new plan
-                plan.success_count += existing.success_count
-                plan.fail_count += existing.fail_count
-                plan.last_verified = max(plan.last_verified, existing.last_verified)
-                plan.created_at = existing.created_at  # preserve original creation
-                plans[i] = plan
+                if len(plan.steps) <= len(existing.steps):
+                    # New plan is better or equal (fewer steps) — replace steps,
+                    # merge accumulated replay track record.
+                    plan.success_count += existing.success_count
+                    plan.fail_count += existing.fail_count
+                    plan.last_verified = max(plan.last_verified, existing.last_verified)
+                    plan.created_at = existing.created_at  # preserve original creation
+                    plans[i] = plan
+                else:
+                    # New plan is worse (more steps) — keep old steps, but
+                    # still count this run as a success on the existing plan.
+                    existing.success_count += 1
+                    existing.last_verified = max(existing.last_verified, time.time())
                 replaced = True
                 break
         if not replaced:
