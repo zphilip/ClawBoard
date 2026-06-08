@@ -997,7 +997,6 @@ def run_agent(
             # Finish detection
             for pat in FINISH_PATTERNS:
                 if re.search(pat, line, re.IGNORECASE):
-                    proc.terminate()
                     status = "success"
                     finish_pattern_hit = pat
                     end_reason = f"finish_pattern_matched:{pat}"
@@ -1024,6 +1023,28 @@ def run_agent(
         proc.terminate()
         status = "error"
         end_reason = "keyboard_interrupt"
+
+    # Drain any remaining stdout from the runner.  When the wrapper
+    # detects a termination marker it breaks out of the reading loop
+    # early, but the runner still prints the cache-hit summary and
+    # timing summary AFTER that marker (post-loop cleanup code).
+    # Without this drain those lines are lost.
+    try:
+        for raw_line in proc.stdout:  # type: ignore[union-attr]
+            line = raw_line.rstrip()
+            if line:
+                last_runner_line = line
+            if line.startswith("[TERMINATION REASON]"):
+                runner_termination_reason = line.split("]", 1)[-1].strip()
+            print(line, file=sys.stderr)
+            if _LOG_FILE:
+                try:
+                    _LOG_FILE.write(line + "\n")
+                    _LOG_FILE.flush()
+                except Exception:
+                    pass
+    except Exception:
+        pass
 
     # Wait for process to exit
     try:
