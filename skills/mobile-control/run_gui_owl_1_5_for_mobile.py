@@ -1345,7 +1345,11 @@ def main():
         # 3c. Supervisor validation — fast text LLM checks intent vs. tool_call.
         # Passes UI dump so it can verify answer claims against actual screen content.
         # Only active when supervisor is configured.
-        if supervisor is not None and _rb_override is None:
+        # Skip for 'answer' actions — validate() checks tool_call correctness
+        # (coordinates, app names), but for answer the question is 'is the task
+        # done?', which is handled by is_task_complete() in the answer handler.
+        if (supervisor is not None and _rb_override is None
+                and _proposed_action != "answer"):
             _skip_supervisor = False
             _sup_skip_reason = ""
             _sup_apps_hint = ""
