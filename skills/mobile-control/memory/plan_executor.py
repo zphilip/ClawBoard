@@ -108,7 +108,7 @@ class RecordedStep:
     __slots__ = (
         "step_index", "action_type", "action_args",
         "pre_action_pkg", "post_action_pkg", "action_description",
-        "post_action_ui_fp", "target_element_signature",
+        "post_action_ui_fp", "pre_action_ui_fp", "target_element_signature",
     )
 
     def __init__(
@@ -120,6 +120,7 @@ class RecordedStep:
         post_action_pkg: str = "",
         action_description: str = "",
         post_action_ui_fp: str = "",
+        pre_action_ui_fp: str = "",
         target_element_signature: dict[str, Any] | None = None,
     ):
         self.step_index = step_index
@@ -129,6 +130,7 @@ class RecordedStep:
         self.post_action_pkg = post_action_pkg
         self.action_description = action_description
         self.post_action_ui_fp = post_action_ui_fp
+        self.pre_action_ui_fp = pre_action_ui_fp
         self.target_element_signature = target_element_signature
 
 
@@ -524,6 +526,7 @@ class PlanExecutor:
         post_action_pkg: str = "",
         action_description: str = "",
         post_action_ui_fp: str = "",
+        pre_action_ui_fp: str = "",
         target_element_signature: dict[str, Any] | None = None,
     ) -> None:
         """Record a step executed during the current run for later plan creation."""
@@ -537,6 +540,7 @@ class PlanExecutor:
             post_action_pkg=post_action_pkg,
             action_description=action_description,
             post_action_ui_fp=post_action_ui_fp,
+            pre_action_ui_fp=pre_action_ui_fp,
             target_element_signature=target_element_signature,
         ))
 
@@ -557,6 +561,18 @@ class PlanExecutor:
 
         plan_steps: list[PlanStep] = []
         for rec in self._recorded_steps:
+            # Skip steps that produced no visible screen change — the action
+            # had no effect (e.g. Home press on launcher, open when already
+            # in the target app, click on a non-interactive element).
+            # Type actions are excluded: the UI structure may not change
+            # even though text was entered successfully.
+            if (
+                rec.action_type != "type"
+                and rec.pre_action_ui_fp
+                and rec.post_action_ui_fp
+                and rec.pre_action_ui_fp == rec.post_action_ui_fp
+            ):
+                continue
             # Deduplicate consecutive identical steps — a VLM retry loop
             # (e.g. typing the same text 3 times in a row) should only
             # produce one plan step.  Compare action_type + action_args

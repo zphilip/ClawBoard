@@ -1781,6 +1781,7 @@ def main():
                     post_action_pkg=_post_pkg,
                     action_description=_step_action_description[:200] if _step_action_description else "",
                     post_action_ui_fp=_post_action_ui_fp,
+                    pre_action_ui_fp=_step_ui_fp,
                     target_element_signature=_plan_target_el,
                 )
             except Exception:
