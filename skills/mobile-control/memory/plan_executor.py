@@ -302,13 +302,16 @@ class PlanExecutor:
                 pass
 
         # Verification layer 3: UI fingerprint comparison.
-        # SKIP for system_button Home/Back — launcher screens and post-back
-        # states always differ between runs (different widgets, suggestions,
-        # notifications).  Package check (layer 1) is sufficient.
+        # SKIP for actions whose post-action screen ALWAYS differs between
+        # runs: Home/Back (different launcher widgets), open (different
+        # ads and splash screens).  Package check (layer 1) is sufficient.
         ui_fp_ok = True
         _skip_fp_check = (
-            step.action_type == "system_button"
-            and step.action_args.get("button") in ("Home", "Back")
+            step.action_type == "open"
+            or (
+                step.action_type == "system_button"
+                and step.action_args.get("button") in ("Home", "Back")
+            )
         )
         if not _skip_fp_check and step.post_action_ui_fp and self._ui_summariser and self._ui_fp_builder:
             try:

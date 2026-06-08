@@ -933,7 +933,10 @@ def main():
                             f"[MEMORY] pre-LLM fastpath skipped: cached action type {_fastpath_action_type!r} "
                             "is not safe for replay"
                         )
-                    elif _action_only_sig in _executed_actions_global:
+                    elif _action_only_sig in _executed_actions_global and _fastpath_action_type not in ("type", "open"):
+                        # type actions are verified by type_with_verification (UI dump
+                        # check after typing), and open actions verify via foreground
+                        # package check — allow them to replay on different states.
                         _memory_reason = "cached_action_already_executed_globally"
                         _log_t(
                             f"[MEMORY] pre-LLM fastpath skipped: action {_fastpath_action_type!r} with args "
