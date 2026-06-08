@@ -820,14 +820,17 @@ class AdbTools:
         
         escaped_text = text.replace('"', '\\"').replace("'", "\\'")
         
-        # Method 1: Direct text broadcast (may fail on Android 8+)
+        # Method 1: Direct text broadcast.
+        # NOTE: we do NOT disable the keyboard after typing — the IME switch
+        # can cause apps (especially Baidu Maps) to lose input focus, clear
+        # search text, and dismiss results, creating an infinite retype loop.
+        # The keyboard was set globally by setup_adb_keyboard() in
+        # mobile_agent.py; per-type enable/disable is unnecessary.
         command_sequence_direct = [
             "shell ime enable com.android.adbkeyboard/.AdbIME",
             "shell ime set com.android.adbkeyboard/.AdbIME",
             0.1,
             f'shell am broadcast -a ADB_INPUT_TEXT --es msg "{escaped_text}"',
-            0.1,
-            "shell ime disable com.android.adbkeyboard/.AdbIME",
         ]
         
         # Method 2: Base64 encoded broadcast (more reliable on newer Android)
@@ -838,8 +841,6 @@ class AdbTools:
                 "shell ime set com.android.adbkeyboard/.AdbIME",
                 0.1,
                 f'shell am broadcast -a ADB_INPUT_B64 --es msg "{b64_text}"',
-                0.1,
-                "shell ime disable com.android.adbkeyboard/.AdbIME",
             ]
         except Exception as e:
             print(f"[ADB TYPE DEBUG] Base64 encoding failed: {e}")
