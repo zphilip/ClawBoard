@@ -2083,14 +2083,17 @@ class SupervisorLLM:
     @staticmethod
     def _call_with_timeout(fn, timeout: float):
         """Call *fn* in a thread and return its result, or raise
-        TimeoutError if it takes longer than *timeout* seconds."""
+        TimeoutError if it takes longer than *timeout* seconds.
+        Does NOT wait for the thread to finish after timeout."""
         from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutTimeout
-        with ThreadPoolExecutor(max_workers=1) as ex:
+        ex = ThreadPoolExecutor(max_workers=1)
+        try:
             fut = ex.submit(fn)
-            try:
-                return fut.result(timeout=timeout)
-            except FutTimeout:
-                raise TimeoutError(f"call timed out after {timeout}s")
+            return fut.result(timeout=timeout)
+        except FutTimeout:
+            raise TimeoutError(f"call timed out after {timeout}s")
+        finally:
+            ex.shutdown(wait=False)  # don't wait for abandoned thread
 
     def validate(
         self,

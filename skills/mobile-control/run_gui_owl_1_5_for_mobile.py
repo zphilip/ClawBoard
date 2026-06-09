@@ -227,6 +227,17 @@ def _goal_conflict_in_feedback(feedback: str) -> bool:
     return any(s in _text for s in _conflict_signals)
 
 
+def _action_text_has_auth(action_text: str) -> bool:
+    """Return True if the VLM's reasoning proposes clicking an authorization
+    or consent button that must be blocked regardless of context."""
+    _text = action_text.lower()
+    _auth_keywords = [
+        "同意授权", "同意", "授权", "agree", "authorize", "allow",
+        "grant", "accept", "确认授权", "允许",
+    ]
+    return any(kw in _text for kw in _auth_keywords)
+
+
 def _vlm_wants_to_exit(action_text: str) -> bool:
     """Return True if the VLM's reasoning indicates it wants to exit/close/cancel.
 
@@ -1172,6 +1183,27 @@ def main():
         action_parameter = action["arguments"]
         _step_action_type = str(action_parameter.get("action", ""))
         _step_action_args = copy.deepcopy(action_parameter)
+
+        # Hard block: the VLM must NEVER click authorization/consent buttons.
+        # Prompt rules are not enough — gui-owl ignores them.  We override
+        # before the action reaches the supervisor or execution.
+        if _step_action_type == "click" and _action_text_has_auth(_action_text):
+            print(
+                "[BLOCKED] VLM proposed clicking an authorization/consent button "
+                f"— overriding to Back: {_action_text[:120]}"
+            )
+            _blocked_note = (
+                "Action: [BLOCKED] authorization click rejected — pressing Back\n"
+                "<tool_call>\n"
+                + json.dumps({"name": "mobile_use", "arguments": {"action": "system_button", "button": "Back"}}, ensure_ascii=False)
+                + "\n</tool_call>"
+            )
+            history.append({"output": _blocked_note, "image": screenshot_path})
+            adb_tools.back()
+            _emit_step_summary("blocked_auth_click")
+            time.sleep(1.5)
+            continue
+
         # Track this action globally to prevent memory from replaying it later
         _current_action_only_sig = f"{_step_action_type}|{json.dumps(_step_action_args, ensure_ascii=False, sort_keys=True)}"
         _executed_actions_global.add(_current_action_only_sig)
