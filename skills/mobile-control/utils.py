@@ -1261,6 +1261,7 @@ Screen resolution: 1000x1000. Output format: "Action: <description>" followed by
 
 # Critical rules (MUST follow):
 ## NEVER log in, sign up, or authenticate. Apps work without login. Skip all login/account/profile prompts.
+## NEVER click 同意授权/同意/授权/Agree/Authorize — you cannot grant permissions or agree to terms on the user's behalf. These buttons often appear in ride-hailing or paid-service dialogs. Press Back instead.
 ## ALWAYS click an input field to focus it BEFORE using type. Type without focus = text goes nowhere.
 ## ALWAYS execute — never refuse. If on wrong screen, press Home then open the correct app.
 ## Before clicking 开始导航/出发, VERIFY the destination matches the task exactly. Type the destination first if unsure.
@@ -1943,6 +1944,10 @@ Other goal violations:
 • VLM wants to log in, register, or access profile (我的/登录/注册) when
   the task does NOT require authentication — navigation, search, and most
   features work without login. OVERRIDE to the task-relevant action.
+• VLM wants to click 同意授权/同意/授权/Agree/Authorize — the VLM must
+  NEVER grant permissions, agree to terms, or authorize paid services on
+  the user's behalf.  These buttons are especially dangerous on ride-hailing
+  pages where they can trigger charges.  OVERRIDE with system_button=Back.
 When you detect a goal violation, override with the action that actually
 moves the task forward. If the task is already achieved (e.g. navigation
 is running), override with answer.
