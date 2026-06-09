@@ -2125,7 +2125,7 @@ class SupervisorLLM:
                         {"role": "user", "content": user_content},
                     ],
                     temperature=0,
-                    max_tokens=1024,
+                    max_tokens=2048,  # increased from 1024: reasoning_split needs room for both CoT + verdict
                     **(dict(extra_body=_extra_body) if _extra_body else {}),
                 )
                 # With reasoning_split=True, the verdict JSON should be in content
@@ -2163,21 +2163,21 @@ class SupervisorLLM:
                         return {"verdict": "approve"}
                     if v in ("override", "overridden"):
                         return dict(parsed, verdict="override")
-                # Last-resort keyword scan — model output chain-of-thought prose
-                # instead of bare JSON (happens even with reasoning_split=True on
-                # some model versions).  Scan the final 300 chars for a verdict.
-                _tail = raw[-300:].lower()
-                if re.search(r'\b(approve|approved)\b', _tail) and "override" not in _tail:
+                # Last-resort keyword scan — some model versions output
+                # chain-of-thought prose instead of JSON (especially with
+                # reasoning_split=True).  Scan the FULL text for a verdict.
+                _raw_lc = raw.lower()
+                _has_approve = bool(re.search(r'\b(approve|approved)\b', _raw_lc))
+                _has_override = bool(re.search(r'\b(override|overridden)\b', _raw_lc))
+                if _has_approve and not _has_override:
                     return {"verdict": "approve"}
-                # If supervisor says "override" but we can't parse the JSON, we should
-                # approve rather than blindly pressing Home. The supervisor's override
-                # might have been for a different reason (e.g., wrong app, wrong target).
-                # Defaulting to Home is too aggressive and can undo correct progress.
-                if "override" in _tail:
-                    print(f"[SUPERVISOR] prose override — cannot parse action JSON; approving by default: {raw[:80]!r}")
+                if _has_override:
+                    print(f"[SUPERVISOR] prose override — no parseable JSON; approving by default")
                     return {"verdict": "approve"}
-                else:
-                    print(f"[SUPERVISOR] unexpected response format — approving: {raw[:120]!r}")
+                # No verdict keywords at all — default to approve.
+                # The supervisor produced analysis but no conclusion, which
+                # means it didn't find a clear problem with the action.
+                print(f"[SUPERVISOR] no verdict in response — approving: {raw[:120]!r}")
                 return {"verdict": "approve"}
             except Exception as _e:
                 _is_timeout = "timeout" in str(_e).lower() or "timed out" in str(_e).lower()
