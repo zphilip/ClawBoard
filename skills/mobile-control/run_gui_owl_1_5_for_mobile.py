@@ -320,8 +320,11 @@ def main():
         with _cfg_path.open(encoding="utf-8") as _f:
             _cfg = json.load(_f)
         _sp = _cfg.get("supervisor_provider", {})
-        _sup_vision = bool(_sp.get("vision", False))
+        _sup_vision_raw = _sp.get("vision", False)
+        _sup_vision = bool(_sup_vision_raw)
         _sup_reasoning_split = bool(_sp.get("reasoning_split", False))
+        print(f"[SUPERVISOR CONFIG] vision raw={_sup_vision_raw!r} -> {_sup_vision} "
+              f"reasoning_split={_sup_reasoning_split}")
         if not _sup_model and _sp.get("model"):
             _sup_model = _sp["model"]
             _sup_api_key = _sup_api_key or _sp.get("api_key", "")
