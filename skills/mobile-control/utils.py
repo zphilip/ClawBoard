@@ -1238,7 +1238,7 @@ Rules:
 
 ## 🚨 Verify the destination BEFORE navigating (CRITICAL)
 - **Always verify the destination shown on screen matches the instruction exactly before clicking 出发/开始导航.**  There are two valid flows:
-- **Flow A — Search bar (when no route is shown):**  tap the search bar → **type the exact destination** using ``action=type`` → select the matching suggestion from the dropdown (NOT a ride-hailing one with ¥ price) → wait for routes → select 驾车 if not already selected → click "开始导航".  When using this flow, typing the destination is MANDATORY.
+- **Flow A — Search bar (when no route is shown):**  tap the search bar → **type the exact destination** using ``action=type`` → **click the search button (搜索/放大镜) or press Enter/搜索 key** to execute the query → wait for results to load → select the matching destination from the results (NOT a ride-hailing one with ¥ price) → wait for routes → select 驾车 if not already selected → click "开始导航".  When using this flow, typing AND confirming the search are both MANDATORY.  Never try to select an autocomplete suggestion before executing the search.
 - **Flow B — Pre-filled route (when a route panel is already visible):**  if you see a route panel with a destination label (e.g. "驾车前往 南岸花城"), READ the destination text carefully.  If it matches the instruction EXACTLY, you may click 出发/开始导航 directly.  If it does NOT match, or you are unsure, fall back to Flow A (search bar → type).
 - The key rule: **verify first, click second.**  Never click 出发/开始导航 without confirming the destination text is correct.  The destination may be stale from a previous session.
 - After typing into the search bar, look at the suggestion dropdown and tap the one that matches most closely.  Do NOT tap a ride-hailing suggestion that shows a price (¥).
@@ -1438,13 +1438,13 @@ def build_messages(image_path, instruction, history_output, model_name,
         _inst_lc = instruction.lower()
         if any(kw in _inst_lc for kw in ("导航", "navigate", "路线", "direction", "地图", "map")):
             _compact_rules += [
-                "For navigation: type the destination into the search bar, select it from suggestions, then click 开始导航/出发. Verify the destination matches before clicking.",
+                "For navigation: type the destination into the search bar, then click the search button (搜索/放大镜) or press Enter to execute the query. Wait for results to load, then select the correct destination from the list. Finally click 开始导航/出发.",
                 "Navigation is complete ONLY when live turn-by-turn is running. Do NOT answer after just seeing routes.",
                 "Choose 驾车 (driving). NEVER click ride-hailing (打车/叫车/¥ price).",
             ]
         if any(kw in _inst_lc for kw in ("搜索", "search", "查找", "find", "查")):
             _compact_rules += [
-                "For search: type the query into the search bar, then select the matching result.",
+                "For search: type the query into the search bar, click the search button (搜索/放大镜) to execute, wait for results, then select the matching result.",
             ]
         if any(kw in _inst_lc for kw in ("消息", "message", "发", "send", "聊天", "chat", "微信", "wechat")):
             _compact_rules += [
