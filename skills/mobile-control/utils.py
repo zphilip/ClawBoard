@@ -1438,13 +1438,14 @@ def build_messages(image_path, instruction, history_output, model_name,
         _inst_lc = instruction.lower()
         if any(kw in _inst_lc for kw in ("导航", "navigate", "路线", "direction", "地图", "map")):
             _compact_rules += [
-                "For navigation: type the destination into the search bar, then click the search button (搜索/放大镜) or press Enter to execute the query. Wait for results to load, then select the correct destination from the list. Finally click 开始导航/出发.",
-                "Navigation is complete ONLY when live turn-by-turn is running. Do NOT answer after just seeing routes.",
+                "For navigation: FIRST click the search bar to focus it, THEN type the destination. After typing, click the search button (搜索/放大镜) to execute the query. Wait for results, select the correct destination, then click 开始导航.",
+                "NEVER type text without first clicking the input field to ensure it has focus.",
+                "Navigation is complete ONLY when live turn-by-turn is running.",
                 "Choose 驾车 (driving). NEVER click ride-hailing (打车/叫车/¥ price).",
             ]
         if any(kw in _inst_lc for kw in ("搜索", "search", "查找", "find", "查")):
             _compact_rules += [
-                "For search: type the query into the search bar, click the search button (搜索/放大镜) to execute, wait for results, then select the matching result.",
+                "For search: FIRST click the input field, THEN type. After typing, click search to execute.",
             ]
         if any(kw in _inst_lc for kw in ("消息", "message", "发", "send", "聊天", "chat", "微信", "wechat")):
             _compact_rules += [
