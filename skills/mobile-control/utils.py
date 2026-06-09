@@ -1932,6 +1932,12 @@ important check. Examples:
 • VLM wants to log in, register, or access profile (我的/登录/注册) when
   the task does NOT require authentication — navigation, search, and most
   features work without login. OVERRIDE to the task-relevant action.
+• **NAVIGATION MODE CHECK:** The task says 导航/navigate but the current
+  screen shows 打车/叫车/ride-hailing selected (look for ¥ prices, 呼叫
+  buttons, or 打车 tab highlighted).  OVERRIDE to click the 驾车 tab first.
+  Navigation tasks ALWAYS use free driving directions, never paid rides.
+  Check the transport mode tabs (驾车/打车/公交/步行) in the UI elements
+  — if 打车 is active, you MUST override.
 When you detect a goal violation, override with the action that actually
 moves the task forward. If the task is already achieved (e.g. navigation
 is running), override with answer.
