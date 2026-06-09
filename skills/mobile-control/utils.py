@@ -2078,6 +2078,7 @@ class SupervisorLLM:
         self.model = model
         self.vision = vision
         self.reasoning_split = reasoning_split
+        self._client = OpenAI(api_key=api_key, base_url=base_url, timeout=25)
 
     @staticmethod
     def _call_with_timeout(fn, timeout: float):
@@ -2090,7 +2091,6 @@ class SupervisorLLM:
                 return fut.result(timeout=timeout)
             except FutTimeout:
                 raise TimeoutError(f"call timed out after {timeout}s")
-        self._client = OpenAI(api_key=api_key, base_url=base_url, timeout=25)
 
     def validate(
         self,
