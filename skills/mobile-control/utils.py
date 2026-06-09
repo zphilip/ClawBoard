@@ -254,7 +254,8 @@ def parse_action(output_text: str) -> dict:
     """Extract the action dict from a VLM output text.
 
     Expects a ``<tool_call>`` block containing JSON with nested
-    ``arguments``.  Falls back to JSON repair for truncated outputs.
+    ``arguments``.  Handles both ``<tool_call>\\n{...}`` and
+    ``<tool_call>{...}`` formats (the latter from fallback models).
 
     Raises ``ValueError`` when no parseable action is found.
     """
@@ -263,21 +264,25 @@ def parse_action(output_text: str) -> dict:
             f"Failed to parse action from model output: "
             f"no <tool_call> block found"
         )
+
+    # Extract the tool_call block — strip any trailing </tool_call>
+    _tc_start = output_text.index("<tool_call>") + len("<tool_call>")
+    _tc_raw = output_text[_tc_start:].strip()
+    _tc_raw = _tc_raw.replace("</tool_call>", "").strip()
+
+    # Try parsing as-is first (handles <tool_call>\n{...} and <tool_call>{...})
     try:
-        tool_call_block = output_text.split("<tool_call>\n")[1]
-        json_str = tool_call_block.split("}}\n")[0] + "}}"
-        return json.loads(json_str)
-    except (IndexError, json.JSONDecodeError):
+        return json.loads(_tc_raw)
+    except json.JSONDecodeError:
         pass
 
-    # Fallback: try repairing truncated JSON
+    # Fallback: repair truncated JSON
     try:
-        tool_call_block = output_text.split("<tool_call>")[1].strip()
-        repaired = repair_json(tool_call_block)
+        repaired = repair_json(_tc_raw)
         result = json.loads(repaired)
         if "arguments" in result and "action" in result.get("arguments", {}):
             return result
-    except (IndexError, json.JSONDecodeError):
+    except (json.JSONDecodeError, KeyError):
         pass
 
     raise ValueError(f"Failed to parse action from model output: {output_text!r}")
