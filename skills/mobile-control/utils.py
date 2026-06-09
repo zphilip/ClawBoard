@@ -1421,12 +1421,31 @@ def build_messages(image_path, instruction, history_output, model_name,
         )
 
     if compact:
-        # Compact prompt omits behavioural rules — add a brief reminder so the
-        # model doesn't give up when the required app is not yet in foreground.
-        instruction_prompt += (
-            "\n\nIf the required app is not on screen, use action=open to "
-            "launch it. Never say an app is unavailable — navigate to it."
-        )
+        # Progressive disclosure: inject only task-relevant rules.
+        # The full SYSTEM_PROMPT is ~3000 tokens — too large for the fallback
+        # model (2048-token context).  Instead, give it minimal universal rules
+        # plus task-specific guidance based on instruction keywords.
+        _compact_rules = [
+            "If the required app is not on screen, use action=open to launch it. Never give up.",
+            "NEVER attempt to log in, sign up, or authenticate. Skip all account/profile prompts.",
+            "After each action, verify the screen changed as expected. If stuck, press Back then Home.",
+        ]
+        _inst_lc = instruction.lower()
+        if any(kw in _inst_lc for kw in ("导航", "navigate", "路线", "direction", "地图", "map")):
+            _compact_rules += [
+                "For navigation: type the destination into the search bar, select it from suggestions, then click 开始导航/出发. Verify the destination matches before clicking.",
+                "Navigation is complete ONLY when live turn-by-turn is running. Do NOT answer after just seeing routes.",
+                "Choose 驾车 (driving). NEVER click ride-hailing (打车/叫车/¥ price).",
+            ]
+        if any(kw in _inst_lc for kw in ("搜索", "search", "查找", "find", "查")):
+            _compact_rules += [
+                "For search: type the query into the search bar, then select the matching result.",
+            ]
+        if any(kw in _inst_lc for kw in ("消息", "message", "发", "send", "聊天", "chat", "微信", "wechat")):
+            _compact_rules += [
+                "For messaging: find the contact, tap the input field, type the message, tap Send.",
+            ]
+        instruction_prompt += "\n\n" + " ".join(_compact_rules)
 
     # Assemble messages
     _system_text = SYSTEM_PROMPT_COMPACT if compact else SYSTEM_PROMPT
