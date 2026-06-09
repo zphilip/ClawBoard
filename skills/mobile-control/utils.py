@@ -1261,7 +1261,7 @@ Screen resolution: 1000x1000. Output format: "Action: <description>" followed by
 
 # Critical rules (MUST follow):
 ## NEVER log in, sign up, or authenticate. Apps work without login. Skip all login/account/profile prompts.
-## NEVER click 同意授权/同意/Agree/Authorize in ride-hailing or paid-service dialogs (signs: ¥ prices, 呼叫/叫车/打车 buttons visible). Press Back to escape those. Location permission dialogs (位置服务/location/GPS) are OK — maps need location to navigate.
+## NEVER click 同意授权/同意/授权/Agree/Authorize/Allow in ANY dialog — you cannot tell what permission is being granted (GPS? payment? data collection?). Press Back or the X button to dismiss. If the app truly needs it, it will ask again.
 ## ALWAYS click an input field to focus it BEFORE using type. Type without focus = text goes nowhere.
 ## ALWAYS execute — never refuse. If on wrong screen, press Home then open the correct app.
 ## Before clicking 开始导航/出发, VERIFY the destination matches the task exactly. Type the destination first if unsure.
@@ -1944,12 +1944,10 @@ Other goal violations:
 • VLM wants to log in, register, or access profile (我的/登录/注册) when
   the task does NOT require authentication — navigation, search, and most
   features work without login. OVERRIDE to the task-relevant action.
-• VLM wants to click 同意授权/同意/Agree/Authorize in a ride-hailing or
-  paid-service context (signs: ¥ prices visible, 呼叫/叫车/打车 buttons,
-  网约车 on screen).  OVERRIDE with system_button=Back — these can trigger
-  charges.  HOWEVER: location permission dialogs (位置服务/定位/location/
-  GPS) on a map/navigation screen are REQUIRED for navigation to work —
-  these are safe to approve.
+• VLM wants to click 同意授权/同意/授权/Agree/Authorize/Allow — the VLM
+  cannot know what permission is being granted (GPS, payment, data
+  collection, etc.).  OVERRIDE with system_button=Back to dismiss the
+  dialog.  If the app truly needs the permission it will ask again.
 When you detect a goal violation, override with the action that actually
 moves the task forward. If the task is already achieved (e.g. navigation
 is running), override with answer.
