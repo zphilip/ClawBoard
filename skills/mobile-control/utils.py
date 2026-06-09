@@ -2146,8 +2146,8 @@ class SupervisorLLM:
         _extra_body: dict = {}
         if self.reasoning_split:
             _extra_body["reasoning_split"] = True
-        _sup_max_attempts = 2  # 2 attempts × 20s = 40s max for validation
-        _sup_req_timeout = 20  # hard wall-clock timeout (seconds) via _call_with_timeout
+        _sup_max_attempts = 2  # 2 attempts × 30s = 60s max for validation
+        _sup_req_timeout = 30  # hard wall-clock timeout (seconds) via _call_with_timeout
         for _sup_try in range(1, _sup_max_attempts + 1):
             try:
                 print(f"[SUPERVISOR] validate attempt {_sup_try}/{_sup_max_attempts}")
@@ -2286,7 +2286,7 @@ class SupervisorLLM:
         if self.reasoning_split:
             _extra_body["reasoning_split"] = True
         _tc_max_attempts = 2
-        _tc_req_timeout = 20  # hard wall-clock timeout (seconds) via _call_with_timeout
+        _tc_req_timeout = 30  # hard wall-clock timeout (seconds) via _call_with_timeout
         for _tc_try in range(1, _tc_max_attempts + 1):
             try:
                 print(f"[SUPERVISOR] task-complete attempt {_tc_try}/{_tc_max_attempts}")
