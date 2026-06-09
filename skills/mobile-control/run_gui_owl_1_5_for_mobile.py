@@ -521,6 +521,26 @@ def main():
     _sup_approved_cache: dict[str, float] = {}
     _SUP_APPROVE_CACHE_TTL_SECONDS = 180
     _SUP_APPROVE_CACHE_MAX_SIZE = 200
+
+    # Persistent supervisor approval cache — survives across runs.
+    # When the supervisor approves the same (state, action) pair N times
+    # without any overrides, we skip the supervisor call entirely.
+    _sup_persistent_cache_path = _memory_root / "supervisor_cache.jsonl"
+    _sup_persistent_cache: dict[str, dict] = {}  # sig -> {approve, override}
+    _SUP_CACHE_MIN_APPROVES = 3  # need 3+ approvals before fastpath
+    try:
+        if _sup_persistent_cache_path.exists():
+            for _line in _sup_persistent_cache_path.read_text().splitlines():
+                if not _line.strip():
+                    continue
+                try:
+                    _entry = json.loads(_line)
+                    _sup_persistent_cache[_entry["sig"]] = _entry
+                except Exception:
+                    pass
+        print(f"[SUPERVISOR CACHE] loaded {len(_sup_persistent_cache)} entries")
+    except Exception:
+        pass
     _STATE_ACTION_LOOP_THRESHOLD = 3
 
     # Keywords in the model's action text that signal it is on the wrong screen.
@@ -1433,8 +1453,20 @@ def main():
                 _skip_supervisor = True
                 _sup_skip_reason = "transient_confirm_dialog_fast_path"
 
-            # Skip supervisor if the same state+action was approved recently.
+            # Persistent cache: skip supervisor when this exact (state, action)
+            # has been approved ≥N times across runs with zero overrides.
             _sup_cache_key = _step_state_action_sig
+            if _sup_cache_key and not _skip_supervisor:
+                _pc_entry = _sup_persistent_cache.get(_sup_cache_key)
+                if (_pc_entry and _pc_entry.get("approve", 0) >= _SUP_CACHE_MIN_APPROVES
+                        and _pc_entry.get("override", 0) == 0):
+                    _skip_supervisor = True
+                    _sup_skip_reason = (
+                        f"persistent_cache(approve={_pc_entry['approve']})"
+                    )
+
+            # In-memory TTL cache: skip supervisor if the same state+action
+            # was approved recently (within the current run).
             if _sup_cache_key and not _skip_supervisor:
                 _cached_until = _sup_approved_cache.get(_sup_cache_key, 0.0)
                 _now = time.time()
@@ -1477,6 +1509,13 @@ def main():
             if (not _skip_supervisor) and _sup_verdict.get("verdict") == "override":
                 _reason = _sup_verdict.get("reason", "")
                 print(f"[SUPERVISOR] overriding action — {_reason}")
+                # Update persistent cache: increment override counter so this
+                # (state, action) pair won't be fastpathed in future runs.
+                if _sup_cache_key and _sup_persistent_cache is not None:
+                    _pc = _sup_persistent_cache.get(_sup_cache_key, {"approve": 0, "override": 0})
+                    _pc["override"] = _pc.get("override", 0) + 1
+                    _pc["last"] = time.time()
+                    _sup_persistent_cache[_sup_cache_key] = _pc
                 # Inject the override reason as feedback so the VLM
                 # knows why its action was wrong and course-corrects on
                 # the next step instead of repeating the same mistake.
@@ -1548,7 +1587,13 @@ def main():
                     continue
             else:
                 print("[SUPERVISOR] approved")
-                # Cache approve on exact same state+action for short TTL.
+                # Update persistent cache: increment approve counter.
+                if _sup_cache_key and _sup_persistent_cache is not None:
+                    _pc = _sup_persistent_cache.get(_sup_cache_key, {"approve": 0, "override": 0})
+                    _pc["approve"] = _pc.get("approve", 0) + 1
+                    _pc["last"] = time.time()
+                    _sup_persistent_cache[_sup_cache_key] = _pc
+                # In-memory TTL cache for same-run approvals.
                 if _step_state_action_sig:
                     # Enforce a max-size cap to prevent unbounded growth in
                     # long-running sessions.  Evict expired entries first;
@@ -2061,6 +2106,18 @@ def main():
                     )
         except Exception as _plan_end_err:
             _log_t(f"[PLAN] end-of-run error ({_plan_end_err!r})")
+
+    # Flush persistent supervisor cache to disk
+    if _sup_persistent_cache:
+        try:
+            _lines = [
+                json.dumps({"sig": k, **v}, ensure_ascii=False)
+                for k, v in _sup_persistent_cache.items()
+            ]
+            _sup_persistent_cache_path.write_text("\n".join(_lines) + "\n")
+            _log_t(f"[SUPERVISOR CACHE] flushed {len(_lines)} entries")
+        except Exception as _cache_err:
+            _log_t(f"[SUPERVISOR CACHE] flush error: {_cache_err}")
 
     # Clean up screenshot directories after task ends
     _cleanup()
