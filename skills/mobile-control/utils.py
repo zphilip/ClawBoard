@@ -1241,7 +1241,8 @@ Rules:
 - **Flow A — Search bar (when no route is shown):**  tap the search bar → **type the exact destination** using ``action=type`` → **click the search button (搜索/放大镜) or press Enter/搜索 key** to execute the query → wait for results to load → select the matching destination from the results (NOT a ride-hailing one with ¥ price) → wait for routes → select 驾车 if not already selected → click "开始导航".  When using this flow, typing AND confirming the search are both MANDATORY.  Never try to select an autocomplete suggestion before executing the search.
 - **Flow B — Pre-filled route (when a route panel is already visible):**  if you see a route panel with a destination label (e.g. "驾车前往 南岸花城"), READ the destination text carefully.  If it matches the instruction EXACTLY, you may click 出发/开始导航 directly.  If it does NOT match, or you are unsure, fall back to Flow A (search bar → type).
 - The key rule: **verify first, click second.**  Never click 出发/开始导航 without confirming the destination text is correct.  The destination may be stale from a previous session.
-- After typing into the search bar, look at the suggestion dropdown and tap the one that matches most closely.  Do NOT tap a ride-hailing suggestion that shows a price (¥).
+- After typing into the search bar, click the search button (搜索/放大镜) or press Enter to execute the query.  Then select the matching result from the search results list.  Do NOT tap a ride-hailing suggestion that shows a price (¥).
+- **NEVER use ``action=type`` without first clicking the input field.**  If the field is not focused, the text goes nowhere.  Always: click to focus → type → click search to execute.
 
 ## ⚠️  Navigation = Driving / Walking / Transit — NOT Ride-Hailing (CRITICAL)
 - "导航" (navigate / navigation) ALWAYS means free self-driving routes: **驾车** (driving), **步行** (walking), or **公共交通** (public transit / bus / metro).
@@ -1260,6 +1261,7 @@ Screen resolution: 1000x1000. Output format: "Action: <description>" followed by
 
 # Critical rules (MUST follow):
 ## NEVER log in, sign up, or authenticate. Apps work without login. Skip all login/account/profile prompts.
+## ALWAYS click an input field to focus it BEFORE using type. Type without focus = text goes nowhere.
 ## ALWAYS execute — never refuse. If on wrong screen, press Home then open the correct app.
 ## Before clicking 开始导航/出发, VERIFY the destination matches the task exactly. Type the destination first if unsure.
 ## Navigation task is complete ONLY when live turn-by-turn navigation is running (arrow + turn instruction visible).
