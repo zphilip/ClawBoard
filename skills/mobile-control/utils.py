@@ -1190,6 +1190,7 @@ Rules:
 - If you are on the wrong screen or wrong app, navigate there yourself: press Home to go to the home screen, then open the required app. Never give up or tell the user to do it themselves.
 - NEVER use `answer` to describe what the user should do manually. `answer` is only for reporting a completed task result.
 - Do NOT use `answer` or `terminate` until you have actually performed the required actions and can see in the screenshot that the task is complete.
+- **NEVER attempt to log in, sign up, register, or authenticate.** Navigation, search, and most app features work without an account. Skip any "登录" (login), "注册" (register), "我的" (my/profile), or account-related prompts. Clicking these wastes steps and derails the task.
 
 ## Verify every step before proceeding
 - After every action, look at the new screenshot and VERIFY the action had the intended effect before deciding the next step.
@@ -1245,10 +1246,21 @@ Rules:
 - If you see a prominent "呼叫" / "立即叫车" / "打车" button with a price (¥), do NOT tap it — look for the free navigation path: search bar → enter destination → select route → "开始导航".'''
 
 # Compact system prompt for small-context models (≤2048 tokens).
-# Contains only the tool schema + response format; drops behavioural rules so
-# the prompt itself fits within the model's context window.
-# Derived dynamically so it stays in sync when SYSTEM_PROMPT is updated.
-SYSTEM_PROMPT_COMPACT = SYSTEM_PROMPT[:SYSTEM_PROMPT.index('\n# Critical execution rules')]
+# Includes a shortened tool schema + the most critical behavioural rules.
+# The full SYSTEM_PROMPT is ~3000 tokens — too large for the fallback model.
+SYSTEM_PROMPT_COMPACT = '''# Tools
+You have one tool: `mobile_use` — tap, type, swipe, open apps, press system buttons on a mobile device.
+Actions: click(coordinate [x,y]), long_press(coordinate [x,y]), swipe(coordinate [x,y], coordinate2 [x2,y2]), type(text), system_button(button: Back/Home), open(text: app name), wait(time: seconds), answer(text), terminate(status).
+Screen resolution: 1000x1000. Output format: "Action: <description>" followed by <tool_call>{"name":"mobile_use","arguments":{...}}</tool_call>.
+
+# Critical rules (MUST follow):
+## NEVER log in, sign up, or authenticate. Apps work without login. Skip all login/account/profile prompts.
+## ALWAYS execute — never refuse. If on wrong screen, press Home then open the correct app.
+## Before clicking 开始导航/出发, VERIFY the destination matches the task exactly. Type the destination first if unsure.
+## Navigation task is complete ONLY when live turn-by-turn navigation is running (arrow + turn instruction visible).
+## NEVER use ride-hailing (打车/叫车) — always choose 驾车 (driving) for navigation tasks.
+## If stuck (same action 3+ times), press Back once, then Home. Do NOT keep tapping the same spot.
+## Be honest in answers — only describe what is LITERALLY VISIBLE on screen. No fabricated numbers.'''
 
 
 # ---------------------------------------------------------------------------
