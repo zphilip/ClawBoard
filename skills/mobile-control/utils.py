@@ -1226,7 +1226,7 @@ Rules:
 
 ## Honesty rules for the answer action
 - ONLY use the answer action when the task outcome is LITERALLY VISIBLE in the current screenshot.
-- Do NOT fabricate or assume any information that is not shown on screen: distances, travel times, congestion indices, prices, ratings, status messages, or any other numbers/text.
+- Do NOT fabricate or assume any information that is not VISIBLE on screen: distances (km/m), travel times (minutes), arrival times (HH:MM), congestion indices, prices (¥), ratings, street names, turn directions ("左转"/"右转"), speed values (km/h), signal status ("定位信号正常"), or any other specific numbers or text. If you cannot see it with your own eyes in the screenshot, do NOT include it in the answer.
 - If you cannot see clear confirmation that the task completed (e.g. navigation actively running, booking confirmed screen), do NOT answer — take the next required action instead.
 - Your answer text must describe only what is visible. Never extrapolate from partial information. If the screen shows a destination pin but navigation has not started, do NOT answer yet — click the start button first.
 
@@ -1268,7 +1268,7 @@ Screen resolution: 1000x1000. Output format: "Action: <description>" followed by
 ## Navigation task is complete ONLY when live turn-by-turn navigation is running (arrow + turn instruction visible).
 ## NEVER use ride-hailing (打车/叫车) — always choose 驾车 (driving) for navigation tasks.
 ## If stuck (same action 3+ times), press Back once, then Home. Do NOT keep tapping the same spot.
-## Be honest in answers — only describe what is LITERALLY VISIBLE on screen. No fabricated numbers.'''
+## Be honest in answers — only describe what is LITERALLY VISIBLE on screen. NEVER fabricate distances (km/m), times (minutes/hours), arrival estimates, street names, turn directions, speed values, or signal status. If you can't see it, don't say it.'''
 
 
 # ---------------------------------------------------------------------------
@@ -2351,8 +2351,8 @@ class SupervisorLLM:
                     print(f"[SUPERVISOR] task-complete timeout on attempt {_tc_try} — retrying in 3s")
                     time.sleep(3)
                     continue
-                print(f"[SUPERVISOR] task-complete error after retries — assuming complete: {_e}")
-                return {"complete": True, "reason": "error/api-unavailable"}
-        return {"complete": True, "reason": "error/exhausted-retries"}
+                print(f"[SUPERVISOR] task-complete error after retries — assuming NOT complete: {_e}")
+                return {"complete": False, "reason": "error/api-unavailable"}
+        return {"complete": False, "reason": "error/exhausted-retries"}
 
 
