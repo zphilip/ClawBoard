@@ -2078,6 +2078,18 @@ class SupervisorLLM:
         self.model = model
         self.vision = vision
         self.reasoning_split = reasoning_split
+
+    @staticmethod
+    def _call_with_timeout(fn, timeout: float):
+        """Call *fn* in a thread and return its result, or raise
+        TimeoutError if it takes longer than *timeout* seconds."""
+        from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutTimeout
+        with ThreadPoolExecutor(max_workers=1) as ex:
+            fut = ex.submit(fn)
+            try:
+                return fut.result(timeout=timeout)
+            except FutTimeout:
+                raise TimeoutError(f"call timed out after {timeout}s")
         self._client = OpenAI(api_key=api_key, base_url=base_url, timeout=25)
 
     def validate(
@@ -2132,20 +2144,22 @@ class SupervisorLLM:
         if self.reasoning_split:
             _extra_body["reasoning_split"] = True
         _sup_max_attempts = 2  # 2 attempts × 20s = 40s max for validation
-        _sup_req_timeout = 20  # per-request timeout (seconds)
+        _sup_req_timeout = 20  # hard wall-clock timeout (seconds) via _call_with_timeout
         for _sup_try in range(1, _sup_max_attempts + 1):
             try:
                 print(f"[SUPERVISOR] validate attempt {_sup_try}/{_sup_max_attempts}")
-                resp = self._client.chat.completions.create(
+                resp = self._call_with_timeout(
+                    lambda: self._client.chat.completions.create(
+                        model=self.model,
+                        messages=[
+                            {"role": "system", "content": _SUPERVISOR_SYSTEM},
+                            {"role": "user", "content": user_content},
+                        ],
+                        temperature=0,
+                        max_tokens=2048,
+                        **(dict(extra_body=_extra_body) if _extra_body else {}),
+                    ),
                     timeout=_sup_req_timeout,
-                    model=self.model,
-                    messages=[
-                        {"role": "system", "content": _SUPERVISOR_SYSTEM},
-                        {"role": "user", "content": user_content},
-                    ],
-                    temperature=0,
-                    max_tokens=2048,  # increased from 1024: reasoning_split needs room for both CoT + verdict
-                    **(dict(extra_body=_extra_body) if _extra_body else {}),
                 )
                 # With reasoning_split=True, the verdict JSON should be in content
                 # and the chain-of-thought in reasoning_details/reasoning_content.
@@ -2269,20 +2283,22 @@ class SupervisorLLM:
         if self.reasoning_split:
             _extra_body["reasoning_split"] = True
         _tc_max_attempts = 2
-        _tc_req_timeout = 20  # per-request timeout (seconds)
+        _tc_req_timeout = 20  # hard wall-clock timeout (seconds) via _call_with_timeout
         for _tc_try in range(1, _tc_max_attempts + 1):
             try:
                 print(f"[SUPERVISOR] task-complete attempt {_tc_try}/{_tc_max_attempts}")
-                resp = self._client.chat.completions.create(
+                resp = self._call_with_timeout(
+                    lambda: self._client.chat.completions.create(
+                        model=self.model,
+                        messages=[
+                            {"role": "system", "content": _TASK_COMPLETE_SYSTEM},
+                            {"role": "user", "content": user_content},
+                        ],
+                        temperature=0,
+                        max_tokens=512,
+                        **(dict(extra_body=_extra_body) if _extra_body else {}),
+                    ),
                     timeout=_tc_req_timeout,
-                    model=self.model,
-                    messages=[
-                        {"role": "system", "content": _TASK_COMPLETE_SYSTEM},
-                        {"role": "user", "content": user_content},
-                    ],
-                    temperature=0,
-                    max_tokens=512,
-                    **(dict(extra_body=_extra_body) if _extra_body else {}),
                 )
                 raw = (resp.choices[0].message.content or "").strip()
                 if not raw:
