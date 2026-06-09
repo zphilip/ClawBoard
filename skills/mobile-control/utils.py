@@ -1238,7 +1238,7 @@ Rules:
 
 ## 🚨 Verify the destination BEFORE navigating (CRITICAL)
 - **Always verify the destination shown on screen matches the instruction exactly before clicking 出发/开始导航.**  There are two valid flows:
-- **Flow A — Search bar (when no route is shown):**  tap the search bar → **type the exact destination** using ``action=type`` → **click the search button (搜索/放大镜) or press Enter/搜索 key** to execute the query → wait for results to load → select the matching destination from the results (NOT a ride-hailing one with ¥ price) → wait for routes → select 驾车 if not already selected → click "开始导航".  When using this flow, typing AND confirming the search are both MANDATORY.  Never try to select an autocomplete suggestion before executing the search.
+- **Flow A — Search bar (when no route is shown):**  FIRST verify the transport mode — check the tabs (驾车/打车/公交/步行) and ensure **驾车** is selected. If 打车 or any other mode is active, click 驾车 before anything else. → tap the search bar → **type the exact destination** using ``action=type`` → **click the search button (搜索/放大镜) or press Enter/搜索 key** to execute the query → wait for results to load → select the matching destination from the results (NOT a ride-hailing one with ¥ price) → verify 驾车 is still selected → click "开始导航".  When using this flow: (1) verify transport mode FIRST, (2) typing AND confirming the search are both MANDATORY.  Never try to select an autocomplete suggestion before executing the search.
 - **Flow B — Pre-filled route (when a route panel is already visible):**  if you see a route panel with a destination label (e.g. "驾车前往 南岸花城"), READ the destination text carefully.  If it matches the instruction EXACTLY, you may click 出发/开始导航 directly.  If it does NOT match, or you are unsure, fall back to Flow A (search bar → type).
 - The key rule: **verify first, click second.**  Never click 出发/开始导航 without confirming the destination text is correct.  The destination may be stale from a previous session.
 - After typing into the search bar, click the search button (搜索/放大镜) or press Enter to execute the query.  Then select the matching result from the search results list.  Do NOT tap a ride-hailing suggestion that shows a price (¥).
@@ -1440,10 +1440,10 @@ def build_messages(image_path, instruction, history_output, model_name,
         _inst_lc = instruction.lower()
         if any(kw in _inst_lc for kw in ("导航", "navigate", "路线", "direction", "地图", "map")):
             _compact_rules += [
-                "For navigation: FIRST click the search bar to focus it, THEN type the destination. After typing, click the search button (搜索/放大镜) to execute the query. Wait for results, select the correct destination, then click 开始导航.",
-                "NEVER type text without first clicking the input field to ensure it has focus.",
+                "Navigation flow: (1) FIRST verify 驾车 tab is selected — if 打车 is active, click 驾车. (2) Click search bar to focus. (3) Type destination. (4) Click search button to execute. (5) Select correct destination from results. (6) Verify 驾车 is still selected. (7) Click 开始导航.",
+                "NEVER type text without first clicking the input field.",
                 "Navigation is complete ONLY when live turn-by-turn is running.",
-                "Choose 驾车 (driving). NEVER click ride-hailing (打车/叫车/¥ price).",
+                "驾车 (driving) only — if screen shows 打车/叫车/¥ prices, switch to 驾车 first.",
             ]
         if any(kw in _inst_lc for kw in ("搜索", "search", "查找", "find", "查")):
             _compact_rules += [
