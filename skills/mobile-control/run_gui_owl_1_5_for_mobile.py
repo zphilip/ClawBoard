@@ -1074,6 +1074,19 @@ def main():
                 _memory_reason = f"error:{_mem_pre_err.__class__.__name__}"
                 _log_t(f"[MEMORY] pre-LLM fastpath error ({_mem_pre_err!r}) — fallback to normal path")
 
+        # Detect ride-hailing keywords in UI dump — used for LLM warning
+        # injection (below) and supervisor skip prevention (3c block).
+        _is_nav_task = any(
+            kw in instruction.lower()
+            for kw in ("导航", "navigate", "路线", "direction")
+        )
+        _has_taxi_keywords = bool(
+            _ui_summary and any(
+                kw in (_ui_summary or "").lower()
+                for kw in ("打车", "叫车", "呼叫", "立即叫车", "网约车")
+            )
+        )
+
         # 2. Call the VLM (delegated to VLMProvider for primary + fallback chain).
         if _pre_llm_action_parameter is None:
             # Inject supervisor feedback from previous overrides so the VLM
@@ -1085,6 +1098,16 @@ def main():
                     f"overridden: {_supervisor_feedback}"
                 )
                 _supervisor_feedback = ""  # clear after injection
+            # Inject transport mode warning when the UI shows ride-hailing
+            # keywords but the task requires free driving navigation.
+            if _is_nav_task and _has_taxi_keywords:
+                _nav_warning = (
+                    "\n\n[CRITICAL] The screen shows 打车/ride-hailing mode active "
+                    "(¥ prices or 呼叫/叫车 buttons visible). This is WRONG for a "
+                    "navigation task. Click the 驾车 (driving) tab FIRST before "
+                    "anything else. Never click 同意授权 or导航 in taxi mode."
+                )
+                _effective_instruction = _effective_instruction.rstrip() + _nav_warning
             _vlm_result = _vlm_provider.call(
                 screenshot_path, _effective_instruction, history, args.model,
                 foreground_pkg=_fg_label,
@@ -1360,12 +1383,6 @@ def main():
             # from a prior run, but the transport mode may have changed — e.g. the
             # user used 打车 last time and now we need 驾车.  Without supervisor
             # validation the VLM navigates in the wrong mode.
-            _has_taxi_keywords = bool(
-                _ui_summary and any(
-                    kw in (_ui_summary or "").lower()
-                    for kw in ("打车", "叫车", "呼叫", "立即叫车")
-                )
-            )
             if _used_memory_fastpath and not _has_taxi_keywords:
                 _skip_supervisor = True
                 _sup_skip_reason = "memory_fastpath_cached_action"
