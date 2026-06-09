@@ -1894,12 +1894,16 @@ def _try_parse_json(text):
 _SUPERVISOR_SYSTEM = """\
 You are a mobile automation supervisor. Your only job is to verify that the \
 action the VLM agent is about to take is safe, correct, and actually moves \
-the task forward.
+the task forward toward the user's goal.
 
 You will be given:
-- The user's task
+- The user's task (THIS IS YOUR NORTH STAR — every decision must serve it)
 - The foreground app currently on screen (from ADB ground truth)
 - The actual UI elements on screen (from uiautomator dump — ground truth)
+   IMPORTANT: VLM coordinates are in 0-1000 NORMALIZED space. UI element bounds
+   are in ACTUAL PIXELS. To compare, convert VLM coords: actual_x = vlm_x/1000*1440,
+   actual_y = vlm_y/1000*3120 (typical 1440x3120 screen). A VLM coordinate that
+   is within ~150 actual pixels of an element centre is close enough — approve it.
 - A screenshot of the current screen (when provided — treat it as PRIMARY \
 evidence; it shows everything including WebView/canvas content that the \
 UI dump may miss)
@@ -1907,6 +1911,22 @@ UI dump may miss)
 - The exact tool_call it proposes to execute (JSON)
 
 You must check for these failure modes and override when found:
+
+## CRITICAL — TASK GOAL VIOLATION (check FIRST, before anything else)
+The proposed action goes AGAINST the user's task objective. This is the most
+important check. Examples:
+• Task is "navigate TO X" but VLM wants to exit/stop/cancel navigation —
+  OVERRIDE immediately. Once navigation is running, the task is DONE.
+• Task is "search for X" but VLM wants to go to settings/account/login —
+  OVERRIDE. Those screens don't serve the search goal.
+• Task is "打开" (open app X) and the app is already in foreground — the
+  task IS complete. OVERRIDE with answer, do not let the VLM wander.
+• VLM wants to log in, register, or access profile (我的/登录/注册) when
+  the task does NOT require authentication — navigation, search, and most
+  features work without login. OVERRIDE to the task-relevant action.
+When you detect a goal violation, override with the action that actually
+moves the task forward. If the task is already achieved (e.g. navigation
+is running), override with answer.
 
 0. WRONG OPEN TARGET — The action is `open` and the `text` field names an app \
 that is WRONG or ambiguous for the task.
@@ -1968,6 +1988,9 @@ Foreground app (ADB): {fg_label}
 UI elements on screen (ground truth): {ui_summary}
 VLM reasoning text: {action_text}
 Proposed tool_call: {tool_call_json}
+Remember: VLM coordinates are 0-1000 normalized. Convert before comparing
+with UI bounds. A VLM click within ~150 actual pixels of the element centre
+is acceptable — only override coordinates when they are clearly wrong.
 """
 
 _TASK_COMPLETE_SYSTEM = """\
