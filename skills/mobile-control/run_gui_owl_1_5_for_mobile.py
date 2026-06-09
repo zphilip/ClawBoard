@@ -1513,8 +1513,21 @@ def main():
         )
         action_parameter = rescale_coordinates(action_parameter, resized_w, resized_h)
 
-        # 5. Execute the action
-        action_type = action_parameter["action"]
+        # 5. Validate required fields before executing.
+        # Truncated VLM outputs can parse as valid JSON but miss required
+        # keys (e.g. click without coordinate).  Catch these early instead
+        # of crashing with KeyError mid-execution.
+        action_type = action_parameter.get("action", "")
+        _missing = _missing_required_fields(action_type, action_parameter)
+        if _missing:
+            print(
+                f"[WARN] action {action_type!r} missing required fields "
+                f"{_missing} — skipping step (VLM output may be truncated)"
+            )
+            history.append({"output": output_text, "image": screenshot_path})
+            _emit_step_summary("parse_failed")
+            time.sleep(1)
+            continue
 
         if action_type == "click":
             _t_action = time.time()
