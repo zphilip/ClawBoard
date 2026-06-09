@@ -2190,13 +2190,13 @@ class SupervisorLLM:
                             time.sleep(2)
                             continue
                         print("[SUPERVISOR] empty response after retries — approving by default")
-                        return {"verdict": "approve"}
+                        return {"verdict": "approve", "_default": True}
                 parsed = _try_parse_json(raw)
                 if parsed:
                     v = str(parsed.get("verdict", "")).lower()
                     # Normalise past-tense forms ("approved" → "approve", etc.)
                     if v in ("approve", "approved"):
-                        return {"verdict": "approve"}
+                        return {"verdict": "approve"}  # EXPLICIT — safe to cache
                     if v in ("override", "overridden"):
                         return dict(parsed, verdict="override")
                 # Last-resort keyword scan — some model versions output
@@ -2206,28 +2206,28 @@ class SupervisorLLM:
                 _has_approve = bool(re.search(r'\b(approve|approved)\b', _raw_lc))
                 _has_override = bool(re.search(r'\b(override|overridden)\b', _raw_lc))
                 if _has_approve and not _has_override:
-                    return {"verdict": "approve"}
+                    return {"verdict": "approve"}  # EXPLICIT — model said approve
                 if _has_override:
                     print(f"[SUPERVISOR] prose override — no parseable JSON; approving by default")
-                    return {"verdict": "approve"}
+                    return {"verdict": "approve", "_default": True}
                 # No verdict keywords at all — default to approve.
                 # The supervisor produced analysis but no conclusion, which
                 # means it didn't find a clear problem with the action.
                 print(f"[SUPERVISOR] no verdict in response — approving: {raw[:120]!r}")
-                return {"verdict": "approve"}
+                return {"verdict": "approve", "_default": True}
             except Exception as _e:
                 _is_timeout = "timeout" in str(_e).lower() or "timed out" in str(_e).lower()
                 _is_auth = getattr(_e, "status_code", None) in (401, 403)
                 if _is_auth:
                     print(f"[SUPERVISOR] auth error — approving by default: {_e}")
-                    return {"verdict": "approve"}
+                    return {"verdict": "approve", "_default": True}
                 if _sup_try < _sup_max_attempts and _is_timeout:
                     print(f"[SUPERVISOR] timeout on attempt {_sup_try} — retrying in 3s")
                     time.sleep(3)
                     continue
                 print(f"[SUPERVISOR] error — approving by default: {_e}")
-                return {"verdict": "approve"}
-        return {"verdict": "approve"}
+                return {"verdict": "approve", "_default": True}
+        return {"verdict": "approve", "_default": True}
 
     def is_task_complete(
         self,

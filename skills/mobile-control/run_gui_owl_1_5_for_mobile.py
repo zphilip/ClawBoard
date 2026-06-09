@@ -527,7 +527,8 @@ def main():
     # without any overrides, we skip the supervisor call entirely.
     _sup_persistent_cache_path = _memory_root / "supervisor_cache.jsonl"
     _sup_persistent_cache: dict[str, dict] = {}  # sig -> {approve, override}
-    _SUP_CACHE_MIN_APPROVES = 3  # need 3+ approvals before fastpath
+    _SUP_CACHE_MIN_APPROVES = 3  # need 3+ EXPLICIT approvals before fastpath
+    _SUP_CACHE_MAX_AGE = 7 * 86400  # expire entries older than 7 days
     try:
         if _sup_persistent_cache_path.exists():
             for _line in _sup_persistent_cache_path.read_text().splitlines():
@@ -1458,12 +1459,16 @@ def main():
             _sup_cache_key = _step_state_action_sig
             if _sup_cache_key and not _skip_supervisor:
                 _pc_entry = _sup_persistent_cache.get(_sup_cache_key)
-                if (_pc_entry and _pc_entry.get("approve", 0) >= _SUP_CACHE_MIN_APPROVES
-                        and _pc_entry.get("override", 0) == 0):
-                    _skip_supervisor = True
-                    _sup_skip_reason = (
-                        f"persistent_cache(approve={_pc_entry['approve']})"
-                    )
+                if _pc_entry is not None:
+                    # Expire stale entries — UI may have changed
+                    if time.time() - _pc_entry.get("last", 0) > _SUP_CACHE_MAX_AGE:
+                        del _sup_persistent_cache[_sup_cache_key]
+                    elif (_pc_entry.get("approve", 0) >= _SUP_CACHE_MIN_APPROVES
+                            and _pc_entry.get("override", 0) == 0):
+                        _skip_supervisor = True
+                        _sup_skip_reason = (
+                            f"persistent_cache(approve={_pc_entry['approve']})"
+                        )
 
             # In-memory TTL cache: skip supervisor if the same state+action
             # was approved recently (within the current run).
@@ -1586,9 +1591,16 @@ def main():
                     time.sleep(2)
                     continue
             else:
-                print("[SUPERVISOR] approved")
-                # Update persistent cache: increment approve counter.
-                if _sup_cache_key and _sup_persistent_cache is not None:
+                _explicit_approve = not _sup_verdict.get("_default", False)
+                if _explicit_approve:
+                    print("[SUPERVISOR] approved")
+                else:
+                    print("[SUPERVISOR] approved by default (timeout/error)")
+                # Update persistent cache: only cache EXPLICIT approvals.
+                # Default-approves (timeout/error fallback) must NOT be
+                # cached — they were never actually checked by the model.
+                if (_sup_cache_key and _sup_persistent_cache is not None
+                        and _explicit_approve):
                     _pc = _sup_persistent_cache.get(_sup_cache_key, {"approve": 0, "override": 0})
                     _pc["approve"] = _pc.get("approve", 0) + 1
                     _pc["last"] = time.time()
