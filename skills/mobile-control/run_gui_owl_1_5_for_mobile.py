@@ -1507,7 +1507,7 @@ def main():
                     )
                 except Exception as _sup_err:
                     print(f"[SUPERVISOR] error during validation ({_sup_err!r}) — approving by default")
-                    _sup_verdict = {"verdict": "approve"}
+                    _sup_verdict = {"verdict": "approve", "_default": True}
                 _step_metrics["supervisor"] = time.time() - _t_supervisor
                 _log_t(f"[TIMING] supervisor_validate={_step_metrics['supervisor']:.2f}s")
 
