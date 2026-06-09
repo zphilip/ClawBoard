@@ -1355,7 +1355,18 @@ def main():
             _sup_apps_hint = ""
             # Skip supervisor for memory fastpath — the action was already approved
             # in a prior run; re-validating it every time defeats the purpose.
-            if _used_memory_fastpath:
+            # EXCEPTION: navigation tasks where the UI dump shows transport mode
+            # keywords (打车/叫车).  The memory fastpath replays a cached action
+            # from a prior run, but the transport mode may have changed — e.g. the
+            # user used 打车 last time and now we need 驾车.  Without supervisor
+            # validation the VLM navigates in the wrong mode.
+            _has_taxi_keywords = bool(
+                _ui_summary and any(
+                    kw in (_ui_summary or "").lower()
+                    for kw in ("打车", "叫车", "呼叫", "立即叫车")
+                )
+            )
+            if _used_memory_fastpath and not _has_taxi_keywords:
                 _skip_supervisor = True
                 _sup_skip_reason = "memory_fastpath_cached_action"
             if _proposed_action == "open" and _cached_sup_app_names:
@@ -1385,7 +1396,8 @@ def main():
             # Skip supervisor when post-LLM memory confirmed the VLM action.
             # Both memory (validated in a prior run) and VLM independently agree
             # on the same action for the same state — supervisor is redundant.
-            if (not _skip_supervisor) and _memory_confirmed_vlm:
+            # Exception: same as above — don't skip when taxi keywords visible.
+            if (not _skip_supervisor) and _memory_confirmed_vlm and not _has_taxi_keywords:
                 _skip_supervisor = True
                 _sup_skip_reason = "memory_confirmed_vlm_action"
 
