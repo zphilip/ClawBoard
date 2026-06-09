@@ -2073,7 +2073,7 @@ class SupervisorLLM:
         self.model = model
         self.vision = vision
         self.reasoning_split = reasoning_split
-        self._client = OpenAI(api_key=api_key, base_url=base_url, timeout=60)
+        self._client = OpenAI(api_key=api_key, base_url=base_url, timeout=25)
 
     def validate(
         self,
@@ -2126,8 +2126,8 @@ class SupervisorLLM:
         _extra_body: dict = {}
         if self.reasoning_split:
             _extra_body["reasoning_split"] = True
-        _sup_max_attempts = 3
-        _sup_req_timeout = 30  # per-request timeout (seconds)
+        _sup_max_attempts = 2  # 2 attempts × 20s = 40s max for validation
+        _sup_req_timeout = 20  # per-request timeout (seconds)
         for _sup_try in range(1, _sup_max_attempts + 1):
             try:
                 print(f"[SUPERVISOR] validate attempt {_sup_try}/{_sup_max_attempts}")
@@ -2263,8 +2263,8 @@ class SupervisorLLM:
         _extra_body: dict = {}
         if self.reasoning_split:
             _extra_body["reasoning_split"] = True
-        _tc_max_attempts = 3
-        _tc_req_timeout = 30  # per-request timeout (seconds)
+        _tc_max_attempts = 2
+        _tc_req_timeout = 20  # per-request timeout (seconds)
         for _tc_try in range(1, _tc_max_attempts + 1):
             try:
                 print(f"[SUPERVISOR] task-complete attempt {_tc_try}/{_tc_max_attempts}")
