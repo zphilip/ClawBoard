@@ -612,6 +612,8 @@ def main():
     _cache_fastpath_steps = 0       # memory pre-LLM fastpath
     _cache_plan_replay_steps = 0    # plan replay (VLM skipped)
     _cache_vlm_normal_steps = 0     # normal VLM call (primary or fallback)
+    _sup_cache_hits = 0             # supervisor skipped (persistent/TTL/memory cache)
+    _sup_cache_misses = 0           # supervisor actually called
     # Supervisor feedback injection — when the supervisor overrides an action
     # because the VLM is going against the task goal, the override reason is
     # injected into the next VLM call so the model course-corrects.
@@ -1491,9 +1493,11 @@ def main():
                 _sup_skip_reason = "memory_confirmed_vlm_action"
 
             if _skip_supervisor:
+                _sup_cache_hits += 1
                 print(f"[SUPERVISOR] skipped ({_sup_skip_reason})")
                 _step_metrics["supervisor"] = 0.0
             else:
+                _sup_cache_misses += 1
                 _t_supervisor = time.time()
                 try:
                     _sup_verdict = supervisor.validate(
@@ -2063,6 +2067,9 @@ def main():
         print(f"║  Plan-replay steps (VLM skipped):   {_cache_plan_replay_steps:>3d}".ljust(58) + "║")
         print(f"║  Memory-fastpath steps (VLM skipped):{_cache_fastpath_steps:>3d}".ljust(58) + "║")
         print(f"║  Normal VLM steps:                  {_cache_vlm_normal_steps:>3d}".ljust(58) + "║")
+        print(f"║  ─────────────────────────────────".ljust(58) + "║")
+        print(f"║  Supervisor cache hits (skipped):   {_sup_cache_hits:>3d}".ljust(58) + "║")
+        print(f"║  Supervisor cache misses (called):  {_sup_cache_misses:>3d}".ljust(58) + "║")
         print(f"║  ─────────────────────────────────".ljust(58) + "║")
         print(f"║  Total steps:                       {_cache_total:>3d}".ljust(58) + "║")
         print(f"║  Cache HIT:  {_cache_hit_pct:5.1f}%  [{'█' * _hit_bars}{'░' * _miss_bars}]".ljust(58) + "║")
