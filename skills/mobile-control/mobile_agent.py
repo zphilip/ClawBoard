@@ -31,6 +31,7 @@ import shutil
 import subprocess
 import sys
 import textwrap
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
@@ -887,6 +888,7 @@ def run_agent(
         )
     except FileNotFoundError as e:
         return {
+            "type": "result",
             "status": "error",
             "steps": 0,
             "last_action": "",
@@ -897,6 +899,21 @@ def run_agent(
     current_step_output: list[str] = []
     current_fg_app: str = ""
     _task_terminated = False  # set when completion detected; keep reading to drain
+
+    # Watchdog daemon thread: if the subprocess hangs with no output for
+    # the configured timeout, kill it so the readline() loop unblocks.
+    timeout_evt = threading.Event()
+
+    def _watchdog() -> None:
+        time.sleep(timeout)
+        timeout_evt.set()
+        try:
+            proc.terminate()
+        except Exception:
+            pass
+
+    watchdog = threading.Thread(target=_watchdog, daemon=True)
+    watchdog.start()
 
     try:
         for raw_line in proc.stdout:  # type: ignore[union-attr]
@@ -917,12 +934,15 @@ def run_agent(
                 end_reason = "runner_terminated_completed"
                 _task_terminated = True
 
-            # Hard timeout
-            if elapsed > timeout:
-                proc.terminate()
+            # Hard timeout (inline check for fast output; watchdog thread
+            # covers the hang-with-no-output case).
+            if elapsed > timeout or timeout_evt.is_set():
+                if not timeout_evt.is_set():
+                    proc.terminate()
+                    timeout_evt.set()  # inform post-loop logic
                 status = "timeout"
-                end_reason = f"hard_timeout_elapsed={int(elapsed)}s"
-                _log(f"Hard timeout reached at {int(elapsed)}s (limit={timeout}s); terminating runner")
+                end_reason = f"hard_timeout_elapsed={int(elapsed)}s limit={timeout}s"
+                _log(f"Timeout reached at {int(elapsed)}s (limit={timeout}s); terminating runner")
                 break
 
             # Forward line to stderr for live visibility
@@ -1039,13 +1059,23 @@ def run_agent(
 
     rc = proc.returncode if proc.returncode is not None else -1
 
+    # If the watchdog fired but the inline check didn't catch it (loop
+    # exited because terminate() closed stdout), explicitly record timeout.
+    if timeout_evt.is_set() and status != "success":
+        status = "timeout"
+        if not end_reason.startswith("hard_timeout"):
+            end_reason = f"hard_timeout_watchdog limit={timeout}s"
+
     # IMPORTANT: clean runner exit without explicit completion marker is NOT success.
     # This avoids false positives like "opened app at step 1" then silent exit.
     if status == "timeout" and rc != 0 and not end_reason.startswith("hard_timeout"):
         status = "error"
         end_reason = f"runner_nonzero_exit rc={rc}"
     elif status == "timeout" and rc == 0 and not end_reason.startswith("hard_timeout"):
-        if runner_termination_reason:
+        if step == 0:
+            status = "error"
+            end_reason = "runner_exited_immediately rc=0 step=0"
+        elif runner_termination_reason:
             end_reason = f"runner_exit_without_completion rc=0; {runner_termination_reason}"
         else:
             end_reason = f"runner_exit_without_completion rc=0; last_line={last_runner_line[:120]!r}"
@@ -1182,6 +1212,7 @@ def main() -> int:
     # 1. Clarification check
     if needs_clarification(args.instruction):
         _emit({
+            "type": "result",
             "status": "clarify",
             "steps": 0,
             "last_action": "",
@@ -1198,6 +1229,7 @@ def main() -> int:
     device = check_adb_device(args.adb_path, args.device)
     if device is None:
         _emit({
+            "type": "result",
             "status": "error",
             "steps": 0,
             "last_action": "",
@@ -1225,6 +1257,7 @@ def main() -> int:
 
     if args.dry_run:
         _emit({
+            "type": "result",
             "status": "success",
             "steps": 0,
             "last_action": "",
@@ -1237,6 +1270,7 @@ def main() -> int:
     runner = _find_runner_script()
     if runner is None:
         _emit({
+            "type": "result",
             "status": "error",
             "steps": 0,
             "last_action": "",

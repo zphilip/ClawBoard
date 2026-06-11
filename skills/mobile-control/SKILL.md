@@ -4,7 +4,11 @@ description: |
   Controls a PHYSICAL ANDROID PHONE connected via USB — NOT the PC, NOT the desktop, NOT a web browser.
   This skill operates the phone screen step-by-step: it takes a screenshot, sends it to a local VLM
   (GUI-Owl on port 8810), gets back one action (tap/swipe/type/scroll), executes it via ADB, then
-  repeats. Each step emits a progress JSON line that you MUST narrate to the user in real time.
+  repeats.
+
+  **Response format:** Emits JSONL to stdout — `{"type":"progress",...}` lines for each step
+  (narrate these in real time) followed by a final `{"type":"result",...}` line.  All diagnostic
+  logs go to stderr.  Read stdout line-by-line, parse JSON, dispatch on `"type"`.
 
   USE when: user says "on my phone", "open [app]", "send WeChat message", "set alarm", "navigate home",
   "search in [app]", "play music on phone", "take a screenshot of my phone", or any task that requires
@@ -183,13 +187,32 @@ tail -f /tmp/mobile_agent.log
 
 ### Exit Codes
 
-| Code | Meaning                                   |
-| ---- | ----------------------------------------- |
-| `0`  | Task completed (FINISH detected)          |
-| `1`  | Runtime error (ADB lost, model crash)     |
-| `2`  | Clarification needed (vague instruction)  |
-| `3`  | Timeout or step limit reached             |
-| `4`  | ADB device not found                      |
+| Code | `status`   | Meaning                                                   |
+| ---- | ---------- | --------------------------------------------------------- |
+| `0`  | `success`  | Task completed (runner or supervisor confirmed)           |
+| `1`  | `error`    | Runtime error (ADB lost, model crash, runner not found)   |
+| `2`  | `clarify`  | Clarification needed (vague instruction)                  |
+| `3`  | `timeout`  | Timeout or step limit reached without completion          |
+| `4`  | `error`    | ADB device not found                                      |
+
+Always check `result.status` (not just exit code) — a timeout may carry extra context in
+`result.debug.end_reason` (e.g. `"hard_timeout_watchdog"` vs `"max_steps_reached"`).
+
+## Response Dispatch (for the calling agent)
+
+**Stream separation:** The script writes ONLY JSON to **stdout**. ALL diagnostic logs
+(step markers, timing, model output, supervisor verdicts) go to **stderr**.  Read stdout
+line-by-line, parse each line as JSON, and dispatch on the `"type"` field:
+
+| `"type"`      | Meaning | Action |
+|---------------|---------|--------|
+| `"progress"`  | One step executed | Narrate `message` to the user; attach `screenshot` if present |
+| `"result"`    | End of run | Read `status` → report outcome; read `message` for summary |
+| *(missing)*   | **Should not happen** (all emissions now include `"type"`) | Fall back to `obj.get("status")` |
+
+**All terminal emissions** (success, error, timeout, clarify, dry-run, runner-not-found,
+no-device) now include `"type": "result"`.  The agent can safely check `obj["type"]`
+on every line to decide whether it is a progress update or the final verdict.
 
 ## Agent Narration Guide
 
@@ -197,52 +220,130 @@ tail -f /tmp/mobile_agent.log
 
 For every `{"type": "progress", ...}` line received:
 - Tell the user what action was taken: _"Step 3 — tapped the WeChat icon"_
-- If a screenshot path is included, mention you can show it
+- If a `screenshot` path is included, you can display it to confirm the result visually
 - Do NOT wait for the final result before talking to the user
+- If `message` starts with `[plan replay]`, the step was replayed from a cached plan (no VLM call)
 
 For the final `{"type": "result", ...}` line:
 - Report the outcome: success / timeout / error
 - List key actions taken from the `actions` array
-- If status is `clarify`, ask the user for more details
+- If `status` is `"clarify"`, ask the user for more details
+- If `status` is `"timeout"` but `debug.end_reason` says `"hard_timeout_watchdog"`,
+  tell the user the runner hung and was forcibly killed
+- If `status` is `"error"` and `debug.end_reason` says `"runner_exited_immediately rc=0 step=0"`,
+  tell the user the runner crashed on startup
 
 Example narration:
 > "I've started controlling your phone. Step 1 — opened the home screen. Step 2 — tapped the WeChat icon. Step 3 — tapped the search bar. Step 4 — typed '妈妈'. Step 5 — tapped the contact. Step 6 — typed the message. Step 7 — tapped Send. Task complete in 7 steps."
 
 ## Output Format
 
-The script emits **newline-delimited JSON (JSONL)** to stdout. There are two line types:
+The script emits **newline-delimited JSON (JSONL)** to **stdout**.  Everything else goes to
+**stderr** — the agent should ignore stderr entirely.  There are exactly two line types:
 
-### Progress lines (one per step)
+### Progress lines (`"type": "progress"`)
 
-Emitted in real time as each step executes. After each action the wrapper waits ~1 second and
+Emitted in real time as each step executes.  After each action the wrapper waits ~1.2 s and
 captures a **verification screenshot** via `adb exec-out screencap -p`, saving it to
-`mobile-control/screenshots/step_NNN_<action>.png`. **Narrate these to the user** so they can
-follow along:
+`mobile-control/screenshots/run_<timestamp>/step_NNN_<action>.png`:
 
 ```json
-{"type": "progress", "step": 3, "action": "click [160, 376]", "message": "Step 3: click [160, 376]", "screenshot": "/path/to/skills/mobile-control/screenshots/step_003_click_160_376_.png"}
-{"type": "progress", "step": 4, "action": "type \"搜索\"", "message": "Step 4: type \"搜索\"", "screenshot": "/path/to/skills/mobile-control/screenshots/step_004_type___搜索___.png"}
-{"type": "progress", "step": 5, "action": "finish", "message": "Step 5: Task finished ✓", "screenshot": "/path/to/skills/mobile-control/screenshots/step_005_finish.png"}
+{
+  "type": "progress",
+  "step": 3,
+  "action": "click [160, 376]",
+  "message": "Step 3: click [160, 376]  [Foreground: com.baidu.BaiduMap (百度地图)]",
+  "screenshot": "/home/zero/ClawBoard/skills/mobile-control/screenshots/run_20260611_165809/step_003_click_160_376_.png"
+}
 ```
 
-**How to narrate:** After each progress line, tell the user what the agent just did.  
-Example: _"Step 3 — tapped [160, 376]. Step 4 — typed '搜索'. Done!"_  
-If a `screenshot` path is present, the agent can display it to confirm the result visually.
+| Field | Type | Notes |
+|-------|------|-------|
+| `step` | int | Zero-based step counter |
+| `action` | string | Short label: `click [x,y]`, `type "text"`, `open "app"`, `swipe`, `finish`, `answer "..."` |
+| `message` | string | **Use this for narration.** Includes `[plan replay]` prefix when step was cached. Ends with `[Foreground: <app>]` when the foreground app is known. |
+| `screenshot` | string? | Absolute path to a verification PNG, or `null` if capture failed. **The screenshot is ephemeral** — it is deleted after the run completes. Read and display it before the result line arrives. |
 
-### Result line (final, always last)
+### Result line (`"type": "result"`)
+
+Always the **last line** on stdout.  Emitted for every exit path (success, timeout, error,
+clarify, dry-run, pre-flight failures):
 
 ```json
 {
   "type": "result",
-  "status": "success|timeout|error|clarify",
-  "steps": 7,
-  "last_action": "click [160, 376]",
-  "message": "Task completed in 7 steps.",
-  "actions": ["open 百度地图", "click [160,376]", "swipe ..."]
+  "status": "success",
+  "steps": 6,
+  "last_action": "answer \"已为您导航至万象城，全程2.6公里...\"",
+  "message": "Task completed in 6 steps. [reason: runner_terminated_completed]",
+  "actions": [
+    "open \"百度地图\"",
+    "click [122, 488]",
+    "type \"万象城 \"",
+    "click [271, 184]",
+    "click [827, 937]",
+    "answer \"...\""
+  ],
+  "debug": {
+    "end_reason": "runner_terminated_completed",
+    "rc": 0,
+    "finish_pattern": "",
+    "runner_termination_reason": "answer_confirmed_complete",
+    "last_runner_line": "[CLEANUP] Screenshot directories removed."
+  }
 }
 ```
 
-Parse with: `python3 mobile_agent.py ... | grep '"type":"result"' | python3 -c "import sys,json; r=json.load(sys.stdin); print(r['message'])"`
+| Field | Type | Notes |
+|-------|------|-------|
+| `status` | string | `"success"` / `"timeout"` / `"error"` / `"clarify"` |
+| `steps` | int | Total steps executed (0 for pre-flight failures) |
+| `last_action` | string | The final action taken, or `""` if none |
+| `message` | string | Human-readable summary. **Use this for the final report to the user.** Includes `[reason: ...]` suffix. |
+| `actions` | string[] | Ordered list of every action taken (for summarisation) |
+| `debug` | object | Diagnostic details (see below) |
+
+### `debug` object reference
+
+| Key | Values | Meaning |
+|-----|--------|---------|
+| `end_reason` | `runner_terminated_completed` | Runner explicitly signalled task completion (best signal) |
+| | `runner_nonzero_exit rc=N` | Runner crashed with non-zero exit code |
+| | `runner_exited_immediately rc=0 step=0` | Runner exited instantly with no output — startup crash |
+| | `runner_exit_without_completion rc=0` | Runner exited cleanly but never signalled completion |
+| | `hard_timeout_elapsed=N limit=M` | Wall-clock timeout reached (output was still flowing) |
+| | `hard_timeout_watchdog limit=N` | Watchdog killed a hung subprocess that produced no output |
+| | `finish_pattern_matched:<p>` | Mobile-agent wrapper detected a finish pattern in runner output |
+| | `max_steps_reached (N)` | Step budget exhausted without completion |
+| `rc` | int | Runner subprocess exit code (`-1` if could not be determined) |
+| `runner_termination_reason` | string | The value after `[TERMINATION REASON]` in runner output, if any |
+| `finish_pattern` | string | Which regex matched (empty if no pattern hit) |
+| `last_runner_line` | string | Last line of runner output (capped at 200 chars) |
+
+### Error / pre-flight result examples
+
+**No ADB device** (exit code 4):
+```json
+{"type": "result", "status": "error", "steps": 0, "last_action": "", "message": "No ADB device found. ...", "actions": []}
+```
+
+**Vague instruction** (exit code 2):
+```json
+{"type": "result", "status": "clarify", "steps": 0, "last_action": "", "message": "Instruction is too vague. ...", "actions": []}
+```
+
+**Dry run OK** (exit code 0):
+```json
+{"type": "result", "status": "success", "steps": 0, "last_action": "", "message": "Dry run OK — device ... ready.", "actions": []}
+```
+
+**Runner not found** (exit code 1):
+```json
+{"type": "result", "status": "error", "steps": 0, "last_action": "", "message": "run_gui_owl_1_5_for_mobile.py not found. ...", "actions": []}
+```
+
+All of these now include `"type": "result"` so the agent can dispatch them the same way as
+a normal completion — check `status` for the outcome, use `message` for the user.
 
 ## Clarification Logic
 
@@ -250,10 +351,10 @@ If the instruction is too vague (matches patterns like "open it", "打开那个"
 "帮我操作"), the script exits with code `2` and prints:
 
 ```json
-{"status": "clarify", "message": "Please specify: which app and what action?"}
+{"type": "result", "status": "clarify", "steps": 0, "last_action": "", "message": "Instruction is too vague. Please specify: which app and what action? Example: '在微信发消息给妈妈说我到家了'", "actions": []}
 ```
 
-OpenClaw should then ask the user: "Which app do you want me to open, and what should I do in it?"
+The calling agent should then ask the user: "Which app do you want me to open, and what should I do in it?"
 
 ## Loop Detection
 

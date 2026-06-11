@@ -2146,10 +2146,13 @@ class SupervisorLLM:
         _extra_body: dict = {}
         if self.reasoning_split:
             _extra_body["reasoning_split"] = True
-        # Mimo models: disable built-in thinking mode so the response
-        # contains a clean JSON verdict rather than a chain-of-thought.
+        _sup_create_kwargs: dict = {}
+        if _extra_body:
+            _sup_create_kwargs["extra_body"] = _extra_body
+        # Mimo models: use native thinking mode (reasoning → reasoning_content,
+        # clean verdict → content) + json_object to guarantee parseable JSON.
         if "mimo" in self.model.lower():
-            _extra_body["thinking"] = {"type": "disabled"}
+            _sup_create_kwargs["response_format"] = {"type": "json_object"}
         _sup_max_attempts = 2  # 2 attempts × 30s = 60s max for validation
         _sup_req_timeout = 30  # hard wall-clock timeout (seconds) via _call_with_timeout
         for _sup_try in range(1, _sup_max_attempts + 1):
@@ -2164,7 +2167,7 @@ class SupervisorLLM:
                         ],
                         temperature=0,
                         max_tokens=2048,
-                        **(dict(extra_body=_extra_body) if _extra_body else {}),
+                        **_sup_create_kwargs,
                     ),
                     timeout=_sup_req_timeout,
                 )
@@ -2289,6 +2292,12 @@ class SupervisorLLM:
         _extra_body: dict = {}
         if self.reasoning_split:
             _extra_body["reasoning_split"] = True
+        _tc_create_kwargs: dict = {}
+        if _extra_body:
+            _tc_create_kwargs["extra_body"] = _extra_body
+        # Mimo models: use native thinking mode + json_object for clean output.
+        if "mimo" in self.model.lower():
+            _tc_create_kwargs["response_format"] = {"type": "json_object"}
         _tc_max_attempts = 2
         _tc_req_timeout = 30  # hard wall-clock timeout (seconds) via _call_with_timeout
         for _tc_try in range(1, _tc_max_attempts + 1):
@@ -2303,7 +2312,7 @@ class SupervisorLLM:
                         ],
                         temperature=0,
                         max_tokens=512,
-                        **(dict(extra_body=_extra_body) if _extra_body else {}),
+                        **_tc_create_kwargs,
                     ),
                     timeout=_tc_req_timeout,
                 )
