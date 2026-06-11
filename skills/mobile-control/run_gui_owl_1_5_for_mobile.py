@@ -527,7 +527,7 @@ def main():
     # without any overrides, we skip the supervisor call entirely.
     _sup_persistent_cache_path = _memory_root / "supervisor_cache.jsonl"
     _sup_persistent_cache: dict[str, dict] = {}  # sig -> {approve, override}
-    _SUP_CACHE_MIN_APPROVES = 3  # need 3+ EXPLICIT approvals before fastpath
+    _SUP_CACHE_MIN_APPROVES = 1  # need 1+ EXPLICIT approvals before fastpath
     _SUP_CACHE_MAX_AGE = 7 * 86400  # expire entries older than 7 days
     try:
         if _sup_persistent_cache_path.exists():
@@ -1456,9 +1456,15 @@ def main():
                 _skip_supervisor = True
                 _sup_skip_reason = "transient_confirm_dialog_fast_path"
 
-            # Persistent cache: skip supervisor when this exact (state, action)
+            # Persistent cache: skip supervisor when this exact (intent, action)
             # has been approved ≥N times across runs with zero overrides.
-            _sup_cache_key = _step_state_action_sig
+            # Use a relaxed key (intent + action_type + action_args) instead of
+            # the full state_key which includes a volatile UI fingerprint that
+            # changes every run — making the cache useless otherwise.
+            _sup_cache_key = (
+                f"{_intent_sig}|{_step_action_type}|"
+                f"{json.dumps(_step_action_args, ensure_ascii=False, sort_keys=True)}"
+            )
             if _sup_cache_key and not _skip_supervisor:
                 _pc_entry = _sup_persistent_cache.get(_sup_cache_key)
                 if _pc_entry is not None:
