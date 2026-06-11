@@ -1236,6 +1236,13 @@ Rules:
 - If you see route cards ("方案一", "方案二", etc.) or a blue "出发" / "开始导航" button anywhere on screen, you MUST click it — do NOT issue answer yet.
 - Never use answer to describe routes you could take. Only use answer after navigation is actively running.
 
+## 🛑 Post-navigation STOP rules (CRITICAL)
+- Once you have clicked "开始导航" / "Start Navigation" and the screen shows the live turn-by-turn navigation interface (large arrow + upcoming turn instruction), your ONLY valid action is ``answer``. The task is DONE. Do NOT take any other action.
+- Do NOT interact with ANY overlay or UI element on the navigation screen: status banners ("定位信号弱", "GPS信号弱", "定位中"), route info bars ("全程"/"退出"), bottom cards, speed displays, or notification badges. These are normal parts of the navigation UI — they are NOT your task.
+- Do NOT click "退出", "取消导航", "停止", or any exit/stop/cancel button. The user asked you to START navigation, not to exit it. Clicking exit is a TASK FAILURE.
+- If you accidentally open a settings or configuration panel (语音包, 导航设置, 路线偏好, 导航语音, etc.), press Back IMMEDIATELY. Do NOT click anything inside the panel — you are not asked to configure anything.
+- Simply answer: state that navigation to <destination> is now running, and describe ONLY what is VISIBLE on screen. Never fabricate numbers.
+
 ## 🚨 Verify the destination BEFORE navigating (CRITICAL)
 - **Always verify the destination shown on screen matches the instruction exactly before clicking 出发/开始导航.**  There are two valid flows:
 - **Flow A — Search bar (when no route is shown):**  FIRST verify the transport mode — check the tabs (驾车/打车/公交/步行) and ensure **驾车** is selected. If 打车 or any other mode is active, click 驾车 before anything else. → tap the search bar → **type the exact destination** using ``action=type`` → **click the search button (搜索/放大镜) or press Enter/搜索 key** to execute the query → wait for results to load → select the matching destination from the results (NOT a ride-hailing one with ¥ price) → verify 驾车 is still selected → click "开始导航".  When using this flow: (1) verify transport mode FIRST, (2) typing AND confirming the search are both MANDATORY.  Never try to select an autocomplete suggestion before executing the search.
@@ -1266,6 +1273,7 @@ Screen resolution: 1000x1000. Output format: "Action: <description>" followed by
 ## ALWAYS execute — never refuse. If on wrong screen, press Home then open the correct app.
 ## Before clicking 开始导航/出发, VERIFY the destination matches the task exactly. Type the destination first if unsure.
 ## Navigation task is complete ONLY when live turn-by-turn navigation is running (arrow + turn instruction visible).
+## Once navigation is live: STOP — use answer immediately. Do NOT tap banners/退出/buttons/settings. If you open a settings panel, press Back at once.
 ## NEVER use ride-hailing (打车/叫车) — always choose 驾车 (driving) for navigation tasks.
 ## If stuck (same action 3+ times), press Back once, then Home. Do NOT keep tapping the same spot.
 ## Be honest in answers — only describe what is LITERALLY VISIBLE on screen. NEVER fabricate distances (km/m), times (minutes/hours), arrival estimates, street names, turn directions, speed values, or signal status. If you can't see it, don't say it.'''
@@ -1397,10 +1405,22 @@ def build_messages(image_path, instruction, history_output, model_name,
     formatted_date = today.strftime("%Y-%m-%d") + " " + weekday_names[today.weekday()]
     date_info = f"Today's date is: {formatted_date}."
 
+    # Build a short goal slug for per-frame reminders so the VLM never
+    # loses sight of what it's supposed to do, even deep in history.
+    _goal_slug = instruction.strip()[:120]
+    if len(instruction.strip()) > 120:
+        _goal_slug = _goal_slug.rsplit(" ", 1)[0] + "..."
+
     instruction_prompt = (
         f"Please generate the next move according to the UI screenshot, "
         f"instruction and previous actions.\n\n"
-        f"Instruction: {date_info}{instruction}\n\n"
+        f"### YOUR TASK ###\n"
+        f"{date_info}{instruction}\n"
+        f"### END OF TASK ###\n\n"
+        f"Before deciding your next action, ask yourself:\n"
+        f"1. Is the task ALREADY complete? If yes → use answer immediately.\n"
+        f"2. Does my proposed action move me closer to the goal?\n"
+        f"3. Is there a more direct way to finish the task right now?\n\n"
         f"Previous actions:\n{previous_actions_str}"
     )
     if foreground_pkg:
@@ -1479,15 +1499,23 @@ def build_messages(image_path, instruction, history_output, model_name,
             else:
                 messages.append({
                     "role": "user",
-                    "content": [{"image": "file://" + item["image"]}],
+                    "content": [
+                        {"text": f"Task: {_goal_slug}"},
+                        {"image": "file://" + item["image"]},
+                    ],
                 })
             messages.append({
                 "role": "assistant",
                 "content": [{"text": item["output"]}],
             })
+        # Current screenshot — include goal reminder so the VLM sees the
+        # task on EVERY frame, not just the first one.
         messages.append({
             "role": "user",
-            "content": [{"image": "file://" + image_path}],
+            "content": [
+                {"text": f"Task: {_goal_slug}"},
+                {"image": "file://" + image_path},
+            ],
         })
     else:
         messages.append({
