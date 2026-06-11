@@ -2146,6 +2146,10 @@ class SupervisorLLM:
         _extra_body: dict = {}
         if self.reasoning_split:
             _extra_body["reasoning_split"] = True
+        # Mimo models: disable built-in thinking mode so the response
+        # contains a clean JSON verdict rather than a chain-of-thought.
+        if "mimo" in self.model.lower():
+            _extra_body["thinking"] = {"type": "disabled"}
         _sup_max_attempts = 2  # 2 attempts × 30s = 60s max for validation
         _sup_req_timeout = 30  # hard wall-clock timeout (seconds) via _call_with_timeout
         for _sup_try in range(1, _sup_max_attempts + 1):
