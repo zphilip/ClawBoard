@@ -38,7 +38,7 @@ _GPIOLINE_FLAG_PULL_DOWN  = 1 << 6
 
 # (chip_path, line_offset, label) for the recommended default button pin per board.
 BUTTON_PINS = {
-    'a7a':   ('/dev/gpiochip0', 32,  'PIN_7'),
+    'a7a':   ('/dev/gpiochip0', 326, 'PIN_31'),
     'a7z':   ('/dev/gpiochip1', 35,  'PIN_33'),
     'radxa': ('/dev/gpiochip1', 35,  'PIN_33'),   # generic Radxa fallback → A7Z mapping
 }
