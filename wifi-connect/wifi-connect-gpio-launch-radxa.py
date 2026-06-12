@@ -2,40 +2,42 @@
 """
 wifi-connect-gpio-launch-radxa.py
 ==================================
-Radxa-native replacement for wifi-connect-gpio-launch.sh.
+Radxa-native GPIO button launcher for wifi-connect.
 
 Uses the ``periphery`` library (same as the OLED driver) instead of RPi.GPIO,
-so it works on Radxa Cubie A7Z and any other Linux SBC that exposes GPIO via
-the character device interface (/dev/gpiochipX).
+so it works on Radxa Cubie A7A, A7Z, and any other Linux SBC that exposes GPIO
+via the character device interface (/dev/gpiochipX).
 
 Hardware wiring
 ---------------
-Button one leg   →  Pin 33  (GPIO input)
-Button other leg →  Pin 30 or Pin 39  (GND)
+Button one leg   →  GPIO input pin (see board defaults below)
+Button other leg →  GND (e.g. Pin 30 or Pin 39)
 
-Confirmed working on Radxa Cubie A7Z:
-    Pin 33 = /dev/gpiochip1 line 35  (labelled PIN_33)
-    Press logic = active-LOW
+Confirmed defaults per board:
+    Radxa Cubie A7A : Pin 7   = /dev/gpiochip0 line 32  (labelled PIN_7)
+    Radxa Cubie A7Z : Pin 33  = /dev/gpiochip1 line 35  (labelled PIN_33)
 
-Override defaults with environment variables if your board differs:
-    RADXA_BTN_CHIP=/dev/gpiochip1  RADXA_BTN_LINE=35 \
-    python3 wifi-connect-gpio-launch-radxa.py
+Override with environment variables if your board/wiring differs:
+    RADXA_BTN_CHIP=/dev/gpiochip0  RADXA_BTN_LINE=32 \\
+    sudo python3 wifi-connect-gpio-launch-radxa.py
+
+Optional flags:
+    --scan | --list     Print all free GPIO lines and exit.
 """
 
 import os
 import sys
 import time
 import subprocess
-import glob
-import fcntl
-import struct
 
-# ── Pin configuration ─────────────────────────────────────────────────────────
-# Pin 33 on Radxa Cubie A7Z 40-pin header.
-# Confirmed: gpiochip1 line 35 is labelled 'PIN_33'.
-# Button is wired active-LOW against GND (Pin 30 or Pin 39).
-BUTTON_CHIP = os.environ.get('RADXA_BTN_CHIP', '/dev/gpiochip1')
-BUTTON_LINE = int(os.environ.get('RADXA_BTN_LINE', '35'))
+# ── Pin configuration (auto-detected, overridable via env) ─────────────────────
+from board_config import detect_board, get_button_pin, open_button, list_pins
+
+_board = detect_board()
+_default_chip, _default_line, _default_label = get_button_pin(_board)
+
+BUTTON_CHIP = os.environ.get('RADXA_BTN_CHIP', _default_chip)
+BUTTON_LINE = int(os.environ.get('RADXA_BTN_LINE', str(_default_line)))
 
 LONG_PRESS_SECONDS = 2
 
@@ -48,104 +50,56 @@ WIFI_CONNECT_CMD = [
 POLL_INTERVAL = 0.05   # seconds between GPIO reads
 
 
-# ── GPIO scan helper ──────────────────────────────────────────────────────────
-
-# ioctl constants for GPIO character device v1 (works on all kernel versions)
-_GPIO_GET_CHIPINFO_IOCTL  = 0x8044B401   # _IOR(0xB4, 0x01, 68)  gpiochip_info
-_GPIO_GET_LINEINFO_IOCTL  = 0xC048B402   # _IOWR(0xB4, 0x02, 72) gpioline_info  ← _IOWR not _IOR
-
-
-def _chip_info(chip_path):
-    """Return (name, label, ngpio) for a gpiochip device."""
-    with open(chip_path, 'rb') as f:
-        buf = fcntl.ioctl(f, _GPIO_GET_CHIPINFO_IOCTL, b'\x00' * 68)
-    name  = buf[0:32].rstrip(b'\x00').decode(errors='replace')
-    label = buf[32:64].rstrip(b'\x00').decode(errors='replace')
-    ngpio = struct.unpack_from('<I', buf, 64)[0]
-    return name, label, ngpio
-
-
-def _line_info(chip_path, offset):
-    """Return (line_name, consumer, flags) for one GPIO line."""
-    req = struct.pack('<I', offset) + b'\x00' * 68  # gpioline_info
-    with open(chip_path, 'rb') as f:
-        buf = fcntl.ioctl(f, _GPIO_GET_LINEINFO_IOCTL, req)
-    flags    = struct.unpack_from('<I', buf, 0)[0]
-    name     = buf[4:36].rstrip(b'\x00').decode(errors='replace')
-    consumer = buf[36:68].rstrip(b'\x00').decode(errors='replace')
-    return name, consumer, flags
-
-
-_GPIOLINE_FLAG_IS_OUT   = 1 << 0
-_GPIOLINE_FLAG_ACTIVE_LOW = 1 << 1
-_GPIOLINE_FLAG_OPEN_DRAIN = 1 << 2
-_GPIOLINE_FLAG_OPEN_SOURCE = 1 << 3
-_GPIOLINE_FLAG_KERNEL   = 1 << 4   # claimed by kernel driver
-
-
-def scan_gpio():
-    """Print all GPIO chips and lines, highlighting free input lines."""
-    chips = sorted(glob.glob('/dev/gpiochip*'),
-                   key=lambda p: int(p.replace('/dev/gpiochip', '')))
-    print(f"\n{'CHIP':<16} {'LINE':>4}  {'NAME':<28} {'CONSUMER':<20} STATUS")
-    print('-' * 80)
-    for chip_path in chips:
-        try:
-            cname, clabel, ngpio = _chip_info(chip_path)
-            print(f"\n{chip_path}  —  {cname} / {clabel}  ({ngpio} lines)")
-            for offset in range(ngpio):
-                try:
-                    lname, consumer, flags = _line_info(chip_path, offset)
-                    busy   = bool(consumer) or bool(flags & _GPIOLINE_FLAG_KERNEL)
-                    is_out = bool(flags & _GPIOLINE_FLAG_IS_OUT)
-                    status = ('OUT ' if is_out else 'in  ')
-                    status += f'[{consumer}]' if consumer else ('[kernel]' if flags & _GPIOLINE_FLAG_KERNEL else 'FREE ←')
-                    print(f"  {'':14} {offset:4}  {lname:<28} {consumer:<20} {status}")
-                except Exception:
-                    pass
-        except Exception as exc:
-            print(f"  {chip_path}: {exc}")
-    print()
-
-
-# ── GPIO helpers (periphery) ──────────────────────────────────────────────────
+# ── GPIO helpers ───────────────────────────────────────────────────────────────
 
 def _open_button():
-    """Open the button GPIO line as input with internal pull-up."""
-    from periphery import GPIO
+    """Open the button GPIO line as input (pull-up preferred)."""
     try:
-        return GPIO(BUTTON_CHIP, BUTTON_LINE, 'in', bias='pull_up')
-    except TypeError:
-        # Older periphery versions don't support the bias kwarg
-        return GPIO(BUTTON_CHIP, BUTTON_LINE, 'in')
+        return open_button(BUTTON_CHIP, BUTTON_LINE)
     except Exception as exc:
         print(f"\nERROR: Cannot open {BUTTON_CHIP} line {BUTTON_LINE}: {exc}")
-        print("\nRun with --scan to list all GPIO lines and find the free one for Pin 33:")
-        print(f"    sudo python3 {os.path.basename(__file__)} --scan")
-        print("\nThen re-run with the correct chip/line:")
+        print(f"\nDetected board: {_board}")
+        print(f"Default pin for this board: {_default_label} → {_default_chip} line {_default_line}")
+        print(f"\nYour current config: {BUTTON_CHIP} line {BUTTON_LINE}")
+        print(f"\nTo scan all free GPIO lines:")
+        print(f"    sudo python3 {os.path.basename(__file__)} --list")
+        print(f"\nTo test a specific pin:")
+        print(f"    sudo python3 gpio-button-test.py --chip {BUTTON_CHIP} --line {BUTTON_LINE}")
+        print(f"\nTo override:")
         print(f"    RADXA_BTN_CHIP=/dev/gpiochipX RADXA_BTN_LINE=N sudo python3 {os.path.basename(__file__)}")
         sys.exit(1)
 
 
+# ── Long-press detection ──────────────────────────────────────────────────────
+
 def wait_for_long_press():
     """Block until a long press (≥ LONG_PRESS_SECONDS) is detected.
 
-    Confirmed wiring is active-LOW: released=HIGH, pressed=LOW.
+    Wiring is active-LOW: released=HIGH, pressed=LOW.
     """
-    print(f"Waiting for long press on {BUTTON_CHIP} line {BUTTON_LINE} "
-          f"(≥{LONG_PRESS_SECONDS}s)…")
+    print(f"Board          : {_board}")
+    print(f"Button pin     : {BUTTON_CHIP} line {BUTTON_LINE}")
+    print(f"Long-press min : {LONG_PRESS_SECONDS}s")
+    print(f"Waiting for long press (hold button ≥{LONG_PRESS_SECONDS}s)…")
+
     btn = _open_button()
     try:
         baseline = btn.read()
         if not baseline:
             print(
-                f"ERROR: {BUTTON_CHIP} line {BUTTON_LINE} is LOW at startup.\n"
-                f"Expected released state is HIGH for the confirmed active-LOW wiring.\n"
-                f"Check the button, cable, or override RADXA_BTN_CHIP / RADXA_BTN_LINE."
+                f"\nERROR: {BUTTON_CHIP} line {BUTTON_LINE} is LOW at startup.\n"
+                f"Expected released state is HIGH for active-LOW wiring.\n"
+                f"\nPossible causes:\n"
+                f"  1. Button is stuck / held down\n"
+                f"  2. Pin has a hardware pull-down (check --list output)\n"
+                f"  3. Wrong pin — try --list to find a pin that reads HIGH\n"
+                f"\nOverride with:\n"
+                f"  RADXA_BTN_CHIP=/dev/gpiochipX RADXA_BTN_LINE=N \\\n"
+                f"  sudo python3 {os.path.basename(__file__)}"
             )
             sys.exit(1)
 
-        print("  Polarity: active-LOW (released=HIGH, pressed=LOW)")
+        print(f"  Polarity: active-LOW (resting=HIGH, pressed=LOW)")
 
         def is_pressed():
             return not btn.read()
@@ -223,7 +177,7 @@ def main():
 
 
 if __name__ == '__main__':
-    if '--scan' in sys.argv:
-        scan_gpio()
+    if '--scan' in sys.argv or '--list' in sys.argv:
+        list_pins()
         sys.exit(0)
     main()
