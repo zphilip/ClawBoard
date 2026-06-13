@@ -33,7 +33,7 @@
 
 set -euo pipefail
 
-REPO_URL="https://gh-proxy.org/https://github.com/zphilip/ClawBoard.git
+REPO_URL="https://gh-proxy.org/https://github.com/zphilip/ClawBoard.git"
 REPO_URL_FALLBACK="https://github.com/zphilip/ClawBoard.git"
 
 # Path where the sync script should live on the device
