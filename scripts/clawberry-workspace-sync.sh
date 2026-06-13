@@ -148,10 +148,13 @@ else
         ZIP_FILE="${WORK_DIR}.zip"
         ZIP_STAGING="${WORK_DIR}.staging"
 
+        # Download with resume support — slow connections need generous timeouts
         if command -v curl >/dev/null 2>&1; then
-            curl -fSL --connect-timeout 30 --max-time 300 -o "$ZIP_FILE" "$ZIP_URL" || true
+            curl -fSL -C - --connect-timeout 30 --max-time 1200 \
+                 --retry 2 --retry-delay 10 \
+                 -o "$ZIP_FILE" "$ZIP_URL" || true
         elif command -v wget >/dev/null 2>&1; then
-            wget --timeout=30 --tries=3 -O "$ZIP_FILE" "$ZIP_URL" || true
+            wget -c --timeout=60 --tries=5 -O "$ZIP_FILE" "$ZIP_URL" || true
         else
             die "No downloader available (curl or wget required) and both git mirrors failed."
         fi
