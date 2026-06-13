@@ -91,8 +91,10 @@ main() {
 parse_args "$@"
 
 # ── Require git ──────────────────────────────────────────────────────────────
-command -v git  >/dev/null 2>&1 || die "git is not installed"
-command -v rsync >/dev/null 2>&1 || die "rsync is not installed"
+command -v git    >/dev/null 2>&1 || die "git is not installed"
+command -v rsync  >/dev/null 2>&1 || die "rsync is not installed"
+command -v unzip  >/dev/null 2>&1 || die "unzip is not installed — run: apt install unzip"
+command -v timeout >/dev/null 2>&1 || die "timeout is not installed (coreutils missing)"
 
 # ── Sparse-clone into a temp directory ──────────────────────────────────────
 # Use /var/tmp (on the main filesystem) instead of /tmp (tmpfs, often small)
@@ -132,12 +134,12 @@ EOF
 # GIT_TERMINAL_PROMPT=0 prevents git from hanging asking for credentials.
 # Fallback chain: primary mirror → github → zip download
 GIT_OK=no
-if GIT_TERMINAL_PROMPT=0 git -C "$WORK_DIR" fetch --depth=1 origin HEAD 2>/dev/null; then
+if GIT_TERMINAL_PROMPT=0 timeout 60 git -C "$WORK_DIR" fetch --depth=1 origin HEAD 2>/dev/null; then
     GIT_OK=yes
 else
     log "Primary mirror ($REPO_URL) failed, falling back to $REPO_URL_FALLBACK ..."
     git -C "$WORK_DIR" remote set-url origin "$REPO_URL_FALLBACK"
-    if GIT_TERMINAL_PROMPT=0 git -C "$WORK_DIR" fetch --depth=1 origin HEAD 2>/dev/null; then
+    if GIT_TERMINAL_PROMPT=0 timeout 60 git -C "$WORK_DIR" fetch --depth=1 origin HEAD 2>/dev/null; then
         GIT_OK=yes
     else
         # ── Zip fallback: download archive from GitHub and extract into WORK_DIR ──
@@ -154,7 +156,7 @@ else
             die "No downloader available (curl or wget required) and both git mirrors failed."
         fi
 
-        if [[ -f "$ZIP_FILE" ]] && file "$ZIP_FILE" | grep -qi 'zip'; then
+        if [[ -f "$ZIP_FILE" ]] && unzip -tq "$ZIP_FILE" 2>/dev/null; then
             mkdir -p "$ZIP_STAGING"
             if unzip -qo "$ZIP_FILE" -d "$ZIP_STAGING" 2>/dev/null; then
                 # GitHub wraps everything in a single dir: ClawBoard-main/
