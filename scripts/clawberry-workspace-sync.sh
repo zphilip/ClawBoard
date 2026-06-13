@@ -33,7 +33,7 @@
 
 set -euo pipefail
 
-REPO_URL="https://gh.fhjhy.top/https://github.com/zphilip/ClawBoard.git"
+REPO_URL="https://gh-proxy.org/https://github.com/zphilip/ClawBoard.git
 REPO_URL_FALLBACK="https://github.com/zphilip/ClawBoard.git"
 
 # Path where the sync script should live on the device
@@ -132,57 +132,80 @@ characters/
 EOF
 
 # GIT_TERMINAL_PROMPT=0 prevents git from hanging asking for credentials.
-# Fallback chain: primary mirror → github → zip download
+# Fallback chain: primary mirror → github → zip download (with retries)
 GIT_OK=no
-if GIT_TERMINAL_PROMPT=0 timeout 60 git -C "$WORK_DIR" fetch --depth=1 origin HEAD 2>/dev/null; then
+# Slow connections (30 KB/s on 20 MB = ~11 min) need generous timeouts.
+# 1200 s = 20 min covers even very slow links.
+GIT_TIMEOUT=1200
+if GIT_TERMINAL_PROMPT=0 timeout "$GIT_TIMEOUT" git -C "$WORK_DIR" fetch --depth=1 origin HEAD 2>&1; then
     GIT_OK=yes
 else
     log "Primary mirror ($REPO_URL) failed, falling back to $REPO_URL_FALLBACK ..."
     git -C "$WORK_DIR" remote set-url origin "$REPO_URL_FALLBACK"
-    if GIT_TERMINAL_PROMPT=0 timeout 60 git -C "$WORK_DIR" fetch --depth=1 origin HEAD 2>/dev/null; then
+    if GIT_TERMINAL_PROMPT=0 timeout "$GIT_TIMEOUT" git -C "$WORK_DIR" fetch --depth=1 origin HEAD 2>&1; then
         GIT_OK=yes
     else
-        # ── Zip fallback: download archive from GitHub and extract into WORK_DIR ──
-        log "Both git mirrors failed. Downloading zip archive ..."
+        # ── Zip fallback: download archive from GitHub with retries ──────────
         ZIP_URL="https://github.com/zphilip/ClawBoard/archive/refs/heads/main.zip"
         ZIP_FILE="${WORK_DIR}.zip"
         ZIP_STAGING="${WORK_DIR}.staging"
+        ZIP_OK=no
 
-        # Download with resume support — slow connections need generous timeouts
-        if command -v curl >/dev/null 2>&1; then
-            curl -fSL -C - --connect-timeout 30 --max-time 1200 \
-                 --retry 2 --retry-delay 10 \
-                 -o "$ZIP_FILE" "$ZIP_URL" || true
-        elif command -v wget >/dev/null 2>&1; then
-            wget -c --timeout=60 --tries=5 -O "$ZIP_FILE" "$ZIP_URL" || true
-        else
-            die "No downloader available (curl or wget required) and both git mirrors failed."
+        for _attempt in 1 2 3 4 5; do
+            log "Zip download attempt $_attempt/5 ..."
+            rm -f "$ZIP_FILE"
+
+            if command -v wget >/dev/null 2>&1; then
+                # No read-timeout — on slow connections the server may pause
+                # >30 s between chunks.  Outer loop + unzip -t handles retries.
+                wget --tries=1 --timeout=0 \
+                     -O "$ZIP_FILE" "$ZIP_URL" 2>&1 || true
+            elif command -v curl >/dev/null 2>&1; then
+                curl -fSL --connect-timeout 30 --max-time 1800 \
+                     --retry 0 \
+                     -o "$ZIP_FILE" "$ZIP_URL" 2>&1 || true
+            else
+                die "No downloader available (wget or curl required) and both git mirrors failed."
+            fi
+
+            if [[ -f "$ZIP_FILE" ]] && unzip -tq "$ZIP_FILE" 2>/dev/null; then
+                ZIP_OK=yes
+                break
+            fi
+
+            # Corrupt or missing — report size and retry
+            _size=0
+            [[ -f "$ZIP_FILE" ]] && _size=$(stat -c%s "$ZIP_FILE" 2>/dev/null || echo 0)
+            log "  Zip invalid (${_size} bytes) — retrying in 5s ..."
+            rm -f "$ZIP_FILE"
+            sleep 5
+        done
+
+        if [[ "$ZIP_OK" != "yes" ]]; then
+            die "All methods (primary git, fallback git, zip download ×3) failed. Check network connectivity."
         fi
 
-        if [[ -f "$ZIP_FILE" ]] && unzip -tq "$ZIP_FILE" 2>/dev/null; then
-            mkdir -p "$ZIP_STAGING"
-            if unzip -qo "$ZIP_FILE" -d "$ZIP_STAGING" 2>/dev/null; then
-                # GitHub wraps everything in a single dir: ClawBoard-main/
-                ZIP_WRAPPER=$(ls -1 "$ZIP_STAGING" | head -1)
-                ZIP_SRC="$ZIP_STAGING"
-                if [[ -n "$ZIP_WRAPPER" && -d "$ZIP_STAGING/$ZIP_WRAPPER" ]]; then
-                    ZIP_SRC="$ZIP_STAGING/$ZIP_WRAPPER"
-                fi
-                # Move repo contents into WORK_DIR (skip .git so sparse-checkout
-                # doesn't apply — the zip gives us everything anyway)
-                shopt -s dotglob
-                for _item in "$ZIP_SRC"/*; do
-                    [[ -e "$_item" ]] || continue
-                    [[ "$(basename "$_item")" == ".git" ]] && continue
-                    mv "$_item" "$WORK_DIR/" 2>/dev/null || true
-                done
-                shopt -u dotglob
-                log "Zip extracted successfully — proceeding without git."
-            else
-                die "Zip downloaded but unzip failed."
+        # ZIP_OK already validated the archive — just extract it
+        mkdir -p "$ZIP_STAGING"
+        if unzip -qo "$ZIP_FILE" -d "$ZIP_STAGING" 2>/dev/null; then
+            # GitHub wraps everything in a single dir: ClawBoard-main/
+            ZIP_WRAPPER=$(ls -1 "$ZIP_STAGING" | head -1)
+            ZIP_SRC="$ZIP_STAGING"
+            if [[ -n "$ZIP_WRAPPER" && -d "$ZIP_STAGING/$ZIP_WRAPPER" ]]; then
+                ZIP_SRC="$ZIP_STAGING/$ZIP_WRAPPER"
             fi
+            # Move repo contents into WORK_DIR (skip .git so sparse-checkout
+            # doesn't apply — the zip gives us everything anyway)
+            shopt -s dotglob
+            for _item in "$ZIP_SRC"/*; do
+                [[ -e "$_item" ]] || continue
+                [[ "$(basename "$_item")" == ".git" ]] && continue
+                mv "$_item" "$WORK_DIR/" 2>/dev/null || true
+            done
+            shopt -u dotglob
+            log "Zip extracted successfully — proceeding without git."
         else
-            die "All methods (primary git, fallback git, zip download) failed. Check network connectivity."
+            die "Zip downloaded and validated but extraction failed."
         fi
         rm -rf "$ZIP_FILE" "$ZIP_STAGING" 2>/dev/null || true
     fi
