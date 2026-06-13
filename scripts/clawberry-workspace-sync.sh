@@ -130,15 +130,63 @@ characters/
 EOF
 
 # GIT_TERMINAL_PROMPT=0 prevents git from hanging asking for credentials.
-# If the primary (gitee) fails, fall back to github automatically.
-if ! GIT_TERMINAL_PROMPT=0 git -C "$WORK_DIR" fetch --depth=1 origin HEAD 2>/dev/null; then
+# Fallback chain: primary mirror → github → zip download
+GIT_OK=no
+if GIT_TERMINAL_PROMPT=0 git -C "$WORK_DIR" fetch --depth=1 origin HEAD 2>/dev/null; then
+    GIT_OK=yes
+else
     log "Primary mirror ($REPO_URL) failed, falling back to $REPO_URL_FALLBACK ..."
     git -C "$WORK_DIR" remote set-url origin "$REPO_URL_FALLBACK"
-    GIT_TERMINAL_PROMPT=0 git -C "$WORK_DIR" fetch --depth=1 origin HEAD \
-        || die "Both mirrors failed. Check network connectivity."
+    if GIT_TERMINAL_PROMPT=0 git -C "$WORK_DIR" fetch --depth=1 origin HEAD 2>/dev/null; then
+        GIT_OK=yes
+    else
+        # ── Zip fallback: download archive from GitHub and extract into WORK_DIR ──
+        log "Both git mirrors failed. Downloading zip archive ..."
+        ZIP_URL="https://github.com/zphilip/ClawBoard/archive/refs/heads/main.zip"
+        ZIP_FILE="${WORK_DIR}.zip"
+        ZIP_STAGING="${WORK_DIR}.staging"
+
+        if command -v curl >/dev/null 2>&1; then
+            curl -fSL --connect-timeout 30 --max-time 300 -o "$ZIP_FILE" "$ZIP_URL" || true
+        elif command -v wget >/dev/null 2>&1; then
+            wget --timeout=30 --tries=3 -O "$ZIP_FILE" "$ZIP_URL" || true
+        else
+            die "No downloader available (curl or wget required) and both git mirrors failed."
+        fi
+
+        if [[ -f "$ZIP_FILE" ]] && file "$ZIP_FILE" | grep -qi 'zip'; then
+            mkdir -p "$ZIP_STAGING"
+            if unzip -qo "$ZIP_FILE" -d "$ZIP_STAGING" 2>/dev/null; then
+                # GitHub wraps everything in a single dir: ClawBoard-main/
+                ZIP_WRAPPER=$(ls -1 "$ZIP_STAGING" | head -1)
+                ZIP_SRC="$ZIP_STAGING"
+                if [[ -n "$ZIP_WRAPPER" && -d "$ZIP_STAGING/$ZIP_WRAPPER" ]]; then
+                    ZIP_SRC="$ZIP_STAGING/$ZIP_WRAPPER"
+                fi
+                # Move repo contents into WORK_DIR (skip .git so sparse-checkout
+                # doesn't apply — the zip gives us everything anyway)
+                shopt -s dotglob
+                for _item in "$ZIP_SRC"/*; do
+                    [[ -e "$_item" ]] || continue
+                    [[ "$(basename "$_item")" == ".git" ]] && continue
+                    mv "$_item" "$WORK_DIR/" 2>/dev/null || true
+                done
+                shopt -u dotglob
+                log "Zip extracted successfully — proceeding without git."
+            else
+                die "Zip downloaded but unzip failed."
+            fi
+        else
+            die "All methods (primary git, fallback git, zip download) failed. Check network connectivity."
+        fi
+        rm -rf "$ZIP_FILE" "$ZIP_STAGING" 2>/dev/null || true
+    fi
 fi
-git -C "$WORK_DIR" checkout -q FETCH_HEAD
-log "Checkout complete."
+
+if [[ "$GIT_OK" == "yes" ]]; then
+    git -C "$WORK_DIR" checkout -q FETCH_HEAD
+    log "Checkout complete."
+fi
 
 # ── Self-update: copy latest script from repo to /usr/local/bin and ensure executable ──
 REPO_SCRIPT_PATH="$WORK_DIR/scripts/clawberry-workspace-sync.sh"
@@ -464,19 +512,26 @@ if [[ -f "$REPO_CFG" && -f "$LOCAL_CFG" ]] && command -v python3 >/dev/null 2>&1
 fi
 
 
-# ── Deploy wifi-connect helper script ────────────────────────────────────────
-WIFI_LAUNCH_SRC="$WORK_DIR/wifi-connect/wifi-connect-gpio-launch.sh"
-WIFI_LAUNCH_DST="/opt/wifi-connect/wifi-connect-gpio-launch.sh"
-if [[ -f "$WIFI_LAUNCH_SRC" ]]; then
-    mkdir -p /opt/wifi-connect
-    if cp "$WIFI_LAUNCH_SRC" "$WIFI_LAUNCH_DST" 2>/dev/null; then
-        chmod 755 "$WIFI_LAUNCH_DST" || true
-        log "  installed wifi-connect-gpio-launch.sh → $WIFI_LAUNCH_DST"
-    else
-        log "WARNING: failed to install wifi-connect-gpio-launch.sh (permission?)"
-    fi
+# ── Deploy wifi-connect scripts ──────────────────────────────────────────────
+WIFI_CONNECT_SRC="$WORK_DIR/wifi-connect"
+WIFI_CONNECT_DST="/opt/wifi-connect"
+if [[ -d "$WIFI_CONNECT_SRC" ]]; then
+    mkdir -p "$WIFI_CONNECT_DST"
+    # Copy all scripts (shell + Python) and the board_config module.
+    # The wifi-connect binary itself is large and rarely changes — skip it here
+    # (deploy separately when needed).
+    for _f in "$WIFI_CONNECT_SRC"/*.{sh,py}; do
+        [[ -f "$_f" ]] || continue
+        _fname="$(basename "$_f")"
+        if cp "$_f" "$WIFI_CONNECT_DST/$_fname" 2>/dev/null; then
+            chmod 755 "$WIFI_CONNECT_DST/$_fname" || true
+            log "  installed $_fname → $WIFI_CONNECT_DST/$_fname"
+        else
+            log "WARNING: failed to install $_fname (permission?)"
+        fi
+    done
 else
-    log "WARNING: wifi-connect/wifi-connect-gpio-launch.sh not found in repo — skipping"
+    log "WARNING: wifi-connect/ not found in repo — skipping"
 fi
 
 # sudoers drop-in
