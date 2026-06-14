@@ -303,6 +303,40 @@ class AdbTools:
         self._last_successful_dump = ""
         self._last_dump_timestamp = 0
 
+    @staticmethod
+    def _u2_connect(device: Optional[str] = None):
+        """Connect to a device via uiautomator2, backward-compatibly.
+
+        uiautomator2 v3.x added ``init_atx_agent`` to ``connect()``;
+        older versions (2.x) and the latest v3.x (which removed it)
+        reject it with TypeError.  This wrapper tries the v3 signature
+        first and falls back gracefully.
+        """
+        import uiautomator2 as u2
+
+        try:
+            # v3.x intermediate path — skip atx-agent init (it's already running)
+            return (
+                u2.connect(device, init_atx_agent=False)
+                if device
+                else u2.connect(init_atx_agent=False)
+            )
+        except TypeError:
+            # v2.x / latest v3.x path — connect() takes only serial
+            return u2.connect(device) if device else u2.connect()
+
+    @staticmethod
+    def _u2_disable_fast_ime(d) -> None:
+        """Disable the ATX FastInputIME so the system IME is used instead.
+
+        ``set_fastinput_ime`` was deprecated in favour of ``set_input_ime``.
+        Try the new name first; fall back to the old one for older u2 versions.
+        """
+        try:
+            d.set_input_ime(False)
+        except AttributeError:
+            d.set_fastinput_ime(False)  # deprecated but still functional
+
     def get_foreground_package(self) -> str:
         """
         Return the package name of the app currently in the foreground
@@ -316,9 +350,8 @@ class AdbTools:
         
         # Priority 1: Try uiautomator2 shell command (cleaner API)
         try:
-            import uiautomator2 as u2
-            d = u2.connect(self.device, init_atx_agent=False) if self.device else u2.connect(init_atx_agent=False)
-            d.set_fastinput_ime(False)   # do NOT install ATX IME
+            d = self._u2_connect(self.device)
+            self._u2_disable_fast_ime(d)
 
             # Execute dumpsys via uiautomator2 (no need for "adb -s XXX shell" prefix)
             print(f"[FG PKG DEBUG] 🎯 Using uiautomator2 shell (primary method)")
@@ -549,11 +582,9 @@ class AdbTools:
         max_retries = 3
         for attempt in range(max_retries):
             try:
-                import uiautomator2 as u2  # optional dependency
-                
                 # Connect to device and dump directly
-                d = u2.connect(self.device, init_atx_agent=False) if self.device else u2.connect(init_atx_agent=False)
-                d.set_fastinput_ime(False)   # do NOT install ATX IME
+                d = self._u2_connect(self.device)
+                self._u2_disable_fast_ime(d)
                 xml = d.dump_hierarchy()
                 return xml or ""
                 
@@ -851,9 +882,8 @@ class AdbTools:
         Falls back to system native IME for text entry.
         """
         try:
-            import uiautomator2 as u2
-            d = u2.connect(self.device, init_atx_agent=False) if self.device else u2.connect(init_atx_agent=False)
-            d.set_fastinput_ime(False)   # do NOT install ATX IME
+            d = self._u2_connect(self.device)
+            self._u2_disable_fast_ime(d)
             d.send_keys(text)
             print(f"[INPUT] ✅ u2.send_keys() succeeded for: {text!r}")
             return True
