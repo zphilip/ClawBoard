@@ -317,8 +317,9 @@ class AdbTools:
         # Priority 1: Try uiautomator2 shell command (cleaner API)
         try:
             import uiautomator2 as u2
-            d = u2.connect(self.device) if self.device else u2.connect()
-            
+            d = u2.connect(self.device, init_atx_agent=False) if self.device else u2.connect(init_atx_agent=False)
+            d.set_fastinput_ime(False)   # do NOT install ATX IME
+
             # Execute dumpsys via uiautomator2 (no need for "adb -s XXX shell" prefix)
             print(f"[FG PKG DEBUG] 🎯 Using uiautomator2 shell (primary method)")
             output, exit_code = d.shell("dumpsys activity activities")
@@ -539,7 +540,7 @@ class AdbTools:
         """
         Primary UI dump via the ``uiautomator2`` Python library.
         Requires ``pip install uiautomator2`` and the atx-agent running on
-        the device (installed automatically on first ``u2.connect()``).
+        the device (started separately via ``python3 -m uiautomator2 init``).
         Returns '' if the library is not installed or the connection fails.
         
         Note: Simple approach - just try to connect and dump directly.
@@ -551,7 +552,8 @@ class AdbTools:
                 import uiautomator2 as u2  # optional dependency
                 
                 # Connect to device and dump directly
-                d = u2.connect(self.device) if self.device else u2.connect()
+                d = u2.connect(self.device, init_atx_agent=False) if self.device else u2.connect(init_atx_agent=False)
+                d.set_fastinput_ime(False)   # do NOT install ATX IME
                 xml = d.dump_hierarchy()
                 return xml or ""
                 
@@ -799,106 +801,68 @@ class AdbTools:
 
     def type(self, text):
         """
-        Type text via ADB Keyboard (supports CJK and Latin characters).
-        Falls back to standard ADB input if ADBKeyboard not available.
-        Returns True if typing succeeds, False otherwise.
+        Type text on the device.
+
+        Primary: ``adb shell input text`` — supports Unicode (including
+        Chinese) on Android 10+ (API 29+) via InputConnection.commitText().
+
+        Fallback: uiautomator2 ``d.send_keys()`` with system IME
+        (set_fastinput_ime disabled) for older Android or when adb fails.
+
+        Returns True if typing succeeded, False otherwise.
         """
-        # Check if text contains non-ASCII characters (Chinese, emoji, etc.)
-        has_unicode = any(ord(c) > 127 for c in text)
-        
-        # Try ADBKeyboard first (best for Unicode)
-        if self._try_adbkeyboard_type(text):
+        # Primary: adb shell input text (Unicode-capable on Android 10+)
+        if self._adb_input_text(text):
             return True
-        
-        # Fallback: Use standard ADB input (works for ASCII only)
-        if not has_unicode:
-            print(f"[ADB TYPE WARNING] ADBKeyboard failed, falling back to standard ADB input")
-            return self._try_standard_input_text(text)
-        
-        # Cannot fallback for Unicode text
-        print(f"[ADB TYPE ERROR] ADBKeyboard failed and text contains Unicode characters - cannot use fallback")
+
+        # Fallback: uiautomator2 send_keys with system IME
+        if self._u2_send_keys(text):
+            return True
+
+        print(f"[INPUT ERROR] All text input methods failed for: {text!r}")
         return False
 
-    def _try_adbkeyboard_type(self, text):
-        """Try typing using ADBKeyboard broadcast method."""
-        import base64
-        
-        escaped_text = text.replace('"', '\\"').replace("'", "\\'")
-        
-        # Method 1: Direct text broadcast.
-        # NOTE: we do NOT disable the keyboard after typing — the IME switch
-        # can cause apps (especially Baidu Maps) to lose input focus, clear
-        # search text, and dismiss results, creating an infinite retype loop.
-        # The keyboard was set globally by setup_adb_keyboard() in
-        # mobile_agent.py; per-type enable/disable is unnecessary.
-        command_sequence_direct = [
-            "shell ime enable com.android.adbkeyboard/.AdbIME",
-            "shell ime set com.android.adbkeyboard/.AdbIME",
-            0.1,
-            f'shell am broadcast -a ADB_INPUT_TEXT --es msg "{escaped_text}"',
-        ]
-        
-        # Method 2: Base64 encoded broadcast (more reliable on newer Android)
-        try:
-            b64_text = base64.b64encode(text.encode('utf-8')).decode('ascii')
-            command_sequence_b64 = [
-                "shell ime enable com.android.adbkeyboard/.AdbIME",
-                "shell ime set com.android.adbkeyboard/.AdbIME",
-                0.1,
-                f'shell am broadcast -a ADB_INPUT_B64 --es msg "{b64_text}"',
-            ]
-        except Exception as e:
-            print(f"[ADB TYPE DEBUG] Base64 encoding failed: {e}")
-            command_sequence_b64 = None
-        
-        # Try direct method first
-        print(f"[ADB TYPE DEBUG] Attempting ADBKeyboard direct method for text: {text!r}")
-        if self._execute_command_sequence(command_sequence_direct, "ADBKeyboard direct"):
-            return True
-        
-        # Try Base64 method if available
-        if command_sequence_b64:
-            print(f"[ADB TYPE DEBUG] Attempting ADBKeyboard Base64 method")
-            if self._execute_command_sequence(command_sequence_b64, "ADBKeyboard Base64"):
-                return True
-        
-        print(f"[ADB TYPE DEBUG] ADBKeyboard methods failed")
-        return False
-    
-    def _try_standard_input_text(self, text):
-        """Fallback: Use standard adb shell input text (ASCII only)."""
-        # Standard input text requires URL-like encoding for spaces
-        encoded_text = text.replace(' ', '%s')
+    def _adb_input_text(self, text):
+        """Type text via ``adb shell input text`` (Unicode on Android 10+)."""
+        has_unicode = any(ord(c) > 127 for c in text)
+        if has_unicode:
+            print(f"[INPUT] Text contains Unicode — requires Android 10+ (API 29+)")
+
+        # Escape single quotes for the adb shell; ``input text`` accepts
+        # literal spaces (unlike the older ``input`` keyevent command which
+        # needed %s substitution).
+        encoded_text = text.replace("'", "\\'")
         cmd = f"shell input text '{encoded_text}'"
-        
-        print(f"[ADB TYPE DEBUG] Attempting standard ADB input: {cmd[:80]}")
+
+        print(f"[INPUT] adb input text for: {text!r}")
         result = self._run(cmd)
-        
+
         if result:
-            print(f"[ADB TYPE] ✅ Standard ADB input succeeded")
+            print(f"[INPUT] ✅ adb input text succeeded")
             return True
         else:
-            print(f"[ADB TYPE ERROR] ❌ Standard ADB input failed")
+            print(f"[INPUT] ❌ adb input text failed")
             return False
-    
-    def _execute_command_sequence(self, command_sequence, sequence_name):
-        """Execute a command sequence and return success status."""
-        success_count = 0
-        total_commands = len([item for item in command_sequence if isinstance(item, str)])
-        
-        for idx, item in enumerate(command_sequence):
-            if isinstance(item, (int, float)):
-                time.sleep(item)
-            else:
-                result = self._run(item.strip())
-                if result:
-                    success_count += 1
-                else:
-                    print(f"[ADB TYPE DEBUG] {sequence_name} step {idx+1} FAILED")
-                    return False
-        
-        print(f"[ADB TYPE DEBUG] {sequence_name} completed: {success_count}/{total_commands} commands succeeded")
-        return True
+
+    def _u2_send_keys(self, text):
+        """Fallback: use uiautomator2 ``send_keys()`` with system IME.
+
+        Disables FastInputIME so no ATX keyboard component is pushed.
+        Falls back to system native IME for text entry.
+        """
+        try:
+            import uiautomator2 as u2
+            d = u2.connect(self.device, init_atx_agent=False) if self.device else u2.connect(init_atx_agent=False)
+            d.set_fastinput_ime(False)   # do NOT install ATX IME
+            d.send_keys(text)
+            print(f"[INPUT] ✅ u2.send_keys() succeeded for: {text!r}")
+            return True
+        except ImportError:
+            print(f"[INPUT] ⚠️ uiautomator2 not installed — cannot use u2 fallback")
+            return False
+        except Exception as e:
+            print(f"[INPUT] ⚠️ u2.send_keys() failed: {e}")
+            return False
 
     @staticmethod
     def _normalize_for_match(s: str) -> str:
@@ -933,6 +897,54 @@ class AdbTools:
                 return True
         return False
 
+    def _verify_text_on_screen(
+        self,
+        text: str,
+        verify_wait_seconds: float = 2.0,
+        verify_interval_seconds: float = 0.4,
+    ) -> bool:
+        """Poll the UI dump until *text* appears or deadline expires.
+
+        Returns True as soon as the text is found; False on timeout.
+        Includes detailed logging for debugging text input issues.
+        """
+        deadline = time.time() + max(0.2, verify_wait_seconds)
+        checks = 0
+        while time.time() < deadline:
+            checks += 1
+            ui_xml = self.get_ui_dump()
+            ui_size = len(ui_xml) if ui_xml else 0
+            print(f"[ADB TYPE VERIFY] Check #{checks}: UI dump size={ui_size} bytes")
+
+            if self._ui_contains_text(ui_xml, text):
+                print(f"[ADB TYPE] ✅ Text VERIFIED in UI after {checks} checks")
+
+                # Show where the text was found
+                if ui_xml:
+                    try:
+                        root = ET.fromstring(ui_xml)
+                        for node in root.iter("node"):
+                            node_text = node.attrib.get("text", "")
+                            node_desc = node.attrib.get("content-desc", "")
+                            if text in node_text or text in node_desc:
+                                print(f"[ADB TYPE DEBUG] Found in node: text={node_text!r}, desc={node_desc!r}")
+                    except Exception:
+                        pass
+                return True
+
+            time.sleep(max(0.1, verify_interval_seconds))
+
+        # Dump a snippet of UI for debugging
+        print(f"[ADB TYPE] ❌ Text NOT visible after {checks} checks")
+        try:
+            # Re-use last ui_xml if still valid, otherwise do one more fetch
+            ui_xml = self.get_ui_dump()
+            if ui_xml and len(ui_xml) > 0:
+                print(f"[ADB TYPE DEBUG] UI dump snippet (first 500 chars):\n{ui_xml[:500]}")
+        except Exception:
+            pass
+        return False
+
     def type_with_verification(
         self,
         text: str,
@@ -943,56 +955,61 @@ class AdbTools:
         """
         Type text and verify it appears in the UI dump.
 
+        Uses a two-method strategy on each attempt:
+          1. Try ``adb shell input text`` (fast, Unicode on Android 10+).
+          2. If ADB "succeeds" but verification fails, try uiautomator2
+             ``send_keys()`` on the SAME attempt before incrementing retries.
+
+        This prevents the silent-failure case where ``adb input text``
+        returns exit code 0 but the text was never actually delivered
+        (e.g. no editable field had focus).
+
         Returns True only when text is observed on-screen after typing.
-        Includes detailed logging for debugging text input issues.
         """
         retries = max(1, int(retries))
         print(f"[ADB TYPE VERIFY] Starting verification for text: {text!r} (retries={retries})")
-        
+
         for attempt in range(1, retries + 1):
-            print(f"\n[ADB TYPE] === ATTEMPT {attempt}/{retries} ===")
-            print(f"[ADB TYPE] Sending text: {text!r}")
-            
-            if not self.type(text):
-                print(f"[ADB TYPE] ❌ Attempt {attempt} FAILED: command sequence error")
-                continue
+            print(f"\n[INPUT] === ATTEMPT {attempt}/{retries} ===")
 
-            print(f"[ADB TYPE] ✅ Command sequence succeeded, starting verification...")
-            deadline = time.time() + max(0.2, verify_wait_seconds)
-            verification_checks = 0
-            
-            while time.time() < deadline:
-                verification_checks += 1
-                ui_xml = self.get_ui_dump()
-                
-                # Log UI dump size for debugging
-                ui_size = len(ui_xml) if ui_xml else 0
-                print(f"[ADB TYPE VERIFY] Check #{verification_checks}: UI dump size={ui_size} bytes")
-                
-                if self._ui_contains_text(ui_xml, text):
-                    print(f"[ADB TYPE] ✅ Text VERIFIED in UI after {verification_checks} checks (attempt {attempt})")
-                    
-                    # Show where the text was found
-                    if ui_xml:
-                        try:
-                            root = ET.fromstring(ui_xml)
-                            for node in root.iter("node"):
-                                node_text = node.attrib.get("text", "")
-                                node_desc = node.attrib.get("content-desc", "")
-                                if text in node_text or text in node_desc:
-                                    print(f"[ADB TYPE DEBUG] Found in node: text={node_text!r}, desc={node_desc!r}")
-                        except Exception:
-                            pass
-                    
+            # --- Method A: adb shell input text ---
+            print(f"[INPUT] Method A (adb): sending text {text!r}")
+            adb_ok = self._adb_input_text(text)
+
+            if adb_ok:
+                print(f"[INPUT] adb input text call succeeded — verifying...")
+                if self._verify_text_on_screen(
+                    text,
+                    verify_wait_seconds=verify_wait_seconds,
+                    verify_interval_seconds=verify_interval_seconds,
+                ):
                     return True
-                
-                time.sleep(max(0.1, verify_interval_seconds))
+                print(f"[INPUT] adb said OK but text NOT found on screen — trying fallback method...")
 
-            print(f"[ADB TYPE] ❌ Text NOT visible after {verification_checks} checks (attempt {attempt})")
-            
-            # Dump a snippet of UI for debugging
-            if ui_xml and len(ui_xml) > 0:
-                print(f"[ADB TYPE DEBUG] UI dump snippet (first 500 chars):\n{ui_xml[:500]}")
+            # --- Method B: uiautomator2 send_keys ---
+            # Always try this when ADB either failed OR "succeeded" but
+            # verification showed the text didn't land.  This catches the
+            # common case where ``input text`` exits 0 but silently
+            # discards the text because no editable field has focus.
+            print(f"[INPUT] Method B (u2): sending text {text!r}")
+            u2_ok = self._u2_send_keys(text)
+
+            if u2_ok:
+                print(f"[INPUT] u2.send_keys() succeeded — verifying...")
+                if self._verify_text_on_screen(
+                    text,
+                    verify_wait_seconds=verify_wait_seconds,
+                    verify_interval_seconds=verify_interval_seconds,
+                ):
+                    return True
+                print(f"[INPUT] u2 sent text but verification failed on this attempt")
+            else:
+                print(f"[INPUT] u2.send_keys() also failed")
+
+            if not adb_ok and not u2_ok:
+                print(f"[INPUT] ❌ Attempt {attempt} FAILED: both input methods returned error")
+            else:
+                print(f"[INPUT] ❌ Attempt {attempt} FAILED: input method(s) succeeded but text never appeared in UI dump")
 
         print(f"[ADB TYPE VERIFY] ❌ All {retries} attempts failed for text: {text!r}")
         return False

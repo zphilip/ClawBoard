@@ -167,7 +167,6 @@ def load_supervisor_config() -> dict:
 DEFAULT_MAX_STEPS = 30
 DEFAULT_TIMEOUT = 900  # seconds for the entire run (15 minutes)
 LOOP_THRESHOLD = 3     # same coordinate N times → inject retry hint
-ADB_IME = "com.android.adbkeyboard/.AdbIME"
 
 # Patterns that imply the task completed
 FINISH_PATTERNS = [
@@ -330,20 +329,6 @@ def ensure_screen_on(adb_path: str, device: str) -> None:
         time.sleep(1)
     else:
         _log("Screen is on.")
-
-
-def setup_adb_keyboard(adb_path: str, device: str) -> None:
-    """Force-set ADB Keyboard as the active IME (required for reliable text input)."""
-    rc, out, _ = _adb(["shell", "ime", "list", "-a"], adb_path=adb_path, device=device)
-    if "adbkeyboard" in out.lower():
-        _adb(["shell", "ime", "set", ADB_IME], adb_path=adb_path, device=device)
-        _log("ADB Keyboard activated.")
-    else:
-        _log(
-            "WARNING: ADB Keyboard not installed. "
-            "Text input may fail. "
-            "Install from https://github.com/senzhk/ADBKeyBoard"
-        )
 
 
 def release_uiautomation_service(adb_path: str, device: str) -> None:
@@ -540,18 +525,19 @@ def is_device_uia2_initialized(device: str, adb_path: str = "adb") -> bool:
         return False
 
 
-def initialize_uiautomator2(adb_path: str, device: str) -> None:
+def initialize_uiautomator2(adb_path: str, device: str, skip_init: bool = False) -> None:
     """
     Initialize uiautomator2 on the device by running 'python -m uiautomator2 init'.
 
     This installs the atx-agent server on the device (~5MB) which is required for
     uiautomator2 to work. The init process also:
-    - Installs app-uiautomator-test.apk and app-uiautomator.apk
+    - Installs app-uiautomator-test.apk and app-uiautomator.apk (background, no launcher icon)
     - Starts the atx-agent daemon on the device
     - Verifies the server is running
 
-    This should be called once at task setup to ensure uiautomator2 is ready.
-    Subsequent calls are fast if already initialized.
+    When *skip_init* is True the function only checks whether the agent is
+    already alive; it never runs ``python3 -m uiautomator2 init``.
+    Use ``--skip-atx-init`` to avoid pushing anything to the device.
 
     Uses a file-based cache so a successful init is remembered across runs
     even when the uiautomator2 Python library is not importable in the
@@ -559,6 +545,9 @@ def initialize_uiautomator2(adb_path: str, device: str) -> None:
     different Python interpreter).
     """
     _cache_file = Path(__file__).parent / ".uia2_init_cache"
+
+    if skip_init:
+        _log("--skip-atx-init: will check connectivity but NOT run python3 -m uiautomator2 init")
 
     # Layer 1: file-cache — if we successfully initted recently, skip
     # the expensive connectivity test and init.  Cache TTL is 24 hours.
@@ -576,6 +565,12 @@ def initialize_uiautomator2(adb_path: str, device: str) -> None:
     if is_device_uia2_initialized(device, adb_path=adb_path):
         _log("✅ uiautomator2 server is already running and responsive")
         _touch_uia2_cache(_cache_file)
+        return
+
+    if skip_init:
+        _log("⚠️ uiautomator2 agent is not responding and --skip-atx-init is set.")
+        _log("   uiautomator2-dependent features (UI dump, send_keys) may fail.")
+        _log("   Run without --skip-atx-init once to initialize the device.")
         return
 
     _log("Initializing uiautomator2 on device...")
@@ -1147,6 +1142,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--instruction", required=True, help="Natural language task")
     p.add_argument("--adb_path", default="adb", help="Path to ADB binary")
     p.add_argument("--device", default=None, help="ADB device serial")
+    p.add_argument("--skip-atx-init", action="store_true",
+                   help="Skip python3 -m uiautomator2 init (device must be pre-configured)")
     p.add_argument("--base_url", default=skill_cfg["base_url"],
                    help="Override base URL from config.json")
     p.add_argument("--model", default=skill_cfg["model"],
@@ -1248,9 +1245,8 @@ def main() -> int:
     # Order matters: initialize uiautomator2 FIRST (it needs atx-agent alive),
     # THEN release ADB's conflicting UiAutomationService.
     ensure_screen_on(args.adb_path, device)
-    initialize_uiautomator2(args.adb_path, device)         # start atx-agent if needed
+    initialize_uiautomator2(args.adb_path, device, skip_init=args.skip_atx_init)
     release_uiautomation_service(args.adb_path, device)    # kill ONLY ADB's dump binary
-    setup_adb_keyboard(args.adb_path, device)
 
     # 4. Toast notification
     send_toast(args.adb_path, device, f"AI正在接管操作: {args.instruction[:30]}")
