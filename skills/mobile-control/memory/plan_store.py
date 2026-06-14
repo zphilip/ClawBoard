@@ -18,6 +18,21 @@ from typing import Any
 from .models import PlanStep, TaskPlan
 
 
+def plan_is_healthy(plan: TaskPlan) -> bool:
+    """Return True if all steps have not failed more than they succeeded.
+
+    A step with fail_count=0 and success_count=0 (pre-scoring era) is
+    considered healthy — no evidence of failure.  A step that has failed
+    2+ times OR has fail_count > success_count is unhealthy.
+    """
+    for step in plan.steps:
+        if step.fail_count >= 2:
+            return False
+        if step.fail_count > step.success_count:
+            return False
+    return True
+
+
 class PlanStore:
     def __init__(self, path: str | Path):
         self.path = Path(path)
@@ -79,27 +94,43 @@ class PlanStore:
     def upsert_by_intent(self, plan: TaskPlan) -> None:
         """Replace the first plan with the same intent_key, merging counters.
 
-        Only replaces steps when the new plan is shorter (fewer steps) or
-        equal length — a more efficient path is always preferred.  When the
-        new plan is longer, the old steps are kept.  In all cases the
-        accumulated replay success/fail history is preserved so the
-        auto-promotion threshold (2+ successes) survives updates.
+        Uses step-level health to decide between old and new plan:
+
+        1. New plan healthy, old plan unhealthy → REPLACE (corrected plan
+           always wins over a known-broken plan, even if it has more steps).
+        2. New plan unhealthy, old plan healthy → KEEP old, count as failure.
+        3. Both healthy (or both unhealthy) → shorter plan wins.  When the
+           new plan is longer or equal, the old plan is kept and its success
+           counter is incremented.
         """
         plans = self.load()
         replaced = False
         for i, existing in enumerate(plans):
             if existing.intent_key == plan.intent_key:
-                if len(plan.steps) <= len(existing.steps):
-                    # New plan is better or equal (fewer steps) — replace steps,
-                    # merge accumulated replay track record.
+                _new_healthy = plan_is_healthy(plan)
+                _old_healthy = plan_is_healthy(existing)
+
+                if _new_healthy and not _old_healthy:
+                    # New plan is healthy; old plan is known-broken.
+                    # Replace unconditionally — correctness over brevity.
                     plan.success_count += existing.success_count
                     plan.fail_count += existing.fail_count
                     plan.last_verified = max(plan.last_verified, existing.last_verified)
-                    plan.created_at = existing.created_at  # preserve original creation
+                    plan.created_at = existing.created_at
+                    plans[i] = plan
+                elif not _new_healthy and _old_healthy:
+                    # New plan has a failing step; old plan is fine.
+                    # Do NOT replace — count this run as a failure.
+                    existing.fail_count += 1
+                elif len(plan.steps) <= len(existing.steps):
+                    # Both healthy (or both unhealthy): shorter plan wins.
+                    plan.success_count += existing.success_count
+                    plan.fail_count += existing.fail_count
+                    plan.last_verified = max(plan.last_verified, existing.last_verified)
+                    plan.created_at = existing.created_at
                     plans[i] = plan
                 else:
-                    # New plan is worse (more steps) — keep old steps, but
-                    # still count this run as a success on the existing plan.
+                    # Both similar health; new plan is longer — keep old.
                     existing.success_count += 1
                     existing.last_verified = max(existing.last_verified, time.time())
                 replaced = True
@@ -109,14 +140,17 @@ class PlanStore:
         self._rewrite_all(plans)
 
     def find_best(self, intent_key: str, min_success: int = 1) -> TaskPlan | None:
-        """Return the highest-scored plan for *intent_key*, or None.
+        """Return the highest-scored **healthy** plan for *intent_key*, or None.
 
         Score = success_count / (success_count + fail_count).
-        Plans with fewer than *min_success* successful runs are excluded.
+        Plans with fewer than *min_success* successful runs OR with any
+        unhealthy step are excluded.
         """
         candidates = [
             p for p in self.load()
-            if p.intent_key == intent_key and p.success_count >= min_success
+            if p.intent_key == intent_key
+            and p.success_count >= min_success
+            and plan_is_healthy(p)
         ]
         if not candidates:
             return None
@@ -145,6 +179,23 @@ class PlanStore:
                 break
         self._rewrite_all(plans)
 
+    def increment_step_fail(self, intent_key: str, step_index: int) -> None:
+        """Increment the fail_count of a specific step in a plan.
+
+        Used when a plan-replay step fails and the VLM has to handle it.
+        This penalises the offending step so the plan eventually becomes
+        unhealthy and self-heals on the next upsert.
+        """
+        plans = self.load()
+        for plan in plans:
+            if plan.intent_key == intent_key:
+                for step in plan.steps:
+                    if step.step_index == step_index:
+                        step.fail_count += 1
+                        break
+                break
+        self._rewrite_all(plans)
+
     def all_plans(self) -> list[TaskPlan]:
         """Return all stored plans (for reporting / debugging)."""
         return self.load()
@@ -168,6 +219,8 @@ def _serialise_plan(plan: TaskPlan) -> dict[str, Any]:
                 "pre_action_pkg": s.pre_action_pkg,
                 "post_action_ui_fp": s.post_action_ui_fp,
                 "target_element_signature": s.target_element_signature,
+                "success_count": s.success_count,
+                "fail_count": s.fail_count,
             }
             for s in plan.steps
         ],
@@ -191,6 +244,8 @@ def _deserialise_plan(obj: dict[str, Any]) -> TaskPlan:
             pre_action_pkg=s.get("pre_action_pkg", ""),
             post_action_ui_fp=s.get("post_action_ui_fp", ""),
             target_element_signature=s.get("target_element_signature"),
+            success_count=int(s.get("success_count", 0)),
+            fail_count=int(s.get("fail_count", 0)),
         )
         for i, s in enumerate(obj.get("steps", []))
     ]

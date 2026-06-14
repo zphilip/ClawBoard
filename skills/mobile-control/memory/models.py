@@ -102,6 +102,8 @@ class PlanStep:
     pre_action_pkg: str = ""               # foreground package BEFORE this step
     post_action_ui_fp: str = ""            # UI fingerprint AFTER this step
     target_element_signature: dict[str, Any] | None = None  # For element-based targeting
+    success_count: int = 0                 # times this step replayed successfully
+    fail_count: int = 0                    # times this step failed during replay
 
 
 @dataclass

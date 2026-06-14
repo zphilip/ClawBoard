@@ -32,6 +32,15 @@ def rescale_coordinates(
     for key in ("coordinate", "coordinate1", "coordinate2"):
         if key in action_parameter:
             _raw_coords[key] = list(action_parameter[key])
+            # Guard against truncated VLM output where a coordinate array
+            # has fewer than 2 elements (e.g. "[25" → repaired to "[25]").
+            if len(action_parameter[key]) < 2:
+                raise ValueError(
+                    f"Coordinate key {key!r} has only "
+                    f"{len(action_parameter[key])} element(s): "
+                    f"{action_parameter[key]!r} — "
+                    f"VLM output was likely truncated."
+                )
             # Backward compatibility: old memory records may store absolute
             # pixels.  If either axis exceeds 1000, treat as already-resolved.
             if action_parameter[key][0] > 1000 or action_parameter[key][1] > 1000:

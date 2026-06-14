@@ -28,7 +28,7 @@ from packages import PACKAGES_NAME_DICT, NAME_PACKAGE_DICT, normalize_package_na
 from memory.logger import MemoryEventLogger
 from memory.models import ActionCandidate, DecisionInput, MemoryRecord, StateSignature
 from memory.plan_executor import PlanExecutor
-from memory.plan_store import PlanStore
+from memory.plan_store import PlanStore, plan_is_healthy
 from memory.policy import MemoryPolicy, NON_CACHEABLE_ACTIONS
 from memory.signature import (
     build_canonical_intent_key,
@@ -463,6 +463,7 @@ def main():
         _auto_promote = (
             _plan_found is not None
             and _plan_found.success_count >= 2
+            and plan_is_healthy(_plan_found)
             and args.memory_replay_mode in ("sequential", "plan")
         )
 
@@ -1642,7 +1643,17 @@ def main():
             min_pixels=3136,
             max_pixels=1003520 * 200,
         )
-        action_parameter = rescale_coordinates(action_parameter, resized_w, resized_h)
+        try:
+            action_parameter = rescale_coordinates(action_parameter, resized_w, resized_h)
+        except (ValueError, IndexError) as _coord_err:
+            print(
+                f"[WARN] coordinate rescale failed: {_coord_err} — "
+                "skipping step (VLM output may be truncated)"
+            )
+            history.append({"output": output_text, "image": screenshot_path})
+            _emit_step_summary("parse_failed")
+            time.sleep(1)
+            continue
 
         # 5. Validate required fields before executing.
         # Truncated VLM outputs can parse as valid JSON but miss required
@@ -2116,6 +2127,11 @@ def main():
                 # Plan replay failed mid-way
                 _plan_executor.note_plan_failure(_canonical_intent_key)
                 _log_t(f"[PLAN] replay failed — incremented fail counter for {_canonical_intent_key}")
+            # Report step-level failures (idempotent — no-op when no step
+            # failed).  Accumulates fail_count on individual steps so they
+            # eventually trigger plan self-healing.
+            if _plan_replay_active:
+                _plan_executor.note_step_failure(_canonical_intent_key)
             elif not _plan_replay_active and _run_succeeded:
                 # LLM-driven run succeeded — record a new plan for future replay
                 _new_plan = _plan_executor.build_and_store_plan(

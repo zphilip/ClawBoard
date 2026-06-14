@@ -183,6 +183,7 @@ class PlanExecutor:
         self._replay_active: bool = False
         self._consecutive_failures: int = 0
         self._paused: bool = False
+        self._failed_step_index: int | None = None  # step that failed during replay
 
         # Recording state (populated during the run)
         self._recorded_steps: list[RecordedStep] = []
@@ -220,6 +221,21 @@ class PlanExecutor:
         self._replay_active = True
         self._consecutive_failures = 0
         self._paused = False
+        self._failed_step_index = None
+
+        # Warn if any step has accumulated failures — the plan may need
+        # self-healing via upsert on the next successful VLM-driven run.
+        if hasattr(self, 'store'):
+            from .plan_store import plan_is_healthy
+            if not plan_is_healthy(plan):
+                _bad_steps = [
+                    f"s{s.step_index}(s{s.success_count}/f{s.fail_count})"
+                    for s in plan.steps if s.fail_count > 0
+                ]
+                print(
+                    f"[PLAN] ⚠️ replaying unhealthy plan: "
+                    f"{', '.join(_bad_steps)}"
+                )
 
     def is_replaying(self) -> bool:
         return self._replay_active and not self._paused
@@ -295,6 +311,8 @@ class PlanExecutor:
         drift between runs.
 
         Verification layers:
+          0. Pre-execution foreground-package check (NEW — skips the
+             step early if we are on the wrong screen)
           1. Foreground package check
           2. (click with element match) element-found confirmation
           3. UI fingerprint comparison (skipped for Home/Back/open,
@@ -302,6 +320,30 @@ class PlanExecutor:
         """
         if step.action_type not in _REPLAYABLE_ACTION_TYPES:
             return False
+
+        # ── Layer 0: pre-execution screen check ─────────────────────────
+        # Skip the step immediately if the current foreground package does
+        # not match the expected pre-action package.  This catches the
+        # common case where a plan lacks an initial ``open`` step and the
+        # device is on the launcher instead of the target app.
+        #
+        # Not applied to ``open`` (it IS the corrective action) or
+        # ``system_button`` (Home/Back navigate anywhere intentionally).
+        if step.pre_action_pkg and step.action_type not in ("open", "system_button"):
+            try:
+                _pre_pkg = self.adb.get_foreground_package() or ""
+            except Exception:
+                _pre_pkg = ""
+            if _pre_pkg and _pre_pkg != step.pre_action_pkg:
+                print(
+                    f"[PLAN] pre-check failed: expected {step.pre_action_pkg!r} "
+                    f"but foreground is {_pre_pkg!r} — skipping step"
+                )
+                self._failed_step_index = step.step_index
+                self._consecutive_failures += 1
+                if self._consecutive_failures >= _MAX_CONSECUTIVE_FAILURES:
+                    self.end_replay()
+                return False
 
         # ── Element-based targeting for clicks ────────────────────────
         _element_matched = False
@@ -331,12 +373,14 @@ class PlanExecutor:
                         "[PLAN] element NOT found on current screen "
                         "— skipping step (screen has changed, stored coords are stale)"
                     )
+                    self._failed_step_index = step.step_index
                     self._consecutive_failures += 1
                     if self._consecutive_failures >= _MAX_CONSECUTIVE_FAILURES:
                         self.end_replay()
                     return False
             except Exception as _el_err:
                 print(f"[PLAN] element lookup error ({_el_err}) — skipping step")
+                self._failed_step_index = step.step_index
                 self._consecutive_failures += 1
                 if self._consecutive_failures >= _MAX_CONSECUTIVE_FAILURES:
                     self.end_replay()
@@ -348,6 +392,7 @@ class PlanExecutor:
             ok = False
 
         if not ok:
+            self._failed_step_index = step.step_index
             self._consecutive_failures += 1
             if self._consecutive_failures >= _MAX_CONSECUTIVE_FAILURES:
                 self.end_replay()
@@ -371,6 +416,7 @@ class PlanExecutor:
                 pkg_ok = False
 
         if not pkg_ok:
+            self._failed_step_index = step.step_index
             self._consecutive_failures += 1
             if self._consecutive_failures >= _MAX_CONSECUTIVE_FAILURES:
                 self.end_replay()
@@ -444,10 +490,12 @@ class PlanExecutor:
         self.last_verify_detail = "; ".join(_parts) if _parts else "all_passed"
 
         if verified:
+            self._failed_step_index = None
             self._replay_cursor += 1
             self._consecutive_failures = 0
             return True
         else:
+            self._failed_step_index = step.step_index
             self._consecutive_failures += 1
             if self._consecutive_failures >= _MAX_CONSECUTIVE_FAILURES:
                 self.end_replay()
@@ -636,3 +684,16 @@ class PlanExecutor:
             self.store.increment_fail(intent_key)
         except Exception:
             pass
+
+    def note_step_failure(self, intent_key: str) -> None:
+        """Increment the fail_count of the step that failed during replay.
+
+        Safe to call even when no step failed (no-op).  This is how the
+        plan executor reports step-level failures back to the store so
+        the offending step eventually becomes unhealthy.
+        """
+        if self._failed_step_index is not None:
+            try:
+                self.store.increment_step_fail(intent_key, self._failed_step_index)
+            except Exception:
+                pass
