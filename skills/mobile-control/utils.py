@@ -876,23 +876,134 @@ class AdbTools:
             return False
 
     def _u2_send_keys(self, text):
-        """Fallback: use uiautomator2 ``send_keys()`` with system IME.
+        """Type text via uiautomator2, auto-focusing an input field if needed.
 
-        Disables FastInputIME so no ATX keyboard component is pushed.
-        Falls back to system native IME for text entry.
+        The ``send_keys()`` method broadcasts to the ATX keyboard (which we
+        disable with ``set_input_ime(False)``) and falls back to
+        ``d(focused=True).set_text()`` — which requires a focused element.
+
+        When no element has focus (common on search pages where the agent
+        arrived via navigation rather than tapping the search bar), we
+        locate an EditText / SearchView in the UI dump, tap it to give it
+        focus, and then call ``set_text`` on the now-focused element.
         """
         try:
             d = self._u2_connect(self.device)
             self._u2_disable_fast_ime(d)
-            d.send_keys(text)
-            print(f"[INPUT] ✅ u2.send_keys() succeeded for: {text!r}")
+
+            # Method 1: standard send_keys (uses ATX broadcast or focused.set_text)
+            try:
+                d.send_keys(text)
+                print(f"[INPUT] ✅ u2.send_keys() succeeded for: {text!r}")
+                return True
+            except Exception as _e1:
+                _err_str = str(_e1)
+                # Check if the failure is "no focused element"
+                _is_focus_error = (
+                    "focused=True" in _err_str
+                    or "focused" in _err_str.lower()
+                )
+                if not _is_focus_error:
+                    raise  # different error — re-raise to outer handler
+
+                print(f"[INPUT] u2.send_keys() — no focused element, trying auto-focus...")
+
+            # Method 2: locate an input field, tap it, then set_text
+            _ui_xml = self.get_ui_dump()
+            if not _ui_xml:
+                raise RuntimeError("no UI dump available for auto-focus")
+
+            _target = self._find_editable_element(_ui_xml)
+            if not _target:
+                raise RuntimeError("no editable element found in UI dump")
+
+            _bx, _by = _target["center"]
+            print(
+                f"[INPUT] auto-focus: tapping {_target['class'][:40]} "
+                f"at ({_bx},{_by}) text={_target.get('text','')[:30]}"
+            )
+            d.click(_bx, _by)
+            time.sleep(0.5)
+
+            # Temporarily enable ATX IME so set_text works on the
+            # now-focused element, then restore the system IME.
+            try:
+                d.set_input_ime(True)
+            except AttributeError:
+                d.set_fastinput_ime(True)
+            d(focused=True).set_text(text)
+            try:
+                d.set_input_ime(False)
+            except AttributeError:
+                d.set_fastinput_ime(False)
+            print(f"[INPUT] ✅ u2 auto-focus + set_text succeeded for: {text!r}")
             return True
+
         except ImportError:
             print(f"[INPUT] ⚠️ uiautomator2 not installed — cannot use u2 fallback")
             return False
         except Exception as e:
             print(f"[INPUT] ⚠️ u2.send_keys() failed: {e}")
             return False
+
+    @staticmethod
+    def _find_editable_element(ui_xml: str) -> dict | None:
+        """Locate the best editable element (EditText / SearchView) in a UI dump.
+
+        Returns ``{"center": (x, y), "class": ..., "text": ...}`` or None.
+        Prefers elements that are already focused, then elements with
+        search-related hints, then any EditText.
+        """
+        if not ui_xml:
+            return None
+        try:
+            root = ET.fromstring(ui_xml)
+        except Exception:
+            return None
+
+        candidates: list[dict] = []
+
+        for node in root.iter("node"):
+            cls = (node.attrib.get("class", "") or "").lower()
+            is_editable = any(
+                kw in cls
+                for kw in ("edittext", "edit", "input", "searchview", "search")
+            )
+            if not is_editable:
+                continue
+            # Must be clickable / focusable
+            focusable = node.attrib.get("focusable", "false") == "true"
+            focused = node.attrib.get("focused", "false") == "true"
+            bounds_str = node.attrib.get("bounds", "")
+            m = re.match(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]", bounds_str)
+            if not m:
+                continue
+            x1, y1, x2, y2 = int(m[1]), int(m[2]), int(m[3]), int(m[4])
+            if x2 <= x1 or y2 <= y1:
+                continue
+
+            candidates.append({
+                "center": ((x1 + x2) // 2, (y1 + y2) // 2),
+                "class": node.attrib.get("class", ""),
+                "text": node.attrib.get("text", ""),
+                "hint": node.attrib.get("hint", ""),
+                "focused": focused,
+                "focusable": focusable,
+            })
+
+        if not candidates:
+            return None
+        # Prefer already-focused
+        for c in candidates:
+            if c["focused"]:
+                return c
+        # Then prefer ones with a search hint
+        for c in candidates:
+            if any(kw in (c.get("hint", "") or "").lower()
+                   for kw in ("search", "搜索", "查找")):
+                return c
+        # Then return the first one
+        return candidates[0]
 
     @staticmethod
     def _normalize_for_match(s: str) -> str:
