@@ -1600,7 +1600,7 @@ def main():
                     _emit_step_summary("supervisor_fallback_home")
                     time.sleep(2)
                     continue
-            else:
+            elif not _skip_supervisor:
                 _explicit_approve = not _sup_verdict.get("_default", False)
                 if _explicit_approve:
                     print("[SUPERVISOR] approved")
