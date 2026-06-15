@@ -834,27 +834,34 @@ class AdbTools:
         """
         Type text on the device.
 
-        Primary: ``adb shell input text`` — supports Unicode (including
-        Chinese) on Android 10+ (API 29+) via InputConnection.commitText().
+        Primary: uiautomator2 ``d.send_keys()`` — uses the ATX agent to
+        deliver keystrokes or directly set text on the focused element.
+        Does **not** require ADB Keyboard to be installed on the device.
 
-        Fallback: uiautomator2 ``d.send_keys()`` with system IME
-        (set_fastinput_ime disabled) for older Android or when adb fails.
+        Fallback: ``adb shell input text`` — fast but unreliable: requires
+        an active IME connection and may crash with NullPointerException
+        on devices without ADB Keyboard APK installed.
 
         Returns True if typing succeeded, False otherwise.
         """
-        # Primary: adb shell input text (Unicode-capable on Android 10+)
-        if self._adb_input_text(text):
+        # Primary: uiautomator2 send_keys (no ADB Keyboard required)
+        if self._u2_send_keys(text):
             return True
 
-        # Fallback: uiautomator2 send_keys with system IME
-        if self._u2_send_keys(text):
+        # Fallback: adb shell input text
+        if self._adb_input_text(text):
             return True
 
         print(f"[INPUT ERROR] All text input methods failed for: {text!r}")
         return False
 
     def _adb_input_text(self, text):
-        """Type text via ``adb shell input text`` (Unicode on Android 10+)."""
+        """Fallback: ``adb shell input text``.
+
+        Requires Android 10+ (API 29+) for Unicode support and a working
+        IME connection.  Often fails with NullPointerException on devices
+        that don't have the ADB Keyboard APK installed.
+        """
         has_unicode = any(ord(c) > 127 for c in text)
         if has_unicode:
             print(f"[INPUT] Text contains Unicode — requires Android 10+ (API 29+)")
@@ -876,11 +883,11 @@ class AdbTools:
             return False
 
     def _u2_send_keys(self, text):
-        """Type text via uiautomator2, auto-focusing an input field if needed.
+        """Primary: type text via uiautomator2 (NO ADB Keyboard required).
 
-        The ``send_keys()`` method broadcasts to the ATX keyboard (which we
-        disable with ``set_input_ime(False)``) and falls back to
-        ``d(focused=True).set_text()`` — which requires a focused element.
+        Uses ``d.send_keys()`` which broadcasts to the ATX agent — no
+        dedicated keyboard APK needed.  Falls back to
+        ``d(focused=True).set_text()`` when no element has focus.
 
         When no element has focus (common on search pages where the agent
         arrived via navigation rather than tapping the search bar), we
@@ -940,7 +947,7 @@ class AdbTools:
             return True
 
         except ImportError:
-            print(f"[INPUT] ⚠️ uiautomator2 not installed — cannot use u2 fallback")
+            print(f"[INPUT] ⚠️ uiautomator2 not installed — cannot use u2 (primary method)")
             return False
         except Exception as e:
             print(f"[INPUT] ⚠️ u2.send_keys() failed: {e}")
@@ -1097,42 +1104,20 @@ class AdbTools:
         Type text and verify it appears in the UI dump.
 
         Uses a two-method strategy on each attempt:
-          1. Try ``adb shell input text`` (fast, Unicode on Android 10+).
-          2. If ADB "succeeds" but verification fails, try uiautomator2
-             ``send_keys()`` on the SAME attempt before incrementing retries.
-
-        This prevents the silent-failure case where ``adb input text``
-        returns exit code 0 but the text was never actually delivered
-        (e.g. no editable field had focus).
+          1. Primary: uiautomator2 ``send_keys()`` — no ADB Keyboard needed.
+          2. If u2 fails or verification fails, try ``adb shell input text``
+             as fallback on the SAME attempt before incrementing retries.
 
         Returns True only when text is observed on-screen after typing.
         """
         retries = max(1, int(retries))
-        print(f"[ADB TYPE VERIFY] Starting verification for text: {text!r} (retries={retries})")
+        print(f"[TYPE VERIFY] Starting verification for text: {text!r} (retries={retries})")
 
         for attempt in range(1, retries + 1):
             print(f"\n[INPUT] === ATTEMPT {attempt}/{retries} ===")
 
-            # --- Method A: adb shell input text ---
-            print(f"[INPUT] Method A (adb): sending text {text!r}")
-            adb_ok = self._adb_input_text(text)
-
-            if adb_ok:
-                print(f"[INPUT] adb input text call succeeded — verifying...")
-                if self._verify_text_on_screen(
-                    text,
-                    verify_wait_seconds=verify_wait_seconds,
-                    verify_interval_seconds=verify_interval_seconds,
-                ):
-                    return True
-                print(f"[INPUT] adb said OK but text NOT found on screen — trying fallback method...")
-
-            # --- Method B: uiautomator2 send_keys ---
-            # Always try this when ADB either failed OR "succeeded" but
-            # verification showed the text didn't land.  This catches the
-            # common case where ``input text`` exits 0 but silently
-            # discards the text because no editable field has focus.
-            print(f"[INPUT] Method B (u2): sending text {text!r}")
+            # --- Method A: uiautomator2 send_keys (primary — no ADB Keyboard required) ---
+            print(f"[INPUT] Method A (u2): sending text {text!r}")
             u2_ok = self._u2_send_keys(text)
 
             if u2_ok:
@@ -1143,11 +1128,25 @@ class AdbTools:
                     verify_interval_seconds=verify_interval_seconds,
                 ):
                     return True
-                print(f"[INPUT] u2 sent text but verification failed on this attempt")
-            else:
-                print(f"[INPUT] u2.send_keys() also failed")
+                print(f"[INPUT] u2 sent text but verification failed — trying fallback method...")
 
-            if not adb_ok and not u2_ok:
+            # --- Method B: adb shell input text (fallback) ---
+            print(f"[INPUT] Method B (adb): sending text {text!r}")
+            adb_ok = self._adb_input_text(text)
+
+            if adb_ok:
+                print(f"[INPUT] adb input text call succeeded — verifying...")
+                if self._verify_text_on_screen(
+                    text,
+                    verify_wait_seconds=verify_wait_seconds,
+                    verify_interval_seconds=verify_interval_seconds,
+                ):
+                    return True
+                print(f"[INPUT] adb said OK but text NOT found on screen")
+            else:
+                print(f"[INPUT] adb input text also failed")
+
+            if not u2_ok and not adb_ok:
                 print(f"[INPUT] ❌ Attempt {attempt} FAILED: both input methods returned error")
             else:
                 print(f"[INPUT] ❌ Attempt {attempt} FAILED: input method(s) succeeded but text never appeared in UI dump")
