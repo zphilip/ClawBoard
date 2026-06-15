@@ -883,39 +883,38 @@ class AdbTools:
             return False
 
     def _u2_send_keys(self, text):
-        """Primary: type text via uiautomator2 (NO ADB Keyboard required).
+        """Primary: type text via uiautomator2 server (NO extra APK required).
 
-        Uses ``d.send_keys()`` which broadcasts to the ATX agent — no
-        dedicated keyboard APK needed.  Falls back to
-        ``d(focused=True).set_text()`` when no element has focus.
+        Uses the uiautomator2 HTTP server + AccessibilityService directly
+        via ``d(focused=True).set_text()`` and its ``ACTION_SET_TEXT``
+        action.  Does **not** use ``d.send_keys()`` (which would trigger
+        an unwanted ATX agent APK install).  Does **not** switch IMEs
+        — ``ACTION_SET_TEXT`` works directly on the focused accessibility
+        node without any keyboard involvement.
 
-        When no element has focus (common on search pages where the agent
-        arrived via navigation rather than tapping the search bar), we
-        locate an EditText / SearchView in the UI dump, tap it to give it
-        focus, and then call ``set_text`` on the now-focused element.
+        When no element has focus, auto-locates an EditText / SearchView
+        in the UI dump, taps it to give it focus, then calls set_text.
         """
         try:
             d = self._u2_connect(self.device)
-            self._u2_disable_fast_ime(d)
 
-            # Method 1: standard send_keys (uses ATX broadcast or focused.set_text)
+            # Try set_text on currently-focused element first
+            # (uses u2 server AccessibilityService, no agent APK)
             try:
-                d.send_keys(text)
-                print(f"[INPUT] ✅ u2.send_keys() succeeded for: {text!r}")
+                d(focused=True).set_text(text)
+                print(f"[INPUT] ✅ u2 set_text on focused element: {text!r}")
                 return True
             except Exception as _e1:
                 _err_str = str(_e1)
-                # Check if the failure is "no focused element"
                 _is_focus_error = (
                     "focused=True" in _err_str
                     or "focused" in _err_str.lower()
                 )
                 if not _is_focus_error:
-                    raise  # different error — re-raise to outer handler
+                    raise
+                print(f"[INPUT] no focused element, trying auto-focus...")
 
-                print(f"[INPUT] u2.send_keys() — no focused element, trying auto-focus...")
-
-            # Method 2: locate an input field, tap it, then set_text
+            # Auto-focus: locate an input field, tap it, then set_text
             _ui_xml = self.get_ui_dump()
             if not _ui_xml:
                 raise RuntimeError("no UI dump available for auto-focus")
@@ -932,25 +931,17 @@ class AdbTools:
             d.click(_bx, _by)
             time.sleep(0.5)
 
-            # Temporarily enable ATX IME so set_text works on the
-            # now-focused element, then restore the system IME.
-            try:
-                d.set_input_ime(True)
-            except AttributeError:
-                d.set_fastinput_ime(True)
+            # set_text via AccessibilityService ACTION_SET_TEXT
+            # — no IME switch, no agent APK needed
             d(focused=True).set_text(text)
-            try:
-                d.set_input_ime(False)
-            except AttributeError:
-                d.set_fastinput_ime(False)
-            print(f"[INPUT] ✅ u2 auto-focus + set_text succeeded for: {text!r}")
+            print(f"[INPUT] ✅ u2 auto-focus + set_text: {text!r}")
             return True
 
         except ImportError:
             print(f"[INPUT] ⚠️ uiautomator2 not installed — cannot use u2 (primary method)")
             return False
         except Exception as e:
-            print(f"[INPUT] ⚠️ u2.send_keys() failed: {e}")
+            print(f"[INPUT] ⚠️ u2 set_text failed: {e}")
             return False
 
     @staticmethod
