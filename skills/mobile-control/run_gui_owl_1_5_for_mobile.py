@@ -1544,11 +1544,85 @@ def main():
                     _ov_args = _override_tc.get("arguments", {})
                     _ov_type = _ov_args.get("action", "")
                     _ov_missing = _missing_required_fields(_ov_type, _ov_args)
-                    if _ov_missing:
-                        print(
-                            f"[SUPERVISOR] override rejected — missing required "
-                            f"fields {_ov_missing} for action {_ov_type!r}"
-                        )
+                    # --- coordinate sanity check for click/long_press overrides ---
+                    # The supervisor model sometimes hallucinates coordinates
+                    # that land in the status bar or on dead space where no
+                    # UI element exists.  Validate that the override coordinates
+                    # land on or near a real interactive element.
+                    _ov_coord_reason = ""
+                    if (not _ov_missing) and _ov_type in ("click", "long_press") and "coordinate" in _ov_args:
+                        _ov_nx, _ov_ny = _ov_args["coordinate"]
+                        # Quick status-bar guard: normalized 0-1000 y < 30
+                        # maps to < ~95 actual pixels on a 3120px screen.
+                        if _ov_ny < 30:
+                            _ov_coord_reason = (
+                                f"coordinate [{_ov_nx}, {_ov_ny}] y={_ov_ny} "
+                                f"is in the status bar area (y < 30 in 0-1000 "
+                                f"normalized space) — no element to click there"
+                            )
+                        else:
+                            # Rescale to approximate actual pixels using the
+                            # current UI dump's screen dimensions.
+                            try:
+                                _ov_ui = adb_tools.get_ui_dump()
+                                if _ov_ui:
+                                    import xml.etree.ElementTree as _ET
+                                    _ov_root = _ET.fromstring(_ov_ui)
+                                    _root_bounds = _ov_root.attrib.get("bounds", "")
+                                    _rm = re.match(
+                                        r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]",
+                                        _root_bounds,
+                                    )
+                                    if _rm:
+                                        _scr_w = int(_rm.group(3))
+                                        _scr_h = int(_rm.group(4))
+                                        _ax = int(_ov_nx / 1000 * _scr_w)
+                                        _ay = int(_ov_ny / 1000 * _scr_h)
+                                        _ov_el = find_element_at_coordinates(
+                                            _ov_ui, _ax, _ay,
+                                        )
+                                        if _ov_el:
+                                            _el_cx = (_ov_el["bounds"][0] + _ov_el["bounds"][2]) // 2
+                                            _el_cy = (_ov_el["bounds"][1] + _ov_el["bounds"][3]) // 2
+                                            _dist = int(((float(_ax) - _el_cx) ** 2 + (float(_ay) - _el_cy) ** 2) ** 0.5)
+                                            # If the nearest element is >300px away
+                                            # or is just the root FrameLayout, the
+                                            # coordinate likely hits dead space.
+                                            _el_cls = _ov_el.get("class", "")
+                                            _is_root = _el_cls.endswith("FrameLayout") and _ov_el.get("resource_id", "") == ""
+                                            if _dist > 300:
+                                                _ov_coord_reason = (
+                                                    f"coordinate [{_ov_nx}, {_ov_ny}] "
+                                                    f"→ actual ({_ax}, {_ay}) — nearest "
+                                                    f"element is {_dist}px away "
+                                                    f"({_el_cls}), likely dead space"
+                                                )
+                                            elif _is_root and _dist > 100:
+                                                _ov_coord_reason = (
+                                                    f"coordinate [{_ov_nx}, {_ov_ny}] "
+                                                    f"→ actual ({_ax}, {_ay}) — nearest "
+                                                    f"element is root {_el_cls} at "
+                                                    f"{_dist}px, no interactive target"
+                                                )
+                                        else:
+                                            _ov_coord_reason = (
+                                                f"coordinate [{_ov_nx}, {_ov_ny}] "
+                                                f"→ actual ({_ax}, {_ay}) — no UI "
+                                                f"element found at all"
+                                            )
+                            except Exception as _ov_e:
+                                print(f"[SUPERVISOR] coord check skipped: {_ov_e}")
+                        if _ov_coord_reason:
+                            print(
+                                f"[SUPERVISOR] override REJECTED — "
+                                f"{_ov_coord_reason}"
+                            )
+                    if _ov_missing or _ov_coord_reason:
+                        if _ov_missing:
+                            print(
+                                f"[SUPERVISOR] override rejected — missing required "
+                                f"fields {_ov_missing} for action {_ov_type!r}"
+                            )
                     else:
                         action = _override_tc
                         action_parameter = action["arguments"]
