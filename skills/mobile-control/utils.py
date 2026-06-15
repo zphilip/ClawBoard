@@ -1840,7 +1840,10 @@ class GUIOwlWrapper(LlmWrapper, MultimodalLlmWrapper):
               # very small (a few dozen tokens), causing truncated JSON output.
               # Request enough for a complete tool_call; the server will cap at
               # n_ctx − n_prompt_tokens regardless.
-              _gen_kwargs: dict = {}
+              # Always set a floor — even when max_context_size is unknown the
+              # server default may be as low as 16 tokens, which is not enough
+              # for verbose Chinese reasoning + a complete JSON tool_call.
+              _gen_kwargs: dict = {'max_tokens': 1024}
               if self.max_context_size:
                   _gen_kwargs['max_tokens'] = max(self.max_context_size // 4, 256)
               chat_completion_from_url = self.bot.chat.completions.create(model=self.model, messages=payload, **_gen_kwargs)
