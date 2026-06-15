@@ -848,8 +848,12 @@ class AdbTools:
         if self._u2_send_keys(text):
             return True
 
-        # Fallback: adb shell input text
+        # Fallback 1: adb shell input text
         if self._adb_input_text(text):
+            return True
+
+        # Fallback 2: clipboard paste (bypasses IME for Unicode on buggy ROMs)
+        if self._adb_clipboard_paste(text):
             return True
 
         print(f"[INPUT ERROR] All text input methods failed for: {text!r}")
@@ -881,6 +885,57 @@ class AdbTools:
         else:
             print(f"[INPUT] ❌ adb input text failed")
             return False
+
+    def _adb_clipboard_paste(self, text):
+        """Last-resort fallback: set clipboard + inject PASTE keyevent.
+
+        Works around the NullPointerException in ``adb shell input text``
+        for Unicode text on buggy ROMs by bypassing the IME entirely:
+
+        1. Base64-encode the text (avoids all shell quoting issues).
+        2. Write the base64 string to a device temp file.
+        3. Decode on-device → ``cmd clipboard set`` → PASTE (keyevent 279).
+        4. Clean up the temp files.
+
+        Requires Android 10+ (API 29+) for ``cmd clipboard``.
+        Returns True on success.
+        """
+        import base64
+
+        b64 = base64.b64encode(text.encode("utf-8")).decode("ascii")
+        clip_b64 = "/sdcard/_claw_clip.b64"
+        clip_txt = "/sdcard/_claw_clip.txt"
+
+        # Step 1: Write base64 to device temp file.
+        # base64 contains only [A-Za-z0-9+/=] — no shell metacharacters.
+        # Double quotes ensure the > redirect is handled by the device
+        # shell, not the local shell (which _run feeds via shell=True).
+        print(f"[INPUT] clipboard paste: writing base64 to {clip_b64}")
+        if not self._run(f'shell "printf %s {b64} > {clip_b64}"'):
+            print("[INPUT] ❌ clipboard paste: failed to write temp file")
+            return False
+
+        # Step 2: Decode → set clipboard → paste → cleanup in one device-shell
+        # invocation.  On-device command:
+        #   base64 -d $b64 > $txt && cmd clipboard set "$(cat $txt)" && input keyevent 279 && rm -f $b64 $txt
+        # The double-quote wrapper (consumed by the local shell) passes the
+        # entire pipeline as a single argument to `adb shell`, so all
+        # redirects / $() / && are interpreted on the device.
+        ok = self._run(
+            f'shell "base64 -d {clip_b64} > {clip_txt} && '
+            f'cmd clipboard set \\"$(cat {clip_txt})\\" && '
+            f'input keyevent 279 && '
+            f'rm -f {clip_b64} {clip_txt}"'
+        )
+
+        if ok:
+            print("[INPUT] ✅ clipboard paste succeeded")
+            return True
+
+        print("[INPUT] ❌ clipboard paste failed")
+        # Best-effort cleanup even on failure
+        self._run(f'shell "rm -f {clip_b64} {clip_txt}"')
+        return False
 
     def _u2_send_keys(self, text):
         """Primary: type text via uiautomator2 server (NO extra APK required).
@@ -1094,10 +1149,11 @@ class AdbTools:
         """
         Type text and verify it appears in the UI dump.
 
-        Uses a two-method strategy on each attempt:
+        Uses a three-method strategy on each attempt:
           1. Primary: uiautomator2 ``send_keys()`` — no ADB Keyboard needed.
-          2. If u2 fails or verification fails, try ``adb shell input text``
-             as fallback on the SAME attempt before incrementing retries.
+          2. If u2 fails or verification fails, try ``adb shell input text``.
+          3. If both fail, try clipboard paste (base64 + PASTE keyevent)
+             — works around Unicode NullPointerException on buggy ROMs.
 
         Returns True only when text is observed on-screen after typing.
         """
@@ -1137,8 +1193,24 @@ class AdbTools:
             else:
                 print(f"[INPUT] adb input text also failed")
 
-            if not u2_ok and not adb_ok:
-                print(f"[INPUT] ❌ Attempt {attempt} FAILED: both input methods returned error")
+            # --- Method C: clipboard paste (last resort — bypasses IME entirely) ---
+            print(f"[INPUT] Method C (clipboard): pasting text {text!r}")
+            clip_ok = self._adb_clipboard_paste(text)
+
+            if clip_ok:
+                print(f"[INPUT] clipboard paste succeeded — verifying...")
+                if self._verify_text_on_screen(
+                    text,
+                    verify_wait_seconds=verify_wait_seconds,
+                    verify_interval_seconds=verify_interval_seconds,
+                ):
+                    return True
+                print(f"[INPUT] clipboard pasted but text NOT found on screen")
+            else:
+                print(f"[INPUT] clipboard paste also failed")
+
+            if not u2_ok and not adb_ok and not clip_ok:
+                print(f"[INPUT] ❌ Attempt {attempt} FAILED: all three input methods returned error")
             else:
                 print(f"[INPUT] ❌ Attempt {attempt} FAILED: input method(s) succeeded but text never appeared in UI dump")
 
