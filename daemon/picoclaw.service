@@ -10,6 +10,10 @@ Group=picoclaw
 SupplementaryGroups=clawboard
 
 ExecStartPre=/usr/bin/test -x /usr/local/bin/picoclaw
+# Kill any lingering process holding the gateway port (e.g. a manually-started
+# instance that escaped systemd tracking).  The "-" prefix tells systemd to
+# ignore non-zero exit codes when nothing is listening on the port.
+ExecStartPre=-/bin/bash -c 'fuser -k 18790/tcp 2>/dev/null; sleep 0.5'
 
 ExecStart=/usr/local/bin/picoclaw gateway
 
