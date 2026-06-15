@@ -73,6 +73,94 @@ def _ts() -> str:
     return datetime.now().strftime("%Y%m%d_%H%M%S")
 
 
+# ── Device reset ────────────────────────────────────────────────────
+
+# Map app display-name → package for force-stop between runs.
+# Extended on the fly via _resolve_package().
+_APP_PACKAGE_MAP: dict[str, str] = {
+    "淘宝": "com.taobao.taobao",
+    "微信": "com.tencent.mm",
+    "百度地图": "com.baidu.BaiduMap",
+    "百度": "com.baidu.BaiduMap",
+    "京东": "com.jingdong.app.mall",
+    "美团": "com.sankuai.meituan",
+    "饿了么": "me.ele",
+    "抖音": "com.ss.android.ugc.aweme",
+    "高德地图": "com.autonavi.minimap",
+    "支付宝": "com.eg.android.AlipayGphone",
+    "QQ": "com.tencent.mobileqq",
+    "网易云音乐": "com.netease.cloudmusic",
+    "QQ音乐": "com.tencent.qqmusic",
+    "哔哩哔哩": "tv.danmaku.bili",
+    "B站": "tv.danmaku.bili",
+    "小红书": "com.xingin.xhs",
+    "拼多多": "com.xunmeng.pinduoduo",
+    "滴滴": "com.sdu.didi.psnger",
+}
+
+
+def _guess_target_package(instruction: str) -> str | None:
+    """Guess which app package the instruction targets (for force-stop)."""
+    norm = instruction.lower().replace(" ", "").replace("-", "")
+    for name, pkg in sorted(_APP_PACKAGE_MAP.items(), key=lambda x: -len(x[0])):
+        if name.lower().replace(" ", "").replace("-", "") in norm:
+            return pkg
+    return None
+
+
+def _reset_device(
+    instruction: str = "",
+    adb_path: str = "adb",
+    device: str | None = None,
+    settle: float = 2.0,
+) -> bool:
+    """Reset device to a known state between test runs.
+
+    1. Press Home to return to launcher.
+    2. Force-stop the target app (so it starts fresh).
+    3. Wait for the device to settle.
+
+    Returns True if at least the Home press succeeded.
+    """
+    dev_flag = ["-s", device] if device else []
+
+    # 1. Home
+    print("[RESET] Pressing Home...")
+    rc, _, _ = _adb(["shell", "input", "keyevent", "3"],
+                     adb_path=adb_path, device=device)
+    home_ok = (rc == 0)
+
+    # 2. Force-stop target app
+    pkg = _guess_target_package(instruction)
+    if pkg:
+        print(f"[RESET] Force-stopping {pkg}...")
+        _adb(["shell", "am", "force-stop", pkg],
+             adb_path=adb_path, device=device)
+    else:
+        print("[RESET] Could not guess target package — skipping force-stop")
+
+    # 3. Settle
+    time.sleep(settle)
+    print(f"[RESET] Done (home_ok={home_ok})")
+    return home_ok
+
+
+def _adb(args: list[str], adb_path: str = "adb",
+         device: str | None = None, timeout: int = 10) -> tuple[int, str, str]:
+    """Run an adb command, return (returncode, stdout, stderr)."""
+    cmd = [adb_path]
+    if device:
+        cmd += ["-s", device]
+    cmd += args
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        return r.returncode, r.stdout.strip(), r.stderr.strip()
+    except subprocess.TimeoutExpired:
+        return -1, "", "timeout"
+    except FileNotFoundError:
+        return -1, "", "adb not found"
+
+
 def _run_agent(instruction: str, extra_args: str = "", timeout: int = 600) -> dict:
     """Run mobile_agent.py and return parsed JSON result from stdout.
 
@@ -311,8 +399,17 @@ def validate_plan_invariants(store: PlanStore) -> list[ValidationResult]:
 class IntegrationTestRunner:
     """Orchestrates real-device runs and validates plan counters."""
 
-    def __init__(self, keep_snapshots: bool = True):
+    def __init__(
+        self,
+        keep_snapshots: bool = True,
+        reset_device: bool = True,
+        adb_path: str = "adb",
+        device: str | None = None,
+    ):
         self.keep_snapshots = keep_snapshots
+        self.reset_device = reset_device
+        self.adb_path = adb_path
+        self.device = device
         self.run_log: list[dict] = []
 
     def run_task_sequence(
@@ -322,7 +419,14 @@ class IntegrationTestRunner:
         extra_args: str = "",
         timeout: int = 600,
     ) -> None:
-        """Run each task *repeat* times, snapshotting after each run."""
+        """Run each task *repeat* times, snapshotting after each run.
+
+        Between consecutive runs of the same task, the device is reset
+        to the home screen and the target app is force-stopped.  This
+        ensures each run starts from a known state — otherwise run N+1
+        starts on the results screen of run N and plan replay fails the
+        pre-check immediately.
+        """
         total_runs = len(tasks) * repeat
         run_idx = 0
 
@@ -330,6 +434,19 @@ class IntegrationTestRunner:
             for rep in range(repeat):
                 run_idx += 1
                 label = f"task{task_idx}_{task[:12]}_rep{rep}"
+
+                # ── Reset device BEFORE each run ───────────────────
+                # Skip the very first run if the device is already at a
+                # reasonable state (user may have positioned it).  All
+                # subsequent repeats get a reset so they start from home.
+                if self.reset_device and run_idx > 1:
+                    print(f"\n[RESET] Resetting device before run {run_idx}/{total_runs}...")
+                    _reset_device(
+                        instruction=task,
+                        adb_path=self.adb_path,
+                        device=self.device,
+                    )
+
                 print(f"\n{'='*60}")
                 print(f"[TEST] RUN {run_idx}/{total_runs}: {task!r}  (repeat {rep+1}/{repeat})")
                 print(f"{'='*60}")
@@ -476,6 +593,12 @@ def main() -> int:
                    help="Timeout per agent run in seconds (default: 600)")
     p.add_argument("--extra-args", default="",
                    help="Extra CLI args to pass to mobile_agent.py")
+    p.add_argument("--adb-path", default="adb",
+                   help="Path to ADB binary (for device reset)")
+    p.add_argument("--device", default=None,
+                   help="ADB device serial (for device reset)")
+    p.add_argument("--no-reset", action="store_true",
+                   help="Don't reset device between runs")
     p.add_argument("--validate-only", action="store_true",
                    help="Only validate existing plans.jsonl (no agent runs)")
     p.add_argument("--no-snapshots", action="store_true",
@@ -506,7 +629,12 @@ def main() -> int:
     for t in tasks:
         print(f"  • {t}")
 
-    runner = IntegrationTestRunner(keep_snapshots=not args.no_snapshots)
+    runner = IntegrationTestRunner(
+        keep_snapshots=not args.no_snapshots,
+        reset_device=not args.no_reset,
+        adb_path=args.adb_path,
+        device=args.device,
+    )
     runner.run_task_sequence(
         tasks=tasks,
         repeat=args.repeat,
