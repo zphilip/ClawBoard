@@ -591,6 +591,110 @@ class PlanExecutor:
             target_element_signature=target_element_signature,
         ))
 
+    def repair_and_store_plan(
+        self,
+        intent_key: str,
+        instruction: str,
+        run_id: str,
+        device_bucket: str = "default",
+    ) -> TaskPlan | None:
+        """Repair a plan that had step failures during replay.
+
+        Merges the successfully-replayed plan steps with VLM-recorded
+        replacement steps so the plan incrementally improves instead of
+        being replaced wholesale (which loses counter history).
+
+        - Steps that replayed OK → kept, success_count incremented.
+        - Steps that failed → replaced with the corresponding VLM step,
+          old step fail_count incremented.
+        - Additional VLM steps → appended.
+        """
+        if self._replay_plan is None or not self._recorded_steps:
+            # Fall back to building a fresh plan from VLM steps
+            return self.build_and_store_plan(
+                intent_key, instruction, run_id, device_bucket,
+            )
+
+        _old_steps = list(self._replay_plan.steps)
+        _failed = self._failed_step_indices
+        _vlm_steps = self._recorded_steps
+
+        # Build the repaired step list
+        _repaired: list[PlanStep] = []
+        _vlm_idx = 0  # index into _vlm_steps for replacement steps
+
+        for _old_step in _old_steps:
+            if _old_step.step_index in _failed:
+                # This step failed — replace with VLM's version
+                _old_step.fail_count += 1
+                if _vlm_idx < len(_vlm_steps):
+                    _rec = _vlm_steps[_vlm_idx]
+                    _vlm_idx += 1
+                    _repaired.append(PlanStep(
+                        step_index=len(_repaired) + 1,
+                        action_type=_rec.action_type,
+                        action_args=dict(_rec.action_args),
+                        expected_pkg=_rec.post_action_pkg,
+                        action_description=_rec.action_description,
+                        pre_action_pkg=_rec.pre_action_pkg,
+                        post_action_ui_fp=_rec.post_action_ui_fp,
+                        target_element_signature=_rec.target_element_signature,
+                        success_count=0,
+                        fail_count=0,
+                    ))
+                # If no VLM step available, just drop the failed step
+            else:
+                # This step replayed OK — keep it
+                _old_step.success_count += 1
+                _old_step.step_index = len(_repaired) + 1
+                _repaired.append(_old_step)
+
+        # Append any remaining VLM steps (beyond plan scope)
+        while _vlm_idx < len(_vlm_steps):
+            _rec = _vlm_steps[_vlm_idx]
+            _vlm_idx += 1
+            # Skip no-effect steps (same pre/post UI fingerprint)
+            if (_rec.action_type != "type"
+                    and _rec.pre_action_ui_fp
+                    and _rec.post_action_ui_fp
+                    and _rec.pre_action_ui_fp == _rec.post_action_ui_fp):
+                continue
+            # Skip duplicate consecutive steps
+            if _repaired and _step_is_duplicate(_repaired[-1], _rec):
+                continue
+            _repaired.append(PlanStep(
+                step_index=len(_repaired) + 1,
+                action_type=_rec.action_type,
+                action_args=dict(_rec.action_args),
+                expected_pkg=_rec.post_action_pkg,
+                action_description=_rec.action_description,
+                pre_action_pkg=_rec.pre_action_pkg,
+                post_action_ui_fp=_rec.post_action_ui_fp,
+                target_element_signature=_rec.target_element_signature,
+                success_count=0,
+                fail_count=0,
+            ))
+
+        if not _repaired:
+            return None
+
+        now = time.time()
+        plan = TaskPlan(
+            intent_key=intent_key,
+            instruction_sample=instruction[:300],
+            steps=_repaired,
+            success_count=1,
+            fail_count=0,
+            last_verified=now,
+            created_at=self._replay_plan.created_at,
+            source_run_id=run_id,
+            device_bucket=device_bucket,
+        )
+
+        self.store.upsert_by_intent(plan)
+        self._replay_plan = None
+        return plan
+
     def build_and_store_plan(
         self,
         intent_key: str,

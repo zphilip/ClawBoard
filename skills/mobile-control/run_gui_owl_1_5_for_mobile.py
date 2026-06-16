@@ -2352,17 +2352,11 @@ def main():
     if _plan_executor is not None:
         try:
             if _plan_replay_active and _plan_had_step_failure:
-                # At least one plan step failed during replay and the VLM
-                # handled it.  Don't blindly increment success — that makes
-                # the broken plan look healthier.  Record the failure and
-                # route to the VLM-built plan replacement below.
-                _plan_executor.note_plan_failure(_canonical_intent_key)
-                _plan_executor.note_step_failure(_canonical_intent_key)
+                # Plan step(s) failed and VLM handled them.  Route to
+                # repair_and_store_plan below (which merges good plan
+                # steps with VLM replacements instead of discarding
+                # the entire plan).
                 _plan_replay_active = False
-                _log_t(
-                    f"[PLAN] step failure in replay — "
-                    "recording failure, VLM plan will replace"
-                )
 
             if _plan_replay_active and _run_succeeded:
                 # Plan replay completed all steps successfully
@@ -2378,18 +2372,36 @@ def main():
             if _plan_replay_active:
                 _plan_executor.note_step_failure(_canonical_intent_key)
             elif not _plan_replay_active and _run_succeeded:
-                # LLM-driven run succeeded — record a new plan for future replay
-                _new_plan = _plan_executor.build_and_store_plan(
-                    intent_key=_canonical_intent_key,
-                    instruction=instruction,
-                    run_id=_run_id,
-                    device_bucket="default",
-                )
-                if _new_plan:
-                    _log_t(
-                        f"[PLAN] recorded new plan: intent_key={_canonical_intent_key} "
-                        f"steps={len(_new_plan.steps)}"
+                if _plan_had_step_failure:
+                    # Repair: keep successfully-replayed plan steps,
+                    # replace failed ones with VLM equivalents, append
+                    # any additional VLM steps.  Step counters are
+                    # updated in-place (success++ for good steps,
+                    # fail++ for failed steps).
+                    _new_plan = _plan_executor.repair_and_store_plan(
+                        intent_key=_canonical_intent_key,
+                        instruction=instruction,
+                        run_id=_run_id,
+                        device_bucket="default",
                     )
+                    if _new_plan:
+                        _log_t(
+                            f"[PLAN] repaired plan: intent_key={_canonical_intent_key} "
+                            f"steps={len(_new_plan.steps)}"
+                        )
+                else:
+                    # LLM-driven run succeeded — record a new plan for future replay
+                    _new_plan = _plan_executor.build_and_store_plan(
+                        intent_key=_canonical_intent_key,
+                        instruction=instruction,
+                        run_id=_run_id,
+                        device_bucket="default",
+                    )
+                    if _new_plan:
+                        _log_t(
+                            f"[PLAN] recorded new plan: intent_key={_canonical_intent_key} "
+                            f"steps={len(_new_plan.steps)}"
+                        )
         except Exception as _plan_end_err:
             _log_t(f"[PLAN] end-of-run error ({_plan_end_err!r})")
 
