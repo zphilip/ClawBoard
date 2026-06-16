@@ -162,6 +162,23 @@ class PlanStore:
         candidates.sort(key=_score, reverse=True)
         return candidates[0]
 
+    def remove(self, intent_key: str) -> bool:
+        """Remove the plan with the given intent_key.
+
+        Returns True if a plan was removed, False if none matched.
+        """
+        plans = self.load()
+        removed = False
+        new_plans = []
+        for p in plans:
+            if p.intent_key == intent_key:
+                removed = True
+            else:
+                new_plans.append(p)
+        if removed:
+            self._rewrite_all(new_plans)
+        return removed
+
     def increment_success(self, intent_key: str) -> None:
         plans = self.load()
         for plan in plans:

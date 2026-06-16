@@ -933,12 +933,90 @@ def main():
                     _log_t(f"[STEP END] step={step_id} total={time.time() - _step_t0:.2f}s")
                     # Check if plan is now exhausted (all steps done)
                     if _plan_executor.next_step() is None:
-                        _log_t("[PLAN] all steps replayed successfully — auto-terminating")
-                        termination_reason = "plan_replay_complete"
-                        print("[TERMINATED] Task completed.")
+                        # All cached steps replayed.  Ask the supervisor
+                        # whether the task is ACTUALLY complete before
+                        # terminating — stale or partial plans (e.g. only
+                        # "open app" when the task is "open app + navigate")
+                        # would otherwise auto-terminate incorrectly and
+                        # self-reinforce through the success counter.
+                        _plan_task_complete = True  # default: trust the plan
+                        if supervisor is not None:
+                            try:
+                                # Take a fresh screenshot AND UI dump so the
+                                # supervisor sees the screen AFTER the last
+                                # plan action (not the pre-action state).
+                                _final_screenshot = screenshot_path
+                                _final_ui_summary = _ui_summary
+                                _final_fg_label = _fg_label
+                                try:
+                                    _final_screenshot = adb_tools.get_screenshot(
+                                        os.path.join(task_dir, f"screenshot_step_{step_id}_plan_final.png")
+                                    )
+                                    _final_xml = adb_tools.get_ui_dump()
+                                    _final_ui_summary = summarise_ui_dump(_final_xml, max_nodes=_ui_max_nodes)
+                                    _final_fg = adb_tools.get_foreground_package() or ""
+                                    _final_fg_label = _final_fg
+                                except Exception:
+                                    pass  # reuse the pre-action state
+                                _completion = supervisor.is_task_complete(
+                                    task=instruction,
+                                    fg_label=_final_fg_label,
+                                    ui_summary=_final_ui_summary,
+                                    history=history,
+                                    conclusion=(
+                                        f"Plan replay completed {len(_plan_executor.replay_plan.steps)} "
+                                        f"cached step(s). "
+                                        f"Last action: {_plan_step.action_description or _plan_step.action_type}"
+                                    ),
+                                    screenshot_path=str(_final_screenshot),
+                                )
+                                _plan_task_complete = _completion.get("complete", True)
+                                if not _plan_task_complete:
+                                    _missing = _completion.get("reason", "task not yet complete")
+                                    _log_t(
+                                        f"[PLAN] supervisor says task NOT complete "
+                                        f"({_missing}) — falling back to VLM"
+                                    )
+                                    print(
+                                        f"[PLAN] ⚠️ Plan exhausted but task incomplete "
+                                        f"({_missing}) — VLM will continue"
+                                    )
+                            except Exception as _sc_err:
+                                _log_t(
+                                    f"[PLAN] supervisor completion check error "
+                                    f"({_sc_err!r}) — trusting plan"
+                                )
+
+                        if _plan_task_complete:
+                            _log_t("[PLAN] all steps replayed successfully — auto-terminating")
+                            termination_reason = "plan_replay_complete"
+                            print("[TERMINATED] Task completed.")
+                            _plan_executor.end_replay()
+                            time.sleep(2)
+                            break
+
+                        # Supervisor confirmed the task is NOT done.
+                        # The plan is insufficient — mark it unhealthy so that
+                        # upsert_by_intent will replace it with the VLM-built
+                        # plan (preserving counter history via merge).
+                        # Each step gets fail_count >= 2 to trigger
+                        # plan_is_healthy → False, which makes upsert_by_intent
+                        # rule 1 fire (new healthy replaces old unhealthy).
+                        _plan_executor.note_plan_failure(_canonical_intent_key)
+                        for _step in _plan_executor.replay_plan.steps:
+                            _plan_store.increment_step_fail(_canonical_intent_key, _step.step_index)
+                            _plan_store.increment_step_fail(_canonical_intent_key, _step.step_index)
+                        _plan_step_count = len(_plan_executor.replay_plan.steps)
+                        _log_t(
+                            f"[PLAN] marked insufficient plan {_canonical_intent_key} "
+                            f"({_plan_step_count} steps) unhealthy — "
+                            "VLM will build a replacement"
+                        )
                         _plan_executor.end_replay()
-                        time.sleep(2)
-                        break  # exit the step loop
+                        _plan_replay_active = False
+                        # Fall through to the VLM path (the continue below
+                        # will advance to the next iteration; is_replaying()
+                        # is now False so the VLM path runs normally).
                     time.sleep(2)
                     continue
                 else:
