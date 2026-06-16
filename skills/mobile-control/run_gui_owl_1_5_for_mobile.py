@@ -440,6 +440,7 @@ def main():
     )
     _plan_executor: PlanExecutor | None = None
     _plan_replay_active = False
+    _plan_had_step_failure = False  # True when any plan step fails during replay
     _plan_intent_key: str = ""
     try:
         _plan_store = PlanStore(_plan_store_path)
@@ -1026,6 +1027,9 @@ def main():
                         f"({_plan_elapsed:.2f}s) — falling back to VLM"
                         + (f" [{_verify_detail}]" if _verify_detail else "")
                     )
+                    # Track that this plan had a step failure — used at
+                    # end-of-run to prefer the VLM-built plan over the stale one.
+                    _plan_had_step_failure = True
                     # Pause replay so VLM handles this step;
                     # resume_replay() will be called after VLM succeeds.
                     _plan_executor.pause_replay()
@@ -2178,6 +2182,34 @@ def main():
             except Exception:
                 pass
 
+        # 5c. Periodic completion check — every ~3 VLM steps, ask the
+        # supervisor whether the task is already done even without a goal
+        # conflict.  Prevents the VLM from drifting (e.g. clicking products
+        # forever after the search results already satisfy the task).
+        if (supervisor is not None
+                and not _plan_step_executed          # VLM-driven step
+                and any_real_action                   # not just waiting
+                and step_id > 0                       # not step 0
+                and step_id % 3 == 0):                # every ~3 steps
+            try:
+                _completion = supervisor.is_task_complete(
+                    task=instruction,
+                    fg_label=_fg_label,
+                    ui_summary=_ui_summary,
+                    history=history,
+                    conclusion=f"Periodic check after step {step_id}",
+                    screenshot_path=str(screenshot_path),
+                )
+                if _completion.get("complete", False):
+                    print("[SUPERVISOR] periodic check — task already complete")
+                    print("[TERMINATED] Task completed.")
+                    termination_reason = "proactive_completion_check"
+                    _emit_step_summary("answer_confirmed_complete")
+                    time.sleep(1)
+                    break
+            except Exception:
+                pass
+
         # 6. Record history and annotate screenshot
         history.append({"output": output_text, "image": screenshot_path})
         annotate_screenshot(
@@ -2303,6 +2335,19 @@ def main():
 
     if _plan_executor is not None:
         try:
+            if _plan_replay_active and _plan_had_step_failure:
+                # At least one plan step failed during replay and the VLM
+                # handled it.  Don't blindly increment success — that makes
+                # the broken plan look healthier.  Record the failure and
+                # route to the VLM-built plan replacement below.
+                _plan_executor.note_plan_failure(_canonical_intent_key)
+                _plan_executor.note_step_failure(_canonical_intent_key)
+                _plan_replay_active = False
+                _log_t(
+                    f"[PLAN] step failure in replay — "
+                    "recording failure, VLM plan will replace"
+                )
+
             if _plan_replay_active and _run_succeeded:
                 # Plan replay completed all steps successfully
                 _plan_executor.note_plan_success(_canonical_intent_key)
