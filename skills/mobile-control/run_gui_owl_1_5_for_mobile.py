@@ -1117,6 +1117,27 @@ def main():
                             f"'{_mem_args.get('text', '')[:60]}' "
                             "already executed in this run"
                         )
+                        # Record negative feedback so the memory store learns
+                        # that this cached action caused a dead-end.  Over time
+                        # enough failures will block the record entirely.
+                        if _memory_store is not None:
+                            try:
+                                _memory_store.append(
+                                    MemoryRecord(
+                                        state_key=_step_state_key,
+                                        intent_key=_intent_sig,
+                                        action_type=_fastpath_action_type,
+                                        action_args=dict(_mem_args),
+                                        success_count=0,
+                                        fail_count=1,
+                                        forbidden=True,
+                                        reason="type_loop_prevented",
+                                        source_run_id=_run_id,
+                                        source_step=step_id,
+                                    )
+                                )
+                            except Exception:
+                                pass
                     elif _action_only_sig in _executed_actions_global and _fastpath_action_type not in ("type", "open"):
                         # open actions verify via foreground package check — allow
                         # them to replay on different states.
