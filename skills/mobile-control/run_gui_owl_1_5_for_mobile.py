@@ -1974,14 +1974,16 @@ def main():
                 print("[ACTION EXEC] ❌ TYPE FAILED OR UNVERIFIED")
                 print("[WARN] Input command may have succeeded but text was not observed in UI")
 
-                # Type failed — likely because no input field was focused.
-                # Inject a correction so the VLM re-examines the screen and
-                # clicks the search/input field before trying to type again.
+                # Type failed — likely no input field was focused.
+                # Build a contextual correction that tells the VLM what
+                # text it was trying to type, so it can click the right
+                # field and retry.
+                _type_fail_text = _text[:80]
                 _type_fail_hint = (
-                    "Action: I made an error — the text input did not work "
-                    "because no text field was focused. I must first click "
-                    "on the search bar or text input field to activate it, "
-                    "then type the text.\n"
+                    f"Action: I made an error — I tried to type "
+                    f"{_type_fail_text!r} but no text field was "
+                    f"focused. I must click on the text input field "
+                    f"first to activate it.\n"
                     "<tool_call>\n"
                     '{"name": "mobile_use", "arguments": '
                     '{"action": "wait", "time": 1}}\n'
