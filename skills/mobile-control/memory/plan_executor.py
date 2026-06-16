@@ -490,7 +490,6 @@ class PlanExecutor:
         self.last_verify_detail = "; ".join(_parts) if _parts else "all_passed"
 
         if verified:
-            self._failed_step_indices.clear()
             self._replay_cursor += 1
             self._consecutive_failures = 0
             return True
