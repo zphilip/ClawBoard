@@ -2355,6 +2355,7 @@ class SupervisorLLM:
         ui_summary: str = "",
         screenshot_path: str = "",
         installed_apps_hint: str = "",
+        extra_context: str = "",
     ) -> dict:
         """
         Returns one of:
@@ -2369,6 +2370,9 @@ class SupervisorLLM:
         installed_apps_hint: comma-separated display names of installed apps on
         the device.  Passed when the proposed action is ``open`` so the
         supervisor can verify the open target against actual installed apps.
+
+        extra_context: optional string injected into the user prompt for
+        situational awareness (e.g. prior type-failure hints).
         """
         user_text = _SUPERVISOR_USER_TMPL.format(
             task=task,
@@ -2379,6 +2383,8 @@ class SupervisorLLM:
         )
         if installed_apps_hint:
             user_text += f"\nInstalled apps on device: {installed_apps_hint}"
+        if extra_context:
+            user_text += f"\n\n[EXECUTION CONTEXT]\n{extra_context}"
         # Build user message: multimodal (image + text) or plain text
         if self.vision and screenshot_path and os.path.exists(screenshot_path):
             try:

@@ -441,6 +441,7 @@ def main():
     _plan_executor: PlanExecutor | None = None
     _plan_replay_active = False
     _plan_had_step_failure = False  # True when any plan step fails during replay
+    _pending_supervisor_hint = ""   # injected into next supervisor.validate() call
     _plan_intent_key: str = ""
     try:
         _plan_store = PlanStore(_plan_store_path)
@@ -1617,6 +1618,7 @@ def main():
                 _sup_cache_hits += 1
                 print(f"[SUPERVISOR] skipped ({_sup_skip_reason})")
                 _step_metrics["supervisor"] = 0.0
+                _pending_supervisor_hint = ""  # consume hint even when skipped
             else:
                 _sup_cache_misses += 1
                 _t_supervisor = time.time()
@@ -1629,10 +1631,12 @@ def main():
                         ui_summary=_ui_summary,
                         screenshot_path=screenshot_path,
                         installed_apps_hint=_sup_apps_hint,
+                        extra_context=_pending_supervisor_hint,
                     )
                 except Exception as _sup_err:
                     print(f"[SUPERVISOR] error during validation ({_sup_err!r}) — approving by default")
                     _sup_verdict = {"verdict": "approve", "_default": True}
+                _pending_supervisor_hint = ""  # consumed — clear so it isn't re-sent
                 _step_metrics["supervisor"] = time.time() - _t_supervisor
                 _log_t(f"[TIMING] supervisor_validate={_step_metrics['supervisor']:.2f}s")
 
@@ -1990,6 +1994,18 @@ def main():
                     "</tool_call>"
                 )
                 history.append({"output": _type_fail_hint, "image": screenshot_path})
+                # Also inject into the *next* supervisor call so the
+                # smarter supervisor model can course-correct if the
+                # VLM fails to follow the hint on its own.
+                _pending_supervisor_hint = (
+                    f"The previous step tried to type {_type_fail_text!r} "
+                    f"but NO text input field was focused. The text was "
+                    f"NOT entered. The next action MUST click on a text "
+                    f"input / search field first (not navigate away). "
+                    f"If the VLM proposes to go back or do anything other "
+                    f"than activating a text field, override it with a "
+                    f"click on the correct input element."
+                )
                 _emit_step_summary("type_failed_no_focus")
                 time.sleep(1)
                 continue
