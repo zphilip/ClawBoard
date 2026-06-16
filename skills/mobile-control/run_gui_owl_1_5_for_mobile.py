@@ -1737,6 +1737,22 @@ def main():
                                 f"[SUPERVISOR] override rejected — missing required "
                                 f"fields {_ov_missing} for action {_ov_type!r}"
                             )
+                        # The supervisor identified a problem but can't
+                        # produce a valid replacement.  Don't execute the
+                        # bad VLM action — inject a correction and retry.
+                        _retry_note = (
+                            "Action: I made an error — the supervisor "
+                            "flagged my action as incorrect. "
+                            f"I will reconsider the screen and try a different approach.\n"
+                            "<tool_call>\n"
+                            '{"name": "mobile_use", "arguments": '
+                            '{"action": "wait", "time": 1}}\n'
+                            "</tool_call>"
+                        )
+                        history.append({"output": _retry_note, "image": screenshot_path})
+                        _emit_step_summary("supervisor_override_rejected")
+                        time.sleep(1)
+                        continue
                     else:
                         action = _override_tc
                         action_parameter = action["arguments"]
