@@ -183,7 +183,7 @@ class PlanExecutor:
         self._replay_active: bool = False
         self._consecutive_failures: int = 0
         self._paused: bool = False
-        self._failed_step_index: int | None = None  # step that failed during replay
+        self._failed_step_indices: set[int] = set()  # steps that failed during replay
 
         # Recording state (populated during the run)
         self._recorded_steps: list[RecordedStep] = []
@@ -221,7 +221,7 @@ class PlanExecutor:
         self._replay_active = True
         self._consecutive_failures = 0
         self._paused = False
-        self._failed_step_index = None
+        self._failed_step_indices.clear()
 
         # Warn if any step has accumulated failures — the plan may need
         # self-healing via upsert on the next successful VLM-driven run.
@@ -339,7 +339,7 @@ class PlanExecutor:
                     f"[PLAN] pre-check failed: expected {step.pre_action_pkg!r} "
                     f"but foreground is {_pre_pkg!r} — skipping step"
                 )
-                self._failed_step_index = step.step_index
+                self._failed_step_indices.add(step.step_index)
                 self._consecutive_failures += 1
                 if self._consecutive_failures >= _MAX_CONSECUTIVE_FAILURES:
                     self.end_replay()
@@ -373,14 +373,14 @@ class PlanExecutor:
                         "[PLAN] element NOT found on current screen "
                         "— skipping step (screen has changed, stored coords are stale)"
                     )
-                    self._failed_step_index = step.step_index
+                    self._failed_step_indices.add(step.step_index)
                     self._consecutive_failures += 1
                     if self._consecutive_failures >= _MAX_CONSECUTIVE_FAILURES:
                         self.end_replay()
                     return False
             except Exception as _el_err:
                 print(f"[PLAN] element lookup error ({_el_err}) — skipping step")
-                self._failed_step_index = step.step_index
+                self._failed_step_indices.add(step.step_index)
                 self._consecutive_failures += 1
                 if self._consecutive_failures >= _MAX_CONSECUTIVE_FAILURES:
                     self.end_replay()
@@ -392,7 +392,7 @@ class PlanExecutor:
             ok = False
 
         if not ok:
-            self._failed_step_index = step.step_index
+            self._failed_step_indices.add(step.step_index)
             self._consecutive_failures += 1
             if self._consecutive_failures >= _MAX_CONSECUTIVE_FAILURES:
                 self.end_replay()
@@ -416,7 +416,7 @@ class PlanExecutor:
                 pkg_ok = False
 
         if not pkg_ok:
-            self._failed_step_index = step.step_index
+            self._failed_step_indices.add(step.step_index)
             self._consecutive_failures += 1
             if self._consecutive_failures >= _MAX_CONSECUTIVE_FAILURES:
                 self.end_replay()
@@ -490,12 +490,12 @@ class PlanExecutor:
         self.last_verify_detail = "; ".join(_parts) if _parts else "all_passed"
 
         if verified:
-            self._failed_step_index = None
+            self._failed_step_indices.clear()
             self._replay_cursor += 1
             self._consecutive_failures = 0
             return True
         else:
-            self._failed_step_index = step.step_index
+            self._failed_step_indices.add(step.step_index)
             self._consecutive_failures += 1
             if self._consecutive_failures >= _MAX_CONSECUTIVE_FAILURES:
                 self.end_replay()
@@ -692,8 +692,8 @@ class PlanExecutor:
         plan executor reports step-level failures back to the store so
         the offending step eventually becomes unhealthy.
         """
-        if self._failed_step_index is not None:
+        for _idx in self._failed_step_indices:
             try:
-                self.store.increment_step_fail(intent_key, self._failed_step_index)
+                self.store.increment_step_fail(intent_key, _idx)
             except Exception:
                 pass
