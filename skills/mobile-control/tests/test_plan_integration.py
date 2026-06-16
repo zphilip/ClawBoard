@@ -166,6 +166,9 @@ def _run_agent(instruction: str, extra_args: str = "", timeout: int = 600) -> di
 
     The agent emits one JSON object per line (progress + final result).
     We capture the final ``{"type": "result", ...}`` object.
+
+    Output is streamed in real-time — the agent's stdout/stderr lines are
+    printed with a [AGENT] prefix so the tester can see what's happening.
     """
     cmd = [
         sys.executable, str(AGENT_SCRIPT),
@@ -183,41 +186,116 @@ def _run_agent(instruction: str, extra_args: str = "", timeout: int = 600) -> di
     print(f"[TEST] Start: {_ts()}")
     t0 = time.time()
 
+    # ── Stream stdout/stderr in real-time, also capture for parsing ──
+    captured_stdout: list[str] = []
+    captured_stderr: list[str] = []
+    result_obj: dict | None = None
+    rc: int | None = None
+
     try:
-        proc = subprocess.run(
+        proc = subprocess.Popen(
             cmd,
-            capture_output=True, text=True,
-            timeout=timeout,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
             cwd=str(SKILL_DIR),
+            bufsize=1,  # line-buffered
         )
-    except subprocess.TimeoutExpired:
-        print(f"[TEST] TIMEOUT after {timeout}s")
-        return {"status": "timeout", "steps": -1, "last_action": "", "message": "test timeout"}
+
+        # Read both streams concurrently via threads
+        def _read_stdout():
+            nonlocal result_obj
+            for line in iter(proc.stdout.readline, ""):
+                if not line:
+                    break
+                stripped = line.rstrip("\n")
+                captured_stdout.append(stripped)
+                # Stream to test output — show progress but keep it compact
+                try:
+                    obj = json.loads(stripped)
+                    t = obj.get("type", "")
+                    if t == "progress":
+                        step = obj.get("step", "?")
+                        action = obj.get("action", "")
+                        print(f"[AGENT] step={step}  action={action}")
+                    elif t == "result":
+                        result_obj = obj
+                        print(f"[AGENT] RESULT: status={obj.get('status')} steps={obj.get('steps')} "
+                              f"last_action={obj.get('last_action')}")
+                    elif t == "plan_summary":
+                        print(f"[AGENT] PLAN: {json.dumps(obj, ensure_ascii=False)[:200]}")
+                    elif t == "precheck":
+                        label = obj.get("label", "")
+                        passed = obj.get("passed", False)
+                        status = "✓" if passed else "✗"
+                        print(f"[AGENT] PRECHECK {status}: {label}")
+                    elif t == "warning":
+                        print(f"[AGENT] ⚠ {obj.get('message', stripped)}")
+                    elif t == "error":
+                        print(f"[AGENT] ❌ {obj.get('message', stripped)}")
+                    else:
+                        # Unknown JSON — print compactly
+                        print(f"[AGENT] {stripped[:200]}")
+                except json.JSONDecodeError:
+                    # Non-JSON line — print if it looks meaningful
+                    if stripped.strip():
+                        print(f"[AGENT] {stripped[:200]}")
+
+        def _read_stderr():
+            for line in iter(proc.stderr.readline, ""):
+                if not line:
+                    break
+                stripped = line.rstrip("\n")
+                captured_stderr.append(stripped)
+                # Only show stderr that looks like an error
+                if stripped.strip():
+                    print(f"[AGENT:stderr] {stripped[:200]}")
+
+        t_out = threading.Thread(target=_read_stdout, daemon=True)
+        t_err = threading.Thread(target=_read_stderr, daemon=True)
+        t_out.start()
+        t_err.start()
+
+        try:
+            rc = proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            rc = proc.wait()
+            print(f"[TEST] TIMEOUT after {timeout}s — killed agent")
+
+        t_out.join(timeout=5)
+        t_err.join(timeout=5)
+
+    except FileNotFoundError:
+        print(f"[TEST] ERROR: script not found: {AGENT_SCRIPT}")
+        return {"status": "error", "steps": -1, "last_action": "", "message": f"script not found: {AGENT_SCRIPT}"}
 
     elapsed = time.time() - t0
-    print(f"[TEST] Elapsed: {elapsed:.0f}s  Exit: {proc.returncode}")
+    print(f"[TEST] Elapsed: {elapsed:.0f}s  Exit: {rc}")
 
-    # Find the final result JSON in stdout
-    result = None
-    for line in proc.stdout.splitlines():
+    if result_obj is not None:
+        return result_obj
+
+    # Fallback: scan captured lines for a result
+    for line in captured_stdout:
         try:
             obj = json.loads(line)
             if obj.get("type") == "result":
-                result = obj
+                result_obj = obj
+                break
         except json.JSONDecodeError:
             pass
 
-    if result is None:
-        # Try parsing from the last line
-        result = {
+    if result_obj is None:
+        result_obj = {
             "status": "error",
             "steps": -1,
             "last_action": "",
-            "message": f"no result JSON found; rc={proc.returncode}",
-            "debug": {"last_stderr": (proc.stderr or "")[-500:]},
+            "message": f"no result JSON found; rc={rc}",
+            "debug": {"last_stderr": "\n".join(captured_stderr[-20:])},
         }
 
-    return result
+    return result_obj
 
 
 def _load_plans() -> list[dict]:
