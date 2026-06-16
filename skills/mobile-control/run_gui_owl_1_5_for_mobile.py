@@ -1622,6 +1622,11 @@ def main():
             else:
                 _sup_cache_misses += 1
                 _t_supervisor = time.time()
+                # Enable vision for click/long_press actions so the
+                # supervisor can visually verify coordinates against
+                # the actual screen, not just XML bounds.
+                _vlm_action_type = action.get("arguments", {}).get("action", "")
+                _force_vision = _vlm_action_type in ("click", "long_press")
                 try:
                     _sup_verdict = supervisor.validate(
                         task=instruction,
@@ -1632,6 +1637,7 @@ def main():
                         screenshot_path=screenshot_path,
                         installed_apps_hint=_sup_apps_hint,
                         extra_context=_pending_supervisor_hint,
+                        force_vision=_force_vision,
                     )
                 except Exception as _sup_err:
                     print(f"[SUPERVISOR] error during validation ({_sup_err!r}) — approving by default")

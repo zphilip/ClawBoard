@@ -2356,6 +2356,7 @@ class SupervisorLLM:
         screenshot_path: str = "",
         installed_apps_hint: str = "",
         extra_context: str = "",
+        force_vision: bool = False,
     ) -> dict:
         """
         Returns one of:
@@ -2363,9 +2364,12 @@ class SupervisorLLM:
           {"verdict": "override", "tool_call": {...}, "reason": "..."}
         Returns {"verdict": "approve"} on any error so as not to block execution.
 
-        When self.vision is True and screenshot_path is provided, the screenshot
-        is sent alongside the text context so the supervisor can directly verify
-        what is visible on screen (including WebView/canvas content).
+        When self.vision is True (or force_vision is True) and screenshot_path
+        is provided, the screenshot is sent alongside the text context so the
+        supervisor can directly verify what is visible on screen (including
+        WebView/canvas content).  force_vision enables per-call vision override
+        without changing the global config — useful for click/long_press actions
+        where coordinate accuracy matters.
 
         installed_apps_hint: comma-separated display names of installed apps on
         the device.  Passed when the proposed action is ``open`` so the
@@ -2386,7 +2390,8 @@ class SupervisorLLM:
         if extra_context:
             user_text += f"\n\n[EXECUTION CONTEXT]\n{extra_context}"
         # Build user message: multimodal (image + text) or plain text
-        if self.vision and screenshot_path and os.path.exists(screenshot_path):
+        _use_vision = self.vision or force_vision
+        if _use_vision and screenshot_path and os.path.exists(screenshot_path):
             try:
                 with open(screenshot_path, "rb") as _img_f:
                     _b64 = base64.b64encode(_img_f.read()).decode()
@@ -2501,6 +2506,7 @@ class SupervisorLLM:
         history: list,
         conclusion: str,
         screenshot_path: str = "",
+        force_vision: bool = False,
     ) -> dict:
         """
         Ask whether the overall task has been fully achieved.
@@ -2531,7 +2537,8 @@ class SupervisorLLM:
             conclusion=(conclusion or "").strip()[:500],
         )
 
-        if self.vision and screenshot_path and os.path.exists(screenshot_path):
+        _use_vision = self.vision or force_vision
+        if _use_vision and screenshot_path and os.path.exists(screenshot_path):
             try:
                 with open(screenshot_path, "rb") as _img_f:
                     _b64 = base64.b64encode(_img_f.read()).decode()
