@@ -1973,7 +1973,25 @@ def main():
             else:
                 print("[ACTION EXEC] ❌ TYPE FAILED OR UNVERIFIED")
                 print("[WARN] Input command may have succeeded but text was not observed in UI")
-                
+
+                # Type failed — likely because no input field was focused.
+                # Inject a correction so the VLM re-examines the screen and
+                # clicks the search/input field before trying to type again.
+                _type_fail_hint = (
+                    "Action: I made an error — the text input did not work "
+                    "because no text field was focused. I must first click "
+                    "on the search bar or text input field to activate it, "
+                    "then type the text.\n"
+                    "<tool_call>\n"
+                    '{"name": "mobile_use", "arguments": '
+                    '{"action": "wait", "time": 1}}\n'
+                    "</tool_call>"
+                )
+                history.append({"output": _type_fail_hint, "image": screenshot_path})
+                _emit_step_summary("type_failed_no_focus")
+                time.sleep(1)
+                continue
+
                 # Debug: show current search bar content
                 try:
                     import xml.etree.ElementTree as ET
