@@ -1105,10 +1105,21 @@ def main():
                             f"[MEMORY] pre-LLM fastpath skipped: cached action type {_fastpath_action_type!r} "
                             "is not safe for replay"
                         )
+                    elif (_fastpath_action_type == "type"
+                          and _action_only_sig in _executed_actions_global):
+                        # Type actions are idempotent — typing the same text again
+                        # when it's already present produces no UI change, which
+                        # causes the state fingerprint to stay the same and the
+                        # fastpath to loop forever on the same cached action.
+                        _memory_reason = "cached_type_action_already_executed_globally"
+                        _log_t(
+                            f"[MEMORY] pre-LLM fastpath skipped: type action "
+                            f"'{_mem_args.get('text', '')[:60]}' "
+                            "already executed in this run"
+                        )
                     elif _action_only_sig in _executed_actions_global and _fastpath_action_type not in ("type", "open"):
-                        # type actions are verified by type_with_verification (UI dump
-                        # check after typing), and open actions verify via foreground
-                        # package check — allow them to replay on different states.
+                        # open actions verify via foreground package check — allow
+                        # them to replay on different states.
                         _memory_reason = "cached_action_already_executed_globally"
                         _log_t(
                             f"[MEMORY] pre-LLM fastpath skipped: action {_fastpath_action_type!r} with args "
