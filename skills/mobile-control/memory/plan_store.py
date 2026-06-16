@@ -18,6 +18,21 @@ from typing import Any
 from .models import PlanStep, TaskPlan
 
 
+def _merge_step_counters(new_plan: TaskPlan, old_plan: TaskPlan) -> None:
+    """Merge step-level success/fail counters from *old_plan* into *new_plan*.
+
+    Steps are matched by (action_type, action_args) so a corrected step
+    that replaces a failing one inherits the counter history.
+    """
+    for _new_step in new_plan.steps:
+        for _old_step in old_plan.steps:
+            if (_new_step.action_type == _old_step.action_type
+                    and _new_step.action_args == _old_step.action_args):
+                _new_step.success_count += _old_step.success_count
+                _new_step.fail_count += _old_step.fail_count
+                break
+
+
 def plan_is_healthy(plan: TaskPlan) -> bool:
     """Return True if all steps have not failed more than they succeeded.
 
@@ -102,6 +117,9 @@ class PlanStore:
         3. Both healthy (or both unhealthy) → shorter plan wins.  When the
            new plan is longer or equal, the old plan is kept and its success
            counter is incremented.
+
+        When replacing, step-level success/fail counters are merged for
+        steps that match by action_type and action_args between old and new.
         """
         plans = self.load()
         replaced = False
@@ -117,6 +135,7 @@ class PlanStore:
                     plan.fail_count += existing.fail_count
                     plan.last_verified = max(plan.last_verified, existing.last_verified)
                     plan.created_at = existing.created_at
+                    _merge_step_counters(plan, existing)
                     plans[i] = plan
                 elif not _new_healthy and _old_healthy:
                     # New plan has a failing step; old plan is fine.
@@ -128,6 +147,7 @@ class PlanStore:
                     plan.fail_count += existing.fail_count
                     plan.last_verified = max(plan.last_verified, existing.last_verified)
                     plan.created_at = existing.created_at
+                    _merge_step_counters(plan, existing)
                     plans[i] = plan
                 else:
                     # Both similar health; new plan is longer — keep old.
