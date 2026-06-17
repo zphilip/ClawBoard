@@ -992,6 +992,9 @@ def main():
                                 _plan_executor.end_replay()
                                 time.sleep(1)
                                 break
+                            else:
+                                _reason = _pc.get("reason", "")[:120]
+                                print(f"[SUPERVISOR] periodic check — not complete: {_reason}")
                         except Exception:
                             pass
                     # Check if plan is now exhausted (all steps done)
@@ -2498,6 +2501,9 @@ def main():
                     _emit_step_summary("answer_confirmed_complete")
                     time.sleep(1)
                     break
+                else:
+                    _reason = _completion.get("reason", "")[:120]
+                    print(f"[SUPERVISOR] periodic check — not complete: {_reason}")
             except Exception:
                 pass
 
