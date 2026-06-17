@@ -453,6 +453,9 @@ def main():
     _plan_replay_active = False
     _plan_had_step_failure = False  # True when any plan step fails during replay
     _pending_supervisor_hint = ""   # injected into next supervisor.validate() call
+    _supervisor_driving = False     # supervisor is in direct control (VLM stuck)
+    _driving_step_count = 0         # steps taken in driving mode (safety limit)
+    _MAX_DRIVING_STEPS = 6          # max consecutive steps supervisor can drive
     _plan_intent_key: str = ""
     try:
         _plan_store = PlanStore(_plan_store_path)
@@ -1254,7 +1257,88 @@ def main():
         )
 
         # 2. Call the VLM (delegated to VLMProvider for primary + fallback chain).
-        if _pre_llm_action_parameter is None:
+        # ── Supervisor driving mode ──────────────────────────────────────
+        # When the supervisor overrides the VLM (e.g. stuck in 打车 mode),
+        # the supervisor stays in direct control for subsequent steps until
+        # the task is back on track — no VLM calls, no memory fastpath.
+        if _supervisor_driving:
+            _driving_step_count += 1
+            if _driving_step_count > _MAX_DRIVING_STEPS:
+                print("[DRIVING] max steps reached — handing back to VLM")
+                _supervisor_driving = False
+                _driving_step_count = 0
+                _emit_step_summary("supervisor_driving_max_steps")
+                continue  # skip this iteration, VLM takes over next
+            else:
+                print(f"[DRIVING] step {_driving_step_count}/{_MAX_DRIVING_STEPS} — supervisor in control")
+                _driving_prompt = (
+                    "[DRIVING MODE] You are in direct control because the VLM "
+                    "was stuck or going against the task goal. Propose the NEXT "
+                    "action to move the task forward. Look at the screenshot "
+                    "and UI dump to decide what to do.\n\n"
+                    "Return OVERRIDE with your chosen action. Return APPROVE "
+                    "when the task is back on track and the VLM can resume.\n\n"
+                    "Previous driving steps: "
+                    f"{_driving_step_count}/{_MAX_DRIVING_STEPS}"
+                )
+                _dummy_action = {
+                    "name": "mobile_use",
+                    "arguments": {"action": "wait", "time": 1},
+                }
+                try:
+                    _drive_verdict = supervisor.validate(
+                        task=instruction,
+                        fg_label=_fg_label,
+                        action_text="[DRIVING MODE — supervisor proposing next action]",
+                        tool_call_dict=_dummy_action,
+                        ui_summary=_ui_summary,
+                        screenshot_path=screenshot_path,
+                        installed_apps_hint=", ".join(_cached_inst_app_names[:80]),
+                        extra_context=_driving_prompt,
+                        force_vision=True,
+                    )
+                except Exception as _drive_err:
+                    print(f"[DRIVING] supervisor error ({_drive_err}) — handing back to VLM")
+                    _supervisor_driving = False
+                    _driving_step_count = 0
+                    _drive_verdict = {"verdict": "approve", "_default": True}
+
+                if _drive_verdict.get("verdict") == "override":
+                    _drive_tc = _drive_verdict.get("tool_call", {})
+                    if _drive_tc and "arguments" in _drive_tc:
+                        action = _drive_tc
+                        action_parameter = action["arguments"]
+                        output_text = (
+                            f"Action: [SUPERVISOR DRIVING] "
+                            f"{_drive_verdict.get('reason', '')[:200]}\n"
+                            f"{json.dumps(_drive_tc, ensure_ascii=False)}"
+                        )
+                        print(f"[DRIVING] supervisor action: "
+                              f"{action_parameter.get('action')} "
+                              f"{str(action_parameter.get('coordinate', action_parameter.get('text', '')))[:80]}")
+                        _provider_used = "supervisor-driving"
+                        _step_metrics["vlm_primary"] = 0.0
+                        _step_metrics["vlm_fallback"] = 0.0
+                        _step_metrics["supervisor"] = 0.0
+                        _skip_supervisor = True  # we just validated
+                        _sup_skip_reason = "supervisor_driving"
+                    else:
+                        print("[DRIVING] no valid tool_call — handing back to VLM")
+                        _supervisor_driving = False
+                        _driving_step_count = 0
+                        _emit_step_summary("supervisor_driving_handback")
+                        continue  # skip this iteration, VLM takes over next
+                else:
+                    # approve → hand back to VLM
+                    print("[DRIVING] supervisor approves — handing back to VLM")
+                    _supervisor_driving = False
+                    _driving_step_count = 0
+                    _emit_step_summary("supervisor_driving_handback")
+                    continue  # skip this iteration, VLM takes over next
+            # If still driving, skip VLM and go straight to execution below.
+            # (Handback cases above use 'continue' to skip this iteration.)
+
+        if not _supervisor_driving and _pre_llm_action_parameter is None:
             # Inject supervisor feedback from previous overrides so the VLM
             # knows why its action was rejected and course-corrects.
             _effective_instruction = instruction
@@ -1779,6 +1863,13 @@ def main():
                     else:
                         action = _override_tc
                         action_parameter = action["arguments"]
+                        # Enter supervisor driving mode — the VLM was wrong,
+                        # so the supervisor stays in control for subsequent
+                        # steps until the task is back on track.
+                        if not _supervisor_driving:
+                            _supervisor_driving = True
+                            _driving_step_count = 0
+                            print("[DRIVING] supervisor override → entering driving mode")
                         # Update step tracking to reflect the override action,
                         # NOT the VLM's rejected proposal.  Without this the
                         # memory store and plan recorder learn the wrong
