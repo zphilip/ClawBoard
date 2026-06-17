@@ -2396,6 +2396,7 @@ def main():
                 and step_id > 0                       # not step 0
                 and step_id % 3 == 0):                # every ~3 steps
             try:
+                print(f"[SUPERVISOR] periodic task-complete check (step {step_id})")
                 _completion = supervisor.is_task_complete(
                     task=instruction,
                     fg_label=_fg_label,
