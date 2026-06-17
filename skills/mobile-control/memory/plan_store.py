@@ -61,18 +61,13 @@ def _is_same_route(plan_a: TaskPlan, plan_b: TaskPlan, compare_steps: int = 2) -
     for sa, sb in zip(_steps_a, _steps_b):
         if sa.action_type != sb.action_type:
             return False
-        # Compare coordinate-bucketed args for clicks (100px buckets),
-        # exact match for non-coordinate actions (type text, open target).
-        if sa.action_type in ("click", "long_press"):
-            _ca = sa.action_args.get("coordinate", [0, 0])
-            _cb = sb.action_args.get("coordinate", [0, 0])
-            # Bucket to nearest 100 in normalized 0-1000 space
-            _ba = (int(_ca[0] / 100) * 100, int(_ca[1] / 100) * 100)
-            _bb = (int(_cb[0] / 100) * 100, int(_cb[1] / 100) * 100)
-            if _ba != _bb:
+        # Compare non-coordinate args (type text, open target) exactly.
+        # For click/long_press: coordinates vary between runs (crop
+        # matching finds same button at slightly different pixels), so
+        # we match on action_type alone — the route is the same path.
+        if sa.action_type not in ("click", "long_press"):
+            if sa.action_args != sb.action_args:
                 return False
-        elif sa.action_args != sb.action_args:
-            return False
     return True
 
 
