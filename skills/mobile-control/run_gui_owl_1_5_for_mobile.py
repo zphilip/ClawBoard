@@ -968,33 +968,48 @@ def main():
                         pass
                     _emit_step_summary("plan_replay_completed")
                     _log_t(f"[STEP END] step={step_id} total={time.time() - _step_t0:.2f}s")
-                    # Periodic task-complete check during plan replay.
+                    # Task-complete check during plan replay.
                     # The 'continue' below skips the normal post-action
                     # checks, so we run this check inline.
-                    if (supervisor is not None
-                            and step_id > 0
-                            and step_id % 3 == 0):
+                    # Trigger: every 3 steps, AND at the step before the plan
+                    # ends (so we don't blindly execute the last step if the
+                    # task is already done).
+                    _plan_len = len(_plan_executor.replay_plan.steps)
+                    _do_check = (
+                        supervisor is not None
+                        and step_id > 0
+                        and (
+                            step_id % 3 == 0
+                            or step_id >= _plan_len - 1  # last step
+                        )
+                    )
+                    if _do_check:
                         try:
-                            print(f"[SUPERVISOR] periodic task-complete check (step {step_id})")
+                            print(f"[SUPERVISOR] task-complete check "
+                                  f"(step {step_id}/{_plan_len})")
                             _pc = supervisor.is_task_complete(
                                 task=instruction,
                                 fg_label=_fg_label,
                                 ui_summary=_ui_summary,
                                 history=history,
-                                conclusion=f"Plan replay step {step_id}/{len(_plan_executor.replay_plan.steps)}",
+                                conclusion=f"Plan replay step {step_id}/{_plan_len}",
                                 screenshot_path=str(screenshot_path),
                                 force_vision=True,
                             )
                             if _pc.get("complete", False):
-                                print("[SUPERVISOR] periodic check — task already complete")
+                                print("[SUPERVISOR] task-complete check — task already complete")
                                 print("[TERMINATED] Task completed.")
                                 termination_reason = "proactive_completion_check"
+                                # Trim plan to the step that actually completed
+                                # the task, so future replays don't waste time
+                                # on unnecessary trailing steps.
+                                _plan_executor.trim_plan_to(step_id)
                                 _plan_executor.end_replay()
                                 time.sleep(1)
                                 break
                             else:
                                 _reason = _pc.get("reason", "")[:120]
-                                print(f"[SUPERVISOR] periodic check — not complete: {_reason}")
+                                print(f"[SUPERVISOR] task-complete check — not complete: {_reason}")
                         except Exception:
                             pass
                     # Check if plan is now exhausted (all steps done)

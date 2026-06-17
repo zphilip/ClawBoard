@@ -418,6 +418,37 @@ class PlanExecutor:
         self._replay_active = False
         self._paused = False
 
+    def trim_plan_to(self, step_index: int) -> None:
+        """Truncate the current replay plan to *step_index* steps.
+
+        Called when a completion check detects the task is already done
+        before reaching the plan's original end — the trailing steps were
+        unnecessary and should be pruned so future replays are shorter.
+        """
+        if self._replay_plan is None:
+            return
+        _steps = self._replay_plan.steps
+        # Convert step_index to plan steps (step_index may include non-replayable steps)
+        # Find the position of the last executed step in the plan
+        _cut_at = 0
+        for i, s in enumerate(_steps):
+            if s.step_index <= step_index:
+                _cut_at = i + 1
+            else:
+                break
+        if _cut_at > 0 and _cut_at < len(_steps):
+            _old_len = len(_steps)
+            self._replay_plan.steps = _steps[:_cut_at]
+            # Persist the shorter plan immediately via upsert
+            try:
+                self.store.upsert_by_intent(self._replay_plan)
+            except Exception:
+                pass
+            print(
+                f"[PLAN] trimmed from {_old_len} to {_cut_at} steps "
+                f"(task was complete at step {step_index})"
+            )
+
     @property
     def replay_plan(self) -> TaskPlan | None:
         return self._replay_plan
