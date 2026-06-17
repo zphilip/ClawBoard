@@ -70,7 +70,7 @@ if TYPE_CHECKING:
 
 
 def _template_match_crop(
-    screenshot_path: str, crop_b64: str, confidence_threshold: float = 0.65,
+    screenshot_path: str, crop_b64: str, confidence_threshold: float = 0.45,
 ) -> tuple[int, int] | None:
     """Try to locate *crop_b64* in *screenshot_path* via template matching.
 

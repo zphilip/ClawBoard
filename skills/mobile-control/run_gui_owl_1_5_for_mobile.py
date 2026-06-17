@@ -2435,7 +2435,9 @@ def main():
                     # for template matching on replay — works even on
                     # WebView/canvas pages where uiautomator sees nothing.
                     try:
-                        _crop_size = 120  # px, centred on click point
+                        _crop_size = 60  # px, centred on click point — small
+                        # enough to capture just the target element, not
+                        # surrounding dynamic content (ads, recommendations)
                         _cx = int(action_parameter.get("coordinate", [0, 0])[0])
                         _cy = int(action_parameter.get("coordinate", [0, 0])[1])
                         _img = Image.open(screenshot_path)
