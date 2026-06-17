@@ -456,6 +456,7 @@ def main():
     _supervisor_driving = False     # supervisor is in direct control (VLM stuck)
     _driving_step_count = 0         # steps taken in driving mode (safety limit)
     _MAX_DRIVING_STEPS = 6          # max consecutive steps supervisor can drive
+    _consecutive_parse_failures = 0  # detect context-overflow parse loops
     _plan_intent_key: str = ""
     try:
         _plan_store = PlanStore(_plan_store_path)
@@ -1413,10 +1414,22 @@ def main():
         # 3. Parse the action
         try:
             action = parse_action(output_text)
+            _consecutive_parse_failures = 0  # reset on success
         except ValueError as e:
-            print(f"[WARN] Could not parse action: {e} — skipping step")
+            _consecutive_parse_failures += 1
+            _err_msg = str(e)[:150]
+            print(f"[WARN] Could not parse action ({_consecutive_parse_failures}): {_err_msg} — skipping step")
             history.append({"output": output_text, "image": screenshot_path})
             _emit_step_summary("parse_failed")
+            # Detect context-overflow parse loops: the VLM produces truncated
+            # JSON because its context window is full.  Trim history to recover.
+            if _consecutive_parse_failures >= 4:
+                print("[PARSE LOOP] clearing history entirely to recover context")
+                history.clear()
+                _consecutive_parse_failures = 0
+            elif _consecutive_parse_failures >= 2:
+                print(f"[PARSE LOOP] trimming history from {len(history)} to 3 messages")
+                history[:] = history[-3:] if len(history) > 3 else history
             time.sleep(1)
             continue
         action_parameter = action["arguments"]
