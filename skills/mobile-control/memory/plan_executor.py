@@ -625,8 +625,10 @@ class PlanExecutor:
 
         for _old_step in _old_steps:
             if _old_step.step_index in _failed:
-                # This step failed — replace with VLM's version
-                _old_step.fail_count += 1
+                # This step failed — replace with VLM's version.
+                # Create a fresh step with the VLM's action; counters
+                # start at 0 — _merge_step_counters in upsert_by_intent
+                # will carry forward matching old counters.
                 if _vlm_idx < len(_vlm_steps):
                     _rec = _vlm_steps[_vlm_idx]
                     _vlm_idx += 1
@@ -644,10 +646,21 @@ class PlanExecutor:
                     ))
                 # If no VLM step available, just drop the failed step
             else:
-                # This step replayed OK — keep it
-                _old_step.success_count += 1
-                _old_step.step_index = len(_repaired) + 1
-                _repaired.append(_old_step)
+                # This step replayed OK — keep it with a FRESH PlanStep
+                # carrying ONLY this run's +1 success.  _merge_step_counters
+                # in upsert_by_intent adds the stored history on top.
+                _repaired.append(PlanStep(
+                    step_index=len(_repaired) + 1,
+                    action_type=_old_step.action_type,
+                    action_args=dict(_old_step.action_args),
+                    expected_pkg=_old_step.expected_pkg,
+                    action_description=_old_step.action_description,
+                    pre_action_pkg=_old_step.pre_action_pkg,
+                    post_action_ui_fp=_old_step.post_action_ui_fp,
+                    target_element_signature=_old_step.target_element_signature,
+                    success_count=1,
+                    fail_count=0,
+                ))
 
         # Append any remaining VLM steps (beyond plan scope)
         while _vlm_idx < len(_vlm_steps):
