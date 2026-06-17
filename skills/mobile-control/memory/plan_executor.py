@@ -70,7 +70,7 @@ if TYPE_CHECKING:
 
 
 def _template_match_crop(
-    screenshot_path: str, crop_b64: str, confidence_threshold: float = 0.45,
+    screenshot_path: str, crop_b64: str, confidence_threshold: float = 0.60,
 ) -> tuple[int, int] | None:
     """Try to locate *crop_b64* in *screenshot_path* via template matching.
 
@@ -400,6 +400,7 @@ class PlanExecutor:
 
         # ── Element-based targeting for clicks ────────────────────────
         _element_matched = False
+        _crop_matched = False  # True when crop matching (not element) succeeded
         _had_element_sig = (
             step.action_type == "click"
             and step.target_element_signature is not None
@@ -440,6 +441,7 @@ class PlanExecutor:
                 if _tm is not None:
                     step.action_args["coordinate"] = [_tm[0], _tm[1]]
                     _element_matched = True
+                    _crop_matched = True
                     print(
                         f"[PLAN] crop match at ({_tm[0]},{_tm[1]}) "
                         f"— template matching succeeded"
@@ -506,12 +508,14 @@ class PlanExecutor:
 
         # Verification layer 3: UI fingerprint comparison.
         # SKIP for:
-        #   - Home/Back (launcher screens differ every run)
-        #   - open        (post-launch ads / splash screens differ)
-        #   - click with element match (element lookup IS verification)
+        #   - Home/Back           (launcher screens differ every run)
+        #   - open                (post-launch ads / splash screens differ)
+        #   - element-based match (element lookup IS verification)
+        # Crop-matched clicks are NOT skipped — template matching can
+        # produce false positives that the fingerprint check catches.
         ui_fp_ok = True
         _skip_fp_check = (
-            _element_matched
+            (_element_matched and not _crop_matched)
             or step.action_type in ("open", "type")
             or (
                 step.action_type == "system_button"
