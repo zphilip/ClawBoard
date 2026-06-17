@@ -1280,6 +1280,16 @@ def main():
                     "was stuck or going against the task goal. Propose the NEXT "
                     "action to move the task forward. Look at the screenshot "
                     "and UI dump to decide what to do.\n\n"
+                    "CRITICAL — action format:\n"
+                    "  click:       {\"action\": \"click\",       \"coordinate\": [x, y]}\n"
+                    "  long_press:  {\"action\": \"long_press\",  \"coordinate\": [x, y]}\n"
+                    "  type:        {\"action\": \"type\",        \"text\": \"...\"}\n"
+                    "  open:        {\"action\": \"open\",        \"text\": \"AppName\"}\n"
+                    "  system_button: {\"action\": \"system_button\", \"button\": \"Back\"}\n"
+                    "  wait:        {\"action\": \"wait\",        \"time\": 1}\n"
+                    "  answer:      {\"action\": \"answer\",      \"text\": \"...\"}\n"
+                    "Coordinates MUST be in 0-1000 normalized space. "
+                    "click/long_press MUST have 'coordinate', NOT 'text'.\n\n"
                     "Return OVERRIDE with your chosen action. Return APPROVE "
                     "when the task is back on track and the VLM can resume.\n\n"
                     "Previous driving steps: "
@@ -1321,6 +1331,20 @@ def main():
                         )
                         print(f"[DRIVING] supervisor action: "
                               f"{json.dumps(action_parameter, ensure_ascii=False)[:200]}")
+                        # Validate the supervisor's action has required fields.
+                        # The supervisor sometimes returns click with 'text'
+                        # instead of 'coordinate' — catch that here.
+                        _drv_type = action_parameter.get("action", "")
+                        _drv_missing = _missing_required_fields(_drv_type, action_parameter)
+                        if _drv_missing:
+                            print(f"[DRIVING] action rejected — missing {_drv_missing} "
+                                  f"for {_drv_type!r} — retrying with corrected prompt")
+                            _driving_prompt += (
+                                f"\n\n[FORMAT ERROR] Your last action was "
+                                f"rejected: {_drv_type!r} requires {_drv_missing}. "
+                                f"Please use the correct format."
+                            )
+                            continue  # retry driving mode with corrected prompt
                         _provider_used = "supervisor-driving"
                         _step_metrics["vlm_primary"] = 0.0
                         _step_metrics["vlm_fallback"] = 0.0
