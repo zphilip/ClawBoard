@@ -1342,52 +1342,55 @@ def main():
             # If still driving, skip VLM and go straight to execution below.
             # (Handback cases above use 'continue' to skip this iteration.)
 
-        if not _supervisor_driving and _pre_llm_action_parameter is None:
-            # Inject supervisor feedback from previous overrides so the VLM
-            # knows why its action was rejected and course-corrects.
-            _effective_instruction = instruction
-            if _supervisor_feedback:
-                _effective_instruction = (
-                    f"{instruction}\n\n[IMPORTANT] Your previous action was "
-                    f"overridden: {_supervisor_feedback}"
+        # In supervisor driving mode the action/ output_text were already
+        # set by the driving-mode block above — skip VLM + memory-fastpath.
+        if not _supervisor_driving:
+            if _pre_llm_action_parameter is None:
+                # Inject supervisor feedback from previous overrides so the VLM
+                # knows why its action was rejected and course-corrects.
+                _effective_instruction = instruction
+                if _supervisor_feedback:
+                    _effective_instruction = (
+                        f"{instruction}\n\n[IMPORTANT] Your previous action was "
+                        f"overridden: {_supervisor_feedback}"
+                    )
+                    _supervisor_feedback = ""  # clear after injection
+                # Inject transport mode warning when the UI shows ride-hailing
+                # keywords but the task requires free driving navigation.
+                if _is_nav_task and _has_taxi_keywords:
+                    _nav_warning = (
+                        "\n\n[CRITICAL] The screen shows 打车/ride-hailing mode active "
+                        "(¥ prices or 呼叫/叫车 buttons visible). This is WRONG for a "
+                        "navigation task. Click the 驾车 (driving) tab FIRST before "
+                        "anything else. Never click 同意授权 or导航 in taxi mode."
+                    )
+                    _effective_instruction = _effective_instruction.rstrip() + _nav_warning
+                _vlm_result = _vlm_provider.call(
+                    screenshot_path, _effective_instruction, history, args.model,
+                    foreground_pkg=_fg_label,
+                    ui_summary=_ui_summary,
+                    installed_apps_hint=", ".join(_cached_inst_app_names[:80]),
+                    target_app_hint=_target_app_hint,
                 )
-                _supervisor_feedback = ""  # clear after injection
-            # Inject transport mode warning when the UI shows ride-hailing
-            # keywords but the task requires free driving navigation.
-            if _is_nav_task and _has_taxi_keywords:
-                _nav_warning = (
-                    "\n\n[CRITICAL] The screen shows 打车/ride-hailing mode active "
-                    "(¥ prices or 呼叫/叫车 buttons visible). This is WRONG for a "
-                    "navigation task. Click the 驾车 (driving) tab FIRST before "
-                    "anything else. Never click 同意授权 or导航 in taxi mode."
-                )
-                _effective_instruction = _effective_instruction.rstrip() + _nav_warning
-            _vlm_result = _vlm_provider.call(
-                screenshot_path, _effective_instruction, history, args.model,
-                foreground_pkg=_fg_label,
-                ui_summary=_ui_summary,
-                installed_apps_hint=", ".join(_cached_inst_app_names[:80]),
-                target_app_hint=_target_app_hint,
-            )
-            output_text = _vlm_result.output_text
-            _step_metrics["vlm_primary"] = _vlm_result.primary_seconds
-            _step_metrics["vlm_fallback"] = _vlm_result.fallback_seconds
-            _provider_used = _vlm_result.provider_label
+                output_text = _vlm_result.output_text
+                _step_metrics["vlm_primary"] = _vlm_result.primary_seconds
+                _step_metrics["vlm_fallback"] = _vlm_result.fallback_seconds
+                _provider_used = _vlm_result.provider_label
 
-            print(f"[MODEL OUTPUT]\n{output_text}")
-        else:
-            output_text = (
-                f"Action: [MEMORY FASTPATH] {_cached_action_description or 'reuse cached action'}\n"
-                "<tool_call>\n"
-                + json.dumps({"name": "mobile_use", "arguments": _pre_llm_action_parameter}, ensure_ascii=False)
-                + "\n</tool_call>"
-            )
-            _provider_used = "memory-fastpath"
-            _step_metrics["vlm_primary"] = 0.0
-            _step_metrics["vlm_fallback"] = 0.0
-            _step_metrics["supervisor"] = 0.0
-            print(f"[VLM] provider used: {_provider_used}")
-            print(f"[MODEL OUTPUT]\n{output_text}")
+                print(f"[MODEL OUTPUT]\n{output_text}")
+            else:
+                output_text = (
+                    f"Action: [MEMORY FASTPATH] {_cached_action_description or 'reuse cached action'}\n"
+                    "<tool_call>\n"
+                    + json.dumps({"name": "mobile_use", "arguments": _pre_llm_action_parameter}, ensure_ascii=False)
+                    + "\n</tool_call>"
+                )
+                _provider_used = "memory-fastpath"
+                _step_metrics["vlm_primary"] = 0.0
+                _step_metrics["vlm_fallback"] = 0.0
+                _step_metrics["supervisor"] = 0.0
+                print(f"[VLM] provider used: {_provider_used}")
+                print(f"[MODEL OUTPUT]\n{output_text}")
 
         # 3a. Wrong-screen early exit: if the model text explicitly mentions a
         # debug/developer/wrong-app screen, press Home and restart rather than
