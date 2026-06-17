@@ -395,10 +395,11 @@ class PlanExecutor:
 
         # ── Element-based targeting for clicks ────────────────────────
         _element_matched = False
-        if (
+        _had_element_sig = (
             step.action_type == "click"
             and step.target_element_signature is not None
-        ):
+        )
+        if _had_element_sig:
             try:
                 _ui_xml = self.adb.get_ui_dump()
                 _fme = _get_find_matching_element()
@@ -407,7 +408,6 @@ class PlanExecutor:
                     _bounds = _current_el["bounds"]
                     _cx = (_bounds[0] + _bounds[2]) // 2
                     _cy = (_bounds[1] + _bounds[3]) // 2
-                    # Override stored coords with current element centre.
                     step.action_args["coordinate"] = [_cx, _cy]
                     _element_matched = True
                     print(
@@ -417,40 +417,39 @@ class PlanExecutor:
                         f"centre=({_cx},{_cy})"
                     )
                 else:
-                    # Element not found via accessibility tree.
-                    # Try screenshot-based template matching as fallback —
-                    # works on WebView/canvas content invisible to uiautomator.
-                    _matched = False
-                    if screenshot_path and getattr(step, 'target_element_crop_b64', ''):
-                        _tm = _template_match_crop(
-                            screenshot_path, step.target_element_crop_b64,
-                        )
-                        if _tm is not None:
-                            step.action_args["coordinate"] = [_tm[0], _tm[1]]
-                            _element_matched = True
-                            _matched = True
-                            print(
-                                f"[PLAN] crop match at ({_tm[0]},{_tm[1]}) "
-                                f"— template matching succeeded where element "
-                                f"lookup failed"
-                            )
-                    if not _matched:
-                        print(
-                            "[PLAN] element NOT found on current screen "
-                            "— skipping step (screen has changed, stored coords are stale)"
-                        )
-                        self._failed_step_indices.add(step.step_index)
-                        self._consecutive_failures += 1
-                        if self._consecutive_failures >= _MAX_CONSECUTIVE_FAILURES:
-                            self.end_replay()
-                        return False
+                    print(
+                        "[PLAN] element NOT found on current screen "
+                        "— trying crop match as fallback"
+                    )
             except Exception as _el_err:
-                print(f"[PLAN] element lookup error ({_el_err}) — skipping step")
-                self._failed_step_indices.add(step.step_index)
-                self._consecutive_failures += 1
-                if self._consecutive_failures >= _MAX_CONSECUTIVE_FAILURES:
-                    self.end_replay()
-                return False
+                print(f"[PLAN] element lookup error ({_el_err}) — trying crop match")
+        # ── Screenshot crop template matching ────────────────────────
+        # Runs when element matching was skipped (no sig) or failed.
+        # Works on WebView/canvas content invisible to uiautomator.
+        if (not _element_matched
+                and step.action_type == "click"
+                and screenshot_path):
+            _crop = getattr(step, 'target_element_crop_b64', '')
+            if _crop:
+                _tm = _template_match_crop(screenshot_path, _crop)
+                if _tm is not None:
+                    step.action_args["coordinate"] = [_tm[0], _tm[1]]
+                    _element_matched = True
+                    print(
+                        f"[PLAN] crop match at ({_tm[0]},{_tm[1]}) "
+                        f"— template matching succeeded"
+                    )
+        # ── If element sig existed but both layers failed → hard fail ──
+        if _had_element_sig and not _element_matched:
+            print(
+                "[PLAN] step FAILED — element not found + no crop match "
+                "(screen has changed, stored coords are stale)"
+            )
+            self._failed_step_indices.add(step.step_index)
+            self._consecutive_failures += 1
+            if self._consecutive_failures >= _MAX_CONSECUTIVE_FAILURES:
+                self.end_replay()
+            return False
 
         try:
             ok = self._execute_action(step)
