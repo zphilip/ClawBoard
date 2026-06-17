@@ -2325,11 +2325,26 @@ class SupervisorLLM:
         model: str,
         vision: bool = False,
         reasoning_split: bool = False,
+        vision_model: str = "",
+        vision_base_url: str = "",
+        vision_api_key: str = "",
     ):
         self.model = model
         self.vision = vision
         self.reasoning_split = reasoning_split
         self._client = OpenAI(api_key=api_key, base_url=base_url, timeout=25)
+        # Optional vision-capable client for force_vision calls.
+        # When configured, click/long_press actions use this client
+        # so the supervisor can verify coordinates against the actual
+        # screenshot rather than just XML bounds.
+        self._vision_model = vision_model
+        self._vision_client = None
+        if vision_model and vision_base_url:
+            _v_key = vision_api_key or api_key
+            self._vision_client = OpenAI(
+                api_key=_v_key, base_url=vision_base_url, timeout=30,
+            )
+            print(f"[SUPERVISOR] vision client: {vision_model} @ {vision_base_url}")
 
     @staticmethod
     def _call_with_timeout(fn, timeout: float):
@@ -2391,7 +2406,20 @@ class SupervisorLLM:
             user_text += f"\n\n[EXECUTION CONTEXT]\n{extra_context}"
         # Build user message: multimodal (image + text) or plain text
         _use_vision = self.vision or force_vision
+        _vision_ok = False
         if _use_vision and screenshot_path and os.path.exists(screenshot_path):
+            # force_vision requires a separate vision-capable client/endpoint.
+            # The text-only endpoint (e.g. token-plan-cn) returns 404 for images.
+            if force_vision and not self.vision:
+                if self._vision_client is not None:
+                    _vision_ok = True
+                else:
+                    print("[SUPERVISOR] force_vision=True but no vision client "
+                          "configured — falling back to text-only")
+                    _use_vision = False
+            elif self.vision:
+                _vision_ok = True
+        if _vision_ok:
             try:
                 with open(screenshot_path, "rb") as _img_f:
                     _b64 = base64.b64encode(_img_f.read()).decode()
@@ -2403,8 +2431,17 @@ class SupervisorLLM:
             except Exception as _enc_err:
                 print(f"[SUPERVISOR] could not encode screenshot ({_enc_err}) — falling back to text-only")
                 user_content = user_text
+                _vision_ok = False
         else:
             user_content = user_text
+        # Determine which client and model to use.
+        # force_vision with a separate vision client → use vision endpoint.
+        if _vision_ok and force_vision and not self.vision:
+            _call_client = self._vision_client
+            _call_model = self._vision_model
+        else:
+            _call_client = self._client
+            _call_model = self.model
         _extra_body: dict = {}
         if self.reasoning_split:
             _extra_body["reasoning_split"] = True
@@ -2413,7 +2450,7 @@ class SupervisorLLM:
             _sup_create_kwargs["extra_body"] = _extra_body
         # Mimo models: use native thinking mode (reasoning → reasoning_content,
         # clean verdict → content) + json_object to guarantee parseable JSON.
-        if "mimo" in self.model.lower():
+        if "mimo" in _call_model.lower():
             _sup_create_kwargs["response_format"] = {"type": "json_object"}
         _sup_max_attempts = 2  # 2 attempts × 30s = 60s max for validation
         _sup_req_timeout = 30  # hard wall-clock timeout (seconds) via _call_with_timeout
@@ -2421,8 +2458,8 @@ class SupervisorLLM:
             try:
                 print(f"[SUPERVISOR] validate attempt {_sup_try}/{_sup_max_attempts}")
                 resp = self._call_with_timeout(
-                    lambda: self._client.chat.completions.create(
-                        model=self.model,
+                    lambda: _call_client.chat.completions.create(
+                        model=_call_model,
                         messages=[
                             {"role": "system", "content": _SUPERVISOR_SYSTEM},
                             {"role": "user", "content": user_content},

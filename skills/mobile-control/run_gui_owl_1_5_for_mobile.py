@@ -323,6 +323,13 @@ def main():
         _sup_vision_raw = _sp.get("vision", False)
         _sup_vision = bool(_sup_vision_raw)
         _sup_reasoning_split = bool(_sp.get("reasoning_split", False))
+        # Optional vision-capable supervisor for coordinate verification.
+        # When configured, click/long_press actions use a separate vision
+        # model/endpoint so the supervisor can verify coordinates against
+        # the actual screenshot rather than just XML bounds.
+        _sup_vision_model = _sp.get("vision_model", "")
+        _sup_vision_base_url = _sp.get("vision_base_url", "")
+        _sup_vision_api_key = _sp.get("vision_api_key", "")
         print(f"[SUPERVISOR CONFIG] vision raw={_sup_vision_raw!r} -> {_sup_vision} "
               f"reasoning_split={_sup_reasoning_split}")
         if not _sup_model and _sp.get("model"):
@@ -356,6 +363,9 @@ def main():
         supervisor = SupervisorLLM(
             _eff_api_key, _eff_base_url, _sup_model,
             vision=_sup_vision, reasoning_split=_sup_reasoning_split,
+            vision_model=_sup_vision_model,
+            vision_base_url=_sup_vision_base_url,
+            vision_api_key=_sup_vision_api_key,
         )
         _vis_tag = " [vision=ON]" if _sup_vision else ""
         _rs_tag = " [reasoning_split=ON]" if _sup_reasoning_split else ""
