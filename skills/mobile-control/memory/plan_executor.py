@@ -296,15 +296,54 @@ class PlanExecutor:
 
         Returns None when no plan exists or the best plan has a low score.
         """
-        plan = self.store.find_best(intent_key, min_success=1)
-        if plan is None:
-            return None
-        total = plan.success_count + plan.fail_count
-        score = plan.success_count / max(total, 1)
-        if score < 0.6:
-            # Too unreliable — don't replay
-            return None
-        return plan
+        plans = self.find_plans(intent_key)
+        return plans[0] if plans else None
+
+    def find_plans(self, intent_key: str) -> list[TaskPlan]:
+        """Return all healthy plans for *intent_key*, sorted best-first.
+
+        Multi-route: the same task may have multiple UI paths (e.g.
+        with vs without a popup).  All are returned so the executor
+        can try each one in order.
+        """
+        candidates = self.store.find_all_healthy(intent_key, min_success=1)
+        return [
+            p for p in candidates
+            if (p.success_count / max(p.success_count + p.fail_count, 1)) >= 0.6
+        ]
+
+    def try_replay_plans(
+        self, intent_key: str, max_tries: int = 3,
+    ) -> bool:
+        """Try to start replaying any healthy plan for *intent_key*.
+
+        Attempts up to *max_tries* plans in score order.  Returns True
+        if a plan was loaded and replay started, False if no viable
+        plan found.
+
+        When multiple routes exist for the same task (e.g. the app had
+        a popup in one run but not another), this picks the first route
+        that matches the current screen state.
+        """
+        _candidates = self.find_plans(intent_key)
+        if not _candidates:
+            return False
+
+        _tried = 0
+        for _plan in _candidates:
+            if _tried >= max_tries:
+                break
+            _tried += 1
+            print(
+                f"[PLAN] trying route #{_tried}/"
+                f"{min(len(_candidates), max_tries)} "
+                f"(score={_plan.success_count / max(_plan.success_count + _plan.fail_count, 1):.2f}, "
+                f"{len(_plan.steps)} steps)"
+            )
+            self.start_replay(_plan)
+            return True
+
+        return False
 
     # ------------------------------------------------------------------
     # Replay control

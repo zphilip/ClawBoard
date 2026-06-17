@@ -46,6 +46,36 @@ def plan_is_healthy(plan: TaskPlan) -> bool:
     return True
 
 
+def _is_same_route(plan_a: TaskPlan, plan_b: TaskPlan, compare_steps: int = 2) -> bool:
+    """Return True when two plans represent the same UI route.
+
+    Two plans are the same route when their first *compare_steps* steps
+    match by (action_type, bucketed action_args).  If the plans have
+    different initial steps they represent different paths through the
+    app (e.g. with vs without a popup, different search bar positions).
+    """
+    _steps_a = plan_a.steps[:compare_steps]
+    _steps_b = plan_b.steps[:compare_steps]
+    if len(_steps_a) != len(_steps_b):
+        return False
+    for sa, sb in zip(_steps_a, _steps_b):
+        if sa.action_type != sb.action_type:
+            return False
+        # Compare coordinate-bucketed args for clicks (100px buckets),
+        # exact match for non-coordinate actions (type text, open target).
+        if sa.action_type in ("click", "long_press"):
+            _ca = sa.action_args.get("coordinate", [0, 0])
+            _cb = sb.action_args.get("coordinate", [0, 0])
+            # Bucket to nearest 100 in normalized 0-1000 space
+            _ba = (int(_ca[0] / 100) * 100, int(_ca[1] / 100) * 100)
+            _bb = (int(_cb[0] / 100) * 100, int(_cb[1] / 100) * 100)
+            if _ba != _bb:
+                return False
+        elif sa.action_args != sb.action_args:
+            return False
+    return True
+
+
 class PlanStore:
     def __init__(self, path: str | Path):
         self.path = Path(path)
@@ -105,30 +135,29 @@ class PlanStore:
         self._invalidate_cache()
 
     def upsert_by_intent(self, plan: TaskPlan) -> None:
-        """Replace the first plan with the same intent_key, merging counters.
+        """Insert or update *plan*, preserving multiple routes per intent.
 
-        Uses step-level health to decide between old and new plan:
+        1. If *plan* matches an existing plan's route (first 2 steps),
+           merge counters using the standard health-aware logic.
+        2. If *plan* represents a DIFFERENT route through the app,
+           append it as a new plan entry — the intent_key now has
+           multiple valid paths.
 
-        1. New plan healthy, old plan unhealthy → REPLACE (corrected plan
-           always wins over a known-broken plan, even if it has more steps).
-        2. New plan unhealthy, old plan healthy → KEEP old, count as failure.
-        3. Both healthy (or both unhealthy) → shorter plan wins.  When the
-           new plan is longer or equal, the old plan is kept and its success
-           counter is incremented.
-
-        When replacing, step-level success/fail counters are merged for
-        steps that match by action_type and action_args between old and new.
+        Multi-route: when the UI changes (popup vs no popup, different
+        search bar layout), each successful VLM run records its own
+        path.  On replay, the executor tries routes in score order.
         """
         plans = self.load()
-        replaced = False
+
+        # 1. Check if this is a new route or an update to an existing one
         for i, existing in enumerate(plans):
-            if existing.intent_key == plan.intent_key:
+            if (existing.intent_key == plan.intent_key
+                    and _is_same_route(plan, existing)):
+                # Same route — merge with health-aware logic
                 _new_healthy = plan_is_healthy(plan)
                 _old_healthy = plan_is_healthy(existing)
 
                 if _new_healthy and not _old_healthy:
-                    # New plan is healthy; old plan is known-broken.
-                    # Replace unconditionally — correctness over brevity.
                     plan.success_count += existing.success_count
                     plan.fail_count += existing.fail_count
                     plan.last_verified = max(plan.last_verified, existing.last_verified)
@@ -136,11 +165,8 @@ class PlanStore:
                     _merge_step_counters(plan, existing)
                     plans[i] = plan
                 elif not _new_healthy and _old_healthy:
-                    # New plan has a failing step; old plan is fine.
-                    # Do NOT replace — count this run as a failure.
                     existing.fail_count += 1
                 elif len(plan.steps) <= len(existing.steps):
-                    # Both healthy (or both unhealthy): shorter plan wins.
                     plan.success_count += existing.success_count
                     plan.fail_count += existing.fail_count
                     plan.last_verified = max(plan.last_verified, existing.last_verified)
@@ -148,14 +174,34 @@ class PlanStore:
                     _merge_step_counters(plan, existing)
                     plans[i] = plan
                 else:
-                    # Both similar health; new plan is longer — keep old.
                     existing.success_count += 1
                     existing.last_verified = max(existing.last_verified, time.time())
-                replaced = True
-                break
-        if not replaced:
-            plans.append(plan)
+                self._rewrite_all(plans)
+                return
+
+        # 2. No matching route — append as a new plan for this intent
+        plans.append(plan)
         self._rewrite_all(plans)
+
+    def find_all_healthy(
+        self, intent_key: str, min_success: int = 1,
+    ) -> list[TaskPlan]:
+        """Return all healthy plans for *intent_key*, sorted by score (best first).
+
+        Multi-route: the same task may have multiple valid UI paths.
+        The executor tries them in order and picks the one that works.
+        """
+        candidates = [
+            p for p in self.load()
+            if p.intent_key == intent_key
+            and p.success_count >= min_success
+            and plan_is_healthy(p)
+        ]
+        def _score(p: TaskPlan) -> float:
+            total = p.success_count + p.fail_count
+            return p.success_count / max(total, 1)
+        candidates.sort(key=_score, reverse=True)
+        return candidates
 
     def find_best(self, intent_key: str, min_success: int = 1) -> TaskPlan | None:
         """Return the highest-scored **healthy** plan for *intent_key*, or None.

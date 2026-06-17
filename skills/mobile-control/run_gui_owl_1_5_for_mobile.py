@@ -477,11 +477,14 @@ def main():
             ap, instruction, adb_tools,
             resolver_api_key, resolver_base_url, resolver_model,
         )
-        # Auto-promotion: when a plan exists with 2+ successful completions,
+        # Auto-promotion: when plans exist with 2+ successful completions,
         # switch to plan replay regardless of the explicit mode.  This means
         # the first 1-2 runs use the VLM normally, and subsequent runs skip
         # the VLM entirely.
+        # Multi-route: if multiple plans exist for this intent (different
+        # UI paths), tries them in score order until one works.
         _plan_found = _plan_executor.find_plan(_canonical_intent_key)
+        _plan_candidates = _plan_executor.find_plans(_canonical_intent_key)
         _auto_promote = (
             _plan_found is not None
             and _plan_found.success_count >= 2
@@ -490,17 +493,25 @@ def main():
         )
 
         if args.memory_replay_mode == "plan" or _auto_promote:
-            if _plan_found:
-                _plan_executor.start_replay(_plan_found)
-                _plan_replay_active = True
-                _plan_intent_key = _canonical_intent_key
-                _tag = " [AUTO-PROMOTED]" if _auto_promote and args.memory_replay_mode != "plan" else ""
-                _log_t(
-                    f"[PLAN] replay started{_tag}: intent_key={_canonical_intent_key} "
-                    f"steps={len(_plan_found.steps)} "
-                    f"success_count={_plan_found.success_count} "
-                    f"fail_count={_plan_found.fail_count}"
+            if _plan_candidates:
+                _plan_replay_active = _plan_executor.try_replay_plans(
+                    _canonical_intent_key,
                 )
+                _plan_intent_key = _canonical_intent_key
+                if _plan_replay_active and _plan_executor.replay_plan:
+                    _rp = _plan_executor.replay_plan
+                    _tag = " [AUTO-PROMOTED]" if _auto_promote and args.memory_replay_mode != "plan" else ""
+                    _log_t(
+                        f"[PLAN] replay started{_tag}: intent_key={_canonical_intent_key} "
+                        f"steps={len(_rp.steps)} "
+                        f"success_count={_rp.success_count} "
+                        f"fail_count={_rp.fail_count}"
+                    )
+                else:
+                    _log_t(
+                        f"[PLAN] no viable plan for intent_key={_canonical_intent_key} "
+                        "— will record a new plan if this run succeeds"
+                    )
             else:
                 _log_t(
                     f"[PLAN] no stored plan for intent_key={_canonical_intent_key} "
