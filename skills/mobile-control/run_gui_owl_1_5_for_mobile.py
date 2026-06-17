@@ -1317,8 +1317,7 @@ def main():
                             f"</tool_call>"
                         )
                         print(f"[DRIVING] supervisor action: "
-                              f"{action_parameter.get('action')} "
-                              f"{str(action_parameter.get('coordinate', action_parameter.get('text', '')))[:80]}")
+                              f"{json.dumps(action_parameter, ensure_ascii=False)[:200]}")
                         _provider_used = "supervisor-driving"
                         _step_metrics["vlm_primary"] = 0.0
                         _step_metrics["vlm_fallback"] = 0.0
@@ -2453,6 +2452,10 @@ def main():
                             _plan_crop_b64 = base64.b64encode(
                                 _buf.getvalue(),
                             ).decode("ascii")
+                            print(f"[PLAN REC] crop captured: "
+                                  f"{_right - _left}x{_bottom - _top}px "
+                                  f"at ({_cx},{_cy}) "
+                                  f"({len(_plan_crop_b64)} chars b64)")
                     except Exception:
                         pass
 

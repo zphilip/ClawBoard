@@ -104,13 +104,18 @@ def _template_match_crop(
         _, max_val, _, max_loc = cv2.minMaxLoc(result)
 
         if max_val < confidence_threshold:
+            print(f"[PLAN] crop match failed: best confidence={max_val:.3f} "
+                  f"< threshold={confidence_threshold} "
+                  f"(crop={crop.shape[1]}x{crop.shape[0]}px)")
             return None
 
         h, w = crop.shape[:2]
         cx = max_loc[0] + w // 2
         cy = max_loc[1] + h // 2
+        print(f"[PLAN] crop match confidence={max_val:.3f} at ({cx},{cy})")
         return (cx, cy)
-    except Exception:
+    except Exception as _e:
+        print(f"[PLAN] crop match error: {_e}")
         return None
 
 

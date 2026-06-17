@@ -79,7 +79,7 @@ def _ts() -> str:
 # Prefixes worth showing (plan replay, supervisor decisions, trust scoring).
 # Everything else (timing, ADB, UI dump, coordinate debug) is suppressed.
 _PLAN_STDERR_PREFIXES = (
-    "[PLAN]", "[TRUST SCORE]", "[SUPERVISOR] overriding",
+    "[PLAN]", "[PLAN REC]", "[TRUST SCORE]", "[SUPERVISOR] overriding",
     "[SUPERVISOR] approved", "[SUPERVISOR] override rejected",
     "[SUPERVISOR] sending screenshot", "[SUPERVISOR] validate attempt",
     "[SUPERVISOR] error", "[SUPERVISOR] timeout",
