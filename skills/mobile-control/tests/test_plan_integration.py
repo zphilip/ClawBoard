@@ -93,6 +93,7 @@ _PLAN_STDERR_PREFIXES = (
     "[VLM] provider used:", "[VLM] primary attempt",
     "[MODEL OUTPUT]", "[INPUT] ❌", "[INPUT] ✅",
     "[ACTION EXEC] ❌ TYPE FAILED",
+    "[LOOP]", "[ACTION EXEC] RULE override", "[ACTION EXEC] LOOP recovery",
 )
 
 

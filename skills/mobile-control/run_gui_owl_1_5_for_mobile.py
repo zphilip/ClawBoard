@@ -520,6 +520,8 @@ def main():
     # Rolling window of the last 5 click coordinates.
     # Used to detect a stuck loop (same coordinate tapped 3+ times in a row).
     _recent_click_coords: list[tuple] = []
+    _same_bare_action_count = 0        # state-independent repeat detector
+    _last_bare_action_sig = ""
     _last_state_action_sig = ""
     _same_state_action_count = 0
     _last_state_action_relaxed_sig = ""
@@ -1476,6 +1478,19 @@ def main():
         _bucketed_sig = bucketed_action_sig(_step_action_type, _step_action_args)
         _step_state_action_relaxed_sig = f"{_step_state_key}|{_bucketed_sig}"
 
+        # Bare action repeat detector — same action repeated regardless of
+        # UI state changes.  Catches VLM loops where it clicks the same spot
+        # over and over even as the screen shifts slightly (animations, loads).
+        if _bucketed_sig and _bucketed_sig == _last_bare_action_sig:
+            _same_bare_action_count += 1
+        else:
+            _same_bare_action_count = 1
+            _last_bare_action_sig = _bucketed_sig
+        if _same_bare_action_count >= 4:
+            print(f"[LOOP] bare action repeat x{_same_bare_action_count}: "
+                  f"{_step_action_type} {_step_action_args} — forcing recovery")
+            _loop_recovery_relaunch = True
+
         # State-action loop detector: same scene + same action repeated several times.
         if _step_state_action_sig and _step_state_action_sig == _last_state_action_sig:
             _same_state_action_count += 1
@@ -1641,6 +1656,8 @@ def main():
                         # Continue with normal flow even if recovery fails
                 # Reset loop detectors after explicit recovery to avoid
                 # repeatedly triggering on stale pre-recovery signatures.
+                _last_bare_action_sig = ""
+                _same_bare_action_count = 0
                 _last_state_action_sig = ""
                 _same_state_action_count = 0
                 _last_state_action_relaxed_sig = ""
