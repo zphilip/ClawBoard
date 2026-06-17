@@ -79,21 +79,35 @@ def _ts() -> str:
 # Prefixes worth showing (plan replay, supervisor decisions, trust scoring).
 # Everything else (timing, ADB, UI dump, coordinate debug) is suppressed.
 _PLAN_STDERR_PREFIXES = (
-    "[PLAN]", "[PLAN REC]", "[TRUST SCORE]", "[SUPERVISOR] overriding",
-    "[SUPERVISOR] approved", "[SUPERVISOR] override rejected",
+    # Plan replay & recording
+    "[PLAN]", "[PLAN REC]", "[PLAN REPLAY ACTION]",
+    "[PLAN] ⚠️",  # plan exhausted but task incomplete
+    # Supervisor decisions
+    "[SUPERVISOR] overriding", "[SUPERVISOR] approved",
+    "[SUPERVISOR] override rejected", "[SUPERVISOR] skipped",
     "[SUPERVISOR] sending screenshot", "[SUPERVISOR] validate attempt",
     "[SUPERVISOR] error", "[SUPERVISOR] timeout",
-    "[DRIVING]",  # supervisor driving mode
     "[SUPERVISOR] periodic", "[SUPERVISOR] task confirmed",
+    "[SUPERVISOR] coord check skipped",
+    # Driving mode
+    "[DRIVING]", "[DRIVING] action rejected",
+    # Memory
     "[MEMORY] enforce", "[MEMORY] pre-LLM fastpath",
     "[MEMORY] post-LLM confirmation",
-    "[STEP SUMMARY]", "[STEP ACTION]",
+    # Step lifecycle
+    "[STEP SUMMARY]", "[STEP ACTION]", "[STEP END]",
+    # Warnings & recovery
     "[WARN]", "[PARSE LOOP]", "[TERMINATED]",
-    "============",  # step separators
+    "[BLOCKED]", "[LOOP]",
+    "[ACTION EXEC] ❌ TYPE FAILED", "[ACTION EXEC] RULE override",
+    "[ACTION EXEC] LOOP recovery",
+    # VLM
     "[VLM] provider used:", "[VLM] primary attempt",
-    "[MODEL OUTPUT]", "[INPUT] ❌", "[INPUT] ✅",
-    "[ACTION EXEC] ❌ TYPE FAILED",
-    "[LOOP]", "[ACTION EXEC] RULE override", "[ACTION EXEC] LOOP recovery",
+    "[MODEL OUTPUT]",
+    # Input
+    "[INPUT] ❌", "[INPUT] ✅",
+    # Step separators
+    "============",
 )
 
 
@@ -614,7 +628,7 @@ class IntegrationTestRunner:
         for task_idx, task in enumerate(tasks):
             for rep in range(repeat):
                 run_idx += 1
-                label = f"task{task_idx}_{task[:12]}_rep{rep}"
+                label = f"task{task_idx}_{task.strip()[:12]}_rep{rep}"
 
                 # ── Reset device BEFORE each run ───────────────────
                 # Skip the very first run if the device is already at a
