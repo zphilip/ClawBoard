@@ -2534,6 +2534,7 @@ def main():
     _run_succeeded = termination_reason in (
         "answer_confirmed_complete",
         "plan_replay_complete",
+        "proactive_completion_check",
     ) or termination_reason.startswith("terminate_action")
 
     if _plan_executor is not None:
