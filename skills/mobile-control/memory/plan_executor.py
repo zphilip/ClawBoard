@@ -69,6 +69,31 @@ if TYPE_CHECKING:
     from utils import AdbTools  # pragma: no cover
 
 
+def _screenshots_differ(
+    pre_path: str, post_path: str, *, threshold: float = 0.03,
+) -> bool:
+    """Return True when *post_path* is visually different from *pre_path*.
+
+    Uses a downscaled pixel-difference metric (not UI fingerprint) so it
+    works on WebView / canvas content that has no accessibility tree.
+    Fast enough to run on every plan-replayed step (~10 ms).
+    """
+    try:
+        from PIL import Image
+        import numpy as np
+
+        pre = Image.open(pre_path).convert("L").resize((64, 64))
+        post = Image.open(post_path).convert("L").resize((64, 64))
+
+        pre_arr = np.array(pre, dtype=np.float32)
+        post_arr = np.array(post, dtype=np.float32)
+
+        diff = np.abs(pre_arr - post_arr).mean() / 255.0
+        return diff > threshold
+    except Exception:
+        return True  # on error, assume change (safe: lets step pass)
+
+
 def _template_match_crop(
     screenshot_path: str, crop_b64: str, confidence_threshold: float = 0.60,
 ) -> tuple[int, int] | None:
@@ -494,28 +519,40 @@ class PlanExecutor:
                 self.end_replay()
             return False
 
-        # Verification layer 2: post-action screenshot
-        if self._screenshot_dir is not None:
+        # Verification layer 2: post-action screenshot (for visual check
+        # and debugging).  Always captured for crop-matched steps so the
+        # visual change detector can compare before/after screenshots.
+        post_screenshot_path = ""
+        if self._screenshot_dir is not None or _crop_matched:
             try:
-                self._screenshot_dir.mkdir(parents=True, exist_ok=True)
-                _ts = int(time.time() * 1000)
-                post_screenshot_path = str(
-                    self._screenshot_dir / f"plan_step_{step.step_index}_{_ts}.png"
-                )
+                if self._screenshot_dir is not None:
+                    self._screenshot_dir.mkdir(parents=True, exist_ok=True)
+                    _ts = int(time.time() * 1000)
+                    post_screenshot_path = str(
+                        self._screenshot_dir
+                        / f"plan_step_{step.step_index}_{_ts}.png"
+                    )
+                else:
+                    import tempfile
+                    _tmp = tempfile.NamedTemporaryFile(
+                        suffix=".png", delete=False,
+                    )
+                    post_screenshot_path = _tmp.name
+                    _tmp.close()
                 self.adb.get_screenshot(post_screenshot_path)
             except Exception:
-                pass
+                post_screenshot_path = ""
 
         # Verification layer 3: UI fingerprint comparison.
         # SKIP for:
         #   - Home/Back           (launcher screens differ every run)
         #   - open                (post-launch ads / splash screens differ)
         #   - element-based match (element lookup IS verification)
-        # Crop-matched clicks are NOT skipped — template matching can
-        # produce false positives that the fingerprint check catches.
+        #   - crop-matched clicks (use visual change detector instead —
+        #     fingerprint is too strict for dynamic content like WebView)
         ui_fp_ok = True
         _skip_fp_check = (
-            (_element_matched and not _crop_matched)
+            _element_matched  # both element + crop match skip fingerprint
             or step.action_type in ("open", "type")
             or (
                 step.action_type == "system_button"
@@ -531,6 +568,27 @@ class PlanExecutor:
                     ui_fp_ok = False
             except Exception:
                 ui_fp_ok = False
+
+        # Verification layer 3b: visual change detector for crop-matched
+        # clicks.  Uses downscaled pixel comparison instead of UI
+        # fingerprint — works on WebView/canvas and tolerates dynamic
+        # content (ads, recommendations) that changes between runs.
+        visual_change_ok = True
+        if _crop_matched and screenshot_path and post_screenshot_path:
+            if not _screenshots_differ(screenshot_path, post_screenshot_path):
+                visual_change_ok = False
+                print(
+                    "[PLAN] visual check: screen unchanged after "
+                    "crop-matched click — likely dead click"
+                )
+            else:
+                print("[PLAN] visual check: screen changed — click had effect")
+        # Clean up temp screenshot
+        if post_screenshot_path and self._screenshot_dir is None:
+            try:
+                Path(post_screenshot_path).unlink(missing_ok=True)
+            except Exception:
+                pass
 
         # For type actions: extra check — did new interactive elements appear?
         type_ok = True
@@ -549,7 +607,7 @@ class PlanExecutor:
             except Exception:
                 pass
 
-        verified = pkg_ok and ui_fp_ok and type_ok
+        verified = pkg_ok and ui_fp_ok and type_ok and visual_change_ok
 
         # Build detail string for logging
         _parts = []
