@@ -291,6 +291,7 @@ def _run_agent(instruction: str, extra_args: str = "", timeout: int = 600,
     print(f"[TEST] Elapsed: {elapsed:.0f}s  Exit: {rc}")
 
     if result_obj is not None:
+        result_obj.setdefault("_elapsed", elapsed)
         return result_obj
 
     # Fallback: scan captured lines for a result
@@ -645,6 +646,7 @@ class IntegrationTestRunner:
                 print(f"[PLAN Δ] {delta}")
 
                 # Log
+                _elapsed = result.get("_elapsed", 0)
                 entry = {
                     "run": run_idx,
                     "task": task,
@@ -652,11 +654,12 @@ class IntegrationTestRunner:
                     "timestamp": _ts(),
                     "status": result.get("status"),
                     "steps": result.get("steps"),
+                    "elapsed": _elapsed,
                     "last_action": result.get("last_action"),
                     "message": result.get("message", ""),
                 }
                 self.run_log.append(entry)
-                print(f"[TEST RESULT] status={result.get('status')} steps={result.get('steps')}")
+                print(f"[TEST RESULT] status={result.get('status')} steps={result.get('steps')} elapsed={_elapsed:.0f}s")
 
                 # Validate after each run (skip in compact mode — done at end)
                 if not self.compact:
@@ -684,16 +687,29 @@ class IntegrationTestRunner:
         print(sep)
 
         # Per-task summary
-        print(f"\n{'Task':<36} {'Runs':>4} {'OK':>4} {'FAIL':>4} {'Steps':>6} {'Plan?':>6}")
-        print("-" * 65)
+        print(f"\n{'Task':<32} {'Run':>4} {'Status':>8} {'Steps':>6} {'Time':>7} {'Plan Δ':>30}")
+        print("-" * 95)
+        for r in self.run_log:
+            task_short = r["task"][:30]
+            status = r.get("status", "?")[:8]
+            steps = r.get("steps", "?")
+            elapsed = r.get("elapsed", 0)
+            time_str = f"{elapsed:.0f}s" if elapsed else "?"
+            # Find delta for this run (computed earlier — not in log, skip)
+            print(f"{task_short:<32} {r['run']:>4} {status:>8} {str(steps):>6} {time_str:>7}")
+
+        # Timing trend: first vs last run per task
+        print(f"\n{'─'*60}")
+        print("TIMING TREND (plan cache should make replays faster)")
+        print(f"{'─'*60}")
         for task in tasks:
             task_runs = [r for r in self.run_log if r["task"] == task]
-            n_ok = sum(1 for r in task_runs if r["status"] == "success")
-            n_fail = sum(1 for r in task_runs if r["status"] in ("error", "parse_failed"))
-            avg_steps = (
-                sum(r["steps"] for r in task_runs if isinstance(r["steps"], int)) / max(len(task_runs), 1)
-            )
-            print(f"{task[:34]:<36} {len(task_runs):>4} {n_ok:>4} {n_fail:>4} {avg_steps:>5.0f}")
+            if len(task_runs) >= 2:
+                first_t = task_runs[0].get("elapsed", 0)
+                last_t = task_runs[-1].get("elapsed", 0)
+                delta_t = first_t - last_t
+                trend = "📈 faster" if delta_t > 0 else ("📉 slower" if delta_t < 0 else "➡️  same")
+                print(f"  {task[:40]:<42} {first_t:.0f}s → {last_t:.0f}s  Δ={delta_t:+.0f}s  {trend}")
 
         # Plan store state
         store = _load_store()
