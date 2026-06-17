@@ -2335,7 +2335,31 @@ def main():
             print("[INFO] User action noted. Resuming...")
 
         else:
-            print(f"[WARN] Unsupported action type: {action_type}")
+            _consecutive_parse_failures += 1
+            print(f"[WARN] Unsupported action type: {action_type!r} "
+                  f"(#{_consecutive_parse_failures})")
+            _unsupported_hint = (
+                "Action: I proposed an unsupported action type "
+                f"({action_type!r}). I must use one of: "
+                "click, long_press, type, scroll, swipe, "
+                "system_button, open, wait, answer, terminate.\n"
+                "<tool_call>\n"
+                '{"name": "mobile_use", "arguments": '
+                '{"action": "wait", "time": 1}}\n'
+                "</tool_call>"
+            )
+            history.append({"output": _unsupported_hint, "image": screenshot_path})
+            _emit_step_summary("unsupported_action")
+            # Same recovery as parse failures — trim context if looping
+            if _consecutive_parse_failures >= 4:
+                print("[PARSE LOOP] clearing history entirely to recover context")
+                history.clear()
+                _consecutive_parse_failures = 0
+            elif _consecutive_parse_failures >= 2:
+                print(f"[PARSE LOOP] trimming history from {len(history)} to 3")
+                history[:] = history[-3:] if len(history) > 3 else history
+            time.sleep(1)
+            continue
 
         # 5b. Proactive task-completion check: when the supervisor overrides
         # an action because the VLM is going against the task goal, the task

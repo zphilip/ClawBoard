@@ -87,7 +87,7 @@ _PLAN_STDERR_PREFIXES = (
     "[MEMORY] enforce", "[MEMORY] pre-LLM fastpath",
     "[MEMORY] post-LLM confirmation",
     "[STEP SUMMARY]", "[STEP ACTION]",
-    "[WARN]", "[TERMINATED]",
+    "[WARN]", "[PARSE LOOP]", "[TERMINATED]",
     "============",  # step separators
     "[VLM] provider used:", "[VLM] primary attempt",
     "[MODEL OUTPUT]", "[INPUT] ❌", "[INPUT] ✅",
