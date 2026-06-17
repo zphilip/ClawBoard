@@ -313,6 +313,8 @@ def _run_agent(instruction: str, extra_args: str = "", timeout: int = 600,
             "debug": {"last_stderr": "\n".join(captured_stderr[-20:])},
         }
 
+    # Ensure elapsed is always present (timeout/error paths may miss it)
+    result_obj.setdefault("_elapsed", elapsed)
     return result_obj
 
 
@@ -704,12 +706,17 @@ class IntegrationTestRunner:
         print(f"{'─'*60}")
         for task in tasks:
             task_runs = [r for r in self.run_log if r["task"] == task]
-            if len(task_runs) >= 2:
-                first_t = task_runs[0].get("elapsed", 0)
-                last_t = task_runs[-1].get("elapsed", 0)
+            ok_runs = [r for r in task_runs if r.get("elapsed", 0) > 0]
+            if len(ok_runs) >= 2:
+                first_t = ok_runs[0]["elapsed"]
+                last_t = ok_runs[-1]["elapsed"]
                 delta_t = first_t - last_t
                 trend = "📈 faster" if delta_t > 0 else ("📉 slower" if delta_t < 0 else "➡️  same")
                 print(f"  {task[:40]:<42} {first_t:.0f}s → {last_t:.0f}s  Δ={delta_t:+.0f}s  {trend}")
+            elif ok_runs:
+                print(f"  {task[:40]:<42} {ok_runs[0]['elapsed']:.0f}s  (only 1 completed run)")
+            else:
+                print(f"  {task[:40]:<42} no completed runs")
 
         # Plan store state
         store = _load_store()
