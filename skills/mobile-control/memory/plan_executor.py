@@ -309,7 +309,7 @@ class PlanExecutor:
         candidates = self.store.find_all_healthy(intent_key, min_success=1)
         return [
             p for p in candidates
-            if (p.success_count / max(p.success_count + p.fail_count, 1)) >= 0.6
+            if (p.success_count / (p.success_count + p.fail_count + 1)) >= 0.5
         ]
 
     def try_replay_plans(
@@ -337,7 +337,7 @@ class PlanExecutor:
             print(
                 f"[PLAN] trying route #{_tried}/"
                 f"{min(len(_candidates), max_tries)} "
-                f"(score={_plan.success_count / max(_plan.success_count + _plan.fail_count, 1):.2f}, "
+                f"(score={_plan.success_count / (_plan.success_count + _plan.fail_count + 1):.2f}, "
                 f"{len(_plan.steps)} steps)"
             )
             self.start_replay(_plan)

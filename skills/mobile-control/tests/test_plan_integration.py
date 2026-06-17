@@ -458,7 +458,7 @@ def _print_plan_summary(store: PlanStore, intent_key: str | None = None) -> None
     for key, group in by_key.items():
         for i, p in enumerate(group):
             total = p.success_count + p.fail_count
-            score = p.success_count / max(total, 1)
+            score = p.success_count / (p.success_count + p.fail_count + 1)
             healthy = "✓" if plan_is_healthy(p) else "✗"
             step_info = ", ".join(
                 f"s{s.step_index}(+{s.success_count}/-{s.fail_count})"
@@ -579,7 +579,7 @@ def validate_plan_invariants(store: PlanStore) -> list[ValidationResult]:
     for p in plans:
         prefix = f"[{p.intent_key[:12]}]"
         total = p.success_count + p.fail_count
-        score = p.success_count / max(total, 1)
+        score = p.success_count / (p.success_count + p.fail_count + 1)
         found = executor.find_plan(p.intent_key)
 
         if score < 0.6 or not plan_is_healthy(p):
@@ -757,7 +757,7 @@ class IntegrationTestRunner:
         for p in plans:
             healthy = plan_is_healthy(p)
             total = p.success_count + p.fail_count
-            score = p.success_count / max(total, 1)
+            score = p.success_count / (p.success_count + p.fail_count + 1)
             step_health = [
                 f"s{s.step_index}(+{s.success_count}/-{s.fail_count})"
                 for s in p.steps

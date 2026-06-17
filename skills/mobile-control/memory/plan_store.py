@@ -198,8 +198,10 @@ class PlanStore:
             and plan_is_healthy(p)
         ]
         def _score(p: TaskPlan) -> float:
-            total = p.success_count + p.fail_count
-            return p.success_count / max(total, 1)
+            # Pseudocount of 1 prevents new plans (1 success) from tying
+            # with proven plans (10+ successes).  Range: 0.0 → ~1.0
+            #   1/0 → 0.50   2/0 → 0.67   5/0 → 0.83   10/0 → 0.91
+            return p.success_count / (p.success_count + p.fail_count + 1)
         candidates.sort(key=_score, reverse=True)
         return candidates
 
@@ -220,8 +222,7 @@ class PlanStore:
             return None
 
         def _score(p: TaskPlan) -> float:
-            total = p.success_count + p.fail_count
-            return p.success_count / max(total, 1)
+            return p.success_count / (p.success_count + p.fail_count + 1)
 
         candidates.sort(key=_score, reverse=True)
         return candidates[0]
