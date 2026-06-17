@@ -968,6 +968,32 @@ def main():
                         pass
                     _emit_step_summary("plan_replay_completed")
                     _log_t(f"[STEP END] step={step_id} total={time.time() - _step_t0:.2f}s")
+                    # Periodic task-complete check during plan replay.
+                    # The 'continue' below skips the normal post-action
+                    # checks, so we run this check inline.
+                    if (supervisor is not None
+                            and step_id > 0
+                            and step_id % 3 == 0):
+                        try:
+                            print(f"[SUPERVISOR] periodic task-complete check (step {step_id})")
+                            _pc = supervisor.is_task_complete(
+                                task=instruction,
+                                fg_label=_fg_label,
+                                ui_summary=_ui_summary,
+                                history=history,
+                                conclusion=f"Plan replay step {step_id}/{len(_plan_executor.replay_plan.steps)}",
+                                screenshot_path=str(screenshot_path),
+                                force_vision=True,
+                            )
+                            if _pc.get("complete", False):
+                                print("[SUPERVISOR] periodic check — task already complete")
+                                print("[TERMINATED] Task completed.")
+                                termination_reason = "proactive_completion_check"
+                                _plan_executor.end_replay()
+                                time.sleep(1)
+                                break
+                        except Exception:
+                            pass
                     # Check if plan is now exhausted (all steps done)
                     if _plan_executor.next_step() is None:
                         # All cached steps replayed.  Ask the supervisor
