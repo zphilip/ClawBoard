@@ -28,7 +28,7 @@ from PIL import Image
 from packages import PACKAGES_NAME_DICT, NAME_PACKAGE_DICT, normalize_package_name
 from memory.logger import MemoryEventLogger
 from memory.models import ActionCandidate, DecisionInput, MemoryRecord, StateSignature
-from memory.plan_executor import PlanExecutor
+from memory.plan_executor import PlanExecutor, _compute_screen_hash
 from memory.plan_store import PlanStore, plan_is_healthy
 from memory.policy import MemoryPolicy, NON_CACHEABLE_ACTIONS
 from memory.signature import (
@@ -2531,6 +2531,17 @@ def main():
                     except Exception:
                         pass
 
+                # Compute pre-action screen hash for visual state matching
+                # during replay — more permissive than UI fingerprint.
+                _plan_screen_hash = ""
+                if _step_action_type == "click" and screenshot_path:
+                    try:
+                        _plan_screen_hash = _compute_screen_hash(
+                            screenshot_path,
+                        )
+                    except Exception:
+                        pass
+
                 _plan_executor.record_step(
                     step_index=step_id,
                     action_type=_step_action_type,
@@ -2542,6 +2553,7 @@ def main():
                     pre_action_ui_fp=_step_ui_fp,
                     target_element_signature=_plan_target_el,
                     crop_b64=_plan_crop_b64,
+                    screen_hash=_plan_screen_hash,
                 )
             except Exception:
                 pass

@@ -103,6 +103,7 @@ class PlanStep:
     post_action_ui_fp: str = ""            # UI fingerprint AFTER this step
     target_element_signature: dict[str, Any] | None = None  # For element-based targeting
     target_element_crop_b64: str = ""       # base64 PNG crop ~120px around click point
+    pre_action_screen_hash: str = ""        # hex-encoded 8×8 grayscale hash of pre-click
     success_count: int = 0                 # times this step replayed successfully
     fail_count: int = 0                    # times this step failed during replay
 

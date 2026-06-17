@@ -69,29 +69,44 @@ if TYPE_CHECKING:
     from utils import AdbTools  # pragma: no cover
 
 
-def _screenshots_differ(
-    pre_path: str, post_path: str, *, threshold: float = 0.03,
-) -> bool:
-    """Return True when *post_path* is visually different from *pre_path*.
+def _compute_screen_hash(screenshot_path: str) -> str:
+    """Return a hex-encoded 8×8 perceptual hash of *screenshot_path*.
 
-    Uses a downscaled pixel-difference metric (not UI fingerprint) so it
-    works on WebView / canvas content that has no accessibility tree.
-    Fast enough to run on every plan-replayed step (~10 ms).
+    The hash is ~64 hex chars and captures the coarse visual structure
+    of the screen.  Two screenshots of the same app state (same screen,
+    different ads/recommendations) produce similar hashes; two different
+    screens produce very different hashes.
     """
     try:
         from PIL import Image
         import numpy as np
 
-        pre = Image.open(pre_path).convert("L").resize((64, 64))
-        post = Image.open(post_path).convert("L").resize((64, 64))
-
-        pre_arr = np.array(pre, dtype=np.float32)
-        post_arr = np.array(post, dtype=np.float32)
-
-        diff = np.abs(pre_arr - post_arr).mean() / 255.0
-        return diff > threshold
+        img = Image.open(screenshot_path).convert("L").resize((8, 8))
+        arr = np.array(img, dtype=np.uint8)
+        median = np.median(arr)
+        bits = (arr > median).flatten()
+        # Pack 8 bits per byte → hex string
+        packed = bytearray(
+            sum(int(b) << (7 - j) for j, b in enumerate(bits[i:i + 8]))
+            for i in range(0, 64, 8)
+        )
+        return packed.hex()
     except Exception:
-        return True  # on error, assume change (safe: lets step pass)
+        return ""
+
+
+def _screen_hashes_similar(h1: str, h2: str, max_distance: int = 8) -> bool:
+    """Return True when two screen hashes are similar enough."""
+    if not h1 or not h2 or len(h1) != len(h2):
+        return False
+    try:
+        b1 = bytes.fromhex(h1)
+        b2 = bytes.fromhex(h2)
+        # Hamming distance on the packed bytes
+        dist = sum(bin(a ^ b).count("1") for a, b in zip(b1, b2))
+        return dist <= max_distance
+    except Exception:
+        return False
 
 
 def _template_match_crop(
@@ -184,7 +199,7 @@ class RecordedStep:
         "step_index", "action_type", "action_args",
         "pre_action_pkg", "post_action_pkg", "action_description",
         "post_action_ui_fp", "pre_action_ui_fp", "target_element_signature",
-        "crop_b64",
+        "crop_b64", "screen_hash",
     )
 
     def __init__(
@@ -199,6 +214,7 @@ class RecordedStep:
         pre_action_ui_fp: str = "",
         target_element_signature: dict[str, Any] | None = None,
         crop_b64: str = "",
+        screen_hash: str = "",
     ):
         self.step_index = step_index
         self.action_type = action_type
@@ -210,6 +226,7 @@ class RecordedStep:
         self.pre_action_ui_fp = pre_action_ui_fp
         self.target_element_signature = target_element_signature
         self.crop_b64 = crop_b64
+        self.screen_hash = screen_hash
 
 
 def _step_is_duplicate(prev: "PlanStep", rec: "RecordedStep") -> bool:
@@ -454,10 +471,31 @@ class PlanExecutor:
                     )
             except Exception as _el_err:
                 print(f"[PLAN] element lookup error ({_el_err}) — trying crop match")
+        # ── Pre-action screen state check ───────────────────────────
+        # Before crop matching, verify the current screen is visually
+        # similar to the recorded pre-click screen.  More permissive
+        # than UI fingerprint (tolerates dynamic content), fails fast
+        # before wasting time on a click that can't work.
+        _screen_state_ok = True
+        if (not _element_matched
+                and step.action_type == "click"
+                and screenshot_path
+                and getattr(step, 'pre_action_screen_hash', '')):
+            _cur_hash = _compute_screen_hash(screenshot_path)
+            if _cur_hash and not _screen_hashes_similar(
+                _cur_hash, step.pre_action_screen_hash,
+            ):
+                _screen_state_ok = False
+                print(
+                    "[PLAN] pre-action screen hash mismatch — "
+                    "screen has changed, skipping step"
+                )
+
         # ── Screenshot crop template matching ────────────────────────
         # Runs when element matching was skipped (no sig) or failed.
         # Works on WebView/canvas content invisible to uiautomator.
-        if (not _element_matched
+        if (_screen_state_ok
+                and not _element_matched
                 and step.action_type == "click"
                 and screenshot_path):
             _crop = getattr(step, 'target_element_crop_b64', '')
@@ -519,40 +557,26 @@ class PlanExecutor:
                 self.end_replay()
             return False
 
-        # Verification layer 2: post-action screenshot (for visual check
-        # and debugging).  Always captured for crop-matched steps so the
-        # visual change detector can compare before/after screenshots.
-        post_screenshot_path = ""
-        if self._screenshot_dir is not None or _crop_matched:
+        # Verification layer 2: post-action screenshot (debugging)
+        if self._screenshot_dir is not None:
             try:
-                if self._screenshot_dir is not None:
-                    self._screenshot_dir.mkdir(parents=True, exist_ok=True)
-                    _ts = int(time.time() * 1000)
-                    post_screenshot_path = str(
-                        self._screenshot_dir
-                        / f"plan_step_{step.step_index}_{_ts}.png"
-                    )
-                else:
-                    import tempfile
-                    _tmp = tempfile.NamedTemporaryFile(
-                        suffix=".png", delete=False,
-                    )
-                    post_screenshot_path = _tmp.name
-                    _tmp.close()
-                self.adb.get_screenshot(post_screenshot_path)
+                self._screenshot_dir.mkdir(parents=True, exist_ok=True)
+                _ts = int(time.time() * 1000)
+                self.adb.get_screenshot(
+                    str(self._screenshot_dir
+                        / f"plan_step_{step.step_index}_{_ts}.png")
+                )
             except Exception:
-                post_screenshot_path = ""
+                pass
 
         # Verification layer 3: UI fingerprint comparison.
         # SKIP for:
         #   - Home/Back           (launcher screens differ every run)
         #   - open                (post-launch ads / splash screens differ)
-        #   - element-based match (element lookup IS verification)
-        #   - crop-matched clicks (use visual change detector instead —
-        #     fingerprint is too strict for dynamic content like WebView)
+        #   - element/crop match  (pre-action check already verified)
         ui_fp_ok = True
         _skip_fp_check = (
-            _element_matched  # both element + crop match skip fingerprint
+            _element_matched  # both element + crop match skip
             or step.action_type in ("open", "type")
             or (
                 step.action_type == "system_button"
@@ -568,27 +592,6 @@ class PlanExecutor:
                     ui_fp_ok = False
             except Exception:
                 ui_fp_ok = False
-
-        # Verification layer 3b: visual change detector for crop-matched
-        # clicks.  Uses downscaled pixel comparison instead of UI
-        # fingerprint — works on WebView/canvas and tolerates dynamic
-        # content (ads, recommendations) that changes between runs.
-        visual_change_ok = True
-        if _crop_matched and screenshot_path and post_screenshot_path:
-            if not _screenshots_differ(screenshot_path, post_screenshot_path):
-                visual_change_ok = False
-                print(
-                    "[PLAN] visual check: screen unchanged after "
-                    "crop-matched click — likely dead click"
-                )
-            else:
-                print("[PLAN] visual check: screen changed — click had effect")
-        # Clean up temp screenshot
-        if post_screenshot_path and self._screenshot_dir is None:
-            try:
-                Path(post_screenshot_path).unlink(missing_ok=True)
-            except Exception:
-                pass
 
         # For type actions: extra check — did new interactive elements appear?
         type_ok = True
@@ -607,7 +610,7 @@ class PlanExecutor:
             except Exception:
                 pass
 
-        verified = pkg_ok and ui_fp_ok and type_ok and visual_change_ok
+        verified = pkg_ok and ui_fp_ok and type_ok
 
         # Build detail string for logging
         _parts = []
@@ -708,6 +711,7 @@ class PlanExecutor:
         pre_action_ui_fp: str = "",
         target_element_signature: dict[str, Any] | None = None,
         crop_b64: str = "",
+        screen_hash: str = "",
     ) -> None:
         """Record a step executed during the current run for later plan creation."""
         if action_type not in _REPLAYABLE_ACTION_TYPES:
@@ -723,6 +727,7 @@ class PlanExecutor:
             pre_action_ui_fp=pre_action_ui_fp,
             target_element_signature=target_element_signature,
             crop_b64=crop_b64,
+            screen_hash=screen_hash,
         ))
 
     def repair_and_store_plan(
@@ -776,6 +781,7 @@ class PlanExecutor:
                         post_action_ui_fp=_rec.post_action_ui_fp,
                         target_element_signature=_rec.target_element_signature,
                         target_element_crop_b64=getattr(_rec, 'crop_b64', ''),
+                        pre_action_screen_hash=getattr(_rec, 'screen_hash', ''),
                         success_count=0,
                         fail_count=0,
                     ))
@@ -794,6 +800,7 @@ class PlanExecutor:
                     post_action_ui_fp=_old_step.post_action_ui_fp,
                     target_element_signature=_old_step.target_element_signature,
                     target_element_crop_b64=getattr(_old_step, 'target_element_crop_b64', ''),
+                    pre_action_screen_hash=getattr(_old_step, 'pre_action_screen_hash', ''),
                     success_count=1,
                     fail_count=0,
                 ))
@@ -821,6 +828,7 @@ class PlanExecutor:
                 post_action_ui_fp=_rec.post_action_ui_fp,
                 target_element_signature=_rec.target_element_signature,
                 target_element_crop_b64=getattr(_rec, 'crop_b64', ''),
+                pre_action_screen_hash=getattr(_rec, 'screen_hash', ''),
                 success_count=0,
                 fail_count=0,
             ))
@@ -890,6 +898,7 @@ class PlanExecutor:
                     post_action_ui_fp=rec.post_action_ui_fp,
                     target_element_signature=rec.target_element_signature,
                     target_element_crop_b64=getattr(rec, 'crop_b64', ''),
+                    pre_action_screen_hash=getattr(rec, 'screen_hash', ''),
                 )
                 continue
             plan_steps.append(PlanStep(
@@ -902,6 +911,7 @@ class PlanExecutor:
                 post_action_ui_fp=rec.post_action_ui_fp,
                 target_element_signature=rec.target_element_signature,
                 target_element_crop_b64=getattr(rec, 'crop_b64', ''),
+                pre_action_screen_hash=getattr(rec, 'screen_hash', ''),
             ))
 
         now = time.time()
