@@ -582,7 +582,7 @@ def validate_plan_invariants(store: PlanStore) -> list[ValidationResult]:
         score = p.success_count / (p.success_count + p.fail_count + 1)
         found = executor.find_plan(p.intent_key)
 
-        if score < 0.6 or not plan_is_healthy(p):
+        if score < 0.5 or not plan_is_healthy(p):
             results.append(ValidationResult(
                 f"{prefix} score<0.6 or unhealthy → find_plan returns None",
                 found is None,
