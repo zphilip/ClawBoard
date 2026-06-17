@@ -41,9 +41,7 @@ def plan_is_healthy(plan: TaskPlan) -> bool:
     2+ times OR has fail_count > success_count is unhealthy.
     """
     for step in plan.steps:
-        if step.fail_count >= 2:
-            return False
-        if step.fail_count > step.success_count:
+        if step.fail_count >= 2 and step.fail_count > step.success_count:
             return False
     return True
 
