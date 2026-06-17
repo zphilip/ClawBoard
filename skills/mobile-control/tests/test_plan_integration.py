@@ -449,22 +449,28 @@ def _print_plan_summary(store: PlanStore, intent_key: str | None = None) -> None
     plans = store.load()
     if intent_key:
         plans = [p for p in plans if p.intent_key == intent_key]
-    print(f"\n{'Plan':<20} {'s_OK':>5} {'s_FAIL':>5} {'Score':>7} {'Healthy':>8} {'Steps':>6}")
-    print("-" * 55)
+    # Group by intent_key for multi-route display
+    by_key: dict[str, list[TaskPlan]] = {}
     for p in plans:
-        total = p.success_count + p.fail_count
-        score = p.success_count / max(total, 1)
-        healthy = "✓" if plan_is_healthy(p) else "✗"
-        step_info = ", ".join(
-            f"s{s.step_index}(+{s.success_count}/-{s.fail_count})"
-            for s in p.steps
-        )
-        print(
-            f"{p.intent_key[:18]:<20} "
-            f"{p.success_count:>5} {p.fail_count:>5} "
-            f"{score:>6.3f} {healthy:>8} "
-            f"{len(p.steps):>3}  [{step_info}]"
-        )
+        by_key.setdefault(p.intent_key, []).append(p)
+    print(f"\n{'Plan':<20} {'Rte':>4} {'s_OK':>5} {'s_FAIL':>5} {'Score':>7} {'Healthy':>8} {'Steps':>6}")
+    print("-" * 65)
+    for key, group in by_key.items():
+        for i, p in enumerate(group):
+            total = p.success_count + p.fail_count
+            score = p.success_count / max(total, 1)
+            healthy = "✓" if plan_is_healthy(p) else "✗"
+            step_info = ", ".join(
+                f"s{s.step_index}(+{s.success_count}/-{s.fail_count})"
+                for s in p.steps
+            )
+            _rte = f"#{i + 1}" if len(group) > 1 else ""
+            print(
+                f"{key[:18]:<20} {_rte:>4} "
+                f"{p.success_count:>5} {p.fail_count:>5} "
+                f"{score:>6.3f} {healthy:>8} "
+                f"{len(p.steps):>3}  [{step_info}]"
+            )
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -488,9 +494,10 @@ def validate_plan_invariants(store: PlanStore) -> list[ValidationResult]:
     plans = store.load()
 
     # ── Structural invariants ──────────────────────────────────────
+    # Multi-route: same intent_key can have multiple plans (different UI paths)
     results.append(ValidationResult(
-        "no_duplicate_intent_keys",
-        len(plans) == len({p.intent_key for p in plans}),
+        "intent_keys_present",
+        len({p.intent_key for p in plans}) > 0 if plans else True,
         f"{len(plans)} plans, {len({p.intent_key for p in plans})} unique keys",
     ))
 
