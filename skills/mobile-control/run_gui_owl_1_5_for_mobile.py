@@ -17,6 +17,7 @@ import os
 import shutil
 import signal
 import subprocess
+import base64
 import time
 from datetime import datetime
 from pathlib import Path
@@ -883,7 +884,9 @@ def main():
                     f"{_plan_step.action_type} {_plan_step.action_args}"
                 )
                 _plan_pre_pkg = _fg_pkg or ""
-                _plan_ok = _plan_executor.execute_and_verify(_plan_step)
+                _plan_ok = _plan_executor.execute_and_verify(
+                    _plan_step, screenshot_path=screenshot_path,
+                )
                 _plan_elapsed = time.time() - _plan_t0
 
                 if _plan_ok:
@@ -2309,6 +2312,7 @@ def main():
                 # nearest element (often the root FrameLayout), producing a
                 # useless signature that never matches during replay.
                 _plan_target_el: dict | None = None
+                _plan_crop_b64: str = ""
                 if _step_action_type == "click" and _ui_xml:
                     try:
                         _coord = action_parameter.get("coordinate", [0, 0])
@@ -2316,6 +2320,29 @@ def main():
                             _plan_target_el = find_element_at_coordinates(
                                 _ui_xml, int(_coord[0]), int(_coord[1]),
                             )
+                    except Exception:
+                        pass
+                    # Also capture a screenshot crop around the click point
+                    # for template matching on replay — works even on
+                    # WebView/canvas pages where uiautomator sees nothing.
+                    try:
+                        _crop_size = 120  # px, centred on click point
+                        _cx = int(action_parameter.get("coordinate", [0, 0])[0])
+                        _cy = int(action_parameter.get("coordinate", [0, 0])[1])
+                        _img = Image.open(screenshot_path)
+                        _half = _crop_size // 2
+                        _left = max(0, _cx - _half)
+                        _top = max(0, _cy - _half)
+                        _right = min(_img.width, _cx + _half)
+                        _bottom = min(_img.height, _cy + _half)
+                        if _right > _left and _bottom > _top:
+                            _crop = _img.crop((_left, _top, _right, _bottom))
+                            import io as _io
+                            _buf = _io.BytesIO()
+                            _crop.save(_buf, format="PNG")
+                            _plan_crop_b64 = base64.b64encode(
+                                _buf.getvalue(),
+                            ).decode("ascii")
                     except Exception:
                         pass
 
@@ -2329,6 +2356,7 @@ def main():
                     post_action_ui_fp=_post_action_ui_fp,
                     pre_action_ui_fp=_step_ui_fp,
                     target_element_signature=_plan_target_el,
+                    crop_b64=_plan_crop_b64,
                 )
             except Exception:
                 pass

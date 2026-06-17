@@ -69,6 +69,51 @@ if TYPE_CHECKING:
     from utils import AdbTools  # pragma: no cover
 
 
+def _template_match_crop(
+    screenshot_path: str, crop_b64: str, confidence_threshold: float = 0.65,
+) -> tuple[int, int] | None:
+    """Try to locate *crop_b64* in *screenshot_path* via template matching.
+
+    Returns (centre_x, centre_y) in actual screen pixels when the best match
+    exceeds *confidence_threshold*, or None when no reliable match is found.
+
+    Used as a fallback when element-based targeting fails — the crop is a
+    small PNG region around the click point captured during plan recording.
+    Works on WebView/canvas content that is invisible to uiautomator.
+    """
+    try:
+        import base64
+        import cv2
+        import numpy as np
+
+        _crop_bytes = base64.b64decode(crop_b64)
+        _crop_arr = np.frombuffer(_crop_bytes, np.uint8)
+        crop = cv2.imdecode(_crop_arr, cv2.IMREAD_COLOR)
+        if crop is None:
+            return None
+
+        screen = cv2.imread(screenshot_path)
+        if screen is None:
+            return None
+
+        # Crop must be smaller than screen in both dimensions
+        if crop.shape[0] >= screen.shape[0] or crop.shape[1] >= screen.shape[1]:
+            return None
+
+        result = cv2.matchTemplate(screen, crop, cv2.TM_CCOEFF_NORMED)
+        _, max_val, _, max_loc = cv2.minMaxLoc(result)
+
+        if max_val < confidence_threshold:
+            return None
+
+        h, w = crop.shape[:2]
+        cx = max_loc[0] + w // 2
+        cy = max_loc[1] + h // 2
+        return (cx, cy)
+    except Exception:
+        return None
+
+
 # Actions that are safe to replay blindly.  Excludes passive / terminal /
 # user-dependent actions (same set as policy.NON_CACHEABLE_ACTIONS).
 _REPLAYABLE_ACTION_TYPES: frozenset[str] = frozenset({
@@ -109,6 +154,7 @@ class RecordedStep:
         "step_index", "action_type", "action_args",
         "pre_action_pkg", "post_action_pkg", "action_description",
         "post_action_ui_fp", "pre_action_ui_fp", "target_element_signature",
+        "crop_b64",
     )
 
     def __init__(
@@ -122,6 +168,7 @@ class RecordedStep:
         post_action_ui_fp: str = "",
         pre_action_ui_fp: str = "",
         target_element_signature: dict[str, Any] | None = None,
+        crop_b64: str = "",
     ):
         self.step_index = step_index
         self.action_type = action_type
@@ -132,6 +179,7 @@ class RecordedStep:
         self.post_action_ui_fp = post_action_ui_fp
         self.pre_action_ui_fp = pre_action_ui_fp
         self.target_element_signature = target_element_signature
+        self.crop_b64 = crop_b64
 
 
 def _step_is_duplicate(prev: "PlanStep", rec: "RecordedStep") -> bool:
@@ -301,7 +349,7 @@ class PlanExecutor:
             return None
         return self._replay_plan.steps[self._replay_cursor]
 
-    def execute_and_verify(self, step: PlanStep) -> bool:
+    def execute_and_verify(self, step: PlanStep, screenshot_path: str = "") -> bool:
         """Execute one plan step via ADB and verify the result.
 
         For click actions with a ``target_element_signature``, the
@@ -369,15 +417,33 @@ class PlanExecutor:
                         f"centre=({_cx},{_cy})"
                     )
                 else:
-                    print(
-                        "[PLAN] element NOT found on current screen "
-                        "— skipping step (screen has changed, stored coords are stale)"
-                    )
-                    self._failed_step_indices.add(step.step_index)
-                    self._consecutive_failures += 1
-                    if self._consecutive_failures >= _MAX_CONSECUTIVE_FAILURES:
-                        self.end_replay()
-                    return False
+                    # Element not found via accessibility tree.
+                    # Try screenshot-based template matching as fallback —
+                    # works on WebView/canvas content invisible to uiautomator.
+                    _matched = False
+                    if screenshot_path and getattr(step, 'target_element_crop_b64', ''):
+                        _tm = _template_match_crop(
+                            screenshot_path, step.target_element_crop_b64,
+                        )
+                        if _tm is not None:
+                            step.action_args["coordinate"] = [_tm[0], _tm[1]]
+                            _element_matched = True
+                            _matched = True
+                            print(
+                                f"[PLAN] crop match at ({_tm[0]},{_tm[1]}) "
+                                f"— template matching succeeded where element "
+                                f"lookup failed"
+                            )
+                    if not _matched:
+                        print(
+                            "[PLAN] element NOT found on current screen "
+                            "— skipping step (screen has changed, stored coords are stale)"
+                        )
+                        self._failed_step_indices.add(step.step_index)
+                        self._consecutive_failures += 1
+                        if self._consecutive_failures >= _MAX_CONSECUTIVE_FAILURES:
+                            self.end_replay()
+                        return False
             except Exception as _el_err:
                 print(f"[PLAN] element lookup error ({_el_err}) — skipping step")
                 self._failed_step_indices.add(step.step_index)
@@ -575,6 +641,7 @@ class PlanExecutor:
         post_action_ui_fp: str = "",
         pre_action_ui_fp: str = "",
         target_element_signature: dict[str, Any] | None = None,
+        crop_b64: str = "",
     ) -> None:
         """Record a step executed during the current run for later plan creation."""
         if action_type not in _REPLAYABLE_ACTION_TYPES:
@@ -589,6 +656,7 @@ class PlanExecutor:
             post_action_ui_fp=post_action_ui_fp,
             pre_action_ui_fp=pre_action_ui_fp,
             target_element_signature=target_element_signature,
+            crop_b64=crop_b64,
         ))
 
     def repair_and_store_plan(
@@ -641,6 +709,7 @@ class PlanExecutor:
                         pre_action_pkg=_rec.pre_action_pkg,
                         post_action_ui_fp=_rec.post_action_ui_fp,
                         target_element_signature=_rec.target_element_signature,
+                        target_element_crop_b64=getattr(_rec, 'crop_b64', ''),
                         success_count=0,
                         fail_count=0,
                     ))
@@ -658,6 +727,7 @@ class PlanExecutor:
                     pre_action_pkg=_old_step.pre_action_pkg,
                     post_action_ui_fp=_old_step.post_action_ui_fp,
                     target_element_signature=_old_step.target_element_signature,
+                    target_element_crop_b64=getattr(_old_step, 'target_element_crop_b64', ''),
                     success_count=1,
                     fail_count=0,
                 ))
@@ -684,6 +754,7 @@ class PlanExecutor:
                 pre_action_pkg=_rec.pre_action_pkg,
                 post_action_ui_fp=_rec.post_action_ui_fp,
                 target_element_signature=_rec.target_element_signature,
+                target_element_crop_b64=getattr(_rec, 'crop_b64', ''),
                 success_count=0,
                 fail_count=0,
             ))
@@ -752,6 +823,7 @@ class PlanExecutor:
                     pre_action_pkg=rec.pre_action_pkg,
                     post_action_ui_fp=rec.post_action_ui_fp,
                     target_element_signature=rec.target_element_signature,
+                    target_element_crop_b64=getattr(rec, 'crop_b64', ''),
                 )
                 continue
             plan_steps.append(PlanStep(
@@ -763,6 +835,7 @@ class PlanExecutor:
                 pre_action_pkg=rec.pre_action_pkg,
                 post_action_ui_fp=rec.post_action_ui_fp,
                 target_element_signature=rec.target_element_signature,
+                target_element_crop_b64=getattr(rec, 'crop_b64', ''),
             ))
 
         now = time.time()

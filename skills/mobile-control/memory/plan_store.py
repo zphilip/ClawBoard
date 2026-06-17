@@ -256,6 +256,7 @@ def _serialise_plan(plan: TaskPlan) -> dict[str, Any]:
                 "pre_action_pkg": s.pre_action_pkg,
                 "post_action_ui_fp": s.post_action_ui_fp,
                 "target_element_signature": s.target_element_signature,
+                "target_element_crop_b64": s.target_element_crop_b64,
                 "success_count": s.success_count,
                 "fail_count": s.fail_count,
             }
@@ -281,6 +282,7 @@ def _deserialise_plan(obj: dict[str, Any]) -> TaskPlan:
             pre_action_pkg=s.get("pre_action_pkg", ""),
             post_action_ui_fp=s.get("post_action_ui_fp", ""),
             target_element_signature=s.get("target_element_signature"),
+            target_element_crop_b64=s.get("target_element_crop_b64", ""),
             success_count=int(s.get("success_count", 0)),
             fail_count=int(s.get("fail_count", 0)),
         )
