@@ -263,6 +263,7 @@ class PlanExecutor:
         ui_summariser: Any = None,  # callable(xml) -> summary string (optional)
         ui_fp_builder: Any = None,  # callable(pkg, summary) -> fp string (optional)
         screenshot_dir: str | Path = "",  # where to save post-action screenshots
+        verify_mode: str = "crop",  # "crop" or "crop+hash"
     ):
         self.store = store
         self.adb = adb_tools
@@ -270,6 +271,7 @@ class PlanExecutor:
         self._ui_summariser = ui_summariser
         self._ui_fp_builder = ui_fp_builder
         self._screenshot_dir = Path(screenshot_dir) if screenshot_dir else None
+        self._verify_mode = verify_mode
 
         # Replay state (reset per run)
         self._replay_plan: TaskPlan | None = None
@@ -471,12 +473,12 @@ class PlanExecutor:
             except Exception as _el_err:
                 print(f"[PLAN] element lookup error ({_el_err}) — trying crop match")
         # ── Pre-action screen state check ───────────────────────────
-        # Before crop matching, verify the current screen is visually
-        # similar to the recorded pre-click screen.  More permissive
-        # than UI fingerprint (tolerates dynamic content), fails fast
-        # before wasting time on a click that can't work.
+        # Only active with --plan-verify crop+hash.  Verifies the
+        # current screen is visually similar to the recorded pre-click
+        # screen before attempting crop matching.
         _screen_state_ok = True
-        if (not _element_matched
+        if (self._verify_mode == "crop+hash"
+                and not _element_matched
                 and step.action_type == "click"
                 and screenshot_path
                 and getattr(step, 'pre_action_screen_hash', '')):

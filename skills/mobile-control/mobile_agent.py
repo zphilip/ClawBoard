@@ -810,6 +810,7 @@ def run_agent(
     memory_store: str = "",
     memory_replay_mode: str = "sequential",
     plan_store: str = "",
+    plan_verify: str = "crop",
 ) -> dict:
     """
     Launch run_gui_owl_1_5_for_mobile.py in a subprocess, monitor its output,
@@ -841,6 +842,8 @@ def run_agent(
         cmd += ["--memory-store", memory_store]
     if plan_store:
         cmd += ["--plan-store", plan_store]
+    if plan_verify:
+        cmd += ["--plan-verify", plan_verify]
 
     # Redact API keys in log output for security
     cmd_for_logging = cmd.copy()
@@ -1178,6 +1181,9 @@ def parse_args() -> argparse.Namespace:
                         "plan (replay entire task-level plans without LLM calls).")
     p.add_argument("--plan-store", default="",
                    help="Path to task plan JSONL store (defaults to memory_data/plans.jsonl).")
+    p.add_argument("--plan-verify", choices=["crop", "crop+hash"], default="crop",
+                   help="Plan replay verification: crop (template matching only, "
+                        "default) or crop+hash (also check pre-action screen hash).")
     p.add_argument("--dry_run", action="store_true",
                    help="Only run pre-checks, skip model inference")
     p.add_argument("--debug", action="store_true",
@@ -1311,6 +1317,7 @@ def main() -> int:
         memory_store=args.memory_store,
         memory_replay_mode=args.memory_replay_mode,
         plan_store=args.plan_store,
+        plan_verify=args.plan_verify,
     )
 
     # 7. Emit result JSON (consumed by OpenClaw)

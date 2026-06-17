@@ -131,6 +131,9 @@ def parse_args():
                              "plan (replay entire task-level plans without LLM calls).")
     parser.add_argument("--plan-store", type=str, default="",
                         help="Path to task plan JSONL store (defaults to memory_data/plans.jsonl).")
+    parser.add_argument("--plan-verify", choices=["crop", "crop+hash"], default="crop",
+                        help="Plan replay verification: crop (template matching only, "
+                             "default) or crop+hash (also check pre-action screen hash).")
     return parser.parse_args()
 
 
@@ -467,6 +470,7 @@ def main():
             ui_summariser=summarise_ui_dump,
             ui_fp_builder=build_ui_fingerprint,
             screenshot_dir=_plan_screenshot_dir,
+            verify_mode=args.plan_verify,
         )
         # Wire up the open handler so plan replay can launch apps
         _plan_executor._open_handler = lambda ap: handle_open_action(
