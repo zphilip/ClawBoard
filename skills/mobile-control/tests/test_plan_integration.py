@@ -83,6 +83,7 @@ _PLAN_STDERR_PREFIXES = (
     "[SUPERVISOR] approved", "[SUPERVISOR] override rejected",
     "[SUPERVISOR] sending screenshot", "[SUPERVISOR] validate attempt",
     "[SUPERVISOR] error", "[SUPERVISOR] timeout",
+    "[DRIVING]",  # supervisor driving mode
     "[MEMORY] enforce", "[MEMORY] pre-LLM fastpath",
     "[MEMORY] post-LLM confirmation",
     "[STEP SUMMARY]", "[STEP ACTION]",
