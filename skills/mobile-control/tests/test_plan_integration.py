@@ -74,7 +74,29 @@ def _ts() -> str:
     return datetime.now().strftime("%Y%m%d_%H%M%S")
 
 
-# ── Device reset ────────────────────────────────────────────────────
+# ── Stderr filter — only show plan-relevant messages ─────────────────
+
+# Prefixes worth showing (plan replay, supervisor decisions, trust scoring).
+# Everything else (timing, ADB, UI dump, coordinate debug) is suppressed.
+_PLAN_STDERR_PREFIXES = (
+    "[PLAN]", "[TRUST SCORE]", "[SUPERVISOR] overriding",
+    "[SUPERVISOR] approved", "[SUPERVISOR] override rejected",
+    "[SUPERVISOR] sending screenshot", "[SUPERVISOR] validate attempt",
+    "[SUPERVISOR] error", "[SUPERVISOR] timeout",
+    "[MEMORY] enforce", "[MEMORY] pre-LLM fastpath",
+    "[MEMORY] post-LLM confirmation",
+    "[STEP SUMMARY]", "[STEP ACTION]",
+    "[WARN]", "[TERMINATED]",
+    "============",  # step separators
+    "[VLM] provider used:", "[VLM] primary attempt",
+    "[MODEL OUTPUT]", "[INPUT] ❌", "[INPUT] ✅",
+    "[ACTION EXEC] ❌ TYPE FAILED",
+)
+
+
+def _stderr_is_relevant(line: str) -> bool:
+    """Return True if *line* is worth showing in compact test output."""
+    return line.startswith(_PLAN_STDERR_PREFIXES)
 
 # Map app display-name → package for force-stop between runs.
 # Extended on the fly via _resolve_package().
@@ -162,14 +184,15 @@ def _adb(args: list[str], adb_path: str = "adb",
         return -1, "", "adb not found"
 
 
-def _run_agent(instruction: str, extra_args: str = "", timeout: int = 600) -> dict:
+def _run_agent(instruction: str, extra_args: str = "", timeout: int = 600,
+               compact: bool = False) -> dict:
     """Run mobile_agent.py and return parsed JSON result from stdout.
 
     The agent emits one JSON object per line (progress + final result).
     We capture the final ``{"type": "result", ...}`` object.
 
-    Output is streamed in real-time — the agent's stdout/stderr lines are
-    printed with a [AGENT] prefix so the tester can see what's happening.
+    In normal mode, agent progress is streamed in real-time.  In compact
+    mode only plan-relevant stderr and the final result are shown.
     """
     cmd = [
         sys.executable, str(AGENT_SCRIPT),
@@ -211,35 +234,27 @@ def _run_agent(instruction: str, extra_args: str = "", timeout: int = 600) -> di
                     break
                 stripped = line.rstrip("\n")
                 captured_stdout.append(stripped)
-                # Stream to test output — show progress but keep it compact
+                # Always parse for result_obj, but only print in non-compact
                 try:
                     obj = json.loads(stripped)
                     t = obj.get("type", "")
                     if t == "progress":
-                        step = obj.get("step", "?")
-                        action = obj.get("action", "")
-                        print(f"[AGENT] step={step}  action={action}")
+                        if not compact:
+                            step = obj.get("step", "?")
+                            action = obj.get("action", "")
+                            msg = obj.get("message", "")
+                            if msg:
+                                print(f"[AGENT] step={step}  action={action}  {msg}")
+                            else:
+                                print(f"[AGENT] step={step}  action={action}")
                     elif t == "result":
                         result_obj = obj
                         print(f"[AGENT] RESULT: status={obj.get('status')} steps={obj.get('steps')} "
                               f"last_action={obj.get('last_action')}")
-                    elif t == "plan_summary":
-                        print(f"[AGENT] PLAN: {json.dumps(obj, ensure_ascii=False)[:200]}")
-                    elif t == "precheck":
-                        label = obj.get("label", "")
-                        passed = obj.get("passed", False)
-                        status = "✓" if passed else "✗"
-                        print(f"[AGENT] PRECHECK {status}: {label}")
-                    elif t == "warning":
-                        print(f"[AGENT] ⚠ {obj.get('message', stripped)}")
-                    elif t == "error":
-                        print(f"[AGENT] ❌ {obj.get('message', stripped)}")
-                    else:
-                        # Unknown JSON — print compactly
+                    elif not compact:
                         print(f"[AGENT] {stripped[:200]}")
                 except json.JSONDecodeError:
-                    # Non-JSON line — print if it looks meaningful
-                    if stripped.strip():
+                    if not compact and stripped.strip():
                         print(f"[AGENT] {stripped[:200]}")
 
         def _read_stderr():
@@ -248,9 +263,10 @@ def _run_agent(instruction: str, extra_args: str = "", timeout: int = 600) -> di
                     break
                 stripped = line.rstrip("\n")
                 captured_stderr.append(stripped)
-                # Only show stderr that looks like an error
-                if stripped.strip():
-                    print(f"[AGENT:stderr] {stripped[:200]}")
+                if compact:
+                    continue  # suppress all stderr in compact mode
+                if _stderr_is_relevant(stripped.strip()):
+                    print(f"[AGENT] {stripped.strip()[:200]}")
 
         t_out = threading.Thread(target=_read_stdout, daemon=True)
         t_err = threading.Thread(target=_read_stderr, daemon=True)
@@ -328,6 +344,84 @@ def _snapshot(label: str) -> Path:
     dest.write_text(json.dumps(plans, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"[SNAPSHOT] {label} → {dest.name}  ({len(plans)} plans)")
     return dest
+
+
+def _compute_plan_delta(before_plans: list[dict], after_plans: list[dict]) -> str:
+    """Return a compact string describing what changed in the plan store."""
+    before_by_key = {p["intent_key"]: p for p in before_plans}
+    after_by_key = {p["intent_key"]: p for p in after_plans}
+
+    parts: list[str] = []
+    all_keys = set(before_by_key) | set(after_by_key)
+
+    for key in sorted(all_keys):
+        b = before_by_key.get(key)
+        a = after_by_key.get(key)
+        if b is None and a is not None:
+            # New plan created
+            sc = a.get("success_count", 0)
+            fc = a.get("fail_count", 0)
+            n_steps = len(a.get("steps", []))
+            h = "✓" if plan_is_healthy(_deser(a)) else "✗"
+            parts.append(f"+new({n_steps}s s={sc}/f={fc} {h})")
+        elif b is not None and a is None:
+            parts.append(f"-removed")
+        elif b is not None and a is not None:
+            b_sc, a_sc = b.get("success_count", 0), a.get("success_count", 0)
+            b_fc, a_fc = b.get("fail_count", 0), a.get("fail_count", 0)
+            ds = a_sc - b_sc
+            df = a_fc - b_fc
+            if ds == 0 and df == 0:
+                continue  # no change
+            b_steps = {s["step_index"]: s for s in b.get("steps", [])}
+            a_steps = {s["step_index"]: s for s in a.get("steps", [])}
+            step_deltas = []
+            for si in sorted(set(b_steps) | set(a_steps)):
+                bs = b_steps.get(si, {})
+                as_ = a_steps.get(si, {})
+                s_ds = as_.get("success_count", 0) - bs.get("success_count", 0)
+                s_df = as_.get("fail_count", 0) - bs.get("fail_count", 0)
+                if s_ds != 0 or s_df != 0:
+                    step_deltas.append(f"s{si}({s_ds:+d}/{s_df:+d})")
+            b_h = "✓" if plan_is_healthy(_deser(b)) else "✗"
+            a_h = "✓" if plan_is_healthy(_deser(a)) else "✗"
+            h_str = f" {b_h}→{a_h}" if b_h != a_h else ""
+            parts.append(
+                f"Δ(s={ds:+d}/f={df:+d}){h_str} "
+                f"[{', '.join(step_deltas)}]" if step_deltas else f"Δ(s={ds:+d}/f={df:+d}){h_str}"
+            )
+    return " | ".join(parts) if parts else "(no change)"
+
+
+def _deser(d: dict) -> TaskPlan:
+    """Convert a raw plan dict back to TaskPlan for health checks."""
+    from memory.models import PlanStep as PS
+    steps = [
+        PS(
+            step_index=s.get("step_index", i),
+            action_type=s.get("action_type", ""),
+            action_args=s.get("action_args", {}),
+            expected_pkg=s.get("expected_pkg", ""),
+            action_description=s.get("action_description", ""),
+            pre_action_pkg=s.get("pre_action_pkg", ""),
+            post_action_ui_fp=s.get("post_action_ui_fp", ""),
+            target_element_signature=s.get("target_element_signature"),
+            success_count=s.get("success_count", 0),
+            fail_count=s.get("fail_count", 0),
+        )
+        for i, s in enumerate(d.get("steps", []))
+    ]
+    return TaskPlan(
+        intent_key=d.get("intent_key", ""),
+        instruction_sample=d.get("instruction_sample", ""),
+        steps=steps,
+        success_count=d.get("success_count", 0),
+        fail_count=d.get("fail_count", 0),
+        last_verified=d.get("last_verified", 0.0),
+        created_at=d.get("created_at", 0.0),
+        source_run_id=d.get("source_run_id", ""),
+        device_bucket=d.get("device_bucket", "default"),
+    )
 
 
 def _print_plan_summary(store: PlanStore, intent_key: str | None = None) -> None:
@@ -484,11 +578,13 @@ class IntegrationTestRunner:
         reset_device: bool = True,
         adb_path: str = "adb",
         device: str | None = None,
+        compact: bool = False,
     ):
         self.keep_snapshots = keep_snapshots
         self.reset_device = reset_device
         self.adb_path = adb_path
         self.device = device
+        self.compact = compact
         self.run_log: list[dict] = []
 
     def run_task_sequence(
@@ -530,14 +626,23 @@ class IntegrationTestRunner:
                 print(f"[TEST] RUN {run_idx}/{total_runs}: {task!r}  (repeat {rep+1}/{repeat})")
                 print(f"{'='*60}")
 
-                # Snapshot BEFORE
-                _snapshot(f"{label}_BEFORE")
+                # Snapshot BEFORE (raw dicts for delta)
+                before_plans = _load_plans()
+                if not self.compact:
+                    _snapshot(f"{label}_BEFORE")
 
                 # Run the agent
-                result = _run_agent(task, extra_args=extra_args, timeout=timeout)
+                result = _run_agent(task, extra_args=extra_args, timeout=timeout,
+                                    compact=self.compact)
 
                 # Snapshot AFTER
-                _snapshot(f"{label}_AFTER")
+                after_plans = _load_plans()
+                if not self.compact:
+                    _snapshot(f"{label}_AFTER")
+
+                # ── Plan delta ────────────────────────────────────────
+                delta = _compute_plan_delta(before_plans, after_plans)
+                print(f"[PLAN Δ] {delta}")
 
                 # Log
                 entry = {
@@ -553,68 +658,88 @@ class IntegrationTestRunner:
                 self.run_log.append(entry)
                 print(f"[TEST RESULT] status={result.get('status')} steps={result.get('steps')}")
 
-                # Validate after each run
-                store = _load_store()
-                print(f"\n[VALIDATE] Running invariant checks...")
-                validations = validate_plan_invariants(store)
-                failures = [v for v in validations if not v.passed]
-                if failures:
-                    print(f"[VALIDATE] ❌ {len(failures)}/{len(validations)} checks FAILED:")
-                    for v in failures:
-                        print(f"  ❌ {v.name}: {v.detail}")
-                else:
-                    print(f"[VALIDATE] ✅ All {len(validations)} invariant checks passed")
+                # Validate after each run (skip in compact mode — done at end)
+                if not self.compact:
+                    store = _load_store()
+                    validations = validate_plan_invariants(store)
+                    failures = [v for v in validations if not v.passed]
+                    if failures:
+                        print(f"[VALIDATE] ❌ {len(failures)}/{len(validations)} checks FAILED")
+                    else:
+                        print(f"[VALIDATE] ✅ {len(validations)} checks passed")
 
-                # Print plan summary
-                store_for_key = _load_store()
-                # Find intent key for this task
+                # Print plan summary for this task
                 from memory.signature import build_canonical_intent_key
                 intent_key = build_canonical_intent_key(task)
-                _print_plan_summary(store_for_key, intent_key)
+                _print_plan_summary(_load_store(), intent_key)
 
         # ── Final report ────────────────────────────────────────────
         self._print_final_report(tasks)
 
     def _print_final_report(self, tasks: list[str]) -> None:
         """Print a comprehensive final report."""
-        print(f"\n\n{'='*60}")
+        sep = "=" * 60
+        print(f"\n\n{sep}")
         print("FINAL REPORT")
-        print(f"{'='*60}")
+        print(sep)
 
         # Per-task summary
-        print(f"\n{'Task':<40} {'Runs':>5} {'Success':>8} {'Failed':>8} {'Other':>8}")
-        print("-" * 75)
+        print(f"\n{'Task':<36} {'Runs':>4} {'OK':>4} {'FAIL':>4} {'Steps':>6} {'Plan?':>6}")
+        print("-" * 65)
         for task in tasks:
             task_runs = [r for r in self.run_log if r["task"] == task]
-            n_success = sum(1 for r in task_runs if r["status"] == "success")
-            n_failed = sum(1 for r in task_runs if r["status"] in ("error", "parse_failed"))
-            n_other = len(task_runs) - n_success - n_failed
-            print(f"{task[:38]:<40} {len(task_runs):>5} {n_success:>8} {n_failed:>8} {n_other:>8}")
+            n_ok = sum(1 for r in task_runs if r["status"] == "success")
+            n_fail = sum(1 for r in task_runs if r["status"] in ("error", "parse_failed"))
+            avg_steps = (
+                sum(r["steps"] for r in task_runs if isinstance(r["steps"], int)) / max(len(task_runs), 1)
+            )
+            print(f"{task[:34]:<36} {len(task_runs):>4} {n_ok:>4} {n_fail:>4} {avg_steps:>5.0f}")
 
         # Plan store state
         store = _load_store()
+        plans = store.load()
         print(f"\n{'─'*60}")
-        print("FINAL PLAN STORE STATE")
+        print(f"PLAN STORE ({len(plans)} plans)")
         print(f"{'─'*60}")
         _print_plan_summary(store)
 
-        # Final validation
+        # Plan cache health analysis
         print(f"\n{'─'*60}")
-        print("FINAL VALIDATION (all plans)")
+        print("PLAN CACHE HEALTH")
         print(f"{'─'*60}")
+        for p in plans:
+            healthy = plan_is_healthy(p)
+            total = p.success_count + p.fail_count
+            score = p.success_count / max(total, 1)
+            step_health = [
+                f"s{s.step_index}(+{s.success_count}/-{s.fail_count})"
+                for s in p.steps
+            ]
+            worst_step = max(
+                (s for s in p.steps),
+                key=lambda s: s.fail_count - s.success_count,
+                default=None,
+            )
+            verdict = "✅ working" if healthy else "⚠️  needs repair"
+            if worst_step and worst_step.fail_count > 0:
+                verdict += f" — worst step: s{worst_step.step_index}(+{worst_step.success_count}/-{worst_step.fail_count})"
+            print(f"  {p.intent_key[:30]:<32} score={score:.2f} {verdict}")
+            if step_health:
+                print(f"    steps: {', '.join(step_health)}")
+
+        # Final validation (only show failures)
         validations = validate_plan_invariants(store)
         failures = [v for v in validations if not v.passed]
-        passed = [v for v in validations if v.passed]
-        print(f"  Passed: {len(passed)}")
-        print(f"  Failed: {len(failures)}")
         if failures:
-            print(f"\n  FAILURES:")
+            print(f"\n[VALIDATE] ❌ {len(failures)} invariant checks FAILED:")
             for v in failures:
-                print(f"    ❌ {v.name}")
-                print(f"       {v.detail}")
+                print(f"  ❌ {v.name}: {v.detail}")
+        else:
+            print(f"\n[VALIDATE] ✅ All invariant checks passed")
 
         # Snapshot final state
-        _snapshot("FINAL")
+        if not self.compact:
+            _snapshot("FINAL")
 
         # Save run log
         log_path = SNAPSHOT_DIR / f"run_log_{_ts()}.json"
@@ -682,6 +807,8 @@ def main() -> int:
                    help="Only validate existing plans.jsonl (no agent runs)")
     p.add_argument("--no-snapshots", action="store_true",
                    help="Don't save plan snapshots")
+    p.add_argument("--compact", action="store_true",
+                   help="Minimal output — only plan deltas and final report")
     args = p.parse_args()
 
     if args.validate_only:
@@ -713,6 +840,7 @@ def main() -> int:
         reset_device=not args.no_reset,
         adb_path=args.adb_path,
         device=args.device,
+        compact=args.compact,
     )
     runner.run_task_sequence(
         tasks=tasks,
