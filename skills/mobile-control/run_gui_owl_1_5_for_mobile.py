@@ -1312,7 +1312,9 @@ def main():
                         output_text = (
                             f"Action: [SUPERVISOR DRIVING] "
                             f"{_drive_verdict.get('reason', '')[:200]}\n"
-                            f"{json.dumps(_drive_tc, ensure_ascii=False)}"
+                            f"<tool_call>\n"
+                            f"{json.dumps(_drive_tc, ensure_ascii=False)}\n"
+                            f"</tool_call>"
                         )
                         print(f"[DRIVING] supervisor action: "
                               f"{action_parameter.get('action')} "
@@ -1323,6 +1325,7 @@ def main():
                         _step_metrics["supervisor"] = 0.0
                         _skip_supervisor = True  # we just validated
                         _sup_skip_reason = "supervisor_driving"
+                        _pre_llm_action_parameter = None  # prevent stale fastpath
                     else:
                         print("[DRIVING] no valid tool_call — handing back to VLM")
                         _supervisor_driving = False
