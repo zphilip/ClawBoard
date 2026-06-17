@@ -108,7 +108,12 @@ def find_element_at_coordinates(ui_xml: str, x: int, y: int) -> Optional[dict]:
                     "bounds": [left, top, right, bottom],
                 }
 
-        # No element exactly contains the point — find nearest by centre.
+        # No element exactly contains the point — find nearest by centre,
+        # but skip bare FrameLayout containers (the root view).  Returning
+        # the root FrameLayout produces a useless signature that matches
+        # every screen but never the actual target element, causing plan
+        # replay to fail on every click step that targets WebView/canvas
+        # content or any element absent from the accessibility tree.
         for node in root.iter("node"):
             bounds_str = node.attrib.get("bounds", "")
             if not bounds_str:
@@ -123,13 +128,20 @@ def find_element_at_coordinates(ui_xml: str, x: int, y: int) -> Optional[dict]:
             centre_y = (top + bottom) // 2
             distance = ((x - centre_x) ** 2 + (y - centre_y) ** 2) ** 0.5
 
+            # Skip bare FrameLayout containers — they are the root view,
+            # not the actual target element the VLM clicked on.
+            _el_cls = node.attrib.get("class", "")
+            _el_rid = node.attrib.get("resource-id", "")
+            if _el_cls.endswith("FrameLayout") and not _el_rid:
+                continue
+
             if distance < min_distance:
                 min_distance = distance
                 best_match = {
-                    "resource_id": node.attrib.get("resource-id", ""),
+                    "resource_id": _el_rid,
                     "text": node.attrib.get("text", ""),
                     "content_desc": node.attrib.get("content-desc", ""),
-                    "class": node.attrib.get("class", ""),
+                    "class": _el_cls,
                     "bounds": [left, top, right, bottom],
                 }
 
