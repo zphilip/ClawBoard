@@ -988,6 +988,7 @@ def main():
                                         f"Last action: {_plan_step.action_description or _plan_step.action_type}"
                                     ),
                                     screenshot_path=str(_final_screenshot),
+                                    force_vision=True,
                                 )
                                 _plan_task_complete = _completion.get("complete", True)
                                 if not _plan_task_complete:
@@ -2304,6 +2305,7 @@ def main():
                         history=history,
                         conclusion=conclusion,
                         screenshot_path=str(screenshot_path),
+                        force_vision=True,
                     )
                 except Exception as _comp_err:
                     print(f"[SUPERVISOR] task-complete check error ({_comp_err!r}) — accepting completion")
@@ -2375,6 +2377,7 @@ def main():
                     history=history,
                     conclusion=_action_text[:500],
                     screenshot_path=str(screenshot_path),
+                    force_vision=True,
                 )
                 if _completion.get("complete", False):
                     print("[SUPERVISOR] task confirmed complete after goal-conflict override")
@@ -2404,6 +2407,7 @@ def main():
                     history=history,
                     conclusion=f"Periodic check after step {step_id}",
                     screenshot_path=str(screenshot_path),
+                    force_vision=True,
                 )
                 if _completion.get("complete", False):
                     print("[SUPERVISOR] periodic check — task already complete")

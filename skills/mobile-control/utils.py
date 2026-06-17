@@ -2586,8 +2586,18 @@ class SupervisorLLM:
             conclusion=(conclusion or "").strip()[:500],
         )
 
+        # ── Vision routing (same pattern as validate()) ─────────────────
         _use_vision = self.vision or force_vision
+        _vision_ok = False
         if _use_vision and screenshot_path and os.path.exists(screenshot_path):
+            if force_vision and not self.vision:
+                if self._vision_client is not None:
+                    _vision_ok = True
+                else:
+                    _use_vision = False
+            elif self.vision:
+                _vision_ok = True
+        if _vision_ok:
             try:
                 with open(screenshot_path, "rb") as _img_f:
                     _b64 = base64.b64encode(_img_f.read()).decode()
@@ -2599,26 +2609,33 @@ class SupervisorLLM:
             except Exception as _enc_err:
                 print(f"[SUPERVISOR] could not encode screenshot ({_enc_err}) — text-only")
                 user_content = user_text
+                _vision_ok = False
         else:
             user_content = user_text
-
+        # ── Client / model selection ──────────────────────────────────
+        if _vision_ok and force_vision and not self.vision:
+            _call_client = self._vision_client
+            _call_model = self._vision_model
+        else:
+            _call_client = self._client
+            _call_model = self.model
+        # ── API call ──────────────────────────────────────────────────
         _extra_body: dict = {}
         if self.reasoning_split:
             _extra_body["reasoning_split"] = True
         _tc_create_kwargs: dict = {}
         if _extra_body:
             _tc_create_kwargs["extra_body"] = _extra_body
-        # Mimo models: use native thinking mode + json_object for clean output.
-        if "mimo" in self.model.lower():
+        if "mimo" in _call_model.lower():
             _tc_create_kwargs["response_format"] = {"type": "json_object"}
         _tc_max_attempts = 2
-        _tc_req_timeout = 30  # hard wall-clock timeout (seconds) via _call_with_timeout
+        _tc_req_timeout = 30
         for _tc_try in range(1, _tc_max_attempts + 1):
             try:
                 print(f"[SUPERVISOR] task-complete attempt {_tc_try}/{_tc_max_attempts}")
                 resp = self._call_with_timeout(
-                    lambda: self._client.chat.completions.create(
-                        model=self.model,
+                    lambda: _call_client.chat.completions.create(
+                        model=_call_model,
                         messages=[
                             {"role": "system", "content": _TASK_COMPLETE_SYSTEM},
                             {"role": "user", "content": user_content},
