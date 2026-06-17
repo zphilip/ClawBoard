@@ -2451,7 +2451,6 @@ def main():
         # conflict.  Prevents the VLM from drifting (e.g. clicking products
         # forever after the search results already satisfy the task).
         if (supervisor is not None
-                and not _plan_step_executed          # VLM-driven step
                 and any_real_action                   # not just waiting
                 and step_id > 0                       # not step 0
                 and step_id % 3 == 0):                # every ~3 steps
