@@ -95,18 +95,17 @@ def _compute_screen_hash(screenshot_path: str) -> str:
         return ""
 
 
-def _screen_hashes_similar(h1: str, h2: str, max_distance: int = 8) -> bool:
-    """Return True when two screen hashes are similar enough."""
+def _screen_hashes_similar(h1: str, h2: str, max_distance: int = 8) -> tuple[bool, int]:
+    """Return (is_similar, hamming_distance) for two screen hashes."""
     if not h1 or not h2 or len(h1) != len(h2):
-        return False
+        return (False, 99)
     try:
         b1 = bytes.fromhex(h1)
         b2 = bytes.fromhex(h2)
-        # Hamming distance on the packed bytes
         dist = sum(bin(a ^ b).count("1") for a, b in zip(b1, b2))
-        return dist <= max_distance
+        return (dist <= max_distance, dist)
     except Exception:
-        return False
+        return (False, 99)
 
 
 def _template_match_crop(
@@ -482,14 +481,22 @@ class PlanExecutor:
                 and screenshot_path
                 and getattr(step, 'pre_action_screen_hash', '')):
             _cur_hash = _compute_screen_hash(screenshot_path)
-            if _cur_hash and not _screen_hashes_similar(
-                _cur_hash, step.pre_action_screen_hash,
-            ):
-                _screen_state_ok = False
-                print(
-                    "[PLAN] pre-action screen hash mismatch — "
-                    "screen has changed, skipping step"
+            if _cur_hash:
+                _hash_ok, _hash_dist = _screen_hashes_similar(
+                    _cur_hash, step.pre_action_screen_hash,
                 )
+                if not _hash_ok:
+                    _screen_state_ok = False
+                    print(
+                        f"[PLAN] pre-action screen hash mismatch "
+                        f"(dist={_hash_dist}/64) — screen has changed, "
+                        f"skipping step"
+                    )
+                else:
+                    print(
+                        f"[PLAN] pre-action screen hash match "
+                        f"(dist={_hash_dist}/64)"
+                    )
 
         # ── Screenshot crop template matching ────────────────────────
         # Runs when element matching was skipped (no sig) or failed.
