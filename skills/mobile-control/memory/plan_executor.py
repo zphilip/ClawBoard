@@ -520,6 +520,17 @@ class PlanExecutor:
             if self._consecutive_failures >= _MAX_CONSECUTIVE_FAILURES:
                 self.end_replay()
             return False
+        # ── If screen hash check failed → screen has changed, FAIL ──
+        if not _screen_state_ok:
+            print(
+                "[PLAN] step FAILED — pre-action screen hash mismatch "
+                "(screen has visually changed)"
+            )
+            self._failed_step_indices.add(step.step_index)
+            self._consecutive_failures += 1
+            if self._consecutive_failures >= _MAX_CONSECUTIVE_FAILURES:
+                self.end_replay()
+            return False
 
         try:
             ok = self._execute_action(step)
