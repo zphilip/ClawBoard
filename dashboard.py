@@ -1626,6 +1626,21 @@ def index(request: Request):
                     'Click Apply at the end — then restart ZeroClaw to activate.'
                 ).classes('text-caption text-grey-6 q-mb-md')
 
+                # ── Config source selector (same as Configuration tab) ─────
+                with ui.row().classes('items-center gap-2 q-mb-sm'):
+                    ui.label('Config source:').classes('text-caption text-grey-6')
+                    _wiz_src_sel = ui.select(
+                        {'runtime': 'Runtime  (/var/lib/zeroclaw/…)',
+                         'local':   'Template (config/config.toml)'},
+                        value=zc_source,
+                    ).props('dense outlined').classes('text-caption').style('min-width: 240px')
+                    def _wiz_reload_source():
+                        new_src = _wiz_src_sel.value or 'runtime'
+                        ui.navigate.to(f'/?lang={lang}&zc_source={new_src}')
+                        _wiz_src_btn.props('loading')
+                    _wiz_src_btn = ui.button('Load', icon='refresh', on_click=_wiz_reload_source
+                        ).props('dense flat size=sm color=blue-7')
+
                 with ui.stepper(value='wiz_provider').props('vertical animated').classes('w-full') as _wiz:
 
                     # ── Step 1: Provider ────────────────────────────────────
