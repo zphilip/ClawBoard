@@ -1189,11 +1189,11 @@ def index(request: Request):
 
         o = conf.setdefault('observability', {})
         o['backend']                   = w_obs_backend.value
-        o['log_persistence']        = w_obs_trace_mode.value
+        o['runtime_trace_mode']        = w_obs_trace_mode.value
         o['otel_endpoint']             = w_obs_otel_endpoint.value
         o['otel_service_name']         = w_obs_otel_service.value
-        o['log_persistence_path']        = w_obs_trace_path.value
-        o['log_persistence_max_entries'] = to_int(w_obs_trace_max.value, 200)
+        o['runtime_trace_path']        = w_obs_trace_path.value
+        o['runtime_trace_max_entries'] = to_int(w_obs_trace_max.value, 200)
 
         sk = conf.setdefault('skills', {})
         sk['open_skills_enabled']   = w_skills_open.value
@@ -1228,7 +1228,7 @@ def index(request: Request):
         g['require_pairing']   = w_gw_pairing.value
         g['allow_public_bind'] = w_gw_public.value
 
-        conf.setdefault('tunnel', {})['tunnel_provider'] = w_tunnel.value
+        conf.setdefault('tunnel', {})['provider'] = w_tunnel.value
 
         ch_conf = conf.setdefault('channels', {})
         ch_conf['cli']                  = w_cli_enabled.value
@@ -1304,7 +1304,7 @@ def index(request: Request):
 
         ws = conf.setdefault('web_search', {})
         ws['enabled']      = w_ws_enabled.value
-        ws['search_provider']     = w_ws_provider.value
+        ws['provider']     = w_ws_provider.value
         ws['max_results']  = to_int(w_ws_max.value, 5)
         ws['timeout_secs'] = to_int(w_ws_timeout.value, 15)
 
@@ -2094,13 +2094,13 @@ def index(request: Request):
                         cur_obs = obs.get('backend', 'none')
                         w_obs_backend = ui.select(['none', 'noop', 'log', 'prometheus', 'otel'], label='backend',
                             value=cur_obs if cur_obs in ['none','noop','log','prometheus','otel'] else 'none').classes('w-full')
-                        cur_tm = obs.get('log_persistence', obs.get('runtime_trace_mode', 'none'))
-                        w_obs_trace_mode = ui.select(['none', 'rolling', 'full'], label='log_persistence',
+                        cur_tm = obs.get('runtime_trace_mode', obs.get('log_persistence', 'none'))
+                        w_obs_trace_mode = ui.select(['none', 'rolling', 'full'], label='runtime_trace_mode',
                             value=cur_tm if cur_tm in ['none','rolling','full'] else 'none').classes('w-full')
                         w_obs_otel_endpoint = ui.input('otel_endpoint', value=str(obs.get('otel_endpoint', 'http://localhost:4318'))).classes('w-full')
                         w_obs_otel_service  = ui.input('otel_service_name', value=str(obs.get('otel_service_name', 'zeroclaw'))).classes('w-full')
-                        w_obs_trace_path    = ui.input('log_persistence_path', value=str(obs.get('log_persistence_path', obs.get('runtime_trace_path', 'state/runtime-trace.jsonl')))).classes('w-full')
-                        w_obs_trace_max     = ui.number('log_persistence_max_entries', value=obs.get('log_persistence_max_entries', obs.get('runtime_trace_max_entries', 200)), min=10, step=50).classes('w-full')
+                        w_obs_trace_path    = ui.input('runtime_trace_path', value=str(obs.get('runtime_trace_path', obs.get('log_persistence_path', 'state/runtime-trace.jsonl')))).classes('w-full')
+                        w_obs_trace_max     = ui.number('runtime_trace_max_entries', value=obs.get('runtime_trace_max_entries', obs.get('log_persistence_max_entries', 200)), min=10, step=50).classes('w-full')
                         ui.separator().classes('q-my-sm')
                         ui.label(T['section_skills']).classes('text-subtitle2 text-grey-7')
                         w_skills_open = ui.checkbox('open_skills_enabled', value=skills.get('open_skills_enabled', False))
@@ -2152,9 +2152,9 @@ def index(request: Request):
                         w_gw_public  = ui.checkbox('allow_public_bind', value=gateway.get('allow_public_bind', False))
                         ui.separator().classes('q-my-sm')
                         ui.label(T['section_tunnel']).classes('text-subtitle2 text-grey-7')
-                        cur_tn = tunnel.get('tunnel_provider', tunnel.get('provider', 'none'))
+                        cur_tn = tunnel.get('provider', tunnel.get('tunnel_provider', 'none'))
                         _tunnel_backends = ['none', 'cloudflare', 'tailscale', 'ngrok', 'openvpn', 'pinggy', 'custom']
-                        w_tunnel = ui.select(_tunnel_backends, label='tunnel.tunnel_provider',
+                        w_tunnel = ui.select(_tunnel_backends, label='tunnel.provider',
                             value=cur_tn if cur_tn in _tunnel_backends else 'none').classes('w-full')
                         ui.separator().classes('q-my-sm')
                         ui.label(T['section_channels_global']).classes('text-subtitle2 text-grey-7')
@@ -2261,9 +2261,9 @@ def index(request: Request):
                             w_wf_timeout  = ui.number('timeout_secs',              value=web_fetch.get('timeout_secs', 30),         min=5,    step=5).classes('w-full')
                         with ui.expansion(T['exp_websearch'], icon='search').classes('w-full'):
                             w_ws_enabled  = ui.checkbox('enabled', value=web_search.get('enabled', False))
-                            cur_wsp = web_search.get('search_provider', web_search.get('provider', 'duckduckgo'))
+                            cur_wsp = web_search.get('provider', web_search.get('search_provider', 'duckduckgo'))
                             _ws_providers = ['duckduckgo', 'brave', 'tavily', 'searxng']
-                            w_ws_provider = ui.select(_ws_providers, label='search_provider',
+                            w_ws_provider = ui.select(_ws_providers, label='provider',
                                 value=cur_wsp if cur_wsp in _ws_providers else 'duckduckgo').classes('w-full')
                             w_ws_max      = ui.number('max_results',  value=web_search.get('max_results', 5),   min=1, step=1).classes('w-full')
                             w_ws_timeout  = ui.number('timeout_secs', value=web_search.get('timeout_secs', 15), min=5, step=5).classes('w-full')
