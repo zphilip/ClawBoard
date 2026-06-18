@@ -38,8 +38,8 @@ STRINGS = {
     'lbl_api_key':     'API Key (global default)',
     'section_secrets': 'Encryption & Identity',
     # ── Providers ────────────────────────────────────────────────────────────
-    'section_providers':     'Model Providers (model_providers.*)',
-    'hint_providers':        'Each card = one [model_providers.<alias>] section in config.toml',
+    'section_providers':     'Model Providers (providers.models.*)',
+    'hint_providers':        'Each card = one [providers.models.<alias>] section in config.toml',
     'lbl_new_alias':         'New alias (e.g. openai, groq, local…)',
     'btn_add_provider':      '+ Add Provider',
     'warn_alias_empty':      'Please enter an alias',
@@ -66,11 +66,11 @@ STRINGS = {
     # ── Comms ────────────────────────────────────────────────────────────────
     'section_gateway':         'Gateway',
     'section_tunnel':          'Tunnel',
-    'section_channels_global': 'channels_config global',
+    'section_channels_global': 'channels global',
     'lbl_cli':                 'cli (enable CLI channel)',
     # ── Channels ─────────────────────────────────────────────────────────────
-    'section_channels':    'Channel Config (channels_config.*)',
-    'hint_channels':       'Each card = one [channels_config.<channel>] section in config.toml',
+    'section_channels':    'Channel Config (channels.*)',
+    'hint_channels':       'Each card = one [channels.<channel>] section in config.toml',
     'lbl_channel_type':    'Select channel type',
     'btn_add_channel':     '+ Add Channel',
     'warn_channel_empty':  'Please select a channel type',

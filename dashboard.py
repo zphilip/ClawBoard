@@ -1079,7 +1079,7 @@ def index(request: Request):
         with container:
             with ui.card().classes('w-full q-mb-sm') as card:
                 with ui.row().classes('w-full items-center justify-between'):
-                    ui.label(f'[model_providers.{alias}]').classes('text-caption text-blue-7 text-bold')
+                    ui.label(f'[providers.models.{alias}]').classes('text-caption text-blue-7 text-bold')
                     def _rm(a=alias, c=card):
                         provider_panels.pop(a, None); c.delete()
                     ui.button(icon='delete', on_click=_rm).props('flat round dense color=negative')
@@ -1106,7 +1106,7 @@ def index(request: Request):
         with container:
             with ui.card().classes('w-full q-mb-sm') as card:
                 with ui.row().classes('w-full items-center justify-between'):
-                    ui.label(f'[channels_config.{ch_key}]').classes('text-caption text-green-7 text-bold')
+                    ui.label(f'[channels.{ch_key}]').classes('text-caption text-green-7 text-bold')
                     def _rm(k=ch_key, c=card):
                         channel_panels.pop(k, None); c.delete()
                     ui.button(icon='delete', on_click=_rm).props('flat round dense color=negative')
@@ -1132,20 +1132,33 @@ def index(request: Request):
                 channel_panels[ch_key] = widgets
 
     def collect():
-        conf['api_key']               = w_api_key.value
-        conf['default_provider']      = w_default_provider.value
-        conf['default_model']         = w_default_model.value
-        conf['default_temperature']   = to_float(w_temperature.value, 0.7)
-        conf['provider_timeout_secs'] = to_int(w_prov_timeout.value, 120)
         conf.setdefault('secrets',  {})['encrypt'] = w_secrets_encrypt.value
         conf.setdefault('identity', {})['format']  = w_identity_format.value
 
-        conf['model_providers'] = {}
+        # ── Provider models → [providers.models.<alias>] (ZeroClaw schema v2)
+        default_temp    = to_float(w_temperature.value, 0.7)
+        default_timeout = to_int(w_prov_timeout.value, 120)
+        default_model   = w_default_model.value.strip() or ''
+        default_key     = w_api_key.value or ''
+
+        conf.setdefault('providers', {}).setdefault('models', {})
+        # Replace the models table wholesale to pick up removals
+        conf['providers']['models'] = {}
         for alias, wmap in provider_panels.items():
-            entry = {'name': wmap['name'].value, 'base_url': wmap['base_url'].value,
-                     'requires_openai_auth': wmap['requires_openai_auth'].value}
-            if wmap['api_key'].value: entry['api_key'] = wmap['api_key'].value
-            conf['model_providers'][alias] = entry
+            entry = {
+                'name':                  wmap['name'].value,
+                'base_url':              wmap['base_url'].value,
+                'requires_openai_auth':  wmap['requires_openai_auth'].value,
+                'model':                 default_model,
+                'temperature':           default_temp,
+                'timeout_secs':          default_timeout,
+            }
+            key = wmap['api_key'].value
+            if not key and default_key:
+                key = default_key
+            if key:
+                entry['api_key'] = key
+            conf['providers']['models'][alias] = entry
 
         a = conf.setdefault('autonomy', {})
         a['level']                            = w_auto_level.value
@@ -1170,11 +1183,11 @@ def index(request: Request):
 
         o = conf.setdefault('observability', {})
         o['backend']                   = w_obs_backend.value
-        o['runtime_trace_mode']        = w_obs_trace_mode.value
+        o['log_persistence']        = w_obs_trace_mode.value
         o['otel_endpoint']             = w_obs_otel_endpoint.value
         o['otel_service_name']         = w_obs_otel_service.value
-        o['runtime_trace_path']        = w_obs_trace_path.value
-        o['runtime_trace_max_entries'] = to_int(w_obs_trace_max.value, 200)
+        o['log_persistence_path']        = w_obs_trace_path.value
+        o['log_persistence_max_entries'] = to_int(w_obs_trace_max.value, 200)
 
         sk = conf.setdefault('skills', {})
         sk['open_skills_enabled']   = w_skills_open.value
@@ -1209,9 +1222,9 @@ def index(request: Request):
         g['require_pairing']   = w_gw_pairing.value
         g['allow_public_bind'] = w_gw_public.value
 
-        conf.setdefault('tunnel', {})['provider'] = w_tunnel.value
+        conf.setdefault('tunnel', {})['tunnel_provider'] = w_tunnel.value
 
-        ch_conf = conf.setdefault('channels_config', {})
+        ch_conf = conf.setdefault('channels', {})
         ch_conf['cli']                  = w_cli_enabled.value
         ch_conf['message_timeout_secs'] = to_int(w_msg_timeout.value, 300)
         ch_conf['ack_reactions']        = w_ch_ack_reactions.value
@@ -1285,7 +1298,7 @@ def index(request: Request):
 
         ws = conf.setdefault('web_search', {})
         ws['enabled']      = w_ws_enabled.value
-        ws['provider']     = w_ws_provider.value
+        ws['search_provider']     = w_ws_provider.value
         ws['max_results']  = to_int(w_ws_max.value, 5)
         ws['timeout_secs'] = to_int(w_ws_timeout.value, 15)
 
@@ -1379,7 +1392,7 @@ def index(request: Request):
     skills       = conf.get('skills',      {})
     memory       = conf.get('memory',      {})
     gateway      = conf.get('gateway',     {})
-    ch_conf_top  = conf.get('channels_config', {})
+    ch_conf_top  = conf.get('channels', {})
     sec          = conf.get('security',    {})
     sec_res      = sec.get('resources',   {})
     sec_sandbox  = sec.get('sandbox',     {})
@@ -1403,6 +1416,10 @@ def index(request: Request):
     hardware     = conf.get('hardware',    {})
     identity     = conf.get('identity',    {})
     secrets_c    = conf.get('secrets',     {})
+
+    # Derive General-tab provider defaults from [providers.models] (schema v2)
+    _prov_models   = conf.get('providers', {}).get('models', {})
+    _default_prov  = next(iter(_prov_models.values()), {}) if _prov_models else {}
 
     # ── Header ────────────────────────────────────────────────────────────────
     with ui.header().classes('bg-blue-9 text-white q-pa-sm row items-center justify-between'):
@@ -1781,15 +1798,14 @@ def index(request: Request):
                             prov_entry: dict = {
                                 'name': wiz_prov_id.value,
                                 'requires_openai_auth': False,
+                                'model': (wiz_def_model.value.strip() or ''),
+                                'temperature': 0.7,
+                                'timeout_secs': 120,
                             }
                             if wiz_prov_key.value:
                                 prov_entry['api_key'] = wiz_prov_key.value
-                                conf['api_key'] = wiz_prov_key.value  # top-level default
                             if wiz_prov_base.value: prov_entry['base_url'] = wiz_prov_base.value
-                            conf.setdefault('model_providers', {})[alias] = prov_entry
-                            conf['default_provider'] = wiz_prov_id.value
-                            if wiz_def_model.value.strip():
-                                conf['default_model'] = wiz_def_model.value.strip()
+                            conf.setdefault('providers', {}).setdefault('models', {})[alias] = prov_entry
                             # ── channel
                             ch_key = wiz_ch_sel.value
                             if ch_key and ch_key in CHANNEL_SCHEMAS:
@@ -1801,7 +1817,7 @@ def index(request: Request):
                                     elif ftype == 'bool':   ch_entry[fkey] = w.value
                                     elif ftype == 'int':    ch_entry[fkey] = to_int(w.value)
                                     else:                   ch_entry[fkey] = w.value
-                                conf.setdefault('channels_config', {})[ch_key] = ch_entry
+                                conf.setdefault('channels', {})[ch_key] = ch_entry
                             # ── tools
                             conf.setdefault('web_search', {})['enabled'] = wiz_tool_web_search.value
                             conf.setdefault('web_fetch', {})['enabled'] = wiz_tool_web_fetch.value
@@ -1915,13 +1931,13 @@ def index(request: Request):
                     # ══ General ══════════════════════════════════════════════
                     with ui.tab_panel(t_gen):
                         ui.label(T['section_api']).classes('text-subtitle2 text-grey-7 q-mt-sm')
-                        w_api_key = ui.input(T['lbl_api_key'], value=str(top.get('api_key', '')),
+                        w_api_key = ui.input(T['lbl_api_key'], value=str(_default_prov.get('api_key', '') or top.get('api_key', '')),
                             password=True, password_toggle_button=True).classes('w-full')
-                        cur_prov = str(top.get('default_provider', 'dashscope'))
+                        cur_prov = str(_default_prov.get('name', '') or top.get('default_provider', 'dashscope'))
                         _eff_prov = cur_prov if cur_prov in PROVIDER_IDS else PROVIDER_IDS[0]
                         w_default_provider = ui.select(PROVIDER_IDS, label='default_provider',
                             value=_eff_prov).classes('w-full')
-                        _cur_def_model = str(top.get('default_model', 'anthropic/claude-sonnet-4-6'))
+                        _cur_def_model = str(_default_prov.get('model', '') or top.get('default_model', 'anthropic/claude-sonnet-4-6'))
                         # Seed model list from the currently selected provider
                         _init_models = _ph_pid_models.get(_eff_prov, _ph_models)
                         _dm_opts = list(_init_models) if _cur_def_model in _init_models \
@@ -1943,9 +1959,9 @@ def index(request: Request):
                             w_default_model.set_options(list(models), value=new_val)
                         w_default_provider.on_value_change(_on_prov_change)
                         w_temperature = ui.number('default_temperature',
-                            value=top.get('default_temperature', 0.7), min=0.0, max=2.0, step=0.1).classes('w-full')
+                            value=_default_prov.get('temperature', top.get('default_temperature', 0.7)), min=0.0, max=2.0, step=0.1).classes('w-full')
                         w_prov_timeout = ui.number('provider_timeout_secs',
-                            value=top.get('provider_timeout_secs', 120), min=5, step=5).classes('w-full')
+                            value=_default_prov.get('timeout_secs', top.get('provider_timeout_secs', 120)), min=5, step=5).classes('w-full')
                         ui.separator().classes('q-my-sm')
                         ui.label(T['section_secrets']).classes('text-subtitle2 text-grey-7')
                         w_secrets_encrypt = ui.checkbox('secrets.encrypt', value=bool(secrets_c.get('encrypt', True)))
@@ -1958,7 +1974,7 @@ def index(request: Request):
                         ui.label(T['section_providers']).classes('text-subtitle2 text-grey-7 q-mt-sm')
                         ui.label(T['hint_providers']).classes('text-caption text-grey-5')
                         provider_container = ui.column().classes('w-full')
-                        for alias, mp_data in conf.get('model_providers', {}).items():
+                        for alias, mp_data in conf.get('providers', {}).get('models', {}).items():
                             build_provider_card(provider_container, alias, mp_data)
                         ui.separator().classes('q-my-sm')
                         ui.label(T['lbl_add_provider']).classes('text-caption text-blue-7')
@@ -1977,7 +1993,7 @@ def index(request: Request):
                         ).classes('w-full q-mb-xs')
                         with ui.row().classes('w-full gap-2 items-center'):
                             new_alias_input = ui.input(
-                                'Alias  [model_providers.<alias>]  — auto-filled, edit for duplicates',
+                                'Alias  [providers.models.<alias>]  — auto-filled, edit for duplicates',
                                 value='',
                             ).classes('flex-1')
                             ui.button(T['btn_add_provider'], on_click=lambda: _add_provider()).props('outline color=blue')
@@ -2045,13 +2061,13 @@ def index(request: Request):
                         cur_obs = obs.get('backend', 'none')
                         w_obs_backend = ui.select(['none', 'noop', 'log', 'prometheus', 'otel'], label='backend',
                             value=cur_obs if cur_obs in ['none','noop','log','prometheus','otel'] else 'none').classes('w-full')
-                        cur_tm = obs.get('runtime_trace_mode', 'none')
-                        w_obs_trace_mode = ui.select(['none', 'rolling', 'full'], label='runtime_trace_mode',
+                        cur_tm = obs.get('log_persistence', obs.get('runtime_trace_mode', 'none'))
+                        w_obs_trace_mode = ui.select(['none', 'rolling', 'full'], label='log_persistence',
                             value=cur_tm if cur_tm in ['none','rolling','full'] else 'none').classes('w-full')
                         w_obs_otel_endpoint = ui.input('otel_endpoint', value=str(obs.get('otel_endpoint', 'http://localhost:4318'))).classes('w-full')
                         w_obs_otel_service  = ui.input('otel_service_name', value=str(obs.get('otel_service_name', 'zeroclaw'))).classes('w-full')
-                        w_obs_trace_path    = ui.input('runtime_trace_path', value=str(obs.get('runtime_trace_path', 'state/runtime-trace.jsonl'))).classes('w-full')
-                        w_obs_trace_max     = ui.number('runtime_trace_max_entries', value=obs.get('runtime_trace_max_entries', 200), min=10, step=50).classes('w-full')
+                        w_obs_trace_path    = ui.input('log_persistence_path', value=str(obs.get('log_persistence_path', obs.get('runtime_trace_path', 'state/runtime-trace.jsonl')))).classes('w-full')
+                        w_obs_trace_max     = ui.number('log_persistence_max_entries', value=obs.get('log_persistence_max_entries', obs.get('runtime_trace_max_entries', 200)), min=10, step=50).classes('w-full')
                         ui.separator().classes('q-my-sm')
                         ui.label(T['section_skills']).classes('text-subtitle2 text-grey-7')
                         w_skills_open = ui.checkbox('open_skills_enabled', value=skills.get('open_skills_enabled', False))
@@ -2103,9 +2119,10 @@ def index(request: Request):
                         w_gw_public  = ui.checkbox('allow_public_bind', value=gateway.get('allow_public_bind', False))
                         ui.separator().classes('q-my-sm')
                         ui.label(T['section_tunnel']).classes('text-subtitle2 text-grey-7')
-                        cur_tn = tunnel.get('provider', 'none')
-                        w_tunnel = ui.select(['none', 'cloudflare', 'ngrok'], label='tunnel.provider',
-                            value=cur_tn if cur_tn in ['none','cloudflare','ngrok'] else 'none').classes('w-full')
+                        cur_tn = tunnel.get('tunnel_provider', tunnel.get('provider', 'none'))
+                        _tunnel_backends = ['none', 'cloudflare', 'tailscale', 'ngrok', 'openvpn', 'pinggy', 'custom']
+                        w_tunnel = ui.select(_tunnel_backends, label='tunnel.tunnel_provider',
+                            value=cur_tn if cur_tn in _tunnel_backends else 'none').classes('w-full')
                         ui.separator().classes('q-my-sm')
                         ui.label(T['section_channels_global']).classes('text-subtitle2 text-grey-7')
                         w_cli_enabled = ui.checkbox(T['lbl_cli'], value=ch_conf_top.get('cli', True))
@@ -2211,9 +2228,10 @@ def index(request: Request):
                             w_wf_timeout  = ui.number('timeout_secs',              value=web_fetch.get('timeout_secs', 30),         min=5,    step=5).classes('w-full')
                         with ui.expansion(T['exp_websearch'], icon='search').classes('w-full'):
                             w_ws_enabled  = ui.checkbox('enabled', value=web_search.get('enabled', False))
-                            cur_wsp = web_search.get('provider', 'duckduckgo')
-                            w_ws_provider = ui.select(['duckduckgo', 'google', 'bing'], label='provider',
-                                value=cur_wsp if cur_wsp in ['duckduckgo','google','bing'] else 'duckduckgo').classes('w-full')
+                            cur_wsp = web_search.get('search_provider', web_search.get('provider', 'duckduckgo'))
+                            _ws_providers = ['duckduckgo', 'brave', 'tavily', 'searxng']
+                            w_ws_provider = ui.select(_ws_providers, label='search_provider',
+                                value=cur_wsp if cur_wsp in _ws_providers else 'duckduckgo').classes('w-full')
                             w_ws_max      = ui.number('max_results',  value=web_search.get('max_results', 5),   min=1, step=1).classes('w-full')
                             w_ws_timeout  = ui.number('timeout_secs', value=web_search.get('timeout_secs', 15), min=5, step=5).classes('w-full')
                         with ui.expansion(T['exp_httpreq'], icon='http').classes('w-full'):

@@ -28,8 +28,8 @@ STRINGS = {
     'lbl_api_key':     'API Key（全局默认）',
     'section_secrets': '加密 & 身份',
     # ── Providers ────────────────────────────────────────────────────────────
-    'section_providers':     '模型提供商 (model_providers.*)',
-    'hint_providers':        '每个卡片 = config.toml 中的 [model_providers.<alias>]',
+    'section_providers':     '模型提供商 (providers.models.*)',
+    'hint_providers':        '每个卡片 = config.toml 中的 [providers.models.<alias>]',
     'lbl_new_alias':         '新别名（如 openai, groq, local…）',
     'btn_add_provider':      '+ 添加模型服务',
     'warn_alias_empty':      '请输入别名',
@@ -56,11 +56,11 @@ STRINGS = {
     # ── Comms ────────────────────────────────────────────────────────────────
     'section_gateway':         'Gateway',
     'section_tunnel':          'Tunnel（隧道）',
-    'section_channels_global': 'channels_config 全局',
+    'section_channels_global': 'channels 全局',
     'lbl_cli':                 'cli（启用 CLI 频道）',
     # ── Channels ─────────────────────────────────────────────────────────────
-    'section_channels':    '频道配置 (channels_config.*)',
-    'hint_channels':       '每个卡片 = config.toml 中的 [channels_config.<channel>]',
+    'section_channels':    '频道配置 (channels.*)',
+    'hint_channels':       '每个卡片 = config.toml 中的 [channels.<channel>]',
     'lbl_channel_type':    '选择频道类型',
     'btn_add_channel':     '+ 添加频道',
     'warn_channel_empty':  '请选择频道类型',

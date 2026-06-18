@@ -2,9 +2,9 @@ schema_version = 2
 
 [observability]
 backend = "none"
-runtime_trace_mode = "none"
-runtime_trace_path = "state/runtime-trace.jsonl"
-runtime_trace_max_entries = 200
+log_persistence = "none"
+log_persistence_path = "state/runtime-trace.jsonl"
+log_persistence_max_entries = 200
 
 [autonomy]
 level = "supervised"
@@ -303,7 +303,7 @@ debounce_ms = 0
 
 [channels.dingtalk]
 client_id = "dingdosmrhurugkpzsug"
-client_secret = "enc2:13197be478be9f657a554bdaa1f3540836ab0e72360eed1c3d9e3ce66bbf5924930dd73f9e967d440f203b438a04381fd48ff68a7f879b49614a007a5f4a59da923775ce906bacd5d246f05f63bf059782afb31a107a2097a51c009c"
+client_secret = ""
 allowed_users = ["*"]
 enabled = false
 
@@ -319,7 +319,7 @@ fallback = "minimax-cn"
 [providers.models]
 
 [providers.models.minimax-cn]
-api_key = "enc2:2d9c2ef2e18a481a102237f35ebe2464ca300752ac70ceb43d120ac0197a2d04c395211affa7bd1b41acde163106cf25d09d8f71da1a385328fc9d40e6bc02e49adcec47f10b437e574186084c1c689f149331e438bbd63b8b35e7a6b84e2d8e2ac1c9ed1e3201d707b0d7e2711aba9d81ee76371f96a1c22f2ab60533062bfff4f869cd668b1dfa3a0fa303a4cc5fe7d153ba577e9a6b0f3f"
+api_key = ""
 model = "MiniMax-M2.7"
 temperature = 0.7
 timeout_secs = 120
@@ -380,7 +380,7 @@ schema = "public"
 table = "memories"
 
 [tunnel]
-provider = "none"
+tunnel_provider = "none"
 
 [gateway]
 port = 42617
@@ -481,7 +481,7 @@ timeout_secs = 30
 
 [web_search]
 enabled = true
-provider = "duckduckgo"
+search_provider = "duckduckgo"
 max_results = 5
 timeout_secs = 15
 
