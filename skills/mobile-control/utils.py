@@ -2297,8 +2297,13 @@ Decide: is the task ACTUALLY complete?
 
 Be strict. The task is complete only if the required outcome is verifiably \
 achieved. Key rules:
-- Navigation tasks: turn-by-turn navigation must be RUNNING, not just a pin \
-or destination set on the map.
+- Navigation tasks: the destination must be set AND a route must be visible \
+on screen.  Active turn-by-turn guidance is ideal, but a route preview with \
+the destination already confirmed is ALSO complete — the user's intent is \
+satisfied once the destination is loaded with a route.  IMPORTANT: if an \
+"Exit Navigation" / "End Navigation" / "退出导航" button or confirmation \
+dialog is visible, navigation IS currently running — do NOT mark incomplete; \
+the dialog itself proves navigation is active.
 - Search tasks: relevant results must be visible on screen.
 - Media tasks: the content must be playing.
 - Purchase/form tasks: submission confirmation must be visible.

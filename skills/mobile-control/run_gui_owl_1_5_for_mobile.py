@@ -992,7 +992,11 @@ def main():
                                 fg_label=_fg_label,
                                 ui_summary=_ui_summary,
                                 history=history,
-                                conclusion=f"Plan replay step {step_id}/{_plan_len}",
+                                conclusion=(
+                                    f"Plan replay step {step_id}/{_plan_len}. "
+                                    f"Foreground: {_fg_label}. "
+                                    f"Last plan action: {_plan_step.action_description or _plan_step.action_type}"
+                                ),
                                 screenshot_path=str(screenshot_path),
                                 force_vision=True,
                             )
@@ -1045,8 +1049,8 @@ def main():
                                     ui_summary=_final_ui_summary,
                                     history=history,
                                     conclusion=(
-                                        f"Plan replay completed {len(_plan_executor.replay_plan.steps)} "
-                                        f"cached step(s). "
+                                        f"Plan replay finished {len(_plan_executor.replay_plan.steps)} step(s). "
+                                        f"Screen shows {_final_fg_label}. "
                                         f"Last action: {_plan_step.action_description or _plan_step.action_type}"
                                     ),
                                     screenshot_path=str(_final_screenshot),
@@ -2505,7 +2509,11 @@ def main():
                     fg_label=_fg_label,
                     ui_summary=_ui_summary,
                     history=history,
-                    conclusion=f"Periodic check after step {step_id}",
+                    conclusion=(
+                        f"Periodic check after step {step_id}. "
+                        f"Foreground: {_fg_label}. "
+                        f"Last action: {history[-1].get('output', '')[:120] if history else 'none'}"
+                    ),
                     screenshot_path=str(screenshot_path),
                     force_vision=True,
                 )

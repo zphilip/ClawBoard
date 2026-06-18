@@ -181,8 +181,9 @@ class PlanStore:
     def find_all_healthy(
         self, intent_key: str, min_success: int = 1,
     ) -> list[TaskPlan]:
-        """Return all healthy plans for *intent_key*, sorted by score (best first).
+        """Return all healthy plans for *intent_key*, sorted best-first.
 
+        Sort order: score desc → steps asc → fail_count asc → success_count desc.
         Multi-route: the same task may have multiple valid UI paths.
         The executor tries them in order and picks the one that works.
         """
@@ -192,12 +193,15 @@ class PlanStore:
             and p.success_count >= min_success
             and plan_is_healthy(p)
         ]
-        def _score(p: TaskPlan) -> float:
-            # Pseudocount of 1 prevents new plans (1 success) from tying
-            # with proven plans (10+ successes).  Range: 0.0 → ~1.0
+        def _sort_key(p: TaskPlan) -> tuple:
+            # Primary: score (higher is better).  Pseudocount of 1 prevents
+            # new plans from tying with proven ones.
             #   1/0 → 0.50   2/0 → 0.67   5/0 → 0.83   10/0 → 0.91
-            return p.success_count / (p.success_count + p.fail_count + 1)
-        candidates.sort(key=_score, reverse=True)
+            score = p.success_count / (p.success_count + p.fail_count + 1)
+            # Tie-breakers (in order): shorter plan, fewer total failures,
+            # more total successes.
+            return (score, -len(p.steps), -p.fail_count, p.success_count)
+        candidates.sort(key=_sort_key, reverse=True)
         return candidates
 
     def find_best(self, intent_key: str, min_success: int = 1) -> TaskPlan | None:
@@ -216,10 +220,10 @@ class PlanStore:
         if not candidates:
             return None
 
-        def _score(p: TaskPlan) -> float:
-            return p.success_count / (p.success_count + p.fail_count + 1)
-
-        candidates.sort(key=_score, reverse=True)
+        def _sort_key(p: TaskPlan) -> tuple:
+            score = p.success_count / (p.success_count + p.fail_count + 1)
+            return (score, -len(p.steps), -p.fail_count, p.success_count)
+        candidates.sort(key=_sort_key, reverse=True)
         return candidates[0]
 
     def remove(self, intent_key: str) -> bool:
@@ -237,6 +241,29 @@ class PlanStore:
                 new_plans.append(p)
         if removed:
             self._rewrite_all(new_plans)
+        return removed
+
+    def prune(self, min_score: float = 0.25) -> int:
+        """Delete plans with score below *min_score* or that are unhealthy.
+
+        A plan that can never be selected by find_plan() / find_best() is
+        dead weight.  The default threshold (0.25) is well below the
+        selection threshold (0.50), so borderline plans get a chance to
+        recover.  Examples at 0.25: 1 success + 2 failures, or 2 + 5.
+
+        Returns the number of plans removed.
+        """
+        plans = self.load()
+        keep = []
+        removed = 0
+        for p in plans:
+            score = p.success_count / (p.success_count + p.fail_count + 1)
+            if score >= min_score and plan_is_healthy(p):
+                keep.append(p)
+            else:
+                removed += 1
+        if removed:
+            self._rewrite_all(keep)
         return removed
 
     def increment_success(self, intent_key: str) -> None:
