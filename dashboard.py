@@ -735,10 +735,15 @@ CHANNEL_SCHEMAS = {
 CHANNEL_KEYS   = list(CHANNEL_SCHEMAS.keys())
 CHANNEL_LABELS = {k: v['label'] for k, v in CHANNEL_SCHEMAS.items()}
 
-def load_config():
-    """Load from the live deploy path first; fall back to local config/config.toml.
+def load_config(source='runtime'):
+    """Load ZeroClaw config.toml.  source='runtime' (default) prefers the live
+    deploy path; source='local' prefers config/config.toml (the repo template).
     Uses tomlkit so that save_config preserves blank lines, comments and key order."""
-    for path in [DEPLOY_CONFIG_PATH, CONFIG_PATH]:
+    if source == 'local':
+        paths = [CONFIG_PATH, DEPLOY_CONFIG_PATH]
+    else:
+        paths = [DEPLOY_CONFIG_PATH, CONFIG_PATH]
+    for path in paths:
         try:
             with open(path, 'r') as f:
                 return tomlkit.load(f)
@@ -1020,8 +1025,9 @@ def index(request: Request):
     lang       = request.query_params.get('lang', 'zh')
     T          = zh_strings.STRINGS if lang == 'zh' else en_strings.STRINGS
     other_lang = 'en' if lang == 'zh' else 'zh'
+    zc_source  = request.query_params.get('zc_source', 'runtime')  # 'runtime' or 'local'
 
-    conf = load_config()
+    conf = load_config(source=zc_source)
     provider_panels = {}
     channel_panels  = {}
 
@@ -1861,11 +1867,23 @@ def index(request: Request):
             # ── ZeroClaw › Configuration ───────────────────────────────────
             with ui.tab_panel(t_zc_cfg):
 
-                # ── Schema version badge ───────────────────────────────────
+                # ── Header row: schema badge + config source selector ──────
                 _zc_schema_ver = int(conf.get('schema_version', 0))
-                with ui.row().classes('items-center gap-2 q-px-sm q-pt-xs q-pb-none'):
+                with ui.row().classes('items-center gap-3 q-px-sm q-pt-xs q-pb-none'):
                     _zc_badge_color = 'green-7' if _zc_schema_ver >= 2 else 'orange-7'
                     ui.badge(f'schema v{_zc_schema_ver}', color=_zc_badge_color).props('outline')
+                    ui.space()
+                    ui.label('Config source:').classes('text-caption text-grey-6')
+                    _zc_src_sel = ui.select(
+                        {'runtime': 'Runtime  (/var/lib/zeroclaw/…)',
+                         'local':   'Template (config/config.toml)'},
+                        value=zc_source,
+                    ).props('dense outlined').classes('text-caption').style('min-width: 240px')
+                    def _zc_reload_source():
+                        new_src = _zc_src_sel.value or 'runtime'
+                        ui.navigate.to(f'/?lang={lang}&zc_source={new_src}')
+                    ui.button('Load', icon='refresh', on_click=_zc_reload_source
+                        ).props('dense flat size=sm color=blue-7')
 
                 # ── Upgrade banner (shown when schema is below current version) ──
                 if _zc_schema_ver < 2:
