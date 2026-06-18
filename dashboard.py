@@ -596,7 +596,7 @@ PROVIDER_IDS = [
     'qwen', 'dashscope', 'groq', 'mistral', 'xai', 'deepseek', 'together',
     'fireworks', 'novita', 'perplexity', 'cohere', 'copilot', 'lmstudio',
     'llamacpp', 'sglang', 'vllm', 'osaurus', 'nvidia',
-    'custom:https://', 'anthropic-custom:https://',
+    'minimax-cn', 'custom:https://', 'anthropic-custom:https://',
 ]
 
 CHANNEL_SCHEMAS = {
