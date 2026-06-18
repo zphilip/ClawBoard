@@ -507,6 +507,25 @@ def main():
                         f"success_count={_rp.success_count} "
                         f"fail_count={_rp.fail_count}"
                     )
+                    # Inject past supervisor correction hints into the
+                    # instruction so the VLM starts with domain knowledge
+                    # learned from prior runs (e.g. "Baidu Maps navigation
+                    # requires 驾车 mode, not 打车/公共交通").
+                    if _rp.correction_hints:
+                        _hint_block = "\n".join(
+                            f"  [{i}] {h}" for i, h in enumerate(
+                                _rp.correction_hints[-5:], 1  # last 5 only
+                            )
+                        )
+                        instruction = (
+                            f"{instruction}\n\n"
+                            f"[历史修正 — CORRECTION HINTS FROM PAST RUNS]\n"
+                            f"{_hint_block}"
+                        )
+                        _log_t(
+                            f"[PLAN] injected {len(_rp.correction_hints[-5:])} "
+                            "correction hint(s) into instruction"
+                        )
                 else:
                     _log_t(
                         f"[PLAN] no viable plan for intent_key={_canonical_intent_key} "
@@ -654,6 +673,7 @@ def main():
     # because the VLM is going against the task goal, the override reason is
     # injected into the next VLM call so the model course-corrects.
     _supervisor_feedback: str = ""
+    _correction_hints: list[str] = []  # accumulated override reasons → stored on plan
     for step_id in range(args.max_steps):
         _step_t0 = time.time()
         _step_metrics: dict[str, float] = {}
@@ -1082,12 +1102,49 @@ def main():
                             break
 
                         # Supervisor confirmed the task is NOT done.
-                        # The plan is insufficient — mark it unhealthy so that
-                        # upsert_by_intent will replace it with the VLM-built
-                        # plan (preserving counter history via merge).
-                        # Each step gets fail_count >= 2 to trigger
-                        # plan_is_healthy → False, which makes upsert_by_intent
-                        # rule 1 fire (new healthy replaces old unhealthy).
+                        # Before falling back to the expensive VLM, check
+                        # whether another plan (route) under the same intent
+                        # has a step whose stored crop matches the current
+                        # screen.  If so, switch to that plan and continue
+                        # from the matched step.
+                        _continuation = None
+                        try:
+                            _cont_screenshot = str(_final_screenshot)
+                            if _cont_screenshot and os.path.exists(_cont_screenshot):
+                                _continuation = _plan_executor.find_continuation_plan(
+                                    screenshot_path=_cont_screenshot,
+                                    intent_key=_canonical_intent_key,
+                                    exclude_plan=_plan_executor.replay_plan,
+                                )
+                        except Exception as _cont_err:
+                            _log_t(
+                                f"[PLAN] continuation search error "
+                                f"({_cont_err!r}) — falling back to VLM"
+                            )
+
+                        if _continuation is not None:
+                            _cont_plan, _cont_step_idx = _continuation
+                            _plan_executor.end_replay()
+                            _plan_executor.start_replay_from(
+                                _cont_plan, _cont_step_idx + 1,
+                            )
+                            _plan_replay_active = True
+                            _log_t(
+                                f"[PLAN] switched to continuation plan "
+                                f"(step {_cont_step_idx + 1}/"
+                                f"{len(_cont_plan.steps)})"
+                            )
+                            time.sleep(1)
+                            continue
+
+                        # No continuation plan found — the plan is
+                        # insufficient.  Mark it unhealthy so that
+                        # upsert_by_intent will replace it with the
+                        # VLM-built plan (preserving counter history
+                        # via merge).  Each step gets fail_count >= 2
+                        # to trigger plan_is_healthy → False, which
+                        # makes upsert_by_intent rule 1 fire (new
+                        # healthy replaces old unhealthy).
                         _plan_executor.note_plan_failure(_canonical_intent_key)
                         for _step in _plan_executor.replay_plan.steps:
                             _plan_store.increment_step_fail(_canonical_intent_key, _step.step_index)
@@ -1881,6 +1938,8 @@ def main():
                 # knows why its action was wrong and course-corrects on
                 # the next step instead of repeating the same mistake.
                 _supervisor_feedback = _reason
+                if _reason and _reason not in _correction_hints:
+                    _correction_hints.append(_reason)
                 _override_tc = _sup_verdict.get("tool_call", {})
                 if _override_tc and "arguments" in _override_tc:
                     # Validate the override has required fields for its action type.
@@ -2731,6 +2790,7 @@ def main():
                         instruction=instruction,
                         run_id=_run_id,
                         device_bucket="default",
+                        correction_hints=_correction_hints,
                     )
                     if _new_plan:
                         _log_t(
@@ -2744,6 +2804,7 @@ def main():
                         instruction=instruction,
                         run_id=_run_id,
                         device_bucket="default",
+                        correction_hints=_correction_hints,
                     )
                     if _new_plan:
                         _log_t(

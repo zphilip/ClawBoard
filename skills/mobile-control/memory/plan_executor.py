@@ -345,14 +345,86 @@ class PlanExecutor:
 
         return False
 
+    def find_continuation_plan(
+        self,
+        screenshot_path: str,
+        intent_key: str,
+        exclude_plan: TaskPlan | None = None,
+        confidence_threshold: float = 0.60,
+    ) -> tuple[TaskPlan, int] | None:
+        """Find another plan whose step crop matches the current screen.
+
+        When the current plan is exhausted but the task is not complete,
+        search other plans (routes) under the same intent for a step
+        whose stored crop matches *screenshot_path* via template matching.
+
+        Returns ``(plan, step_index)`` where *step_index* is the matched
+        step — replay should continue from *step_index + 1*.  Returns
+        ``None`` when no other plan matches the current screen.
+        """
+        candidates = self.find_plans(intent_key)
+        if not candidates:
+            return None
+
+        for plan in candidates:
+            # Skip the plan we already exhausted (same step count +
+            # identical action_type sequence = same plan).
+            if exclude_plan is not None:
+                if (
+                    len(plan.steps) == len(exclude_plan.steps)
+                    and all(
+                        s.action_type == es.action_type
+                        for s, es in zip(plan.steps, exclude_plan.steps)
+                    )
+                ):
+                    continue
+
+            # Try each step's crop against the current screen.
+            for step in plan.steps:
+                crop = getattr(step, 'target_element_crop_b64', '')
+                if not crop:
+                    continue
+                match = _template_match_crop(
+                    screenshot_path, crop,
+                    confidence_threshold=confidence_threshold,
+                )
+                if match is not None:
+                    print(
+                        f"[PLAN] continuation found: route "
+                        f"(score={plan.success_count / (plan.success_count + plan.fail_count + 1):.2f}) "
+                        f"step s{step.step_index} crop matched "
+                        f"at ({match[0]},{match[1]}) — switching plan"
+                    )
+                    return (plan, step.step_index)
+
+        return None
+
     # ------------------------------------------------------------------
     # Replay control
     # ------------------------------------------------------------------
 
     def start_replay(self, plan: TaskPlan) -> None:
         """Begin replaying *plan* from step 0."""
+        self._start_replay_at(plan, 0)
+
+    def start_replay_from(self, plan: TaskPlan, step_index: int) -> None:
+        """Begin replaying *plan* from *step_index*.
+
+        Used when a continuation plan is found — replay resumes from the
+        step after the one whose crop matched the current screen.
+        """
+        if step_index < 0 or step_index >= len(plan.steps):
+            raise ValueError(
+                f"step_index {step_index} out of range [0, {len(plan.steps)})"
+            )
+        print(
+            f"[PLAN] resuming replay from step {step_index}/{len(plan.steps)}"
+        )
+        self._start_replay_at(plan, step_index)
+
+    def _start_replay_at(self, plan: TaskPlan, cursor: int) -> None:
         self._replay_plan = plan
-        self._replay_cursor = 0
+        self._replay_cursor = cursor
         self._replay_active = True
         self._consecutive_failures = 0
         self._paused = False
@@ -510,6 +582,35 @@ class PlanExecutor:
                 if self._consecutive_failures >= _MAX_CONSECUTIVE_FAILURES:
                     self.end_replay()
                 return False
+
+        # ── Layer 0.5: visual state pre-check ──────────────────────────
+        # When a pre-action screen hash is stored, compare it against the
+        # current screenshot.  A large Hamming distance (>12 bits) means
+        # the screen has changed so much that this step is unlikely to
+        # apply (e.g. wrong tab, popup appeared, layout shifted).  Skip
+        # early rather than wasting element lookups + crop matching.
+        _screen_hash_checked = False
+        if (step.pre_action_screen_hash
+                and screenshot_path
+                and step.action_type != "open"):
+            _cur_hash = _compute_screen_hash(screenshot_path)
+            if _cur_hash and step.pre_action_screen_hash:
+                _similar, _dist = _screen_hashes_similar(
+                    step.pre_action_screen_hash, _cur_hash,
+                    max_distance=12,
+                )
+                _screen_hash_checked = True
+                if not _similar:
+                    print(
+                        f"[PLAN] visual pre-check failed: screen hash "
+                        f"distance={_dist} > 12 — screen has changed "
+                        f"significantly, skipping step s{step.step_index}"
+                    )
+                    self._failed_step_indices.add(step.step_index)
+                    self._consecutive_failures += 1
+                    if self._consecutive_failures >= _MAX_CONSECUTIVE_FAILURES:
+                        self.end_replay()
+                    return False
 
         # ── Element-based targeting for clicks ────────────────────────
         _element_matched = False
@@ -826,6 +927,7 @@ class PlanExecutor:
         instruction: str,
         run_id: str,
         device_bucket: str = "default",
+        correction_hints: list[str] | None = None,
     ) -> TaskPlan | None:
         """Repair a plan that had step failures during replay.
 
@@ -841,7 +943,7 @@ class PlanExecutor:
         if self._replay_plan is None or not self._recorded_steps:
             # Fall back to building a fresh plan from VLM steps
             return self.build_and_store_plan(
-                intent_key, instruction, run_id, device_bucket,
+                intent_key, instruction, run_id, device_bucket, correction_hints,
             )
 
         _old_steps = list(self._replay_plan.steps)
@@ -937,6 +1039,7 @@ class PlanExecutor:
             created_at=self._replay_plan.created_at,
             source_run_id=run_id,
             device_bucket=device_bucket,
+            correction_hints=list(set(correction_hints or [])),  # deduplicate
         )
 
         self.store.upsert_by_intent(plan)
@@ -949,6 +1052,7 @@ class PlanExecutor:
         instruction: str,
         run_id: str,
         device_bucket: str = "default",
+        correction_hints: list[str] | None = None,
     ) -> TaskPlan | None:
         """Convert recorded steps into a TaskPlan and persist it.
 
@@ -1015,6 +1119,7 @@ class PlanExecutor:
             created_at=now,
             source_run_id=run_id,
             device_bucket=device_bucket,
+            correction_hints=list(set(correction_hints or [])),  # deduplicate
         )
 
         # Upsert: replace older plans for the same intent so the store

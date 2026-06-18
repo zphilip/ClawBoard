@@ -336,6 +336,7 @@ def _serialise_plan(plan: TaskPlan) -> dict[str, Any]:
         "created_at": plan.created_at,
         "source_run_id": plan.source_run_id,
         "device_bucket": plan.device_bucket,
+        "correction_hints": plan.correction_hints,
     }
 
 
@@ -367,4 +368,5 @@ def _deserialise_plan(obj: dict[str, Any]) -> TaskPlan:
         created_at=float(obj.get("created_at", 0.0)),
         source_run_id=obj.get("source_run_id", ""),
         device_bucket=obj.get("device_bucket", "default"),
+        correction_hints=obj.get("correction_hints", []),
     )

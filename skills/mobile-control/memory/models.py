@@ -125,3 +125,4 @@ class TaskPlan:
     created_at: float = 0.0                # epoch timestamp of plan creation
     source_run_id: str = ""                # run_id that originally recorded the plan
     device_bucket: str = "default"
+    correction_hints: list[str] = field(default_factory=list)  # supervisor override reasons for injection on replay
