@@ -803,6 +803,33 @@ def deploy_config():
     if r.returncode != 0:
         err = r.stderr.strip() or f'sudo tee failed (exit {r.returncode})'
         return False, err
+    # Ensure zeroclaw can read/write its own config (for key encryption).
+    subprocess.run(
+        ['sudo', '/usr/bin/chown', 'zeroclaw:zeroclaw', DEPLOY_CONFIG_PATH],
+        capture_output=True
+    )
+    # Step 5: read-back verification — ensure the deploy target actually
+    # has the content we wrote (catches silent tee failures and cases where
+    # a concurrently-running zeroclaw rewrites the file between steps).
+    try:
+        r2 = subprocess.run(
+            ['sudo', '/usr/bin/cat', DEPLOY_CONFIG_PATH],
+            capture_output=True, text=True
+        )
+        if r2.returncode == 0:
+            _deployed = tomlkit.loads(r2.stdout)
+            _wrote = tomlkit.loads(content)
+            _wrote_models = _wrote.get('providers', {}).get('models', {})
+            _deployed_models = _deployed.get('providers', {}).get('models', {})
+            if set(_wrote_models.keys()) != set(_deployed_models.keys()):
+                return False, (
+                    f'Deploy verification failed: wrote aliases '
+                    f'{sorted(_wrote_models.keys())} but deployed file has '
+                    f'{sorted(_deployed_models.keys())}. '
+                    f'The file may have been overwritten after tee.'
+                )
+    except Exception:
+        pass  # verification is best-effort; don't block deploy
     return True, ''
 
 def deploy_picoclaw_config():

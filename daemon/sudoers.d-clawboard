@@ -19,6 +19,7 @@ zero ALL=(zeroclaw) NOPASSWD: /opt/zeroclaw/zeroclaw config migrate
 
 # ── ZeroClaw config deploy (dashboard writes config.toml as zeroclaw user) ───
 zero ALL=(root) NOPASSWD: /usr/bin/tee /var/lib/zeroclaw/.zeroclaw/config.toml
+zero ALL=(root) NOPASSWD: /usr/bin/chown zeroclaw\:zeroclaw /var/lib/zeroclaw/.zeroclaw/config.toml
 zero ALL=(root) NOPASSWD: /usr/bin/mkdir -p /var/lib/zeroclaw/.zeroclaw
 
 # ── ZeroClaw runtime files (read by clawberry-proxy for TTS config) ──────────
