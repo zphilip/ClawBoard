@@ -1712,13 +1712,24 @@ def index(request: Request):
                             # Set base_url LAST so hint value wins over any cascade
                             wiz_prov_base.set_value(h.get('api_base', ''))
 
+                        # Track last provider_id so _fill_from_pid can detect
+                        # when the alias hasn't been customized (matches old pid)
+                        _last_pid = ['openrouter']
+
                         def _fill_from_pid(e):
-                            """Fill base_url and alias from provider-ID selection."""
+                            """Fill base_url from provider-ID selection.
+                            Only auto-set alias when the current alias still
+                            matches the previous provider-id — i.e. the user
+                            hasn't customized it. This preserves regional
+                            variants like minimax-cn set by the quick-pick."""
                             pid = e.value
                             if not pid:
                                 return
                             wiz_prov_base.set_value(_pid_base.get(pid, ''))
-                            wiz_prov_alias.set_value(pid.split(':')[0])
+                            cur_alias = (wiz_prov_alias.value or '').strip()
+                            if not cur_alias or cur_alias == _last_pid[0]:
+                                wiz_prov_alias.set_value(pid.split(':')[0])
+                            _last_pid[0] = pid
 
                         # Register via .on_value_change() — callbacks are fully defined above
                         wiz_quick.on_value_change(_fill_from_hint)
@@ -1840,7 +1851,16 @@ def index(request: Request):
                             if wiz_prov_key.value:
                                 prov_entry['api_key'] = wiz_prov_key.value
                             if wiz_prov_base.value: prov_entry['base_url'] = wiz_prov_base.value
-                            conf.setdefault('providers', {}).setdefault('models', {})[alias] = prov_entry
+                            conf.setdefault('providers', {}).setdefault('models', {})
+                            # Remove any stale entries that share the same provider name
+                            # (e.g. leftover "minimax" or "custom:https://..." aliases from
+                            # previous buggy wizard runs) so only the current alias stays.
+                            pname = wiz_prov_id.value
+                            for _k in list(conf['providers']['models'].keys()):
+                                _v = conf['providers']['models'].get(_k)
+                                if isinstance(_v, dict) and _v.get('name') == pname and _k != alias:
+                                    del conf['providers']['models'][_k]
+                            conf['providers']['models'][alias] = prov_entry
                             # ── fallback
                             if wiz_is_fallback.value:
                                 conf.setdefault('providers', {})['fallback'] = alias
