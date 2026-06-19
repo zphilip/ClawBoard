@@ -761,10 +761,11 @@ def save_config(conf):
     with open(CONFIG_PATH, 'w') as f:
         f.write(tomlkit.dumps(conf))
 
-def deploy_config():
+def deploy_config(conf=None):
     """Backup CONFIG_PATH → .bak, then deploy to DEPLOY_CONFIG_PATH via sudo tee.
     Uses: sudo /usr/bin/tee /var/lib/zeroclaw/.zeroclaw/config.toml
     Requires the matching sudoers rule in daemon/sudoers.d-clawboard.
+    If conf is provided, use it directly (bypasses re-reading from disk).
     Returns (ok: bool, message: str)."""
     import shutil
     # Step 1: backup local copy
@@ -773,14 +774,20 @@ def deploy_config():
         shutil.copy2(CONFIG_PATH, bak)
     except Exception as e:
         return False, f'Backup failed: {e}'
-    # Step 2: load local config, then preserve paired_tokens from the live deploy
-    # path. zeroclaw encrypts paired_tokens with its own runtime key; overwriting
+    # Step 2: use the provided conf, or load from disk
+    if conf is not None:
+        # Round-trip through TOML to get a deep copy independent of the
+        # wizard's in-memory dict (paired_tokens merge won't mutate caller).
+        conf_to_deploy = tomlkit.loads(tomlkit.dumps(conf))
+    else:
+        try:
+            with open(CONFIG_PATH, 'r') as f:
+                conf_to_deploy = tomlkit.load(f)
+        except Exception as e:
+            return False, f'Read failed: {e}'
+    # Preserve paired_tokens from the live deploy path.
+    # zeroclaw encrypts paired_tokens with its own runtime key; overwriting
     # them with a stale local copy causes "Decryption failed" on next startup.
-    try:
-        with open(CONFIG_PATH, 'r') as f:
-            conf_to_deploy = tomlkit.load(f)
-    except Exception as e:
-        return False, f'Read failed: {e}'
     try:
         with open(DEPLOY_CONFIG_PATH, 'r') as lf:
             _live = tomlkit.load(lf)
@@ -822,11 +829,14 @@ def deploy_config():
             _wrote_models = _wrote.get('providers', {}).get('models', {})
             _deployed_models = _deployed.get('providers', {}).get('models', {})
             if set(_wrote_models.keys()) != set(_deployed_models.keys()):
+                # Extract just the models section from both for diagnosis
+                _wrote_keys = sorted(_wrote_models.keys())
+                _deployed_keys = sorted(_deployed_models.keys())
                 return False, (
-                    f'Deploy verification failed: wrote aliases '
-                    f'{sorted(_wrote_models.keys())} but deployed file has '
-                    f'{sorted(_deployed_models.keys())}. '
-                    f'The file may have been overwritten after tee.'
+                    f'Deploy verification failed.\n'
+                    f'Source ({CONFIG_PATH}): {_wrote_keys}\n'
+                    f'Target ({DEPLOY_CONFIG_PATH}): {_deployed_keys}\n'
+                    f'Extra keys in target: {sorted(set(_deployed_keys) - set(_wrote_keys))}'
                 )
     except Exception:
         pass  # verification is best-effort; don't block deploy
@@ -1921,7 +1931,7 @@ def index(request: Request):
                                 wiz_result_lbl.set_text(msg)
                                 wiz_result_lbl.classes(remove='text-positive text-warning', add='text-negative')
                                 return
-                            ok_deploy, deploy_err = deploy_config()
+                            ok_deploy, deploy_err = deploy_config(conf)
                             if not ok_deploy:
                                 msg = f'⚠️ Saved locally but deploy failed: {deploy_err}'
                                 ui.notify(msg, type='warning')
