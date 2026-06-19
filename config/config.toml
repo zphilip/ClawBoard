@@ -252,7 +252,7 @@ loop_detection_max_repeats = 3
 
 [skills]
 open_skills_enabled = false
-allow_scripts = false
+allow_scripts = true
 prompt_injection_mode = "full"
 
 [skills.skill_creation]
