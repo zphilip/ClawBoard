@@ -799,6 +799,12 @@ def deploy_config(conf=None):
     except Exception:
         pass  # live file may not exist yet; proceed without
     content = tomlkit.dumps(conf_to_deploy)
+    # DEBUG: write a copy to /tmp so we can inspect exactly what's deployed
+    try:
+        with open('/tmp/clawboard-deploy-content.toml', 'w') as _dbg:
+            _dbg.write(content)
+    except Exception:
+        pass
     # Step 3: ensure target directory exists (best-effort, may already exist)
     subprocess.run(
         ['sudo', '/usr/bin/mkdir', '-p', os.path.dirname(DEPLOY_CONFIG_PATH)],
