@@ -1068,7 +1068,7 @@ def index(request: Request):
     lang       = request.query_params.get('lang', 'zh')
     T          = zh_strings.STRINGS if lang == 'zh' else en_strings.STRINGS
     other_lang = 'en' if lang == 'zh' else 'zh'
-    zc_source  = request.query_params.get('zc_source', 'runtime')  # 'runtime' or 'local'
+    zc_source  = request.query_params.get('zc_source', 'local')  # 'local' (source of truth) or 'runtime'
 
     conf = load_config(source=zc_source)
     provider_panels = {}
@@ -1678,7 +1678,7 @@ def index(request: Request):
                         value=zc_source,
                     ).props('dense outlined').classes('text-caption').style('min-width: 240px')
                     def _wiz_reload_source():
-                        new_src = _wiz_src_sel.value or 'runtime'
+                        new_src = _wiz_src_sel.value or 'local'
                         ui.navigate.to(f'/?lang={lang}&zc_source={new_src}')
                         _wiz_src_btn.props('loading')
                     _wiz_src_btn = ui.button('Load', icon='refresh', on_click=_wiz_reload_source
@@ -1970,7 +1970,7 @@ def index(request: Request):
                         value=zc_source,
                     ).props('dense outlined').classes('text-caption').style('min-width: 240px')
                     def _zc_reload_source():
-                        new_src = _zc_src_sel.value or 'runtime'
+                        new_src = _zc_src_sel.value or 'local'
                         ui.navigate.to(f'/?lang={lang}&zc_source={new_src}')
                     ui.button('Load', icon='refresh', on_click=_zc_reload_source
                         ).props('dense flat size=sm color=blue-7')
