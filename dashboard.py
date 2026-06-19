@@ -741,10 +741,12 @@ CHANNEL_SCHEMAS = {
 CHANNEL_KEYS   = list(CHANNEL_SCHEMAS.keys())
 CHANNEL_LABELS = {k: v['label'] for k, v in CHANNEL_SCHEMAS.items()}
 
-def load_config(source='runtime'):
-    """Load ZeroClaw config.toml.  source='runtime' (default) prefers the live
-    deploy path; source='local' prefers config/config.toml (the repo template).
-    Uses tomlkit so that save_config preserves blank lines, comments and key order."""
+def load_config(source='local'):
+    """Load ZeroClaw config.toml.  source='local' prefers config/config.toml
+    (the source-of-truth template); source='runtime' prefers the live deploy
+    path (/var/lib/zeroclaw/.zeroclaw/config.toml).
+    Uses tomlkit so that save_config preserves blank lines, comments and key order.
+    Returns (conf, actual_source) — actual_source is the path that was loaded."""
     if source == 'local':
         paths = [CONFIG_PATH, DEPLOY_CONFIG_PATH]
     else:
@@ -752,10 +754,10 @@ def load_config(source='runtime'):
     for path in paths:
         try:
             with open(path, 'r') as f:
-                return tomlkit.load(f)
+                return tomlkit.load(f), path
         except Exception:
             continue
-    return tomlkit.document()
+    return tomlkit.document(), None
 
 def save_config(conf):
     with open(CONFIG_PATH, 'w') as f:
@@ -1070,7 +1072,12 @@ def index(request: Request):
     other_lang = 'en' if lang == 'zh' else 'zh'
     zc_source  = request.query_params.get('zc_source', 'local')  # 'local' (source of truth) or 'runtime'
 
-    conf = load_config(source=zc_source)
+    conf, _loaded_from = load_config(source=zc_source)
+    # Warn if the requested source wasn't available and we fell back
+    if _loaded_from and zc_source == 'runtime' and _loaded_from == CONFIG_PATH:
+        ui.notify('Runtime config not found — loaded local template instead', type='warning')
+    elif _loaded_from and zc_source == 'local' and _loaded_from == DEPLOY_CONFIG_PATH:
+        ui.notify('Local template not found — loaded runtime config instead', type='warning')
     provider_panels = {}
     channel_panels  = {}
 
