@@ -1698,11 +1698,15 @@ def index(request: Request):
                                 # set provider_id — may cascade into _fill_from_pid,
                                 # which writes prov_base; we overwrite it again below.
                                 wiz_prov_id.set_value(pid)
-                            slug = (h.get('model_name') or '').lower() \
-                                .replace(' ', '_').replace('-', '_').replace('.', '_') \
-                                .split('(')[0].rstrip('_')
-                            if slug:
-                                wiz_prov_alias.set_value(slug)
+                            suggested = h.get('suggested_alias', '')
+                            if suggested:
+                                wiz_prov_alias.set_value(suggested)
+                            else:
+                                slug = (h.get('model_name') or '').lower() \
+                                    .replace(' ', '_').replace('-', '_').replace('.', '_') \
+                                    .split('(')[0].rstrip('_')
+                                if slug:
+                                    wiz_prov_alias.set_value(slug)
                             if h.get('model'):
                                 wiz_def_model.set_value(h['model'])
                             # Set base_url LAST so hint value wins over any cascade
