@@ -1078,6 +1078,7 @@ def index(request: Request):
         ui.notify('Runtime config not found — loaded local template instead', type='warning')
     elif _loaded_from and zc_source == 'local' and _loaded_from == DEPLOY_CONFIG_PATH:
         ui.notify('Local template not found — loaded runtime config instead', type='warning')
+    _diag = ''  # populated by _wiz_apply; read by _wiz_refresh_summary (shared index scope)
     provider_panels = {}
     channel_panels  = {}
 
@@ -1828,6 +1829,8 @@ def index(request: Request):
                             masked = ('*' * 6 + key[-4:]) if len(key) >= 6 else ('*' * len(key))
                             ch_label = CHANNEL_SCHEMAS.get(wiz_ch_sel.value or '', {}).get('label', '(none selected)')
                             lines = [
+                                _diag,
+                                '',
                                 f'Provider:      {wiz_prov_id.value}',
                                 f'Alias:         {wiz_prov_alias.value or "default"}',
                                 f'API Key:       {masked if key else "(not set)"}',
@@ -1882,7 +1885,7 @@ def index(request: Request):
                         wiz_result_lbl = ui.label('').classes('text-caption w-full q-mb-xs')
 
                         def _wiz_apply():
-                            _wiz_refresh_summary()
+                            nonlocal _diag
                             alias = (wiz_prov_alias.value or 'default').strip()
                             # ── provider
                             prov_entry: dict = {
@@ -1896,6 +1899,8 @@ def index(request: Request):
                                 prov_entry['api_key'] = wiz_prov_key.value
                             if wiz_prov_base.value: prov_entry['base_url'] = wiz_prov_base.value
                             conf.setdefault('providers', {}).setdefault('models', {})
+                            # Diagnostic: capture state before cleanup
+                            _before_keys = list(conf['providers']['models'].keys())
                             # Remove any stale entries that share the same provider name
                             # (e.g. leftover "minimax" or "custom:https://..." aliases from
                             # previous buggy wizard runs) so only the current alias stays.
@@ -1906,6 +1911,17 @@ def index(request: Request):
                                 if hasattr(_v, 'get') and _v.get('name') == pname and _k != alias:
                                     del conf['providers']['models'][_k]
                             conf['providers']['models'][alias] = prov_entry
+                            # Diagnostic: capture state after cleanup
+                            _after_keys = list(conf['providers']['models'].keys())
+                            _loaded_src = _loaded_from or 'unknown'
+                            _diag = (
+                                f'📋 Loaded from: {_loaded_src}\n'
+                                f'   Before cleanup: {sorted(_before_keys)}\n'
+                                f'   After cleanup:  {sorted(_after_keys)}\n'
+                                f'   Will save to:   {CONFIG_PATH}\n'
+                                f'   Will deploy to: {DEPLOY_CONFIG_PATH}'
+                            )
+                            _wiz_refresh_summary()
                             # ── fallback
                             if wiz_is_fallback.value:
                                 conf.setdefault('providers', {})['fallback'] = alias
@@ -1940,19 +1956,19 @@ def index(request: Request):
                                 return
                             ok_deploy, deploy_err = deploy_config(conf)
                             if not ok_deploy:
-                                msg = f'⚠️ Saved locally but deploy failed: {deploy_err}'
+                                msg = f'⚠️ Saved locally but deploy failed: {deploy_err}\n{_diag}'
                                 ui.notify(msg, type='warning')
                                 wiz_result_lbl.set_text(msg)
                                 wiz_result_lbl.classes(remove='text-positive text-negative', add='text-warning')
                                 return
                             ok_svc, svc_err = restart_service()
                             if ok_svc:
-                                msg = '✅ Wizard applied, deployed & ZeroClaw restarted successfully'
+                                msg = f'✅ Wizard applied, deployed & ZeroClaw restarted successfully\n{_diag}'
                                 ui.notify(msg, type='positive')
                                 wiz_result_lbl.set_text(msg)
                                 wiz_result_lbl.classes(remove='text-warning text-negative', add='text-positive')
                             else:
-                                msg = f'⚠️ Deployed but service restart failed: {svc_err or T["notify_sudo_required"]}'
+                                msg = f'⚠️ Deployed but service restart failed: {svc_err or T["notify_sudo_required"]}\n{_diag}'
                                 ui.notify(msg, type='warning')
                                 wiz_result_lbl.set_text(msg)
                                 wiz_result_lbl.classes(remove='text-positive text-negative', add='text-warning')
