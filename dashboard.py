@@ -1960,6 +1960,7 @@ def index(request: Request):
                                 wiz_result_lbl.set_text(msg)
                                 wiz_result_lbl.classes(remove='text-positive text-warning', add='text-negative')
                                 return
+                            # Step 1: deploy clean config to runtime
                             ok_deploy, deploy_err = deploy_config(conf)
                             if not ok_deploy:
                                 msg = f'⚠️ Saved locally but deploy failed: {deploy_err}\n{_diag}'
@@ -1967,17 +1968,27 @@ def index(request: Request):
                                 wiz_result_lbl.set_text(msg)
                                 wiz_result_lbl.classes(remove='text-positive text-negative', add='text-warning')
                                 return
+                            # Step 2: restart zeroclaw (it may write stale entries on startup)
                             ok_svc, svc_err = restart_service()
-                            if ok_svc:
-                                msg = f'✅ Wizard applied, deployed & ZeroClaw restarted successfully\n{_diag}'
-                                ui.notify(msg, type='positive')
-                                wiz_result_lbl.set_text(msg)
-                                wiz_result_lbl.classes(remove='text-warning text-negative', add='text-positive')
-                            else:
+                            if not ok_svc:
                                 msg = f'⚠️ Deployed but service restart failed: {svc_err or T["notify_sudo_required"]}\n{_diag}'
                                 ui.notify(msg, type='warning')
                                 wiz_result_lbl.set_text(msg)
                                 wiz_result_lbl.classes(remove='text-positive text-negative', add='text-warning')
+                                return
+                            # Step 3: wait for zeroclaw startup, then overwrite whatever it wrote
+                            import time; time.sleep(3)
+                            ok_deploy2, deploy_err2 = deploy_config(conf)
+                            if not ok_deploy2:
+                                msg = f'⚠️ Deployed & restarted but post-restart deploy failed: {deploy_err2}\n{_diag}'
+                                ui.notify(msg, type='warning')
+                                wiz_result_lbl.set_text(msg)
+                                wiz_result_lbl.classes(remove='text-positive text-negative', add='text-warning')
+                                return
+                            msg = f'✅ Wizard applied, deployed & ZeroClaw restarted successfully\n{_diag}'
+                            ui.notify(msg, type='positive')
+                            wiz_result_lbl.set_text(msg)
+                            wiz_result_lbl.classes(remove='text-warning text-negative', add='text-positive')
 
                         with ui.stepper_navigation():
                             ui.button('← Back', on_click=_wiz.previous).props('flat color=grey-7')
