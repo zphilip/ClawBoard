@@ -319,6 +319,7 @@ fallback = "minimax-cn"
 [providers.models]
 
 [providers.models.minimax-cn]
+name = "minimax"
 api_key = ""
 model = "MiniMax-M2.7"
 temperature = 0.7

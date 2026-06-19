@@ -590,13 +590,19 @@ def pair_page(request: Request):
 
 
 PROVIDER_IDS = [
-    'openrouter', 'anthropic', 'openai', 'ollama', 'gemini', 'venice',
-    'vercel', 'cloudflare', 'moonshot', 'kimi-code', 'synthetic', 'opencode',
-    'opencode-go', 'zai', 'glm', 'minimax', 'bedrock', 'qianfan', 'doubao',
-    'qwen', 'dashscope', 'groq', 'mistral', 'xai', 'deepseek', 'together',
-    'fireworks', 'novita', 'perplexity', 'cohere', 'copilot', 'lmstudio',
-    'llamacpp', 'sglang', 'vllm', 'osaurus', 'nvidia',
-    'minimax-cn', 'custom:https://', 'anthropic-custom:https://',
+    # ── All 75 canonical model_provider slots from for_each_model_provider_slot! ──
+    'ai21', 'aihubmix', 'anthropic', 'anyscale', 'arcee', 'astrai',
+    'atomic_chat', 'avian', 'azure', 'baichuan', 'baseten', 'bedrock',
+    'cerebras', 'cloudflare', 'cohere', 'copilot', 'custom', 'deepinfra',
+    'deepmyst', 'deepseek', 'doubao', 'featherless', 'fireworks', 'friendli',
+    'gemini', 'gemini_cli', 'github_models', 'glm', 'groq', 'huggingface',
+    'hunyuan', 'hyperbolic', 'inception', 'kilo', 'kilocli', 'lambda_ai',
+    'lepton', 'litellm', 'llamacpp', 'lmstudio', 'manifest', 'minimax',
+    'mistral', 'moonshot', 'morph', 'nearai', 'nebius', 'novita', 'nscale',
+    'nvidia', 'ollama', 'openai', 'opencode', 'openrouter', 'osaurus',
+    'ovh', 'perplexity', 'qianfan', 'qwen', 'reka', 'sambanova', 'sglang',
+    'siliconflow', 'stepfun', 'synthetic', 'telnyx', 'together', 'upstage',
+    'venice', 'vercel', 'vllm', 'xai', 'yi', 'zai',
 ]
 
 CHANNEL_SCHEMAS = {
@@ -1676,6 +1682,9 @@ def index(request: Request):
                         wiz_def_model = ui.input(
                             'default_model  (e.g. anthropic/claude-sonnet-4-6)',
                             value=str(top.get('default_model', ''))).classes('w-full')
+                        wiz_is_fallback = ui.checkbox(
+                            'Set as fallback provider  — used when the primary provider fails',
+                            value=False)
 
                         # ── Callbacks defined AFTER all widgets so closures resolve ──
                         def _fill_from_hint(e):
@@ -1765,6 +1774,7 @@ def index(request: Request):
                                 f'API Key:       {masked if key else "(not set)"}',
                                 f'base_url:      {wiz_prov_base.value or "(provider default)"}',
                                 f'default_model: {wiz_def_model.value or "(unchanged)"}',
+                                f'Fallback:      {"✓ YES" if wiz_is_fallback.value else "—"}',
                                 f'Channel:       {ch_label}',
                                 f'Web Search:    {"on" if wiz_tool_web_search.value else "off"}',
                                 f'Web Fetch:     {"on" if wiz_tool_web_fetch.value else "off"}',
@@ -1827,6 +1837,9 @@ def index(request: Request):
                                 prov_entry['api_key'] = wiz_prov_key.value
                             if wiz_prov_base.value: prov_entry['base_url'] = wiz_prov_base.value
                             conf.setdefault('providers', {}).setdefault('models', {})[alias] = prov_entry
+                            # ── fallback
+                            if wiz_is_fallback.value:
+                                conf.setdefault('providers', {})['fallback'] = alias
                             # ── channel
                             ch_key = wiz_ch_sel.value
                             if ch_key and ch_key in CHANNEL_SCHEMAS:
