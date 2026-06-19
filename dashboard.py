@@ -1143,7 +1143,7 @@ def index(request: Request):
                 w_name = ui.select(PROVIDER_IDS, label=T['lbl_provider_name'],
                     value=mp_data.get('name', alias) if mp_data.get('name', alias) in PROVIDER_IDS else PROVIDER_IDS[0]
                 ).classes('w-full')
-                w_base_url    = ui.input(T['lbl_provider_base_url'], value=str(mp_data.get('base_url', ''))).classes('w-full')
+                w_base_url    = ui.input(T['lbl_provider_base_url'], value=str(mp_data.get('uri') or mp_data.get('base_url', ''))).classes('w-full')
                 w_openai_auth = ui.checkbox('requires_openai_auth', value=bool(mp_data.get('requires_openai_auth', False)))
                 w_api_key_mp  = ui.input(T['lbl_provider_api_key'], value=str(mp_data.get('api_key', '')),
                                          password=True, password_toggle_button=True).classes('w-full')
@@ -1204,7 +1204,7 @@ def index(request: Request):
         for alias, wmap in provider_panels.items():
             entry = {
                 'name':                  wmap['name'].value,
-                'base_url':              wmap['base_url'].value,
+                'uri':                   wmap['base_url'].value,
                 'requires_openai_auth':  wmap['requires_openai_auth'].value,
                 'model':                 default_model,
                 'temperature':           default_temp,
@@ -1895,7 +1895,7 @@ def index(request: Request):
                             }
                             if wiz_prov_key.value:
                                 prov_entry['api_key'] = wiz_prov_key.value
-                            if wiz_prov_base.value: prov_entry['base_url'] = wiz_prov_base.value
+                            if wiz_prov_base.value: prov_entry['uri'] = wiz_prov_base.value
                             conf.setdefault('providers', {}).setdefault('models', {})
                             # Diagnostic: capture state before cleanup
                             _before_keys = list(conf['providers']['models'].keys())
@@ -2139,8 +2139,8 @@ def index(request: Request):
                                 ui.notify(T['warn_alias_exists'].format(alias), type='warning'); return
                             pid = new_prov_sel.value or alias
                             pre = {
-                                'name':     pid,
-                                'base_url': _ph_pid_base.get(pid, ''),
+                                'name': pid,
+                                'uri':  _ph_pid_base.get(pid, ''),
                             }
                             build_provider_card(provider_container, alias, pre)
                             new_alias_input.set_value('')
