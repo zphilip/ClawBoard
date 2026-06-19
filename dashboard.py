@@ -1855,10 +1855,11 @@ def index(request: Request):
                             # Remove any stale entries that share the same provider name
                             # (e.g. leftover "minimax" or "custom:https://..." aliases from
                             # previous buggy wizard runs) so only the current alias stays.
+                            # tomlkit tables are MutableMapping, NOT dict — use hasattr, not isinstance.
                             pname = wiz_prov_id.value
                             for _k in list(conf['providers']['models'].keys()):
                                 _v = conf['providers']['models'].get(_k)
-                                if isinstance(_v, dict) and _v.get('name') == pname and _k != alias:
+                                if hasattr(_v, 'get') and _v.get('name') == pname and _k != alias:
                                     del conf['providers']['models'][_k]
                             conf['providers']['models'][alias] = prov_entry
                             # ── fallback
