@@ -756,7 +756,18 @@ def load_config(source='local'):
             with open(path, 'r') as f:
                 return tomlkit.load(f), path
         except Exception:
-            continue
+            pass  # direct open failed; try sudo cat for deploy path
+        # Runtime config may be owned by zeroclaw:zeroclaw — use sudo cat
+        if path == DEPLOY_CONFIG_PATH:
+            try:
+                r = subprocess.run(
+                    ['sudo', '/usr/bin/cat', DEPLOY_CONFIG_PATH],
+                    capture_output=True, text=True
+                )
+                if r.returncode == 0:
+                    return tomlkit.loads(r.stdout), path
+            except Exception:
+                pass
     return tomlkit.document(), None
 
 def save_config(conf):
