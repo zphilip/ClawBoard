@@ -1419,23 +1419,17 @@ def index(request: Request):
         except Exception as e:
             ui.notify(T['notify_save_fail'].format(e), type='negative')
 
-    def do_save_restart():
+    def do_save_deploy():
         try:
             # 1. Collect form values → save to config/config.toml
             collect()
             save_config(conf)
-            # 2. Backup config/config.toml → config/config.toml.bak
-            #    then sudo-copy to DEPLOY_CONFIG_PATH
+            # 2. Deploy to runtime
             ok_deploy, deploy_err = deploy_config()
             if not ok_deploy:
                 ui.notify(f'⚠️ Saved locally but deploy failed: {deploy_err}', type='warning')
                 return
-            # 3. Restart the service
-            ok_svc, svc_err = restart_service()
-            if ok_svc:
-                ui.notify(T['notify_saved_restarted'], type='positive')
-            else:
-                ui.notify(T['notify_restart_fail'].format(svc_err or T['notify_sudo_required']), type='warning')
+            ui.notify(T['notify_saved_restarted'], type='positive')
             ui.timer(2.0, lambda: ui.navigate.to(
                 f'/?lang={lang}&zc_source={zc_source}'))
         except Exception as e:
@@ -2430,7 +2424,7 @@ def index(request: Request):
                 ui.separator()
                 with ui.row().classes('w-full gap-2 q-pa-sm'):
                     ui.button(T['btn_save'],         on_click=do_save).props('elevated').classes('flex-1 bg-blue text-white')
-                    ui.button(T['btn_save_restart'], on_click=do_save_restart).props('elevated').classes('flex-1 bg-green text-white')
+                    ui.button(T['btn_save_deploy'], on_click=do_save_deploy).props('elevated').classes('flex-1 bg-green text-white')
 
             # ── ZeroClaw › Pair Device ─────────────────────────────────────
             with ui.tab_panel(t_zc_pair):

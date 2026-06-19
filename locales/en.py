@@ -107,12 +107,12 @@ STRINGS = {
     'btn_view_logs':         'Recent Logs',
     'btn_service_status':    'Service Status',
     # ── Action bar ───────────────────────────────────────────────────────────
-    'btn_save':         '💾 Save',
-    'btn_save_restart': '🔄 Save & Restart',
+    'btn_save':          '💾 Save',
+    'btn_save_deploy':   '📤 Save & Deploy',
     # ── Notifications ─────────────────────────────────────────────────────────
     'notify_saved':           '✅ Config saved',
     'notify_save_fail':       '❌ Save failed: {}',
-    'notify_saved_restarted': '✅ Saved, zeroclaw.service restarted',
+    'notify_saved_restarted': '✅ Saved & deployed to runtime',
     'notify_restart_fail':    '⚠️ Saved, restart failed: {}',
     'notify_op_fail':         '❌ Operation failed: {}',
     'notify_service':         'zeroclaw.service: {}',

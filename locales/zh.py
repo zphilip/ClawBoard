@@ -97,12 +97,12 @@ STRINGS = {
     'btn_view_logs':         '最近日志',
     'btn_service_status':    '服务状态',
     # ── Action bar ───────────────────────────────────────────────────────────
-    'btn_save':         '💾 保存',
-    'btn_save_restart': '🔄 保存并重启',
+    'btn_save':          '💾 保存',
+    'btn_save_deploy':   '📤 保存并部署',
     # ── Notifications ─────────────────────────────────────────────────────────
     'notify_saved':           '✅ 配置已保存',
     'notify_save_fail':       '❌ 保存失败：{}',
-    'notify_saved_restarted': '✅ 已保存，zeroclaw.service 已重启',
+    'notify_saved_restarted': '✅ 已保存并部署到运行时',
     'notify_restart_fail':    '⚠️ 已保存，重启失败：{}',
     'notify_op_fail':         '❌ 操作失败：{}',
     'notify_service':         'zeroclaw.service：{}',
