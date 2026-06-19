@@ -1248,7 +1248,13 @@ def index(request: Request):
 
         sk = conf.setdefault('skills', {})
         sk['open_skills_enabled']   = w_skills_open.value
+        sk['allow_scripts']         = w_skills_allow_scripts.value
         sk['prompt_injection_mode'] = w_skills_mode.value
+        sk.setdefault('skill_creation', {})['enabled'] = w_sk_cr_enabled.value
+        sk['skill_creation']['max_skills'] = to_int(w_sk_cr_max.value, 500)
+        sk['skill_creation']['similarity_threshold'] = to_float(w_sk_cr_sim.value, 0.85)
+        sk.setdefault('skill_improvement', {})['enabled'] = w_sk_im_enabled.value
+        sk['skill_improvement']['cooldown_secs'] = to_int(w_sk_im_cooldown.value, 3600)
 
         m = conf.setdefault('memory', {})
         m['backend']                    = w_mem_backend.value
@@ -2197,9 +2203,20 @@ def index(request: Request):
                         ui.separator().classes('q-my-sm')
                         ui.label(T['section_skills']).classes('text-subtitle2 text-grey-7')
                         w_skills_open = ui.checkbox('open_skills_enabled', value=skills.get('open_skills_enabled', False))
+                        w_skills_allow_scripts = ui.checkbox('allow_scripts', value=skills.get('allow_scripts', True))
                         cur_pm = skills.get('prompt_injection_mode', 'full')
                         w_skills_mode = ui.select(['full', 'compact'], label='prompt_injection_mode',
                             value=cur_pm if cur_pm in ['full','compact'] else 'full').classes('w-full')
+                        ui.separator().classes('q-my-xs')
+                        ui.label('skill_creation').classes('text-caption text-blue-7 text-bold')
+                        _sk_cr = skills.get('skill_creation', {})
+                        w_sk_cr_enabled = ui.checkbox('skill_creation.enabled', value=_sk_cr.get('enabled', False))
+                        w_sk_cr_max = ui.number('skill_creation.max_skills', value=_sk_cr.get('max_skills', 500), min=1, step=10).classes('w-full')
+                        w_sk_cr_sim = ui.number('skill_creation.similarity_threshold', value=_sk_cr.get('similarity_threshold', 0.85), min=0.0, max=1.0, step=0.01).classes('w-full')
+                        ui.label('skill_improvement').classes('text-caption text-blue-7 text-bold')
+                        _sk_im = skills.get('skill_improvement', {})
+                        w_sk_im_enabled = ui.checkbox('skill_improvement.enabled', value=_sk_im.get('enabled', True))
+                        w_sk_im_cooldown = ui.number('skill_improvement.cooldown_secs', value=_sk_im.get('cooldown_secs', 3600), min=60, step=300).classes('w-full')
 
                     # ══ Memory ═══════════════════════════════════════════════
                     with ui.tab_panel(t_mem):
