@@ -799,12 +799,6 @@ def deploy_config(conf=None):
     except Exception:
         pass  # live file may not exist yet; proceed without
     content = tomlkit.dumps(conf_to_deploy)
-    # DEBUG: write a copy to /tmp so we can inspect exactly what's deployed
-    try:
-        with open('/tmp/clawboard-deploy-content.toml', 'w') as _dbg:
-            _dbg.write(content)
-    except Exception:
-        pass
     # Step 3: ensure target directory exists (best-effort, may already exist)
     subprocess.run(
         ['sudo', '/usr/bin/mkdir', '-p', os.path.dirname(DEPLOY_CONFIG_PATH)],
@@ -1420,6 +1414,8 @@ def index(request: Request):
         try:
             collect(); save_config(conf)
             ui.notify(T['notify_saved'], type='positive')
+            ui.timer(1.0, lambda: ui.navigate.to(
+                f'/?lang={lang}&zc_source={zc_source}'))
         except Exception as e:
             ui.notify(T['notify_save_fail'].format(e), type='negative')
 
@@ -1440,6 +1436,8 @@ def index(request: Request):
                 ui.notify(T['notify_saved_restarted'], type='positive')
             else:
                 ui.notify(T['notify_restart_fail'].format(svc_err or T['notify_sudo_required']), type='warning')
+            ui.timer(2.0, lambda: ui.navigate.to(
+                f'/?lang={lang}&zc_source={zc_source}'))
         except Exception as e:
             ui.notify(T['notify_op_fail'].format(e), type='negative')
 
@@ -1971,6 +1969,10 @@ def index(request: Request):
                             ui.notify(msg, type='positive')
                             wiz_result_lbl.set_text(msg)
                             wiz_result_lbl.classes(remove='text-warning text-negative', add='text-positive')
+                            # Reload the page after a short delay to reflect the
+                            # deployed config from disk (not the old in-memory conf)
+                            ui.timer(2.0, lambda: ui.navigate.to(
+                                f'/?lang={lang}&zc_source={zc_source}'))
 
                         with ui.stepper_navigation():
                             ui.button('← Back', on_click=_wiz.previous).props('flat color=grey-7')
