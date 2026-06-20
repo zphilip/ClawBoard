@@ -58,6 +58,11 @@ zero ALL=(root) NOPASSWD: /usr/bin/systemctl restart clawberry-proxy.service
 zero ALL=(root) NOPASSWD: /usr/bin/systemctl stop clawberry-proxy.service
 zero ALL=(root) NOPASSWD: /usr/bin/systemctl start clawberry-proxy.service
 
+# ── ClawProxy config deploy (dashboard writes config.toml to /opt/clawproxy/) ──
+zero ALL=(root) NOPASSWD: /usr/bin/mkdir -p /opt/clawproxy
+zero ALL=(root) NOPASSWD: /usr/bin/tee /opt/clawproxy/config.toml
+zero ALL=(root) NOPASSWD: /usr/bin/chown zero\:zero /opt/clawproxy/config.toml
+
 # ── OpenClaw service management ─────────────────────────────────────────────
 zero ALL=(root) NOPASSWD: /usr/bin/systemctl restart openclaw.service
 zero ALL=(root) NOPASSWD: /usr/bin/systemctl stop openclaw.service
