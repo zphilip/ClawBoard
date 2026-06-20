@@ -4719,7 +4719,7 @@ def index(request: Request):
 
             # ── mimotts ──
             with ui.expansion('🔊 MimoTTS', value=False).classes('w-full q-mb-xs'):
-                cpc_mimo_key = ui.input('API Key', value='', password=True).classes('w-full q-mb-xs')
+                cpc_mimo_key = ui.input('API Key', value='').classes('w-full q-mb-xs')
                 cpc_mimo_url = ui.input('Base URL', value='https://token-plan-cn.xiaomimimo.com/v1').classes('w-full q-mb-xs')
                 cpc_mimo_model = ui.input('Model', value='mimo-v2.5-tts').classes('w-full')
 
