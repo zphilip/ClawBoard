@@ -10,6 +10,7 @@ PartOf=zeroclaw.service
 Type=simple
 User=zero
 Group=zero
+Environment=CLAWPROXY_CONFIG=/opt/clawproxy/config.toml
 
 ExecStartPre=/bin/mkdir -p /opt/clawproxy
 ExecStartPre=/bin/chown zero:zero /opt/clawproxy
