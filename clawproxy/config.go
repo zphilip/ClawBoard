@@ -252,7 +252,8 @@ func discoverConfigPath() string {
 //
 //  1. $CLAWPROXY_CONFIG env var (explicit override)
 //  2. ~/.clawproxy/config.toml  (default; alongside saved tokens)
-//  3. /etc/clawproxy/config.toml (system-wide)
+//  3. /opt/clawproxy/config.toml (service WorkingDirectory)
+//  4. /etc/clawproxy/config.toml (system-wide)
 func discoverClawproxyConfigPath() string {
 	if v := os.Getenv("CLAWPROXY_CONFIG"); v != "" {
 		return v
@@ -261,7 +262,10 @@ func discoverClawproxyConfigPath() string {
 	if home, err := os.UserHomeDir(); err == nil {
 		candidates = append(candidates, filepath.Join(home, ".clawproxy", "config.toml"))
 	}
-	candidates = append(candidates, "/etc/clawproxy/config.toml")
+	candidates = append(candidates,
+		"/opt/clawproxy/config.toml",
+		"/etc/clawproxy/config.toml",
+	)
 	for _, p := range candidates {
 		if _, err := os.Stat(p); err == nil {
 			return p
