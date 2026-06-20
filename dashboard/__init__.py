@@ -1,0 +1,1 @@
+# ClawBoard dashboard — modular package
