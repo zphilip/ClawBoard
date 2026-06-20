@@ -471,17 +471,19 @@ def _oc_model_ref_text(value: Any) -> str:
 
 
 def _oc_provider_models(conf: dict[str, Any]) -> dict[str, Any]:
+    # OpenClaw path: models.providers.<name>
+    models = conf.get('models', {})
+    if isinstance(models, dict):
+        providers = models.get('providers', {})
+        if isinstance(providers, dict):
+            return providers
+
+    # Legacy/borrowed ZeroClaw path: providers.models.<name>
     providers = conf.get('providers', {})
     if isinstance(providers, dict):
-        models = providers.get('models', {})
-        if isinstance(models, dict):
-            return models
-
-    legacy = conf.get('models', {})
-    if isinstance(legacy, dict):
-        models = legacy.get('providers', {})
-        if isinstance(models, dict):
-            return models
+        m = providers.get('models', {})
+        if isinstance(m, dict):
+            return m
 
     return {}
 
@@ -3710,23 +3712,23 @@ def index(request: Request):
                     with ui.step('oc_wiz_model', title='2  Provider & Model', icon='cloud'):
                         ui.label('Pick a provider and model for agents.').classes('text-caption text-grey-6 q-mb-sm')
 
-                        # Derive initial values from config
+                        # Derive initial values from config (OpenClaw schema)
                         _oc_wiz_init_primary = str(_oc_wiz_model)
-                        # provider is either explicit in agents.defaults.provider or derived
-                        _oc_wiz_init_prov_key = str(_oc_wiz_ad.get('provider', '')).strip()
-                        if not _oc_wiz_init_prov_key and '/' in _oc_wiz_init_primary:
+                        # Provider is derived from the model reference: "provider/model-id"
+                        _oc_wiz_init_prov_key = ''
+                        if '/' in _oc_wiz_init_primary:
                             _oc_wiz_init_prov_key = _oc_wiz_init_primary.split('/', 1)[0]
                         _oc_wiz_init_model = ''
                         if '/' in _oc_wiz_init_primary:
                             _oc_wiz_init_model = _oc_wiz_init_primary.split('/', 1)[1]
                         else:
                             _oc_wiz_init_model = _oc_wiz_init_primary
-                        # Read existing api_key from providers.models.<provider>.api_key
+                        # Read existing apiKey/baseUrl from models.providers.<name> (OpenClaw schema)
                         _oc_wiz_init_api_key = str(
-                            _oc_wiz_provider_models.get(_oc_wiz_init_prov_key, {}).get('api_key', ''))
+                            _oc_wiz_provider_models.get(_oc_wiz_init_prov_key, {}).get('apiKey', ''))
                         _oc_wiz_init_base_url = str(
-                            _oc_wiz_provider_models.get(_oc_wiz_init_prov_key, {}).get('base_url')
-                            or _oc_wiz_provider_models.get(_oc_wiz_init_prov_key, {}).get('baseUrl')
+                            _oc_wiz_provider_models.get(_oc_wiz_init_prov_key, {}).get('baseUrl')
+                            or _oc_wiz_provider_models.get(_oc_wiz_init_prov_key, {}).get('base_url')
                             or _oc_ph_pid_base.get(_oc_wiz_init_prov_key, ''))
 
                         # Build option lists — ensure current values appear
@@ -3775,7 +3777,7 @@ def index(request: Request):
                         ).classes('w-full q-mb-sm')
 
                         oc_wiz_base_url = ui.input(
-                            'providers.models.<provider>.base_url',
+                            'models.providers.<name>.baseUrl',
                             value=_oc_wiz_init_base_url,
                         ).classes('w-full q-mb-sm')
 
@@ -3827,10 +3829,8 @@ def index(request: Request):
                                 f'gateway.port:            {int(oc_wiz_port.value or 18789)}\n'
                                 f'gateway.auth.mode:       {oc_wiz_auth_mode.value}\n'
                                 f'gateway.auth.token:      {"(set)" if oc_wiz_token.value else "(empty)"}\n'
-                                f'provider:                {oc_wiz_prov.value or "(unchanged)"}\n'
                                 f'agents.defaults.model:   {oc_wiz_model_primary.value or "(unchanged)"}\n'
-                                f'api_key:                 {"(set)" if oc_wiz_api_key.value else "(empty)"}\n'
-                                f'base_url:                {oc_wiz_base_url.value or "(provider default)"}\n'
+                                f'models.providers.{oc_wiz_prov.value or "?"}.baseUrl:  {oc_wiz_base_url.value or "(provider default)"}\n'
                                 f'workspace:               {oc_wiz_workspace.value}\n'
                                 f'tools.profile:           {oc_wiz_tools_profile.value}'
                             )
@@ -3849,24 +3849,21 @@ def index(request: Request):
                             if oc_wiz_token.value:
                                 data['gateway']['auth']['token'] = oc_wiz_token.value
                             ad = data.setdefault('agents', {}).setdefault('defaults', {})
-                            if oc_wiz_prov.value:
-                                ad['provider'] = oc_wiz_prov.value
+                            # OpenClaw does NOT have agents.defaults.provider —
+                            # the provider is derived from the provider/model-id format.
                             if oc_wiz_model_primary.value:
                                 ad['model'] = oc_wiz_model_primary.value
                             if oc_wiz_workspace.value:
                                 ad['workspace'] = oc_wiz_workspace.value
                             data.setdefault('tools', {})['profile'] = oc_wiz_tools_profile.value or 'coding'
-                            # Save provider api_key into providers.models.<provider>.api_key
+                            # Save provider config into models.providers.<name> (OpenClaw schema)
                             _prov = oc_wiz_prov.value or ''
-                            if _prov and (oc_wiz_api_key.value or oc_wiz_base_url.value or oc_wiz_model_primary.value):
-                                _hint = _oc_ph_map.get(oc_wiz_quick.value or '') or {}
-                                data.setdefault('providers', {}).setdefault('models', {}).setdefault(_prov, {})
+                            if _prov and (oc_wiz_api_key.value or oc_wiz_base_url.value):
+                                data.setdefault('models', {}).setdefault('providers', {}).setdefault(_prov, {})
                                 if oc_wiz_base_url.value:
-                                    data['providers']['models'][_prov]['base_url'] = oc_wiz_base_url.value
-                                if oc_wiz_model_primary.value:
-                                    data['providers']['models'][_prov]['model'] = oc_wiz_model_primary.value
+                                    data['models']['providers'][_prov]['baseUrl'] = oc_wiz_base_url.value
                                 if oc_wiz_api_key.value:
-                                    data['providers']['models'][_prov]['api_key'] = oc_wiz_api_key.value
+                                    data['models']['providers'][_prov]['apiKey'] = oc_wiz_api_key.value
                             try:
                                 save_openclaw_config(data)
                                 ok_cfg, err_cfg = deploy_openclaw_config()
@@ -3957,11 +3954,10 @@ def index(request: Request):
                     ui.separator().classes('q-my-xs')
                     ui.label('Provider & Model').classes('text-caption text-grey-6')
 
-                    # Derive current defaults from either the current config shape
-                    # (provider/model) or the newer string/object model field.
+                    # Derive current defaults from the OpenClaw model reference
                     _oc_model_primary = _oc_model_ref_text(oc_agents.get('model', ''))
-                    _oc_cfg_init_prov = str(oc_agents.get('provider', '')).strip()
-                    if not _oc_cfg_init_prov and '/' in _oc_model_primary:
+                    _oc_cfg_init_prov = ''
+                    if '/' in _oc_model_primary:
                         _oc_cfg_init_prov = _oc_model_primary.split('/', 1)[0]
                     _oc_cfg_prov_opts = list(_oc_ph_provs)
                     if _oc_cfg_init_prov and _oc_cfg_init_prov not in _oc_cfg_prov_opts:
@@ -3970,11 +3966,12 @@ def index(request: Request):
                         _oc_cfg_prov_opts = ['']
                     if _oc_cfg_init_prov not in _oc_cfg_prov_opts:
                         _oc_cfg_init_prov = _oc_cfg_prov_opts[0]
+                    # Read existing apiKey/baseUrl from models.providers.<name> (OpenClaw schema)
                     _oc_cfg_init_api_key = str(
-                        oc_provider_models.get(_oc_cfg_init_prov, {}).get('api_key', ''))
+                        oc_provider_models.get(_oc_cfg_init_prov, {}).get('apiKey', ''))
                     _oc_cfg_init_base_url = str(
-                        oc_provider_models.get(_oc_cfg_init_prov, {}).get('base_url')
-                        or oc_provider_models.get(_oc_cfg_init_prov, {}).get('baseUrl')
+                        oc_provider_models.get(_oc_cfg_init_prov, {}).get('baseUrl')
+                        or oc_provider_models.get(_oc_cfg_init_prov, {}).get('base_url')
                         or _oc_ph_pid_base.get(_oc_cfg_init_prov, ''))
 
                     oc_w_cfg_quick = ui.select(
@@ -4004,7 +4001,7 @@ def index(request: Request):
                     ).classes('w-full')
 
                     oc_w_base_url = ui.input(
-                        'providers.models.<provider>.base_url',
+                        'models.providers.<name>.baseUrl',
                         value=_oc_cfg_init_base_url,
                     ).classes('w-full')
 
@@ -4032,8 +4029,8 @@ def index(request: Request):
                             oc_w_model_primary.set_value(first.get('primary', prov + '/' + first.get('model', '')))
                             if first.get('api_base') and not oc_w_base_url.value:
                                 oc_w_base_url.set_value(first.get('api_base'))
-                        # Load existing api_key for newly selected provider
-                        existing_key = str(oc_provider_models.get(prov, {}).get('api_key', ''))
+                        # Load existing apiKey for newly selected provider (OpenClaw schema)
+                        existing_key = str(oc_provider_models.get(prov, {}).get('apiKey', ''))
                         if existing_key:
                             oc_w_api_key.set_value(existing_key)
                     oc_w_provider.on_value_change(_oc_cfg_fill_prov)
@@ -4077,18 +4074,17 @@ def index(request: Request):
                     data['gateway']['tailscale']['resetOnExit'] = oc_w_ts_reset.value
 
                     data['agents']['defaults']['workspace'] = oc_w_workspace.value or ''
-                    data['agents']['defaults']['provider'] = oc_w_provider.value or ''
+                    # OpenClaw does NOT have agents.defaults.provider
                     data['agents']['defaults']['model']    = oc_w_model_primary.value or ''
 
-                    # Save provider fields into providers.models.<provider>
+                    # Save provider config into models.providers.<name> (OpenClaw schema)
                     _cfg_prov = oc_w_provider.value or ''
-                    if _cfg_prov and (oc_w_api_key.value or oc_w_base_url.value or oc_w_model_primary.value):
-                        data.setdefault('providers', {}).setdefault('models', {}).setdefault(_cfg_prov, {})
+                    if _cfg_prov and (oc_w_api_key.value or oc_w_base_url.value):
+                        data.setdefault('models', {}).setdefault('providers', {}).setdefault(_cfg_prov, {})
                         if oc_w_base_url.value:
-                            data['providers']['models'][_cfg_prov]['base_url'] = oc_w_base_url.value
-                        data['providers']['models'][_cfg_prov]['model'] = oc_w_model_primary.value or data['providers']['models'][_cfg_prov].get('model', '')
+                            data['models']['providers'][_cfg_prov]['baseUrl'] = oc_w_base_url.value
                         if oc_w_api_key.value:
-                            data['providers']['models'][_cfg_prov]['api_key'] = oc_w_api_key.value
+                            data['models']['providers'][_cfg_prov]['apiKey'] = oc_w_api_key.value
 
                     data['session']['dmScope'] = oc_w_dm_scope.value or 'per-channel-peer'
                     data['tools']['profile']   = oc_w_tools_profile.value or 'coding'
