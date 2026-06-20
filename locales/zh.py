@@ -239,7 +239,7 @@ STRINGS = {
     'proxy_cp_loaded':          '✅ 已从本地配置加载',
     'proxy_cp_saved_ok':        '✅ clawproxy config.toml 已保存',
     'proxy_cp_save_err':        '❌ 保存失败：{}',
-    'proxy_cp_deploy_ok':       '✅ 已部署到 /opt/clawproxy/config.toml',
+    'proxy_cp_deploy_ok':       '✅ 已部署并重启服务',
     'proxy_cp_deploy_err':      '❌ 部署失败：{}',
     # ── 技能配置 ──────────────────────────────────────────────────────────────
     'btn_skills':           '🧩 技能配置',

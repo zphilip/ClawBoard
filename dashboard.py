@@ -4789,15 +4789,25 @@ def index(request: Request):
                     ui.notify(T.get('proxy_cp_save_err', '❌ Save failed: {}').format(e), type='negative')
 
             def _cp_cfg_deploy():
-                """Save local config, then deploy to /opt/clawproxy/config.toml via sudo."""
+                """Save local config, deploy to /opt/clawproxy/config.toml, then restart clawberry-proxy."""
                 _cp_cfg_save()
                 ok, msg = deploy_clawproxy_config()
-                if ok:
-                    cpc_status.set_text(T.get('proxy_cp_deploy_ok', '✅ Deployed to /opt/clawproxy/config.toml'))
-                    ui.notify(T.get('proxy_cp_deploy_ok', '✅ clawproxy config deployed'), type='positive')
-                else:
+                if not ok:
                     cpc_status.set_text(msg)
                     ui.notify(T.get('proxy_cp_deploy_err', '❌ Deploy failed: {}').format(msg), type='negative')
+                    return
+                # Restart clawberry-proxy so it picks up the new config
+                rr = subprocess.run(
+                    ['sudo', '/usr/bin/systemctl', 'restart', 'clawberry-proxy.service'],
+                    capture_output=True, text=True
+                )
+                if rr.returncode != 0:
+                    err = rr.stderr.strip() or f'systemctl restart failed (exit {rr.returncode})'
+                    cpc_status.set_text(f'Config deployed but restart failed: {err}')
+                    ui.notify(f'Config deployed but restart failed: {err}', type='warning')
+                else:
+                    cpc_status.set_text(T.get('proxy_cp_deploy_ok', '✅ Deployed & service restarted'))
+                    ui.notify(T.get('proxy_cp_deploy_ok', '✅ clawproxy config deployed & service restarted'), type='positive')
 
             with ui.row().classes('gap-2 q-mt-sm'):
                 ui.button(T.get('proxy_cp_btn_load', '📂 Load'), on_click=_cp_cfg_load).props('flat color=blue-8')
