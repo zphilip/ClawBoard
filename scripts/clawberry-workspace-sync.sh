@@ -220,30 +220,48 @@ fi
 # ── Self-update: copy latest script from repo to /usr/local/bin and ensure executable ──
 REPO_SCRIPT_PATH="$WORK_DIR/scripts/clawberry-workspace-sync.sh"
 SCRIPT_PATH="/usr/local/bin/clawberry-workspace-sync.sh"
+_cur_hash=$(sha256sum "$SCRIPT_PATH" 2>/dev/null | cut -d' ' -f1 || echo "none")
+_updated=no
+
 if [[ -f "$REPO_SCRIPT_PATH" ]]; then
     _repo_hash=$(sha256sum "$REPO_SCRIPT_PATH" | cut -d' ' -f1)
-    _cur_hash=$(sha256sum "$SCRIPT_PATH" 2>/dev/null | cut -d' ' -f1 || echo "none")
     if [[ "$_repo_hash" != "$_cur_hash" ]]; then
-        log "Sync script has been updated in the repo — installing new version to $SCRIPT_PATH ..."
         if cp "$REPO_SCRIPT_PATH" "$SCRIPT_PATH" 2>/dev/null; then
             chmod +x "$SCRIPT_PATH" 2>/dev/null || true
-            log "✅ Sync script updated at $SCRIPT_PATH."
-            log ""
-            log "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-            log "  The sync script was updated. Please run it again to apply"
-            log "  all remaining changes with the new version:"
-            log "    sudo bash $SCRIPT_PATH $*"
-            log "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-            exit 0
+            _updated=yes
         else
             log "WARNING: failed to copy $REPO_SCRIPT_PATH to $SCRIPT_PATH (permission?)"
         fi
-    else
-        log "Sync script is already up to date — continuing."
     fi
 else
-    log "WARNING: sync script not found in repo at $REPO_SCRIPT_PATH — skipping self-update"
+    log "WARNING: sync script not found in repo at $REPO_SCRIPT_PATH"
 fi
+
+# Fallback: fetch directly from GitHub raw to bypass gh-proxy cache latency.
+if [[ "$_updated" == "no" ]]; then
+    _fb_script=$(curl -sfL --connect-timeout 10 \
+        "https://raw.githubusercontent.com/zphilip/ClawBoard/main/scripts/clawberry-workspace-sync.sh" 2>/dev/null || true)
+    if [[ -n "$_fb_script" ]]; then
+        _fb_hash=$(echo "$_fb_script" | sha256sum | cut -d' ' -f1)
+        if [[ "$_fb_hash" != "$_cur_hash" && "$_fb_hash" != "none" ]]; then
+            echo "$_fb_script" > "$SCRIPT_PATH"
+            chmod +x "$SCRIPT_PATH" 2>/dev/null || true
+            _updated=yes
+        fi
+    fi
+fi
+
+if [[ "$_updated" == "yes" ]]; then
+    log "✅ Sync script updated at $SCRIPT_PATH (proxy cache may have been stale)."
+    log ""
+    log "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    log "  The sync script was updated. Please run it again to apply"
+    log "  all remaining changes with the new version:"
+    log "    sudo bash $SCRIPT_PATH $*"
+    log "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    exit 0
+fi
+log "Sync script is already up to date — continuing."
 
 # ── Bootstrap clawboard group (idempotent) ──────────────────────────────────
 groupadd --system clawboard 2>/dev/null || true
