@@ -11,9 +11,11 @@ SupplementaryGroups=clawboard
 
 ExecStartPre=/usr/bin/test -x /usr/local/bin/zeroclaw
 
-ExecStart=/usr/local/bin/zeroclaw daemon
+ExecStart=/usr/local/bin/zeroclaw service start
 
 WorkingDirectory=/var/lib/zeroclaw
+
+Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/var/run/dbus/system_bus_socket
 
 Restart=on-failure
 RestartSec=5
@@ -26,7 +28,7 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/var/lib/zeroclaw
+ReadWritePaths=/var/lib/zeroclaw /var/run/dbus/system_bus_socket
 ReadOnlyPaths=/opt/clawboard/venv
 RestrictNamespaces=true
 RestrictRealtime=true
