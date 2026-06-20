@@ -1,6 +1,7 @@
 """Provider hints, canonical slots, and channel schemas."""
 import json
 import os
+from typing import Any
 
 from .paths import SCRIPT_DIR
 from .config_io import load_picoclaw_config
