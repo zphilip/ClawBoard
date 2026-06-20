@@ -185,7 +185,7 @@ func (z *zcAuth) acquireToken(base string) error {
 	}
 	z.token = tok
 	saveToken("zc_token", tok)
-	fmt.Printf("%sPaired!  token saved to ~/.clawproxy/zc_token\n", prefixZC())
+	fmt.Printf("%sPaired!  token saved to /opt/clawproxy/zc_token\n", prefixZC())
 	return nil
 }
 
@@ -196,7 +196,7 @@ func (z *zcAuth) setup() error {
 	if z.token == "" {
 		z.token = loadToken("zc_token")
 		if z.token != "" {
-			fmt.Printf("%szeroclaw token loaded from ~/.clawproxy/zc_token\n", prefixZC())
+			fmt.Printf("%szeroclaw token loaded from /opt/clawproxy/zc_token\n", prefixZC())
 		}
 	}
 
@@ -233,19 +233,15 @@ type pcAuth struct {
 	wsURL   string
 }
 
-// ── Token store (~/.clawproxy/) ──────────────────────────────────────────────
+// ── Token store (/opt/clawproxy/) ────────────────────────────────────────────
 //
 // Tokens are persisted as plain text files so auth survives restarts:
-//   ~/.clawproxy/zc_token   — zeroclaw bearer token
-//   ~/.clawproxy/pc_token   — picoclaw bearer token
+//   /opt/clawproxy/zc_token   — zeroclaw bearer token
+//   /opt/clawproxy/pc_token   — picoclaw bearer token
 
 func clawproxyDir() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	dir := home + "/.clawproxy"
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	dir := "/opt/clawproxy"
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", err
 	}
 	return dir, nil
@@ -377,10 +373,10 @@ func extractYAMLPicoToken(yml string) (string, error) {
 func (p *pcAuth) setup() error {
 	if p.direct {
 		if p.token == "" {
-			// 1. try ~/.clawproxy/pc_token (previously entered)
+			// 1. try /opt/clawproxy/pc_token (previously entered)
 			if saved := loadToken("pc_token"); saved != "" {
 				p.token = saved
-				fmt.Printf("%spicoclaw token loaded from ~/.clawproxy/pc_token\n", prefixPC())
+				fmt.Printf("%spicoclaw token loaded from /opt/clawproxy/pc_token\n", prefixPC())
 			} else if tok, err := readPicoTokenFromConfig(); err == nil {
 				// 2. try /var/lib/picoclaw/.picoclaw/.security.yml
 				p.token = tok
@@ -396,7 +392,7 @@ func (p *pcAuth) setup() error {
 					return fmt.Errorf("picoclaw token is required")
 				}
 				saveToken("pc_token", p.token)
-				fmt.Printf("%spicoclaw token saved to ~/.clawproxy/pc_token\n", prefixPC())
+				fmt.Printf("%spicoclaw token saved to /opt/clawproxy/pc_token\n", prefixPC())
 			}
 		}
 		p.wsURL = fmt.Sprintf("ws://%s:%d/pico/ws", p.host, p.gwPort)
@@ -416,7 +412,7 @@ func (p *pcAuth) setup() error {
 	if p.token == "" {
 		if saved := loadToken("pc_token"); saved != "" {
 			p.token = saved
-			fmt.Printf("%spicoclaw token loaded from ~/.clawproxy/pc_token\n", prefixPC())
+			fmt.Printf("%spicoclaw token loaded from /opt/clawproxy/pc_token\n", prefixPC())
 		} else if tok, err := readPicoTokenFromConfig(); err == nil {
 			p.token = tok
 			fmt.Printf("%spicoclaw token assembled from .security.yml\n", prefixPC())
@@ -430,7 +426,7 @@ func (p *pcAuth) setup() error {
 				return fmt.Errorf("picoclaw token is required")
 			}
 			saveToken("pc_token", p.token)
-			fmt.Printf("%spicoclaw token saved to ~/.clawproxy/pc_token\n", prefixPC())
+			fmt.Printf("%spicoclaw token saved to /opt/clawproxy/pc_token\n", prefixPC())
 		}
 	}
 
@@ -855,7 +851,7 @@ func main() {
 	proxyMode := flag.Bool("proxy", false, "run as proxy server (v2)")
 	proxyPort := flag.Int("proxy-port", 18780, "proxy server listen port")
 	queueDepth := flag.Int("queue-depth", 1024, "offline queue depth per session (0 = disabled)")
-	queueDB := flag.String("queue-db", "", "SQLite queue file path ('' = ~/.clawproxy/queue.db, ':memory:' = no persistence)")
+	queueDB := flag.String("queue-db", "", "SQLite queue file path ('' = /opt/clawproxy/queue.db, ':memory:' = no persistence)")
 	queueTTL := flag.Int("queue-ttl", 86400, "buffered message TTL in seconds (0 = no expiry)")
 
 	// TTS flags (proxy mode only — registers /tts/synthesize and /tts/info)
@@ -886,7 +882,7 @@ func main() {
 	ttsMiMoModel := flag.String("tts-mimo-model", "", "MiMo TTS model: mimo-v2.5-tts | mimo-v2.5-tts-voicedesign | mimo-v2.5-tts-voiceclone (default: mimo-v2.5-tts)")
 	// Config file flags — path discovery for each supported config ecosystem.
 	// Pass '-' to disable a source entirely.
-	clawproxyConfigPath := flag.String("clawproxy-config", "", "clawproxy config.toml path (default: ~/.clawproxy/config.toml; '-' = disable)")
+	clawproxyConfigPath := flag.String("clawproxy-config", "", "clawproxy config.toml path (default: /opt/clawproxy/config.toml; '-' = disable)")
 	configPath          := flag.String("config", "", "zeroclaw config.toml path (default: auto-discover; '-' = disable)")
 	picoConfigPath      := flag.String("picoclaw-config", "", "picoclaw config.json path (default: auto-discover; '-' = disable)")
 	openConfigPath      := flag.String("openclaw-config", "", "openclaw openclaw.json path (default: auto-discover; '-' = disable)")
