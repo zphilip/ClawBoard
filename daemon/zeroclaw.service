@@ -11,7 +11,7 @@ SupplementaryGroups=clawboard
 
 ExecStartPre=/usr/bin/test -x /usr/local/bin/zeroclaw
 
-ExecStart=/usr/local/bin/zeroclaw service start
+ExecStart=/usr/local/bin/zeroclaw daemon
 
 WorkingDirectory=/var/lib/zeroclaw
 
