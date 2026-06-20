@@ -118,6 +118,7 @@ config/
 wifi-connect/
 skills/
 clawproxy/
+dashboard/
 nginx/nginx.openclaw
 dashboard.py
 clawberry_bluetooth.py
@@ -444,6 +445,13 @@ for f in "$WORK_DIR/dashboard.py" "$WORK_DIR"/clawberry_*.py "$WORK_DIR/publish_
         log "WARNING: failed to install $fname to $CLAWBOARD_DST"
     fi
 done
+
+# dashboard/ package (modular Python modules)
+if [[ -d "$WORK_DIR/dashboard" ]]; then
+    mkdir -p "$CLAWBOARD_DST/dashboard"
+    rsync --archive --update "$WORK_DIR/dashboard/" "$CLAWBOARD_DST/dashboard/"
+    log "  synced dashboard/"
+fi
 
 # locales/ directory (locale string modules)
 if [[ -d "$WORK_DIR/locales" ]]; then
