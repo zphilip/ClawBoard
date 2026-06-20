@@ -350,6 +350,20 @@ if [[ -f "$WORK_DIR/clawproxy/clawproxy-arm64" ]]; then
     fi
 fi
 
+# ── Deploy clawproxy config (first-time seed from example) ───────────────────
+if [[ -f "$WORK_DIR/clawproxy/config.toml.example" ]]; then
+    # Always keep the example up-to-date in /opt/clawproxy
+    cp "$WORK_DIR/clawproxy/config.toml.example" "/opt/clawproxy/config.toml.example"
+    chown zero:zero "/opt/clawproxy/config.toml.example" 2>/dev/null || true
+    # On first install (no config.toml exists), seed from example
+    if [[ ! -f "/opt/clawproxy/config.toml" ]]; then
+        cp "$WORK_DIR/clawproxy/config.toml.example" "/opt/clawproxy/config.toml"
+        chown zero:zero "/opt/clawproxy/config.toml" 2>/dev/null || true
+        log "clawproxy config.toml seeded from config.toml.example"
+    fi
+    log "clawproxy config.toml.example updated"
+fi
+
 # ── Deploy daemon service files ─────────────────────────────────────────────
 SVC_CHANGED=no
 if [[ -d "$WORK_DIR/daemon" ]]; then
@@ -665,6 +679,22 @@ if [[ -d "$WORK_DIR/skills" ]]; then
 else
     log "WARNING: skills/ not found in repo — skipping"
 fi
+# ── Seed mobile-control config.json from example (first-time only) ───────────
+for _mc_user_dir in \
+    "/var/lib/picoclaw/.picoclaw/workspace" \
+    "/var/lib/zeroclaw/.zeroclaw/workspace" \
+    "/var/lib/openclaw/.openclaw/workspace"
+do
+    _mc_example="$_mc_user_dir/skills/mobile-control/config.json.example"
+    _mc_config="$_mc_user_dir/skills/mobile-control/config.json"
+    if [[ -f "$_mc_example" && ! -f "$_mc_config" ]]; then
+        cp "$_mc_example" "$_mc_config"
+        # chown to the owner of the workspace dir
+        _mc_owner=$(stat -c '%U' "$_mc_user_dir" 2>/dev/null || echo "")
+        [[ -n "$_mc_owner" ]] && chown "${_mc_owner}:${_mc_owner}" "$_mc_config" 2>/dev/null || true
+        log "mobile-control config.json seeded from example → $_mc_config"
+    fi
+done
 # ── Seed MEMORY.md into picoclaw workspace/memory/ ───────────────────────────
 # MEMORY.md lives at the workspace root in the repo but picoclaw expects it
 # (and writes runtime updates to) ~/.picoclaw/workspace/memory/MEMORY.md.

@@ -1,0 +1,17 @@
+[tts]
+default_provider = "mimotts"
+default_voice    = "Chloe"
+
+[tts.mimotts]
+api_key  = ""   
+base_url = "https://token-plan-cn.xiaomimimo.com/v1"    # default, can omit
+model    = "mimo-v2.5-tts"                    # preset voices
+
+[tts.f5tts]
+base_url = "http://apicn.aiworm.cn:8010"
+api_key = "token1"   # optional
+speed  = 0.8         # 0.5–2.0; try 0.75–0.85 if too fast
+
+[tts.qwen3tts]
+base_url = "http://apicn.aiworm.cn:8012"
+speed    = 0.9

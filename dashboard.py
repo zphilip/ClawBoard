@@ -22,6 +22,9 @@ PICOCLAW_DEPLOY_SECURITY_PATH= '/var/lib/picoclaw/.picoclaw/.security.yml'      
 
 OPENCLAW_CONFIG_PATH         = os.path.join(SCRIPT_DIR, 'config', 'openclaw.json')
 OPENCLAW_DEPLOY_CONFIG_PATH  = '/var/lib/openclaw/.openclaw/openclaw.json'
+CLAWPROXY_CONFIG_PATH        = os.path.join(SCRIPT_DIR, 'clawproxy', 'config.toml')
+CLAWPROXY_CONFIG_EXAMPLE     = os.path.join(SCRIPT_DIR, 'clawproxy', 'config.toml.example')
+CLAWPROXY_DEPLOY_CONFIG_PATH = '/opt/clawproxy/config.toml'
 CHARACTERS_DIR               = os.path.join(SCRIPT_DIR, 'characters')          # character personas folder
 
 def _sudo_read_file(path: str) -> tuple[str, str]:
@@ -290,6 +293,47 @@ def restart_openclaw_service():
         capture_output=True, text=True
     )
     return r.returncode == 0, r.stderr.strip()
+
+def load_clawproxy_config():
+    """Load clawproxy config.toml (TOML format); returns tomlkit document or empty on failure."""
+    for path in (CLAWPROXY_CONFIG_PATH, CLAWPROXY_CONFIG_EXAMPLE):
+        try:
+            with open(path, 'r') as f:
+                return tomlkit.load(f)
+        except Exception:
+            pass
+    return tomlkit.document()
+
+def save_clawproxy_config(conf):
+    """Save clawproxy config.toml to local workspace copy."""
+    os.makedirs(os.path.dirname(CLAWPROXY_CONFIG_PATH), exist_ok=True)
+    with open(CLAWPROXY_CONFIG_PATH, 'w') as f:
+        f.write(tomlkit.dumps(conf))
+
+def deploy_clawproxy_config():
+    """Deploy clawproxy config.toml from local workspace to /opt/clawproxy/config.toml via sudo tee.
+    Returns (ok: bool, message: str)."""
+    try:
+        with open(CLAWPROXY_CONFIG_PATH, 'r') as f:
+            content = f.read()
+    except Exception as e:
+        return False, f'Read failed: {e}'
+    subprocess.run(
+        ['sudo', '/usr/bin/mkdir', '-p', os.path.dirname(CLAWPROXY_DEPLOY_CONFIG_PATH)],
+        capture_output=True
+    )
+    r = subprocess.run(
+        ['sudo', '/usr/bin/tee', CLAWPROXY_DEPLOY_CONFIG_PATH],
+        input=content, capture_output=True, text=True
+    )
+    if r.returncode != 0:
+        err = r.stderr.strip() or f'sudo tee failed (exit {r.returncode})'
+        return False, err
+    subprocess.run(
+        ['sudo', '/usr/bin/chown', 'zero:zero', CLAWPROXY_DEPLOY_CONFIG_PATH],
+        capture_output=True
+    )
+    return True, ''
 
 # Machine target for openclaw user systemd session (works even without XDG_RUNTIME_DIR)
 _OC_MACHINE = 'openclaw@.host'
@@ -4657,6 +4701,111 @@ def index(request: Request):
                     .props('elevated color=indigo-7')
                 ui.button(T['proxy_btn_refresh'], on_click=_proxy_refresh) \
                     .props('flat color=grey-7')
+
+        # ── ClawProxy TTS Config ──────────────────────────────────────────────
+        with ui.card().classes('w-full q-pa-md q-mt-sm'):
+            ui.label(T.get('proxy_cp_cfg_title', '🎤 ClawProxy TTS Config')).classes('text-subtitle1 text-bold q-mb-xs')
+            ui.label(T.get('proxy_cp_cfg_hint', 'Edit clawproxy TTS provider settings (config.toml). Deploy to /opt/clawproxy/ when done.')).classes('text-caption text-grey-6 q-mb-sm')
+
+            cpc_default_provider = ui.select(
+                ['mimotts', 'f5tts', 'qwen3tts'],
+                label=T.get('proxy_cp_default_provider', 'Default TTS Provider'),
+                value='mimotts'
+            ).classes('w-full q-mb-xs')
+            cpc_default_voice = ui.input(
+                T.get('proxy_cp_default_voice', 'Default Voice'),
+                value='Chloe'
+            ).classes('w-full q-mb-sm')
+
+            # ── mimotts ──
+            with ui.expansion('🔊 MimoTTS', value=False).classes('w-full q-mb-xs'):
+                cpc_mimo_key = ui.input('API Key', value='', password=True).classes('w-full q-mb-xs')
+                cpc_mimo_url = ui.input('Base URL', value='https://token-plan-cn.xiaomimimo.com/v1').classes('w-full q-mb-xs')
+                cpc_mimo_model = ui.input('Model', value='mimo-v2.5-tts').classes('w-full')
+
+            # ── f5tts ──
+            with ui.expansion('🔊 F5-TTS', value=False).classes('w-full q-mb-xs'):
+                cpc_f5_url = ui.input('Base URL', value='http://apicn.aiworm.cn:8010').classes('w-full q-mb-xs')
+                cpc_f5_key = ui.input('API Key', value='token1').classes('w-full q-mb-xs')
+                cpc_f5_speed = ui.number('Speed (0.5–2.0)', value=0.8, min=0.5, max=2.0, step=0.05).classes('w-full')
+
+            # ── qwen3tts ──
+            with ui.expansion('🔊 Qwen3-TTS', value=False).classes('w-full q-mb-xs'):
+                cpc_qwen_url = ui.input('Base URL', value='http://apicn.aiworm.cn:8012').classes('w-full q-mb-xs')
+                cpc_qwen_speed = ui.number('Speed (0.5–2.0)', value=0.9, min=0.5, max=2.0, step=0.05).classes('w-full')
+
+            cpc_status = ui.label('').classes('text-caption q-mt-xs')
+
+            def _cp_cfg_load():
+                """Load clawproxy config.toml and populate UI fields."""
+                try:
+                    c = load_clawproxy_config()
+                except Exception as e:
+                    ui.notify(f'Failed to parse config.toml: {e}', type='negative')
+                    return
+                tts = c.get('tts', {}) if c else {}
+                cpc_default_provider.set_value(tts.get('default_provider', 'mimotts'))
+                cpc_default_voice.set_value(tts.get('default_voice', 'Chloe'))
+                mimo = tts.get('mimotts', {})
+                cpc_mimo_key.set_value(mimo.get('api_key', ''))
+                cpc_mimo_url.set_value(mimo.get('base_url', 'https://token-plan-cn.xiaomimimo.com/v1'))
+                cpc_mimo_model.set_value(mimo.get('model', 'mimo-v2.5-tts'))
+                f5 = tts.get('f5tts', {})
+                cpc_f5_url.set_value(f5.get('base_url', 'http://apicn.aiworm.cn:8010'))
+                cpc_f5_key.set_value(f5.get('api_key', 'token1'))
+                cpc_f5_speed.set_value(float(f5.get('speed', 0.8)))
+                qwen = tts.get('qwen3tts', {})
+                cpc_qwen_url.set_value(qwen.get('base_url', 'http://apicn.aiworm.cn:8012'))
+                cpc_qwen_speed.set_value(float(qwen.get('speed', 0.9)))
+                cpc_status.set_text(T.get('proxy_cp_loaded', '✅ Loaded from local config'))
+
+            def _cp_cfg_save():
+                """Save UI values to local clawproxy config.toml."""
+                try:
+                    c = tomlkit.document()
+                    tts = tomlkit.table()
+                    tts['default_provider'] = cpc_default_provider.value
+                    tts['default_voice'] = cpc_default_voice.value
+                    mimo = tomlkit.table()
+                    mimo['api_key'] = cpc_mimo_key.value or ''
+                    mimo['base_url'] = cpc_mimo_url.value or ''
+                    mimo['model'] = cpc_mimo_model.value or ''
+                    tts['mimotts'] = mimo
+                    f5 = tomlkit.table()
+                    f5['base_url'] = cpc_f5_url.value or ''
+                    f5['api_key'] = cpc_f5_key.value or ''
+                    f5['speed'] = cpc_f5_speed.value
+                    tts['f5tts'] = f5
+                    qwen = tomlkit.table()
+                    qwen['base_url'] = cpc_qwen_url.value or ''
+                    qwen['speed'] = cpc_qwen_speed.value
+                    tts['qwen3tts'] = qwen
+                    c['tts'] = tts
+                    save_clawproxy_config(c)
+                    cpc_status.set_text(T.get('proxy_cp_saved_ok', '✅ Config saved locally'))
+                    ui.notify(T.get('proxy_cp_saved_ok', '✅ clawproxy config.toml saved'), type='positive')
+                except Exception as e:
+                    cpc_status.set_text(str(e))
+                    ui.notify(T.get('proxy_cp_save_err', '❌ Save failed: {}').format(e), type='negative')
+
+            def _cp_cfg_deploy():
+                """Save local config, then deploy to /opt/clawproxy/config.toml via sudo."""
+                _cp_cfg_save()
+                ok, msg = deploy_clawproxy_config()
+                if ok:
+                    cpc_status.set_text(T.get('proxy_cp_deploy_ok', '✅ Deployed to /opt/clawproxy/config.toml'))
+                    ui.notify(T.get('proxy_cp_deploy_ok', '✅ clawproxy config deployed'), type='positive')
+                else:
+                    cpc_status.set_text(msg)
+                    ui.notify(T.get('proxy_cp_deploy_err', '❌ Deploy failed: {}').format(msg), type='negative')
+
+            with ui.row().classes('gap-2 q-mt-sm'):
+                ui.button(T.get('proxy_cp_btn_load', '📂 Load'), on_click=_cp_cfg_load).props('flat color=blue-8')
+                ui.button(T.get('proxy_cp_btn_save', '💾 Save'), on_click=_cp_cfg_save).props('elevated color=indigo-7')
+                ui.button(T.get('proxy_cp_btn_deploy', '🚀 Deploy'), on_click=_cp_cfg_deploy).props('elevated color=positive')
+
+            # Auto-load on first view
+            _cp_cfg_load()
 
     upgrade_content = ui.column().classes('w-full q-px-sm q-pt-sm')
     upgrade_content.set_visibility(False)
