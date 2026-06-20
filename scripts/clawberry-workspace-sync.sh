@@ -447,7 +447,15 @@ for f in "$WORK_DIR/dashboard.py" "$WORK_DIR"/clawberry_*.py "$WORK_DIR/publish_
 done
 
 # dashboard/ package (modular Python modules)
-if [[ -d "$WORK_DIR/dashboard" ]]; then
+# Force-checkout from git — legacy sparse checkout may not materialize new dirs.
+_dashboard_ok=no
+if git -C "$WORK_DIR" ls-tree --name-only FETCH_HEAD dashboard/ &>/dev/null; then
+    git -C "$WORK_DIR" checkout -q FETCH_HEAD -- dashboard/
+    _dashboard_ok=yes
+elif [[ -d "$WORK_DIR/dashboard" ]]; then
+    _dashboard_ok=yes  # ZIP fallback — already on disk
+fi
+if [[ "$_dashboard_ok" == "yes" ]]; then
     mkdir -p "$CLAWBOARD_DST/dashboard"
     rsync --archive --update "$WORK_DIR/dashboard/" "$CLAWBOARD_DST/dashboard/"
     log "  synced dashboard/"
