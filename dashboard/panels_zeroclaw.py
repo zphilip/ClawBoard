@@ -15,11 +15,42 @@ _invite_tokens = {}  # one-time invite tokens
 def build_zeroclaw_panel(T, conf, zc_source, lang, other_lang, _ph_hints, _ph_map, _ph_models, _ph_pid_base, _ph_pid_models, provider_panels, channel_panels, do_status, _build_character_tab, _build_skills_tab, _loaded_from, to_int, lines_to_list, build_provider_card, build_channel_card, do_save, do_save_deploy):
     """Build panel UI."""
     _diag = ''  # populated by _wiz_apply; read by _wiz_refresh_summary
-    top = conf  # local alias used in wizard pre-fill
-    ch_conf_top = conf.get('channels', {})
-    sec_estop = conf.get('security', {}).get('estop', {})
+
+    # ── shortcuts (section aliases from conf) ───────────────────────────────
+    top          = conf
+    autonomy     = conf.get('autonomy',    {})
+    agent_c      = conf.get('agent',       {})
+    obs          = conf.get('observability',{})
+    skills       = conf.get('skills',      {})
+    memory       = conf.get('memory',      {})
+    gateway      = conf.get('gateway',     {})
+    ch_conf_top  = conf.get('channels', {})
+    sec          = conf.get('security',    {})
+    sec_res      = sec.get('resources',   {})
+    sec_sandbox  = sec.get('sandbox',     {})
+    sec_audit    = sec.get('audit',       {})
+    sec_otp      = sec.get('otp',         {})
+    sec_estop    = sec.get('estop',       {})
+    reliability  = conf.get('reliability', {})
+    scheduler    = conf.get('scheduler',   {})
+    web_fetch    = conf.get('web_fetch',   {})
+    web_search   = conf.get('web_search',  {})
+    http_request = conf.get('http_request',{})
+    browser      = conf.get('browser',     {})
+    multimodal   = conf.get('multimodal',  {})
+    cost         = conf.get('cost',        {})
+    composio_c   = conf.get('composio',    {})
+    tunnel       = conf.get('tunnel',      {})
+    transcription= conf.get('transcription',{})
+    heartbeat    = conf.get('heartbeat',   {})
+    cron         = conf.get('cron',        {})
+    hooks        = conf.get('hooks',       {})
+    hardware     = conf.get('hardware',    {})
+    identity     = conf.get('identity',    {})
+    secrets_c    = conf.get('secrets',     {})
     _prov_models = conf.get('providers', {}).get('models', {})
     _default_prov = next(iter(_prov_models.values()), {}) if _prov_models else {}
+
     # ══ ZeroClaw Dashboard ════════════════════════════════════════════════════
     zc_content = ui.column().classes('w-full q-px-sm q-pt-sm')
     with zc_content:
