@@ -980,13 +980,14 @@ def index(request: Request):
     pc_content = build_picoclaw_panel(T, conf, lang, _ph_map, _ph_pid_base,
         _ph_pid_models, _pc_ph_hints, _pc_ph_map, _pc_ph_provs,
         _pc_ph_pid_base, _pc_ph_pid_models,
-        _build_character_tab, _build_skills_tab)
+        _build_character_tab, _build_skills_tab,
+        _get_lan_ip, restart_picoclaw_service, setup_pico_channel_token)
 
     # ══ OpenClaw panel ═══════════════════════════════════════════════════════
     oc_content = build_openclaw_panel(T, conf, lang, _ph_map, _ph_pid_base,
         _ph_pid_models, _oc_ph_hints, _oc_ph_map, _oc_ph_provs,
         _oc_ph_pid_base, _oc_ph_pid_models,
-        _build_character_tab, _build_skills_tab)
+        _build_character_tab, _build_skills_tab, _get_lan_ip)
 
     # ══ WiFi panel ═══════════════════════════════════════════════════════════
     wifi_content = build_wifi_panel(T)

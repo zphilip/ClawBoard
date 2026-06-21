@@ -5,11 +5,19 @@ from nicegui import ui
 
 from dashboard.paths import CONFIG_PATH, DEPLOY_CONFIG_PATH, SCRIPT_DIR
 from dashboard.config_io import deploy_config, save_config
-from dashboard.auth import _load_auth
+from dashboard.auth import _hash_pw, _load_auth, _verify_pw
 from dashboard.provider_hints import CHANNEL_LABELS, CHANNEL_SCHEMAS, PROVIDER_IDS
+from urllib.parse import quote
+import time as _time
+
+CHANNEL_KEYS = list(CHANNEL_SCHEMAS.keys())
+_invite_tokens = {}  # one-time invite tokens
 def build_zeroclaw_panel(T, conf, zc_source, lang, other_lang, _ph_hints, _ph_map, _ph_models, _ph_pid_base, _ph_pid_models, provider_panels, channel_panels, do_status, _build_character_tab, _build_skills_tab):
     """Build panel UI."""
     _diag = ''  # populated by _wiz_apply; read by _wiz_refresh_summary
+    top = conf  # local alias used in wizard pre-fill
+    ch_conf_top = conf.get('channels', {})
+    sec_estop = conf.get('security', {}).get('estop', {})
     # ══ ZeroClaw Dashboard ════════════════════════════════════════════════════
     zc_content = ui.column().classes('w-full q-px-sm q-pt-sm')
     with zc_content:
