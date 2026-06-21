@@ -5,6 +5,7 @@ from nicegui import ui
 
 def build_zeroclaw_panel(T, conf, zc_source, lang, other_lang, _ph_hints, _ph_map, _ph_models, _ph_pid_base, _ph_pid_models, provider_panels, channel_panels, do_status, _build_character_tab, _build_skills_tab):
     """Build panel UI."""
+    _diag = ''  # populated by _wiz_apply; read by _wiz_refresh_summary
     # ══ ZeroClaw Dashboard ════════════════════════════════════════════════════
     zc_content = ui.column().classes('w-full q-px-sm q-pt-sm')
     with zc_content:
