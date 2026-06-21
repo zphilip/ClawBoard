@@ -996,7 +996,7 @@ def index(request: Request):
     wifi_content = build_wifi_panel(T)
 
     # ══ Proxy & Upgrade panels ═══════════════════════════════════════════════
-    proxy_content, upgrade_content, upgrade_content_inner = build_proxy_panel(T)
+    proxy_content, upgrade_content, upgrade_content_inner, _proxy_refresh = build_proxy_panel(T)
 
     # ── Sidebar navigation wiring ──────────────────────────────────────────────
     def _switch_dash(name):

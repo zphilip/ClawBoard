@@ -256,4 +256,4 @@ def build_proxy_panel(T):
             btn_upg_run = ui.button(
                 T['upgrade_btn_run'], on_click=_start_upgrade
             ).props('elevated color=orange-9')
-    return proxy_content, upgrade_content, upgrade_content_inner
+    return proxy_content, upgrade_content, upgrade_content_inner, _proxy_refresh
