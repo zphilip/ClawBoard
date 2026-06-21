@@ -1,5 +1,6 @@
 """ClawBoard dashboard — proxy panel."""
 import subprocess
+import tomlkit
 from nicegui import ui
 
 

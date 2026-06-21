@@ -1,4 +1,5 @@
 """ClawBoard dashboard — picoclaw panel."""
+import os
 import subprocess
 from nicegui import ui
 

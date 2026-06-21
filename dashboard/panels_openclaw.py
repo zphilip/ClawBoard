@@ -1,4 +1,5 @@
 """ClawBoard dashboard — openclaw panel."""
+import json
 import subprocess
 from nicegui import ui
 

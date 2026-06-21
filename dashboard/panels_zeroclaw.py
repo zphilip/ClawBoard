@@ -1,5 +1,9 @@
 """ClawBoard dashboard — zeroclaw panel."""
+import datetime
+import os
+import secrets as _secrets
 import subprocess
+
 from nicegui import ui
 
 
