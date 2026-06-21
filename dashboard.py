@@ -432,6 +432,7 @@ def index(request: Request):
             _oc_ph_pid_models.setdefault(_ocpid, []).append(_och['model_name'])
 
     # (ZeroClaw hints continued)
+    _ph_map    = {h['model_name']: h for h in _ph_hints if h.get('model_name')}
     _ph_models = [h['model'] for h in _ph_hints if h.get('model')]
     _ph_pid_base:   dict[str, str]       = {}  # provider_id → first api_base
     _ph_pid_models: dict[str, list[str]] = {}  # provider_id → [models...]
