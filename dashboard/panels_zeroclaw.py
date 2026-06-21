@@ -12,7 +12,7 @@ import time as _time
 
 CHANNEL_KEYS = list(CHANNEL_SCHEMAS.keys())
 _invite_tokens = {}  # one-time invite tokens
-def build_zeroclaw_panel(T, conf, zc_source, lang, other_lang, _ph_hints, _ph_map, _ph_models, _ph_pid_base, _ph_pid_models, provider_panels, channel_panels, do_status, _build_character_tab, _build_skills_tab):
+def build_zeroclaw_panel(T, conf, zc_source, lang, other_lang, _ph_hints, _ph_map, _ph_models, _ph_pid_base, _ph_pid_models, provider_panels, channel_panels, do_status, _build_character_tab, _build_skills_tab, _loaded_from, to_int, lines_to_list, build_provider_card, build_channel_card, do_save, do_save_deploy):
     """Build panel UI."""
     _diag = ''  # populated by _wiz_apply; read by _wiz_refresh_summary
     top = conf  # local alias used in wizard pre-fill

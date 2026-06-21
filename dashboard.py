@@ -974,7 +974,10 @@ def index(request: Request):
     zc_content = build_zeroclaw_panel(T, conf, zc_source, lang, other_lang,
         _ph_hints, _ph_map, _ph_models, _ph_pid_base, _ph_pid_models,
         provider_panels, channel_panels, do_status,
-        _build_character_tab, _build_skills_tab)
+        _build_character_tab, _build_skills_tab,
+        _loaded_from, to_int, lines_to_list,
+        build_provider_card, build_channel_card,
+        do_save, do_save_deploy)
 
     # ══ PicoClaw panel ═══════════════════════════════════════════════════════
     pc_content = build_picoclaw_panel(T, conf, lang, _ph_map, _ph_pid_base,
