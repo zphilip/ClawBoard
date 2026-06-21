@@ -18,6 +18,8 @@ def build_zeroclaw_panel(T, conf, zc_source, lang, other_lang, _ph_hints, _ph_ma
     top = conf  # local alias used in wizard pre-fill
     ch_conf_top = conf.get('channels', {})
     sec_estop = conf.get('security', {}).get('estop', {})
+    _prov_models = conf.get('providers', {}).get('models', {})
+    _default_prov = next(iter(_prov_models.values()), {}) if _prov_models else {}
     # ══ ZeroClaw Dashboard ════════════════════════════════════════════════════
     zc_content = ui.column().classes('w-full q-px-sm q-pt-sm')
     with zc_content:
