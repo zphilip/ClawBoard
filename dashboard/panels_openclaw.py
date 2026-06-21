@@ -7,7 +7,7 @@ from nicegui import ui
 from dashboard.config_io import _read_openclaw_deploy_token, deploy_openclaw_config, enable_openclaw_user_service, load_openclaw_config, openclaw_service_is_enabled, restart_openclaw_service, save_openclaw_config
 from urllib.parse import quote
 from dashboard.provider_hints import _oc_model_ref_text, _oc_provider_models
-def build_openclaw_panel(T, conf, lang, _ph_map, _ph_pid_base, _ph_pid_models, _oc_ph_hints, _oc_ph_map, _oc_ph_provs, _oc_ph_pid_base, _oc_ph_pid_models, _build_character_tab, _build_skills_tab, _get_lan_ip):
+def build_openclaw_panel(T, conf, lang, _ph_map, _ph_pid_base, _ph_pid_models, _oc_ph_hints, _oc_ph_map, _oc_ph_provs, _oc_ph_pid_base, _oc_ph_pid_models, _build_character_tab, _build_skills_tab, _get_lan_ip, request):
     """Build panel UI."""
     # ══ OpenClaw Dashboard ════════════════════════════════════════════════════
     oc_content = ui.column().classes('w-full q-px-sm q-pt-sm')
