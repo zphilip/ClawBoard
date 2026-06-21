@@ -3,6 +3,7 @@ import subprocess
 from nicegui import ui
 
 
+from dashboard.config_io import _read_openclaw_deploy_token, deploy_openclaw_config, enable_openclaw_user_service, load_openclaw_config, openclaw_service_is_enabled, restart_openclaw_service, save_openclaw_config
 def build_openclaw_panel(T, conf, lang, _ph_map, _ph_pid_base, _ph_pid_models, _oc_ph_hints, _oc_ph_map, _oc_ph_provs, _oc_ph_pid_base, _oc_ph_pid_models, _build_character_tab, _build_skills_tab):
     """Build panel UI."""
     # ══ OpenClaw Dashboard ════════════════════════════════════════════════════

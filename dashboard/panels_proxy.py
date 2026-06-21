@@ -3,6 +3,7 @@ import subprocess
 from nicegui import ui
 
 
+from dashboard.config_io import deploy_clawproxy_config, load_clawproxy_config, save_clawproxy_config
 def build_proxy_panel(T):
     """Build panel UI."""
     # ══ Upgrade ═══════════════════════════════════════════════════════════════

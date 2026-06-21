@@ -3,6 +3,10 @@ import subprocess
 from nicegui import ui
 
 
+from dashboard.paths import CONFIG_PATH, DEPLOY_CONFIG_PATH, SCRIPT_DIR
+from dashboard.config_io import deploy_config, save_config
+from dashboard.auth import _load_auth
+from dashboard.provider_hints import CHANNEL_LABELS, CHANNEL_SCHEMAS, PROVIDER_IDS
 def build_zeroclaw_panel(T, conf, zc_source, lang, other_lang, _ph_hints, _ph_map, _ph_models, _ph_pid_base, _ph_pid_models, provider_panels, channel_panels, do_status, _build_character_tab, _build_skills_tab):
     """Build panel UI."""
     _diag = ''  # populated by _wiz_apply; read by _wiz_refresh_summary

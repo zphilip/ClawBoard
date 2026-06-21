@@ -3,6 +3,9 @@ import subprocess
 from nicegui import ui
 
 
+from dashboard.paths import PICOCLAW_CONFIG_PATH, SCRIPT_DIR
+from dashboard.config_io import _read_security_yml_token, deploy_picoclaw_config, deploy_picoclaw_security, load_picoclaw_config, load_picoclaw_security, save_picoclaw_config, save_picoclaw_security
+from dashboard.provider_hints import PROVIDER_IDS
 def build_picoclaw_panel(T, conf, lang, _ph_map, _ph_pid_base, _ph_pid_models, _pc_ph_hints, _pc_ph_map, _pc_ph_provs, _pc_ph_pid_base, _pc_ph_pid_models, _build_character_tab, _build_skills_tab):
     """Build panel UI."""
     # ══ PicoClaw Dashboard ════════════════════════════════════════════════════
