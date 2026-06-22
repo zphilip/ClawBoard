@@ -16,7 +16,7 @@ import time as _time
 
 CHANNEL_KEYS = list(CHANNEL_SCHEMAS.keys())
 _invite_tokens = {}  # one-time invite tokens
-def build_zeroclaw_panel(T, conf, zc_source, lang, other_lang, _ph_hints, _ph_map, _ph_models, _ph_pid_base, _ph_pid_models, provider_panels, channel_panels, do_status, _build_character_tab, _build_skills_tab, _loaded_from, to_int, lines_to_list, build_provider_card, build_channel_card, do_save, do_save_deploy, request):
+def build_zeroclaw_panel(T, conf, zc_source, lang, other_lang, _ph_hints, _ph_map, _ph_models, _ph_pid_base, _ph_pid_models, provider_panels, channel_panels, do_status, _build_character_tab, _build_skills_tab, _loaded_from, to_int, to_float, lines_to_list, build_provider_card, build_channel_card, do_save, do_save_deploy, request):
     """Build panel UI."""
     _diag = ''  # populated by _wiz_apply; read by _wiz_refresh_summary
 
@@ -837,10 +837,254 @@ def build_zeroclaw_panel(T, conf, zc_source, lang, other_lang, _ph_hints, _ph_ma
                             ui.button(T['btn_service_status'], icon='info', on_click=do_status).props('outline').classes('flex-1')
 
                 ui.separator()
-                # ── Pre-save hook: collect form values that live in this scope ──
+                # ── Pre-save hook: collect ALL form values into conf ──
+                # All w_* widgets are in scope here (build_zeroclaw_panel closure).
+                # conf is a mutable dict shared with the caller — mutations are
+                # visible to save_config() in do_save / do_save_deploy.
                 def _pre_save():
                     conf.setdefault('secrets',  {})['encrypt'] = w_secrets_encrypt.value
                     conf.setdefault('identity', {})['format']  = w_identity_format.value
+
+                    # ── Provider models defaults ──────────────────────────
+                    default_temp    = to_float(w_temperature.value, 0.7)
+                    default_timeout = to_int(w_prov_timeout.value, 120)
+                    default_model   = w_default_model.value.strip() or ''
+                    default_key     = w_api_key.value or ''
+                    conf.setdefault('providers', {}).setdefault('models', {})
+                    conf['providers']['models'] = {}
+                    for alias, wmap in provider_panels.items():
+                        entry = {
+                            'name':                 wmap['name'].value,
+                            'uri':                  wmap['base_url'].value,
+                            'requires_openai_auth': wmap['requires_openai_auth'].value,
+                            'model':                default_model,
+                            'temperature':          default_temp,
+                            'timeout_secs':         default_timeout,
+                        }
+                        key = wmap['api_key'].value
+                        if not key and default_key:
+                            key = default_key
+                        if key:
+                            entry['api_key'] = key
+                        conf['providers']['models'][alias] = entry
+
+                    # ── Autonomy ──────────────────────────────────────────
+                    a = conf.setdefault('autonomy', {})
+                    a['level']                            = w_auto_level.value
+                    a['workspace_only']                   = w_auto_workspace.value
+                    a['require_approval_for_medium_risk'] = w_auto_require_approval.value
+                    a['block_high_risk_commands']         = w_auto_block_high.value
+                    a['max_actions_per_hour']             = to_int(w_auto_max_actions.value, 20)
+                    a['max_cost_per_day_cents']           = to_int(w_auto_max_cost.value, 500)
+                    a['allowed_commands']                 = lines_to_list(w_auto_cmds.value)
+                    a['auto_approve']                     = lines_to_list(w_auto_approve.value)
+                    a['always_ask']                       = lines_to_list(w_auto_always_ask.value)
+                    a['forbidden_paths']                  = lines_to_list(w_auto_forbidden.value)
+                    a['allowed_roots']                    = lines_to_list(w_auto_allowed_roots.value)
+                    a['shell_env_passthrough']            = lines_to_list(w_auto_shell_env.value)
+
+                    # ── Agent ─────────────────────────────────────────────
+                    ag = conf.setdefault('agent', {})
+                    ag['compact_context']      = w_agent_compact.value
+                    ag['parallel_tools']       = w_agent_parallel.value
+                    ag['max_tool_iterations']  = to_int(w_agent_max_iter.value, 10)
+                    ag['max_history_messages'] = to_int(w_agent_max_hist.value, 50)
+                    ag['tool_dispatcher']      = w_agent_tool_dispatcher.value
+
+                    # ── Observability ─────────────────────────────────────
+                    o = conf.setdefault('observability', {})
+                    o['backend']                   = w_obs_backend.value
+                    o['runtime_trace_mode']        = w_obs_trace_mode.value
+                    o['otel_endpoint']             = w_obs_otel_endpoint.value
+                    o['otel_service_name']         = w_obs_otel_service.value
+                    o['runtime_trace_path']        = w_obs_trace_path.value
+                    o['runtime_trace_max_entries'] = to_int(w_obs_trace_max.value, 200)
+
+                    # ── Skills ────────────────────────────────────────────
+                    sk = conf.setdefault('skills', {})
+                    sk['open_skills_enabled']   = w_skills_open.value
+                    sk['allow_scripts']         = w_skills_allow_scripts.value
+                    sk['prompt_injection_mode'] = w_skills_mode.value
+                    sk.setdefault('skill_creation', {})['enabled'] = w_sk_cr_enabled.value
+                    sk['skill_creation']['max_skills'] = to_int(w_sk_cr_max.value, 500)
+                    sk['skill_creation']['similarity_threshold'] = to_float(w_sk_cr_sim.value, 0.85)
+                    sk.setdefault('skill_improvement', {})['enabled'] = w_sk_im_enabled.value
+                    sk['skill_improvement']['cooldown_secs'] = to_int(w_sk_im_cooldown.value, 3600)
+
+                    # ── Memory ────────────────────────────────────────────
+                    m = conf.setdefault('memory', {})
+                    m['backend']                    = w_mem_backend.value
+                    m['search_mode']                = w_mem_search_mode.value
+                    m['auto_save']                  = w_mem_auto_save.value
+                    m['hygiene_enabled']            = w_mem_hygiene.value
+                    m['archive_after_days']         = to_int(w_mem_archive_days.value, 7)
+                    m['purge_after_days']           = to_int(w_mem_purge_days.value, 30)
+                    m['conversation_retention_days']= to_int(w_mem_conv_retention.value, 30)
+                    m['embedding_provider']         = w_mem_embed_provider.value
+                    m['embedding_model']            = w_mem_embed_model.value
+                    m['embedding_dimensions']       = to_int(w_mem_embed_dims.value, 1536)
+                    m['vector_weight']              = to_float(w_mem_vec_weight.value, 0.7)
+                    m['keyword_weight']             = to_float(w_mem_kw_weight.value, 0.3)
+                    m['min_relevance_score']        = to_float(w_mem_min_relevance.value, 0.4)
+                    m['embedding_cache_size']       = to_int(w_mem_cache_size.value, 10000)
+                    m['chunk_max_tokens']           = to_int(w_mem_chunk_tokens.value, 512)
+                    m['response_cache_enabled']     = w_mem_resp_cache.value
+                    m['response_cache_ttl_minutes'] = to_int(w_mem_resp_ttl.value, 60)
+                    m['response_cache_max_entries'] = to_int(w_mem_resp_max.value, 5000)
+                    m['snapshot_enabled']           = w_mem_snapshot.value
+                    m['snapshot_on_hygiene']        = w_mem_snap_hygiene.value
+                    m['auto_hydrate']               = w_mem_auto_hydrate.value
+
+                    # ── Gateway ───────────────────────────────────────────
+                    g = conf.setdefault('gateway', {})
+                    g['port']              = to_int(w_gw_port.value, 42617)
+                    g['host']              = w_gw_host.value
+                    g['require_pairing']   = w_gw_pairing.value
+                    g['allow_public_bind'] = w_gw_public.value
+
+                    conf.setdefault('tunnel', {})['provider'] = w_tunnel.value
+
+                    # ── Channels ──────────────────────────────────────────
+                    ch_conf = conf.setdefault('channels', {})
+                    ch_conf['cli']                  = w_cli_enabled.value
+                    ch_conf['message_timeout_secs'] = to_int(w_msg_timeout.value, 300)
+                    ch_conf['ack_reactions']        = w_ch_ack_reactions.value
+                    ch_conf['show_tool_calls']      = w_ch_show_tool_calls.value
+                    ch_conf['session_persistence']  = w_ch_session_persist.value
+                    ch_conf['session_backend']      = w_ch_session_backend.value
+                    ch_conf['session_ttl_hours']    = to_int(w_ch_session_ttl.value, 0)
+                    ch_conf['debounce_ms']          = to_int(w_ch_debounce_ms.value, 0)
+                    _static_ch_keys = {
+                        'cli', 'message_timeout_secs', 'ack_reactions',
+                        'show_tool_calls', 'session_persistence',
+                        'session_backend', 'session_ttl_hours', 'debounce_ms',
+                    }
+                    for k in [k for k in list(ch_conf.keys()) if k not in _static_ch_keys]:
+                        del ch_conf[k]
+                    for ch_key, wmap in channel_panels.items():
+                        schema = CHANNEL_SCHEMAS[ch_key]; entry = {}
+                        for (fkey, _fl, ftype, _fd) in schema['fields']:
+                            w = wmap.get(fkey)
+                            if w is None: continue
+                            if ftype == 'textarea':   entry[fkey] = lines_to_list(w.value)
+                            elif ftype == 'bool':     entry[fkey] = w.value
+                            elif ftype == 'int':      entry[fkey] = to_int(w.value)
+                            else:                     entry[fkey] = w.value
+                        ch_conf[ch_key] = entry
+
+                    # ── Security ──────────────────────────────────────────
+                    sec = conf.setdefault('security', {})
+                    sr = sec.setdefault('resources', {})
+                    sr['max_memory_mb']        = to_int(w_sec_mem.value, 512)
+                    sr['max_cpu_time_seconds'] = to_int(w_sec_cpu.value, 60)
+                    sr['max_subprocesses']     = to_int(w_sec_procs.value, 10)
+                    sr['memory_monitoring']    = w_sec_mem_monitor.value
+                    sec.setdefault('sandbox', {})['backend'] = w_sec_sandbox.value
+                    sa = sec.setdefault('audit', {})
+                    sa['enabled']     = w_sec_audit_enabled.value
+                    sa['log_path']    = w_sec_audit_log_path.value
+                    sa['max_size_mb'] = to_int(w_sec_audit_max.value, 100)
+                    sa['sign_events'] = w_sec_audit_sign.value
+                    so = sec.setdefault('otp', {})
+                    so['enabled']          = w_sec_otp_enabled.value
+                    so['method']           = w_sec_otp_method.value
+                    so['token_ttl_secs']   = to_int(w_sec_otp_ttl.value, 30)
+                    so['cache_valid_secs'] = to_int(w_sec_otp_cache.value, 300)
+                    so['gated_actions']    = lines_to_list(w_sec_otp_actions.value)
+                    so['gated_domains']    = lines_to_list(w_sec_otp_domains.value)
+                    se = sec.setdefault('estop', {})
+                    se['enabled']               = w_sec_estop_enabled.value
+                    se['state_file']            = w_sec_estop_file.value
+                    se['require_otp_to_resume'] = w_sec_estop_otp.value
+
+                    # ── Reliability ───────────────────────────────────────
+                    r = conf.setdefault('reliability', {})
+                    r['provider_retries']             = to_int(w_rel_retries.value, 2)
+                    r['provider_backoff_ms']          = to_int(w_rel_backoff.value, 500)
+                    r['channel_initial_backoff_secs'] = to_int(w_rel_ch_backoff.value, 2)
+                    r['channel_max_backoff_secs']     = to_int(w_rel_ch_max.value, 60)
+
+                    # ── Scheduler ─────────────────────────────────────────
+                    s = conf.setdefault('scheduler', {})
+                    s['enabled']        = w_sched_enabled.value
+                    s['max_tasks']      = to_int(w_sched_tasks.value, 64)
+                    s['max_concurrent'] = to_int(w_sched_concurrent.value, 4)
+
+                    # ── web_fetch ─────────────────────────────────────────
+                    wf = conf.setdefault('web_fetch', {})
+                    wf['enabled']          = w_wf_enabled.value
+                    wf['allowed_domains']  = lines_to_list(w_wf_domains.value)
+                    wf['blocked_domains']  = lines_to_list(w_wf_blocked.value)
+                    wf['max_response_size']= to_int(w_wf_max_size.value, 500000)
+                    wf['timeout_secs']     = to_int(w_wf_timeout.value, 30)
+
+                    # ── web_search ────────────────────────────────────────
+                    ws = conf.setdefault('web_search', {})
+                    ws['enabled']      = w_ws_enabled.value
+                    ws['provider']     = w_ws_provider.value
+                    ws['max_results']  = to_int(w_ws_max.value, 5)
+                    ws['timeout_secs'] = to_int(w_ws_timeout.value, 15)
+
+                    # ── http_request ──────────────────────────────────────
+                    hr = conf.setdefault('http_request', {})
+                    hr['enabled']          = w_http_enabled.value
+                    hr['allowed_domains']  = lines_to_list(w_http_domains.value)
+                    hr['max_response_size']= to_int(w_http_max_size.value, 1000000)
+                    hr['timeout_secs']     = to_int(w_http_timeout.value, 30)
+
+                    # ── browser ───────────────────────────────────────────
+                    br = conf.setdefault('browser', {})
+                    br['enabled']             = w_br_enabled.value
+                    br['allowed_domains']     = lines_to_list(w_br_domains.value)
+                    br['backend']             = w_br_backend.value
+                    br['native_headless']     = w_br_headless.value
+                    br['native_webdriver_url']= w_br_webdriver.value
+
+                    # ── multimodal ────────────────────────────────────────
+                    mm = conf.setdefault('multimodal', {})
+                    mm['max_images']         = to_int(w_mm_images.value, 4)
+                    mm['max_image_size_mb']  = to_int(w_mm_image_size.value, 5)
+                    mm['allow_remote_fetch'] = w_mm_remote.value
+
+                    # ── cost ──────────────────────────────────────────────
+                    c = conf.setdefault('cost', {})
+                    c['enabled']           = w_cost_enabled.value
+                    c['daily_limit_usd']   = to_float(w_cost_daily.value, 10.0)
+                    c['monthly_limit_usd'] = to_float(w_cost_monthly.value, 100.0)
+                    c['warn_at_percent']   = to_int(w_cost_warn.value, 80)
+                    c['allow_override']    = w_cost_override.value
+
+                    # ── composio ──────────────────────────────────────────
+                    cp = conf.setdefault('composio', {})
+                    cp['enabled']   = w_comp_enabled.value
+                    cp['entity_id'] = w_comp_entity.value
+
+                    conf.setdefault('hooks', {})['enabled'] = w_hooks_enabled.value
+
+                    # ── hardware ──────────────────────────────────────────
+                    hw = conf.setdefault('hardware', {})
+                    hw['enabled']             = w_hw_enabled.value
+                    hw['transport']           = w_hw_transport.value
+                    hw['baud_rate']           = to_int(w_hw_baud.value, 115200)
+                    hw['workspace_datasheets']= w_hw_datasheets.value
+
+                    # ── transcription ─────────────────────────────────────
+                    tr = conf.setdefault('transcription', {})
+                    tr['enabled']          = w_tr_enabled.value
+                    tr['api_url']          = w_tr_url.value
+                    tr['model']            = w_tr_model.value
+                    tr['max_duration_secs']= to_int(w_tr_max_duration.value, 120)
+
+                    # ── heartbeat ─────────────────────────────────────────
+                    hb = conf.setdefault('heartbeat', {})
+                    hb['enabled']          = w_hb_enabled.value
+                    hb['interval_minutes'] = to_int(w_hb_interval.value, 30)
+
+                    # ── cron ──────────────────────────────────────────────
+                    cr = conf.setdefault('cron', {})
+                    cr['enabled']         = w_cron_enabled.value
+                    cr['max_run_history'] = to_int(w_cron_max_history.value, 50)
+
                 def _do_save():
                     _pre_save()
                     do_save()
