@@ -49,9 +49,11 @@ package main
 //     --tts-edge-bin  edge-tts binary name                  (default: edge-tts)
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -98,6 +100,10 @@ type TtsConfig struct {
 	MiMoKey     string // MIMO_API_KEY env or --tts-mimo-key
 	MiMoBaseURL string // default: https://api.xiaomimimo.com/v1
 	MiMoModel   string // mimo-v2.5-tts | mimo-v2.5-tts-voicedesign | mimo-v2.5-tts-voiceclone
+	// Streaming enables SSE-based streaming TTS for providers that support it.
+	// When true, MiMo-V2.5-TTS uses stream=true and collects PCM16 chunks
+	// progressively via SSE instead of waiting for the full WAV response.
+	Streaming bool
 }
 
 // initTtsConfig builds a TtsConfig from CLI flags, env vars, and optionally a
@@ -118,6 +124,7 @@ func initTtsConfig(provider, voice, format, apiKey, model, piperURL, edgeBin,
 	f5Key, f5BaseURL string, f5Speed float64,
 	q3Key, q3BaseURL, q3Model string, q3Speed float64, q3Timeout time.Duration,
 	mimoKey, mimoBaseURL, mimoModel string,
+	streaming bool,
 	clawproxyConfigPath, configPath, picoConfigPath, openConfigPath string) *TtsConfig {
 	cfg := &TtsConfig{
 		Provider:       provider,
@@ -141,6 +148,7 @@ func initTtsConfig(provider, voice, format, apiKey, model, piperURL, edgeBin,
 		MiMoKey:        mimoKey,
 		MiMoBaseURL:    mimoBaseURL,
 		MiMoModel:      mimoModel,
+		Streaming:      streaming,
 	}
 
 	// Env var fallbacks (same names as zeroclaw uses).
@@ -298,6 +306,9 @@ func applyFileTtsConfig(cfg *TtsConfig, fc *fileTtsSection) {
 	}
 	if fc.MaxTextLength > 0 && cfg.MaxTextLen == 0 {
 		cfg.MaxTextLen = fc.MaxTextLength
+	}
+	if fc.Streaming {
+		cfg.Streaming = true
 	}
 	if fc.OpenAI != nil {
 		if cfg.OpenAIKey == "" {
@@ -734,6 +745,9 @@ func synthesize(ctx context.Context, text, provider, voice, format string, cfg *
 	case "qwen3tts":
 		return synthQwen3TTS(ctx, text, voice, cfg)
 	case "mimotts":
+		if cfg.Streaming {
+			return synthMiMoTTSStreaming(ctx, text, voice, cfg)
+		}
 		return synthMiMoTTS(ctx, text, voice, cfg)
 	default:
 		return nil, "", fmt.Errorf("unknown TTS provider %q (valid: openai, elevenlabs, google, edge, piper, minimax, f5tts, qwen3tts, mimotts)", provider)
@@ -1554,4 +1568,184 @@ func synthMiMoTTS(ctx context.Context, text, voice string, cfg *TtsConfig) ([]by
 	fmt.Printf("%s[mimotts] synthesised %d chars → %d bytes (wav)  voice=%s  model=%s\n",
 		prefixSYS(), len([]rune(text)), len(audio), voice, modelName)
 	return audio, "wav", nil
+}
+
+// synthMiMoTTSStreaming is the SSE streaming variant of synthMiMoTTS.
+// It uses stream=true and collects PCM16LE chunks (24 kHz, mono, 16-bit)
+// delivered via Server-Sent Events, then wraps them in a WAV header.
+func synthMiMoTTSStreaming(ctx context.Context, text, voice string, cfg *TtsConfig) ([]byte, string, error) {
+	if cfg.MiMoKey == "" {
+		return nil, "", fmt.Errorf("MiMo TTS (streaming): no API key — set MIMO_API_KEY or --tts-mimo-key")
+	}
+
+	baseURL := cfg.MiMoBaseURL
+	if baseURL == "" {
+		baseURL = "https://api.xiaomimimo.com/v1"
+	}
+	modelName := cfg.MiMoModel
+	if modelName == "" {
+		modelName = "mimo-v2.5-tts"
+	}
+	if voice == "" {
+		voice = "mimo_default"
+	}
+
+	// Build messages — same structure as the non-streaming variant.
+	messages := []map[string]any{
+		{"role": "assistant", "content": text},
+	}
+
+	audioParams := map[string]any{
+		"format": "pcm16",
+	}
+
+	switch {
+	case modelName == "mimo-v2.5-tts-voicedesign":
+		if voice != "" && voice != "mimo_default" {
+			messages = append([]map[string]any{{"role": "user", "content": voice}}, messages...)
+		}
+		audioParams["optimize_text_preview"] = true
+	case modelName == "mimo-v2.5-tts-voiceclone":
+		if voice != "" && voice != "mimo_default" {
+			audioParams["voice"] = voice
+		}
+		messages = append([]map[string]any{{"role": "user", "content": ""}}, messages...)
+	default:
+		audioParams["voice"] = voice
+	}
+
+	payload := map[string]any{
+		"model":    modelName,
+		"messages": messages,
+		"audio":    audioParams,
+		"stream":   true,
+	}
+	bodyJSON, _ := json.Marshal(payload)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		baseURL+"/chat/completions", bytes.NewReader(bodyJSON))
+	if err != nil {
+		return nil, "", fmt.Errorf("MiMo TTS (streaming): build request: %w", err)
+	}
+	req.Header.Set("api-key", cfg.MiMoKey)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "text/event-stream")
+
+	client := &http.Client{Timeout: 120 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, "", fmt.Errorf("MiMo TTS (streaming): request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == 401 || resp.StatusCode == 403 {
+		return nil, "", fmt.Errorf("MiMo TTS (streaming): invalid API key (HTTP %d)", resp.StatusCode)
+	}
+	if resp.StatusCode >= 400 {
+		errBody, _ := io.ReadAll(resp.Body)
+		return nil, "", fmt.Errorf("MiMo TTS (streaming): HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(errBody)))
+	}
+
+	// ── Parse SSE stream, collect PCM16 chunks ──────────────────────
+	const sampleRate = 24000
+	const channels = 1
+	const bitsPerSample = 16
+
+	var allSamples []int16
+	scanner := bufio.NewScanner(resp.Body)
+	// Increase scanner buffer — audio chunks can be larger than the default 64 KB.
+	scanner.Buffer(make([]byte, 0, 256*1024), 8*1024*1024)
+
+	for scanner.Scan() {
+		line := scanner.Text()
+
+		// SSE data lines: "data: <json>" or "data: [DONE]"
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+		dataStr := strings.TrimPrefix(line, "data: ")
+		if dataStr == "[DONE]" {
+			break
+		}
+
+		// Parse the chunk JSON.
+		type chunkDelta struct {
+			Audio *struct {
+				Data string `json:"data"`
+			} `json:"audio"`
+		}
+		type chunkChoice struct {
+			Delta chunkDelta `json:"delta"`
+		}
+		var chunk struct {
+			Choices []chunkChoice `json:"choices"`
+		}
+		if err := json.Unmarshal([]byte(dataStr), &chunk); err != nil {
+			continue // skip malformed chunks (e.g. keep-alive comments)
+		}
+		if len(chunk.Choices) == 0 || chunk.Choices[0].Delta.Audio == nil {
+			continue
+		}
+
+		pcmBytes, err := base64.StdEncoding.DecodeString(chunk.Choices[0].Delta.Audio.Data)
+		if err != nil {
+			continue
+		}
+		// PCM16LE → []int16 samples
+		samples := make([]int16, len(pcmBytes)/2)
+		for i := range samples {
+			samples[i] = int16(binary.LittleEndian.Uint16(pcmBytes[i*2 : (i+1)*2]))
+		}
+		allSamples = append(allSamples, samples...)
+	}
+
+	if err := scanner.Err(); err != nil {
+		return nil, "", fmt.Errorf("MiMo TTS (streaming): SSE read error: %w", err)
+	}
+
+	if len(allSamples) == 0 {
+		return nil, "", fmt.Errorf("MiMo TTS (streaming): received no audio data")
+	}
+
+	// ── Wrap PCM16 in WAV header ───────────────────────────────────
+	wav := pcm16ToWAV(allSamples, sampleRate, channels, bitsPerSample)
+
+	fmt.Printf("%s[mimotts] streaming synthesised %d chars → %d bytes (wav, %.1fs audio)  voice=%s  model=%s\n",
+		prefixSYS(), len([]rune(text)), len(wav),
+		float64(len(allSamples))/float64(sampleRate), voice, modelName)
+	return wav, "wav", nil
+}
+
+// pcm16ToWAV wraps raw PCM16LE samples in a RIFF/WAV header.
+func pcm16ToWAV(samples []int16, sampleRate uint32, numChannels, bitsPerSample uint16) []byte {
+	dataLen := uint32(len(samples) * int(bitsPerSample/8))
+	byteRate := sampleRate * uint32(numChannels) * uint32(bitsPerSample/8)
+	blockAlign := numChannels * bitsPerSample / 8
+
+	// Build PCM data bytes (little-endian).
+	pcmData := make([]byte, dataLen)
+	for i, s := range samples {
+		binary.LittleEndian.PutUint16(pcmData[i*2:], uint16(s))
+	}
+
+	var buf bytes.Buffer
+	// RIFF header
+	buf.WriteString("RIFF")
+	binary.Write(&buf, binary.LittleEndian, uint32(36+dataLen)) // chunk size
+	buf.WriteString("WAVE")
+	// fmt  sub-chunk
+	buf.WriteString("fmt ")
+	binary.Write(&buf, binary.LittleEndian, uint32(16))           // sub-chunk size (PCM)
+	binary.Write(&buf, binary.LittleEndian, uint16(1))            // audio format (PCM = 1)
+	binary.Write(&buf, binary.LittleEndian, numChannels)
+	binary.Write(&buf, binary.LittleEndian, sampleRate)
+	binary.Write(&buf, binary.LittleEndian, byteRate)
+	binary.Write(&buf, binary.LittleEndian, blockAlign)
+	binary.Write(&buf, binary.LittleEndian, bitsPerSample)
+	// data sub-chunk
+	buf.WriteString("data")
+	binary.Write(&buf, binary.LittleEndian, dataLen)
+	buf.Write(pcmData)
+
+	return buf.Bytes()
 }

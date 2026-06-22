@@ -91,6 +91,7 @@ type fileTtsSection struct {
 	DefaultVoice    string              `toml:"default_voice"`
 	DefaultFormat   string              `toml:"default_format"`
 	MaxTextLength   int                 `toml:"max_text_length"`
+	Streaming       bool                `toml:"streaming"` // SSE-based streaming TTS (MiMo-V2.5-TTS)
 	OpenAI          *fileTtsOpenAI      `toml:"openai"`
 	ElevenLabs      *fileTtsElevenLabs  `toml:"elevenlabs"`
 	Google          *fileTtsGoogle      `toml:"google"`

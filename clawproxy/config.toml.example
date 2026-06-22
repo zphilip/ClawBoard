@@ -1,6 +1,10 @@
 [tts]
 default_provider = "mimotts"
 default_voice    = "Chloe"
+# Enable SSE-based streaming TTS (MiMo-V2.5-TTS).
+# When true, audio chunks are collected progressively via Server-Sent Events
+# instead of waiting for the full response. Reduces time-to-first-audio.
+streaming        = true
 
 [tts.mimotts]
 api_key  = ""   
