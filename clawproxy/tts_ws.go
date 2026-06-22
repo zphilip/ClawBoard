@@ -155,10 +155,13 @@ func extractZCFinalText(data []byte) (string, bool) {
 		if t == "" {
 			t = m.Content
 		}
+		// Strip <think>...</think> blocks — reasoning content must not be spoken.
+		t, _ = stripThink(t, false)
 		clean := cleanForTTS(t)
 		return clean, clean != ""
 	case "message":
-		clean := cleanForTTS(m.Content)
+		clean, _ := stripThink(m.Content, false)
+		clean = cleanForTTS(clean)
 		return clean, clean != ""
 	}
 	return "", false
@@ -255,8 +258,14 @@ var (
 // suitable for speech synthesis.  It removes visual structure (headers, bold,
 // bullets, code fences, links) while preserving all spoken content and natural
 // sentence breaks so that rechunk and the TTS provider can process the result.
+//
+// <think>…</think> blocks are stripped entirely (both tags and content) because
+// internal reasoning must never be read aloud.
 func cleanForTTS(text string) string {
-	s := text
+	// Strip think blocks before any other processing — their content is not
+	// meant to be spoken.  Pass inThink=false since this operates on a complete
+	// text; any unclosed tag at EOF is a model artifact and is safe to drop.
+	s, _ := stripThink(text, false)
 	s = reTTSHTMLTag.ReplaceAllString(s, "")
 	s = reTTSCodeFence.ReplaceAllString(s, "")
 	s = reTTSInlineCode.ReplaceAllString(s, "$1")

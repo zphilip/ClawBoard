@@ -837,9 +837,19 @@ def build_zeroclaw_panel(T, conf, zc_source, lang, other_lang, _ph_hints, _ph_ma
                             ui.button(T['btn_service_status'], icon='info', on_click=do_status).props('outline').classes('flex-1')
 
                 ui.separator()
+                # ── Pre-save hook: collect form values that live in this scope ──
+                def _pre_save():
+                    conf.setdefault('secrets',  {})['encrypt'] = w_secrets_encrypt.value
+                    conf.setdefault('identity', {})['format']  = w_identity_format.value
+                def _do_save():
+                    _pre_save()
+                    do_save()
+                def _do_save_deploy():
+                    _pre_save()
+                    do_save_deploy()
                 with ui.row().classes('w-full gap-2 q-pa-sm'):
-                    ui.button(T['btn_save'],         on_click=do_save).props('elevated').classes('flex-1 bg-blue text-white')
-                    ui.button(T['btn_save_deploy'], on_click=do_save_deploy).props('elevated').classes('flex-1 bg-green text-white')
+                    ui.button(T['btn_save'],         on_click=_do_save).props('elevated').classes('flex-1 bg-blue text-white')
+                    ui.button(T['btn_save_deploy'], on_click=_do_save_deploy).props('elevated').classes('flex-1 bg-green text-white')
 
             # ── ZeroClaw › Pair Device ─────────────────────────────────────
             with ui.tab_panel(t_zc_pair):

@@ -502,8 +502,8 @@ def index(request: Request):
                 channel_panels[ch_key] = widgets
 
     def collect():
-        conf.setdefault('secrets',  {})['encrypt'] = w_secrets_encrypt.value
-        conf.setdefault('identity', {})['format']  = w_identity_format.value
+        # secrets.encrypt & identity.format are collected by _pre_save()
+        # inside build_zeroclaw_panel where the widgets are in scope.
 
         # ── Provider models → [providers.models.<alias>] (ZeroClaw schema v2)
         default_temp    = to_float(w_temperature.value, 0.7)
