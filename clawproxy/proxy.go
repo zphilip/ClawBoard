@@ -1486,12 +1486,12 @@ func (cs *zcCompatSession) deliverOrBuffer(data []byte, keyShort string) {
 							return
 						}
 						// 2b. Single-shot: one API call, one tts.audio frame.
-						// 2b. Single-shot: one API call, one tts.audio frame.
 						pcSynthStart := time.Now()
 						audioFrame := buildTtsAudioFrame(ttsText, p, v, f, cfg)
 						if cs.debug != nil {
 							cs.debug.logTTS("synthesis", ttsText, len(audioFrame), time.Since(pcSynthStart), p, opts.streaming, nil)
 						}
+						cs.appMu.RLock()
 						app := cs.app
 						cs.appMu.RUnlock()
 						if app == nil {
