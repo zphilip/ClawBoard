@@ -111,8 +111,8 @@ func (s *proxyServer) getTtsCfg() *TtsConfig {
 func (s *proxyServer) reloadConfig() *TtsConfig {
 	newCfg := s.refreshTtsCfg()
 	s.ttsCfg.Store(newCfg)
-	fmt.Printf("%sConfig reloaded: provider=%s voice=%s format=%s\n",
-		prefixSYS(), newCfg.Provider, newCfg.Voice, newCfg.Format)
+	fmt.Printf("%sConfig reloaded: provider=%s voice=%s format=%s streaming=%v\n",
+		prefixSYS(), newCfg.Provider, newCfg.Voice, newCfg.Format, newCfg.Streaming)
 	return newCfg
 }
 
