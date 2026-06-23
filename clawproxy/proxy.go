@@ -73,9 +73,10 @@ type proxyServer struct {
 	// Use getTtsCfg() to read; never access the field directly.
 	ttsCfg        atomic.Pointer[TtsConfig]
 	refreshTtsCfg func() *TtsConfig // rebuilds TtsConfig from CLI params + current config files
+	debugDir      string           // per-conversation debug log directory ("" = disabled)
 }
 
-func newProxyServer(zca *zcAuth, pca *pcAuth, port int, db *queueStore, sessionTTL time.Duration, refreshTtsCfg func() *TtsConfig) *proxyServer {
+func newProxyServer(zca *zcAuth, pca *pcAuth, port int, db *queueStore, sessionTTL time.Duration, refreshTtsCfg func() *TtsConfig, debugDir string) *proxyServer {
 zcH, pcH := "not_configured", "not_configured"
 if zca != nil {
 zcH = "unknown"
@@ -95,6 +96,7 @@ s := &proxyServer{
 		zcHealth:      zcH,
 		pcHealth:      pcH,
 		refreshTtsCfg: refreshTtsCfg,
+			debugDir:      debugDir,
 		upgrader: websocket.Upgrader{
 			CheckOrigin: func(r *http.Request) bool { return true },
 		},
@@ -264,13 +266,13 @@ func (s *proxyServer) probeAll() {
 	}
 }
 
-func runProxy(port int, zca *zcAuth, pca *pcAuth, maxQueue int, dbPath string, ttl time.Duration, refreshTtsCfg func() *TtsConfig) {
+func runProxy(port int, zca *zcAuth, pca *pcAuth, maxQueue int, dbPath string, ttl time.Duration, refreshTtsCfg func() *TtsConfig, debugDir string) {
 db, err := openQueueStore(dbPath, maxQueue, ttl)
 if err != nil {
 fmt.Printf("%scannot open queue DB %q: %v — falling back to in-memory\n", prefixERR(), dbPath, err)
 db, _ = openQueueStore(":memory:", maxQueue, ttl)
 }
-s := newProxyServer(zca, pca, port, db, 24*time.Hour, refreshTtsCfg)
+s := newProxyServer(zca, pca, port, db, 24*time.Hour, refreshTtsCfg, debugDir)
 mux := http.NewServeMux()
 
 // ── compat: zeroclaw (chat.py) ──────────────────────────────────
@@ -454,7 +456,11 @@ func (s *proxyServer) handleZCCompat(w http.ResponseWriter, r *http.Request) {
 	defer func() {
 		cs.detachApp()
 		appConn.Close()
-		fmt.Printf("%sZC compat detach  key=%s\n", prefixSYS(), keyShort)
+		if cs.debug != nil {
+		cs.debug.close()
+		cs.debug = nil
+	}
+	fmt.Printf("%sZC compat detach  key=%s\n", prefixSYS(), keyShort)
 	}()
 	opts, _ := cs.getTtsState()
 	voiceInjected := opts == nil // skip injection when TTS is disabled
@@ -474,6 +480,13 @@ func (s *proxyServer) handleZCCompat(w http.ResponseWriter, r *http.Request) {
 				m.Content = voiceInstruction + "\n\n" + m.Content
 				if newData, jerr := json.Marshal(m); jerr == nil {
 					data = newData
+				}
+				// Create debug writer on first message (lazy, so we have agent+key).
+				if s.debugDir != "" && cs.debug == nil {
+					cs.debug = newDebugWriter(s.debugDir, "zc", cs.key)
+				}
+				if cs.debug != nil {
+					cs.debug.logAppMessage(m.Content, true)
 				}
 			}
 		}
@@ -657,7 +670,11 @@ func (s *proxyServer) handlePCCompat(w http.ResponseWriter, r *http.Request) {
 	defer func() {
 		cs.detachApp()
 		appConn.Close()
-		fmt.Printf("%sPC compat detach  key=%s\n", prefixSYS(), keyShort)
+		if cs.debug != nil {
+		cs.debug.close()
+		cs.debug = nil
+	}
+	fmt.Printf("%sPC compat detach  key=%s\n", prefixSYS(), keyShort)
 	}()
 	pcOpts, _ := cs.getTtsState()
 	pcVoiceInjected := pcOpts == nil // skip when TTS is disabled
@@ -679,6 +696,13 @@ func (s *proxyServer) handlePCCompat(w http.ResponseWriter, r *http.Request) {
 				m.Payload.Content = voiceInstruction + "\n\n" + m.Payload.Content
 				if newData, jerr := json.Marshal(m); jerr == nil {
 					data = newData
+				}
+				// Create debug writer on first message.
+				if s.debugDir != "" && cs.debug == nil {
+					cs.debug = newDebugWriter(s.debugDir, "pc", cs.key)
+				}
+				if cs.debug != nil {
+					cs.debug.logAppMessage(m.Payload.Content, true)
 				}
 			}
 		}
@@ -825,6 +849,8 @@ type pcCompatSession struct {
 	// Only accessed from the upstream goroutine — no mutex needed.
 	turnActive bool
 
+	debug *debugWriter // per-conversation debug log (nil = disabled)
+
 	getToken func() string           // reads current token from proxyServer
 	getWSURL func(sid string) string // builds upstream wsURL
 
@@ -942,6 +968,52 @@ func (cs *pcCompatSession) deliverOrBuffer(data []byte, keyShort string) {
 	}
 	cs.pendingMu.Unlock()
 
+	// ── Debug logging ────────────────────────────────────────────
+	if cs.debug != nil {
+		var dbgPeek struct {
+			Type    string `json:"type"`
+			Payload struct {
+				Content string `json:"content"`
+				Kind    string `json:"kind"`
+				Thought bool   `json:"thought"`
+			} `json:"payload"`
+		}
+		if json.Unmarshal(data, &dbgPeek) == nil {
+			extra := map[string]any{}
+			switch dbgPeek.Type {
+			case "message.create":
+				if dbgPeek.Payload.Kind == "tool_calls" || dbgPeek.Payload.Thought {
+					cs.debug.logAgentFrame("tool_call", dbgPeek.Payload.Content, extra)
+				} else if dbgPeek.Payload.Kind == "thought" {
+					cs.debug.logAgentFrame("thinking", dbgPeek.Payload.Content, extra)
+				} else {
+					// Response — capture clean stats.
+					raw := dbgPeek.Payload.Content
+					clean := cleanForTTS(raw)
+					doneExtra := map[string]any{
+						"raw_chars":   len([]rune(raw)),
+						"clean_chars": len([]rune(clean)),
+					}
+					mdHints := []string{}
+					if strings.Contains(raw, "```") { mdHints = append(mdHints, "code fences") }
+					if strings.Contains(raw, "**")   { mdHints = append(mdHints, "bold") }
+					if strings.Contains(raw, "\n- ") || strings.Contains(raw, "\n* ") {
+						mdHints = append(mdHints, "bullet lists")
+					}
+					if len(mdHints) > 0 {
+						doneExtra["saw_markdown"] = true
+						doneExtra["markdown_info"] = mdHints
+					}
+					cs.debug.logAgentFrame("done", "", doneExtra)
+				}
+			case "typing.start":
+				cs.debug.logAgentFrame(dbgPeek.Type, "", nil)
+			case "typing.stop":
+				cs.debug.logAgentFrame(dbgPeek.Type, "", nil)
+			}
+		}
+	}
+
 	// TTS: turn-start / turn-end notifications and final-response synthesis.
 	// All synthesis is done asynchronously so that message.create (and other
 	// frames) are forwarded to the app immediately without stalling the relay
@@ -1025,7 +1097,11 @@ func (cs *pcCompatSession) deliverOrBuffer(data []byte, keyShort string) {
 							return
 						}
 						// 2b. Single-shot: one API call, one tts.audio frame.
+						synthStart := time.Now()
 						audioFrame := buildTtsAudioFrame(ttsText, p, v, f, cfg)
+						if cs.debug != nil {
+							cs.debug.logTTS("synthesis", ttsText, len(audioFrame), time.Since(synthStart), p, opts.streaming, nil)
+						}
 						cs.appMu.RLock()
 						app := cs.app
 						cs.appMu.RUnlock()
@@ -1165,6 +1241,8 @@ type zcCompatSession struct {
 	// Only accessed from the upstream goroutine — no mutex needed.
 	turnActive bool
 
+	debug *debugWriter // per-conversation debug log (nil = disabled)
+
 	getToken func() string           // reads current ZC token from proxyServer
 	getWSURL func(sid string) string // builds upstream zeroclaw wsURL
 
@@ -1282,6 +1360,52 @@ func (cs *zcCompatSession) deliverOrBuffer(data []byte, keyShort string) {
 	}
 	cs.pendingMu.Unlock()
 
+	// ── Debug logging ────────────────────────────────────────────
+	if cs.debug != nil {
+		var dbgPeek struct {
+			Type    string `json:"type"`
+			Payload struct {
+				Content string `json:"content"`
+				Kind    string `json:"kind"`
+				Thought bool   `json:"thought"`
+			} `json:"payload"`
+		}
+		if json.Unmarshal(data, &dbgPeek) == nil {
+			extra := map[string]any{}
+			switch dbgPeek.Type {
+			case "message.create":
+				if dbgPeek.Payload.Kind == "tool_calls" || dbgPeek.Payload.Thought {
+					cs.debug.logAgentFrame("tool_call", dbgPeek.Payload.Content, extra)
+				} else if dbgPeek.Payload.Kind == "thought" {
+					cs.debug.logAgentFrame("thinking", dbgPeek.Payload.Content, extra)
+				} else {
+					// Response — capture clean stats.
+					raw := dbgPeek.Payload.Content
+					clean := cleanForTTS(raw)
+					doneExtra := map[string]any{
+						"raw_chars":   len([]rune(raw)),
+						"clean_chars": len([]rune(clean)),
+					}
+					mdHints := []string{}
+					if strings.Contains(raw, "```") { mdHints = append(mdHints, "code fences") }
+					if strings.Contains(raw, "**")   { mdHints = append(mdHints, "bold") }
+					if strings.Contains(raw, "\n- ") || strings.Contains(raw, "\n* ") {
+						mdHints = append(mdHints, "bullet lists")
+					}
+					if len(mdHints) > 0 {
+						doneExtra["saw_markdown"] = true
+						doneExtra["markdown_info"] = mdHints
+					}
+					cs.debug.logAgentFrame("done", "", doneExtra)
+				}
+			case "typing.start":
+				cs.debug.logAgentFrame(dbgPeek.Type, "", nil)
+			case "typing.stop":
+				cs.debug.logAgentFrame(dbgPeek.Type, "", nil)
+			}
+		}
+	}
+
 	// TTS: turn-start / turn-end notifications and final-response synthesis.
 	// All synthesis is done asynchronously so that frames are forwarded to
 	// the app immediately without stalling the relay loop.
@@ -1362,8 +1486,12 @@ func (cs *zcCompatSession) deliverOrBuffer(data []byte, keyShort string) {
 							return
 						}
 						// 2b. Single-shot: one API call, one tts.audio frame.
+						// 2b. Single-shot: one API call, one tts.audio frame.
+						pcSynthStart := time.Now()
 						audioFrame := buildTtsAudioFrame(ttsText, p, v, f, cfg)
-						cs.appMu.RLock()
+						if cs.debug != nil {
+							cs.debug.logTTS("synthesis", ttsText, len(audioFrame), time.Since(pcSynthStart), p, opts.streaming, nil)
+						}
 						app := cs.app
 						cs.appMu.RUnlock()
 						if app == nil {
