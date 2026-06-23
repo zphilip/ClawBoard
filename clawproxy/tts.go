@@ -183,7 +183,7 @@ func initTtsConfig(provider, voice, format, apiKey, model, piperURL, edgeBin,
 			fmt.Fprintf(os.Stderr, "[clawproxy] warning: could not read clawproxy config %s: %v\n", clawproxyConfigPath, err)
 		} else if fc != nil {
 			applyFileTtsConfig(cfg, fc)
-			fmt.Printf("%sLoaded TTS config from clawproxy config %s\n", prefixSYS(), clawproxyConfigPath)
+			fmt.Printf("%sLoaded TTS config from clawproxy config %s  streaming=%v\n", prefixSYS(), clawproxyConfigPath, cfg.Streaming)
 		}
 	}
 
@@ -197,7 +197,7 @@ func initTtsConfig(provider, voice, format, apiKey, model, piperURL, edgeBin,
 		} else if fc != nil {
 			applyFileTtsConfig(cfg, fc)
 			if configPath != "" {
-				fmt.Printf("%sLoaded TTS config from %s\n", prefixSYS(), configPath)
+				fmt.Printf("%sLoaded TTS config from %s  streaming=%v\n", prefixSYS(), configPath, cfg.Streaming)
 			}
 		}
 	}
