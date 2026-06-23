@@ -46,6 +46,14 @@ import (
 "github.com/gorilla/websocket"
 )
 
+// voiceInstruction is prepended to the first user message when TTS is enabled
+// on a connection.  It instructs the model to produce output suitable for spoken
+// delivery — no markdown, natural conversational language, short sentences.
+const voiceInstruction = "[This conversation uses voice output. Format your response " +
+	"for spoken delivery: no markdown, no tables, no code blocks. Use natural " +
+	"conversational language with reasonably short sentences. Spell out URLs, " +
+	"abbreviations, and technical notation that would be confusing when read aloud.]"
+
 // ── Proxy server ──────────────────────────────────────────────────────────────
 
 type proxyServer struct {
@@ -448,10 +456,26 @@ func (s *proxyServer) handleZCCompat(w http.ResponseWriter, r *http.Request) {
 		appConn.Close()
 		fmt.Printf("%sZC compat detach  key=%s\n", prefixSYS(), keyShort)
 	}()
+	opts, _ := cs.getTtsState()
+	voiceInjected := opts == nil // skip injection when TTS is disabled
 	for {
 		msgType, data, err := appConn.ReadMessage()
 		if err != nil {
 			return
+		}
+		// Inject voice formatting instruction on first message.send when TTS is on.
+		if !voiceInjected {
+			var m struct {
+				Type    string `json:"type"`
+				Content string `json:"content"`
+			}
+			if json.Unmarshal(data, &m) == nil && m.Type == "message.send" {
+				voiceInjected = true
+				m.Content = voiceInstruction + "\n\n" + m.Content
+				if newData, jerr := json.Marshal(m); jerr == nil {
+					data = newData
+				}
+			}
 		}
 		preview := string(data)
 		if len(preview) > 120 {
@@ -635,16 +659,34 @@ func (s *proxyServer) handlePCCompat(w http.ResponseWriter, r *http.Request) {
 		appConn.Close()
 		fmt.Printf("%sPC compat detach  key=%s\n", prefixSYS(), keyShort)
 	}()
+	pcOpts, _ := cs.getTtsState()
+	pcVoiceInjected := pcOpts == nil // skip when TTS is disabled
 	for {
 		msgType, data, err := appConn.ReadMessage()
 		if err != nil {
 			return
 		}
+		// Inject voice formatting instruction on first message.send when TTS is on.
+		if !pcVoiceInjected {
+			var m struct {
+				Type    string `json:"type"`
+				Payload struct {
+					Content string `json:"content"`
+				} `json:"payload"`
+			}
+			if json.Unmarshal(data, &m) == nil && m.Type == "message.send" {
+				pcVoiceInjected = true
+				m.Payload.Content = voiceInstruction + "\n\n" + m.Payload.Content
+				if newData, jerr := json.Marshal(m); jerr == nil {
+					data = newData
+				}
+			}
+		}
 		preview := string(data)
 		if len(preview) > 120 {
-			preview = preview[:120] + "\u2026"
+			preview = preview[:120] + "…"
 		}
-		fmt.Printf("%sPC relay[%s] app\u2192gw (%d B): %s\n", prefixSYS(), keyShort, len(data), preview)
+		fmt.Printf("%sPC relay[%s] app→gw (%d B): %s\n", prefixSYS(), keyShort, len(data), preview)
 		if werr := cs.sendToUpstream(msgType, data); werr != nil {
 			fmt.Printf("%sPC relay[%s] app\u2192gw write-err: %v\n", prefixERR(), keyShort, werr)
 			continue
