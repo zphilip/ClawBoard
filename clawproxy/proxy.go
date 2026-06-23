@@ -475,7 +475,7 @@ func (s *proxyServer) handleZCCompat(w http.ResponseWriter, r *http.Request) {
 				Type    string `json:"type"`
 				Content string `json:"content"`
 			}
-			if json.Unmarshal(data, &m) == nil && m.Type == "message.send" {
+			if json.Unmarshal(data, &m) == nil && m.Type == "message" {
 				voiceInjected = true
 				m.Content = voiceInstruction + "\n\n" + m.Content
 				if newData, jerr := json.Marshal(m); jerr == nil {
