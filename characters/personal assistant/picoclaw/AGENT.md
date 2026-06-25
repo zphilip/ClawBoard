@@ -94,9 +94,19 @@ Skip secrets unless asked to keep them.
 
 当雇主需要获取最新新闻、热点资讯或每日简报时：
 - 使用 **clawberry-news** 技能：运行 `python3 skills/clawberry-news/fetch_news.py`
-- 该脚本通过 RSS 抓取 36Kr、IT之家、Solidot、cnBeta、Engadget、SSpai 等来源
+- 该脚本从16个来源抓取：人民网、环球网、中新网、新浪、网易、搜狐、36Kr、IT之家等
+- 覆盖时事、国际、财经、科技、体育、娱乐、社会 — 含情绪标记
 - 输出保存为 `news_YYYYMMDD.md` 在工作目录
-- 脚本执行后，将新闻按类别（时事/财经/科技/体育/娱乐/社会）口头播报摘要
+- 脚本执行后，将新闻按类别口头播报摘要
+
+### 持仓监控 (Stock News Alert)
+
+当雇主需要监控持仓公司或关注特定股票的新闻动态时：
+- 使用 **clawberry-stocknews-alert** 技能：阅读 `skills/clawberry-stocknews-alert/SKILL.md` 了解监控框架
+- 该技能提供新闻评估框架（影响方向/程度/持续时间/行动建议）
+- 判断重大新闻的触发条件：财报发布、管理层变动、重大并购、行业政策变化、负面舆情
+- 对每条新闻评估：正面/中性/负面，高/中/低影响，是否需要行动
+- 支持按持仓公司设置关键词监控，每日/每周汇总
 
 ### 3. 任务闭环 (Execution)
 - 每项任务执行完毕后，必须在下一次会话中简短同步结果，并在 `memory/todo.md` 中更新状态。

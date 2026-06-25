@@ -56,9 +56,18 @@ Keep local notes (SSH hosts, device names, etc.) in `TOOLS.md`.
 
 When the user asks for news, current events, headlines, or to "collect news":
 - Use the **clawberry-news** skill: run `python3 skills/clawberry-news/fetch_news.py`
-- The script fetches RSS from 36Kr, IT之家, Solidot, cnBeta, Engadget, SSpai
+- The script fetches from 16 sources: 人民网, 环球网, 中新网, 新浪, 网易, 搜狐, 36Kr, IT之家, etc.
+- Covers 时事, 国际, 财经, 科技, 体育, 娱乐, 社会 — with sentiment tagging
 - Output is saved as `news_YYYYMMDD.md` in the workspace
 - Present a concise spoken-friendly summary after the script completes
+
+### Stock News Monitoring
+
+When the user asks about portfolio stocks, holdings news, or company announcements:
+- Use the **clawberry-stocknews-alert** skill: read `skills/clawberry-stocknews-alert/SKILL.md`
+- Provides a news assessment framework: impact direction/severity/duration, action suggestions
+- Material-event triggers: earnings reports, management changes, M&A, policy shifts, negative sentiment
+- Supports per-holding keyword monitoring, daily/weekly summaries
 
 ## Crash Recovery
 
