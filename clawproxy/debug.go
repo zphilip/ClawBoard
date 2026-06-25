@@ -243,7 +243,8 @@ func (dw *debugWriter) logWarning(msg string) {
 }
 
 // logThinkChunk handles think content embedded in ZeroClaw chunk frames.
-// Accumulates across frames and writes one block when </think> closes.
+// Accumulates content between <think> and </think> tags across frames,
+// and writes one block when </think> closes.
 func (dw *debugWriter) logThinkChunk(content string) {
 	if dw == nil {
 		return
@@ -251,19 +252,32 @@ func (dw *debugWriter) logThinkChunk(content string) {
 	dw.mu.Lock()
 	defer dw.mu.Unlock()
 
-	cleaned, stillInThink := stripThink(content, dw.inThink)
-	if cleaned != "" {
-		dw.thinkBuf.WriteString(cleaned)
-	}
-	dw.inThink = stillInThink
-
-	if !dw.inThink && dw.thinkBuf.Len() > 0 {
-		text := dw.thinkBuf.String()
-		chars := len([]rune(text))
-		dw.write("  ── Thinking (%d chars) ──\n", chars)
-		dw.write("    %s\n\n", strings.ReplaceAll(text, "\n", "\n    "))
-		dw.syncLocked()
-		dw.thinkBuf.Reset()
+	s := content
+	for {
+		if dw.inThink {
+			end := strings.Index(s, "</think>")
+			if end == -1 {
+				dw.thinkBuf.WriteString(s)
+				return
+			}
+			dw.thinkBuf.WriteString(s[:end])
+			s = s[end+len("</think>"):]
+			dw.inThink = false
+			// Flush accumulated think content.
+			text := dw.thinkBuf.String()
+			chars := len([]rune(text))
+			dw.write("  ── Thinking (%d chars) ──\n", chars)
+			dw.write("    %s\n\n", strings.ReplaceAll(text, "\n", "\n    "))
+			dw.syncLocked()
+			dw.thinkBuf.Reset()
+		} else {
+			start := strings.Index(s, "<think>")
+			if start == -1 {
+				return // no think block in this chunk
+			}
+			s = s[start+len("<think>"):]
+			dw.inThink = true
+		}
 	}
 }
 
