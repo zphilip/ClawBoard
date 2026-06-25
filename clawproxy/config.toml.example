@@ -21,4 +21,5 @@ speed  = 0.8         # 0.5–2.0; try 0.75–0.85 if too fast
 
 [tts.qwen3tts]
 base_url = "http://apicn.aiworm.cn:8012"
-speed    = 0.9
+speed = 0.9
+voice = "vivian"
