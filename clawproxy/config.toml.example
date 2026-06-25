@@ -5,6 +5,9 @@ default_voice    = "Chloe"
 # When true, audio chunks are collected progressively via Server-Sent Events
 # instead of waiting for the full response. Reduces time-to-first-audio.
 streaming        = true
+# Fallback provider — used if the default provider is unreachable or fails.
+# Leave empty to disable fallback.  Recommended: "qwen3tts" if you run a Qwen3-TTS server.
+fallback_provider = "qwen3tts"
 
 [tts.mimotts]
 api_key  = ""   

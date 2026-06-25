@@ -881,7 +881,8 @@ func main() {
 	ttsMiMoURL   := flag.String("tts-mimo-url", "", "MiMo TTS base URL (default: https://api.xiaomimimo.com/v1)")
 	ttsMiMoModel := flag.String("tts-mimo-model", "", "MiMo TTS model: mimo-v2.5-tts | mimo-v2.5-tts-voicedesign | mimo-v2.5-tts-voiceclone (default: mimo-v2.5-tts)")
 	ttsStreaming := flag.Bool("tts-streaming", false, "enable SSE-based streaming TTS for providers that support it (currently MiMo-V2.5-TTS)")
-	debugDir := flag.String("debug-dir", "", "per-conversation debug log directory (e.g. /opt/clawproxy/debug; empty = disabled)")
+	ttsFallback  := flag.String("tts-fallback", "", "fallback TTS provider if primary fails (e.g. qwen3tts; empty = no fallback)")
+	debugDir     := flag.String("debug-dir", "", "per-conversation debug log directory (e.g. /opt/clawproxy/debug; empty = disabled)")
 	// Config file flags — path discovery for each supported config ecosystem.
 	// Pass '-' to disable a source entirely.
 	clawproxyConfigPath := flag.String("clawproxy-config", "", "clawproxy config.toml path (default: /opt/clawproxy/config.toml; '-' = disable)")
@@ -901,7 +902,7 @@ func main() {
 			*ttsQ3Key, *ttsQ3URL, *ttsQ3Model, *ttsQ3Speed,
 			time.Duration(*ttsQ3TimeoutSecs)*time.Second,
 			*ttsMiMoKey, *ttsMiMoURL, *ttsMiMoModel,
-			*ttsStreaming,
+			*ttsStreaming, *ttsFallback,
 			*clawproxyConfigPath, *configPath, *picoConfigPath, *openConfigPath)
 	}
 

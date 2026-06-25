@@ -104,6 +104,9 @@ type TtsConfig struct {
 	// When true, MiMo-V2.5-TTS uses stream=true and collects PCM16 chunks
 	// progressively via SSE instead of waiting for the full WAV response.
 	Streaming bool
+	// FallbackProvider is the TTS provider to try if the primary provider fails.
+	// Empty (default) means no fallback — synthesis errors are returned as-is.
+	FallbackProvider string
 }
 
 // initTtsConfig builds a TtsConfig from CLI flags, env vars, and optionally a
@@ -125,6 +128,7 @@ func initTtsConfig(provider, voice, format, apiKey, model, piperURL, edgeBin,
 	q3Key, q3BaseURL, q3Model string, q3Speed float64, q3Timeout time.Duration,
 	mimoKey, mimoBaseURL, mimoModel string,
 	streaming bool,
+		fallback string,
 	clawproxyConfigPath, configPath, picoConfigPath, openConfigPath string) *TtsConfig {
 	cfg := &TtsConfig{
 		Provider:       provider,
@@ -149,6 +153,7 @@ func initTtsConfig(provider, voice, format, apiKey, model, piperURL, edgeBin,
 		MiMoBaseURL:    mimoBaseURL,
 		MiMoModel:      mimoModel,
 		Streaming:      streaming,
+		FallbackProvider: fallback,
 	}
 
 	// Env var fallbacks (same names as zeroclaw uses).
@@ -309,6 +314,9 @@ func applyFileTtsConfig(cfg *TtsConfig, fc *fileTtsSection) {
 	}
 	if fc.Streaming {
 		cfg.Streaming = true
+	}
+	if cfg.FallbackProvider == "" && fc.FallbackProvider != "" {
+		cfg.FallbackProvider = canonicalProvider(fc.FallbackProvider)
 	}
 	if fc.OpenAI != nil {
 		if cfg.OpenAIKey == "" {
@@ -727,6 +735,31 @@ func audioMIME(format string) string {
 // synthesize converts text to audio using the named provider.
 // Returns: raw audio bytes, actual format string, error.
 func synthesize(ctx context.Context, text, provider, voice, format string, cfg *TtsConfig) ([]byte, string, error) {
+	audio, outFmt, err := synthesizeOne(ctx, text, provider, voice, format, cfg)
+	if err != nil && cfg.FallbackProvider != "" && canonicalProvider(cfg.FallbackProvider) != canonicalProvider(provider) {
+		fallback := canonicalProvider(cfg.FallbackProvider)
+		fmt.Printf("%s[tts] primary provider %s failed (%v) — trying fallback %s\n",
+			prefixSYS(), provider, err, fallback)
+		// Use fallback voice: try requested voice first, then config default, then provider default.
+		fbVoice := voice
+		if fbVoice == "" || fbVoice == defaultVoiceFor(provider) {
+			fbVoice = cfg.Voice
+		}
+		if fbVoice == "" {
+			fbVoice = defaultVoiceFor(fallback)
+		}
+		audio2, outFmt2, err2 := synthesizeOne(ctx, text, fallback, fbVoice, format, cfg)
+		if err2 != nil {
+			fmt.Printf("%s[tts] fallback %s also failed: %v\n", prefixERR(), fallback, err2)
+			return nil, "", fmt.Errorf("primary (%s) and fallback (%s) both failed: %w / %v", provider, fallback, err, err2)
+		}
+		fmt.Printf("%s[tts] fallback %s succeeded (%d bytes, %s)\n", prefixSYS(), fallback, len(audio2), outFmt2)
+		return audio2, outFmt2, nil
+	}
+	return audio, outFmt, err
+}
+
+func synthesizeOne(ctx context.Context, text, provider, voice, format string, cfg *TtsConfig) ([]byte, string, error) {
 	switch canonicalProvider(provider) {
 	case "openai":
 		return synthOpenAI(text, voice, format, cfg)
