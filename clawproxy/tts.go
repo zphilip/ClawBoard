@@ -378,6 +378,9 @@ func applyFileTtsConfig(cfg *TtsConfig, fc *fileTtsSection) {
 		if cfg.Qwen3Timeout == 0 && fc.Qwen3.TimeoutSecs > 0 {
 			cfg.Qwen3Timeout = time.Duration(fc.Qwen3.TimeoutSecs) * time.Second
 		}
+		if cfg.Qwen3Voice == "" && fc.Qwen3.Voice != "" {
+			cfg.Qwen3Voice = fc.Qwen3.Voice
+		}
 	}
 	if fc.MiMo != nil {
 		if cfg.MiMoKey == "" {
@@ -476,7 +479,7 @@ func defaultVoiceFor(provider string) string {
 	case "f5tts":
 		return "demo_speaker0" // F5-TTS default demo voice
 	case "qwen3tts":
-		return "Vivian" // Qwen3-TTS default voice
+		return "vivian" // Qwen3-TTS default voice
 	case "mimotts":
 		return "mimo_default" // MiMo default preset voice (冰糖 on CN cluster)
 	default:
