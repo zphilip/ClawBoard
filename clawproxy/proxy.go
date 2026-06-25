@@ -1423,10 +1423,10 @@ func (cs *zcCompatSession) deliverOrBuffer(data []byte, keyShort string) {
 				cs.debug.logAgentFrame(dbgPeek.Type, dbgPeek.Content, nil)
 			case "chunk":
 				// ZeroClaw embeds thinking inside <think> tags within chunk frames.
-				if strings.Contains(dbgPeek.Content, "<think>") || strings.Contains(dbgPeek.Content, "</think>") {
-					cs.debug.logAgentFrame("thinking", dbgPeek.Content, nil)
-				}
+				// Accumulate across frames and flush as one block when </think> closes.
+				cs.debug.logThinkChunk(dbgPeek.Content)
 			case "chunk_reset":
+				cs.debug.logThinkChunk(dbgPeek.Content)
 				cs.debug.logAgentFrame(dbgPeek.Type, dbgPeek.Content, nil)
 			case "done":
 				ttsText, _ := extractZCFinalText(data)

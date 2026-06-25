@@ -29,6 +29,8 @@ type debugWriter struct {
 	chunkChars    int // accumulated from chunk frames
 	chunkCharsPre int // before last chunk_reset
 	voiceInjected bool
+	thinkBuf      strings.Builder // accumulated think content across chunk frames
+	inThink       bool            // true when inside a <think> block
 }
 
 // newDebugWriter creates a debug log file for one compat session.
@@ -175,6 +177,14 @@ func (dw *debugWriter) logAgentFrame(frameType, content string, extra map[string
 		dw.syncLocked()
 
 	case "done":
+		// Flush any remaining think content.
+		if dw.thinkBuf.Len() > 0 {
+			text := dw.thinkBuf.String()
+			dw.write("  ── Thinking (remainder) ──\n    %s\n    (%d chars)\n\n",
+				strings.ReplaceAll(text, "\n", "\n    "), len([]rune(text)))
+			dw.thinkBuf.Reset()
+			dw.inThink = false
+		}
 		// Response stats.
 		dw.write("  ── Response ──\n")
 		if dw.chunkCharsPre > 0 || dw.chunkChars > 0 {
@@ -251,6 +261,38 @@ func (dw *debugWriter) logWarning(msg string) {
 	dw.syncLocked()
 }
 
+// logThinkChunk handles think content embedded in ZeroClaw chunk frames.
+// It accumulates think text across frames and writes it as one block when
+// the </think> tag closes.
+func (dw *debugWriter) logThinkChunk(content string) {
+	if dw == nil {
+		return
+	}
+	dw.mu.Lock()
+	defer dw.mu.Unlock()
+
+	cleaned, stillInThink := stripThink(content, dw.inThink)
+	if cleaned != "" {
+		dw.thinkBuf.WriteString(cleaned)
+	}
+	dw.inThink = stillInThink
+
+	// Flush when think block closes or buffer gets large.
+	if !dw.inThink && dw.thinkBuf.Len() > 0 {
+		text := dw.thinkBuf.String()
+		chars := len([]rune(text))
+		prev := text
+		if len(prev) > 500 {
+			prev = prev[:500] + "…"
+		}
+		dw.write("  ── Thinking ──\n")
+		dw.write("    %s\n", strings.ReplaceAll(prev, "\n", "\n    "))
+		dw.write("    (%d chars)\n\n", chars)
+		dw.syncLocked()
+		dw.thinkBuf.Reset()
+	}
+}
+
 // ── Internal helpers ────────────────────────────────────────────────────────
 
 func (dw *debugWriter) startTurnLocked() {
@@ -259,6 +301,8 @@ func (dw *debugWriter) startTurnLocked() {
 	dw.frameCounts = make(map[string]int)
 	dw.chunkChars = 0
 	dw.chunkCharsPre = 0
+	dw.thinkBuf.Reset()
+	dw.inThink = false
 	dw.write("=== Turn %d | %s | voice: %v ===\n\n",
 		dw.turnNum, dw.turnStart.Format("15:04:05"), dw.voiceInjected)
 }
