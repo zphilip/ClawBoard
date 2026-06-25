@@ -94,7 +94,8 @@ type TtsConfig struct {
 	Qwen3BaseURL string        // default: http://apicn.aiworm.cn:8011
 	Qwen3Model   string        // model name: qwen3-tts, tts-1, tts-1-zh, … (default: qwen3-tts)
 	Qwen3Speed   float64       // speech speed: 0.5–2.0; 0 means use default (1.0)
-	Qwen3Timeout time.Duration // HTTP timeout for one synthesis call; 0 = use default (10 min)
+	Qwen3Voice   string        // voice name (default: Vivian)
+		Qwen3Timeout time.Duration // HTTP timeout for one synthesis call; 0 = use default (10 min)
 	// MiMo-V2.5-TTS (Xiaomi; chat-completions-based TTS API)
 	// https://platform.xiaomimimo.com/docs/zh-CN/usage-guide/speech-synthesis-v2.5
 	MiMoKey     string // MIMO_API_KEY env or --tts-mimo-key
@@ -149,6 +150,7 @@ func initTtsConfig(provider, voice, format, apiKey, model, piperURL, edgeBin,
 		Qwen3Model:     q3Model,
 		Qwen3Speed:     q3Speed,
 		Qwen3Timeout:   q3Timeout,
+			Qwen3Voice:     "",
 		MiMoKey:        mimoKey,
 		MiMoBaseURL:    mimoBaseURL,
 		MiMoModel:      mimoModel,
@@ -742,6 +744,9 @@ func synthesize(ctx context.Context, text, provider, voice, format string, cfg *
 			prefixSYS(), provider, err, fallback)
 		// Primary voice is provider-specific; use fallback provider's default.
 		fbVoice := defaultVoiceFor(fallback)
+		if fallback == "qwen3tts" && cfg.Qwen3Voice != "" {
+			fbVoice = cfg.Qwen3Voice
+		}
 		audio2, outFmt2, err2 := synthesizeOne(ctx, text, fallback, fbVoice, format, cfg)
 		if err2 != nil {
 			fmt.Printf("%s[tts] fallback %s also failed: %v\n", prefixERR(), fallback, err2)
