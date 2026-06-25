@@ -971,45 +971,76 @@ func (cs *pcCompatSession) deliverOrBuffer(data []byte, keyShort string) {
 	// ── Debug logging ────────────────────────────────────────────
 	if cs.debug != nil {
 		var dbgPeek struct {
-			Type    string `json:"type"`
-			Payload struct {
-				Content string `json:"content"`
-				Kind    string `json:"kind"`
-				Thought bool   `json:"thought"`
-			} `json:"payload"`
+			Type         string `json:"type"`
+			Content      string `json:"content"`
+			FullResponse string `json:"full_response"`
+			Name         string `json:"name"`
+			Args         string `json:"args"`  // JSON string in ZC protocol
+			Output       string `json:"output"`
 		}
 		if json.Unmarshal(data, &dbgPeek) == nil {
 			extra := map[string]any{}
 			switch dbgPeek.Type {
-			case "message.create":
-				if dbgPeek.Payload.Kind == "tool_calls" || dbgPeek.Payload.Thought {
-					cs.debug.logAgentFrame("tool_call", dbgPeek.Payload.Content, extra)
-				} else if dbgPeek.Payload.Kind == "thought" {
-					cs.debug.logAgentFrame("thinking", dbgPeek.Payload.Content, extra)
-				} else {
-					// Response — capture clean stats.
-					raw := dbgPeek.Payload.Content
-					clean := cleanForTTS(raw)
-					doneExtra := map[string]any{
-						"raw_chars":   len([]rune(raw)),
-						"clean_chars": len([]rune(clean)),
-					}
-					mdHints := []string{}
-					if strings.Contains(raw, "```") { mdHints = append(mdHints, "code fences") }
-					if strings.Contains(raw, "**")   { mdHints = append(mdHints, "bold") }
-					if strings.Contains(raw, "\n- ") || strings.Contains(raw, "\n* ") {
-						mdHints = append(mdHints, "bullet lists")
-					}
-					if len(mdHints) > 0 {
-						doneExtra["saw_markdown"] = true
-						doneExtra["markdown_info"] = mdHints
-					}
-					cs.debug.logAgentFrame("done", "", doneExtra)
+			case "tool_call":
+				extra["name"] = dbgPeek.Name
+				extra["args"] = dbgPeek.Args
+				cs.debug.logAgentFrame(dbgPeek.Type, "", extra)
+				if dbgPeek.Name == "http_request" {
+					cs.debug.logWarning("http_request tool used — add to auto_approve to skip approval prompts")
 				}
-			case "typing.start":
-				cs.debug.logAgentFrame(dbgPeek.Type, "", nil)
-			case "typing.stop":
-				cs.debug.logAgentFrame(dbgPeek.Type, "", nil)
+			case "tool_result":
+				extra["name"] = dbgPeek.Name
+				cs.debug.logAgentFrame(dbgPeek.Type, dbgPeek.Output, extra)
+			case "thinking":
+				cs.debug.logAgentFrame(dbgPeek.Type, dbgPeek.Content, nil)
+			case "chunk", "chunk_reset":
+				cs.debug.logAgentFrame(dbgPeek.Type, dbgPeek.Content, nil)
+			case "done":
+				ttsText, _ := extractZCFinalText(data)
+				fullText := dbgPeek.FullResponse
+				if fullText == "" {
+					fullText = dbgPeek.Content
+				}
+				clean, _ := stripThink(fullText, false)
+				cleanAfter := cleanForTTS(clean)
+				doneExtra := map[string]any{
+					"raw_chars":   len([]rune(fullText)),
+					"clean_chars": len([]rune(cleanAfter)),
+				}
+				thinkChars := len([]rune(fullText)) - len([]rune(clean))
+				if thinkChars > 0 {
+					doneExtra["think_chars_stripped"] = thinkChars
+					cs.debug.logWarning(fmt.Sprintf("<think> block in full_response (%d chars of reasoning stripped)", thinkChars))
+				}
+				mdHints := []string{}
+				if strings.Contains(fullText, "http://") || strings.Contains(fullText, "https://") {
+					mdHints = append(mdHints, "bare URLs")
+				}
+				if strings.Contains(fullText, "```") {
+					mdHints = append(mdHints, "code fences")
+				}
+				if strings.Contains(fullText, "|") && strings.Contains(fullText, "---") {
+					mdHints = append(mdHints, "tables")
+				}
+				if strings.Contains(fullText, "**") {
+					mdHints = append(mdHints, "bold")
+				}
+				if strings.Contains(fullText, "\n- ") || strings.Contains(fullText, "\n* ") {
+					mdHints = append(mdHints, "bullet lists")
+				}
+				if len(mdHints) > 0 {
+					doneExtra["saw_markdown"] = true
+					doneExtra["markdown_info"] = mdHints
+					cs.debug.logWarning(fmt.Sprintf("markdown in response: %s — voice instruction may need adjustment", strings.Join(mdHints, ", ")))
+				}
+				if len([]rune(ttsText)) > 2000 {
+					cs.debug.logWarning(fmt.Sprintf("large TTS text (%d chars) — consider ?tts_streaming=1", len([]rune(ttsText))))
+				}
+				cs.debug.logAgentFrame(dbgPeek.Type, "", doneExtra)
+			default:
+				if dbgPeek.Type != "" {
+					cs.debug.logAgentFrame(dbgPeek.Type, dbgPeek.Content, nil)
+				}
 			}
 		}
 	}
@@ -1363,45 +1394,76 @@ func (cs *zcCompatSession) deliverOrBuffer(data []byte, keyShort string) {
 	// ── Debug logging ────────────────────────────────────────────
 	if cs.debug != nil {
 		var dbgPeek struct {
-			Type    string `json:"type"`
-			Payload struct {
-				Content string `json:"content"`
-				Kind    string `json:"kind"`
-				Thought bool   `json:"thought"`
-			} `json:"payload"`
+			Type         string `json:"type"`
+			Content      string `json:"content"`
+			FullResponse string `json:"full_response"`
+			Name         string `json:"name"`
+			Args         string `json:"args"`  // JSON string in ZC protocol
+			Output       string `json:"output"`
 		}
 		if json.Unmarshal(data, &dbgPeek) == nil {
 			extra := map[string]any{}
 			switch dbgPeek.Type {
-			case "message.create":
-				if dbgPeek.Payload.Kind == "tool_calls" || dbgPeek.Payload.Thought {
-					cs.debug.logAgentFrame("tool_call", dbgPeek.Payload.Content, extra)
-				} else if dbgPeek.Payload.Kind == "thought" {
-					cs.debug.logAgentFrame("thinking", dbgPeek.Payload.Content, extra)
-				} else {
-					// Response — capture clean stats.
-					raw := dbgPeek.Payload.Content
-					clean := cleanForTTS(raw)
-					doneExtra := map[string]any{
-						"raw_chars":   len([]rune(raw)),
-						"clean_chars": len([]rune(clean)),
-					}
-					mdHints := []string{}
-					if strings.Contains(raw, "```") { mdHints = append(mdHints, "code fences") }
-					if strings.Contains(raw, "**")   { mdHints = append(mdHints, "bold") }
-					if strings.Contains(raw, "\n- ") || strings.Contains(raw, "\n* ") {
-						mdHints = append(mdHints, "bullet lists")
-					}
-					if len(mdHints) > 0 {
-						doneExtra["saw_markdown"] = true
-						doneExtra["markdown_info"] = mdHints
-					}
-					cs.debug.logAgentFrame("done", "", doneExtra)
+			case "tool_call":
+				extra["name"] = dbgPeek.Name
+				extra["args"] = dbgPeek.Args
+				cs.debug.logAgentFrame(dbgPeek.Type, "", extra)
+				if dbgPeek.Name == "http_request" {
+					cs.debug.logWarning("http_request tool used — add to auto_approve to skip approval prompts")
 				}
-			case "typing.start":
-				cs.debug.logAgentFrame(dbgPeek.Type, "", nil)
-			case "typing.stop":
-				cs.debug.logAgentFrame(dbgPeek.Type, "", nil)
+			case "tool_result":
+				extra["name"] = dbgPeek.Name
+				cs.debug.logAgentFrame(dbgPeek.Type, dbgPeek.Output, extra)
+			case "thinking":
+				cs.debug.logAgentFrame(dbgPeek.Type, dbgPeek.Content, nil)
+			case "chunk", "chunk_reset":
+				cs.debug.logAgentFrame(dbgPeek.Type, dbgPeek.Content, nil)
+			case "done":
+				ttsText, _ := extractZCFinalText(data)
+				fullText := dbgPeek.FullResponse
+				if fullText == "" {
+					fullText = dbgPeek.Content
+				}
+				clean, _ := stripThink(fullText, false)
+				cleanAfter := cleanForTTS(clean)
+				doneExtra := map[string]any{
+					"raw_chars":   len([]rune(fullText)),
+					"clean_chars": len([]rune(cleanAfter)),
+				}
+				thinkChars := len([]rune(fullText)) - len([]rune(clean))
+				if thinkChars > 0 {
+					doneExtra["think_chars_stripped"] = thinkChars
+					cs.debug.logWarning(fmt.Sprintf("<think> block in full_response (%d chars of reasoning stripped)", thinkChars))
+				}
+				mdHints := []string{}
+				if strings.Contains(fullText, "http://") || strings.Contains(fullText, "https://") {
+					mdHints = append(mdHints, "bare URLs")
+				}
+				if strings.Contains(fullText, "```") {
+					mdHints = append(mdHints, "code fences")
+				}
+				if strings.Contains(fullText, "|") && strings.Contains(fullText, "---") {
+					mdHints = append(mdHints, "tables")
+				}
+				if strings.Contains(fullText, "**") {
+					mdHints = append(mdHints, "bold")
+				}
+				if strings.Contains(fullText, "\n- ") || strings.Contains(fullText, "\n* ") {
+					mdHints = append(mdHints, "bullet lists")
+				}
+				if len(mdHints) > 0 {
+					doneExtra["saw_markdown"] = true
+					doneExtra["markdown_info"] = mdHints
+					cs.debug.logWarning(fmt.Sprintf("markdown in response: %s — voice instruction may need adjustment", strings.Join(mdHints, ", ")))
+				}
+				if len([]rune(ttsText)) > 2000 {
+					cs.debug.logWarning(fmt.Sprintf("large TTS text (%d chars) — consider ?tts_streaming=1", len([]rune(ttsText))))
+				}
+				cs.debug.logAgentFrame(dbgPeek.Type, "", doneExtra)
+			default:
+				if dbgPeek.Type != "" {
+					cs.debug.logAgentFrame(dbgPeek.Type, dbgPeek.Content, nil)
+				}
 			}
 		}
 	}
