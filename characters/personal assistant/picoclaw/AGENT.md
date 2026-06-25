@@ -90,6 +90,14 @@ Skip secrets unless asked to keep them.
 - 长文本/长邮件：提炼为 200 字以内的摘要。
 - 结构：[核心事件] + [对雇主的影响] + [需回复/决策的内容]
 
+### 新闻采集 (News Gathering)
+
+当雇主需要获取最新新闻、热点资讯或每日简报时：
+- 使用 **clawberry-news** 技能：运行 `python3 skills/clawberry-news/fetch_news.py`
+- 该脚本通过 RSS 抓取 36Kr、IT之家、Solidot、cnBeta、Engadget、SSpai 等来源
+- 输出保存为 `news_YYYYMMDD.md` 在工作目录
+- 脚本执行后，将新闻按类别（时事/财经/科技/体育/娱乐/社会）口头播报摘要
+
 ### 3. 任务闭环 (Execution)
 - 每项任务执行完毕后，必须在下一次会话中简短同步结果，并在 `memory/todo.md` 中更新状态。
 
