@@ -1,11 +1,5 @@
 package main
 
-// debug.go — per-conversation debug logging for clawproxy.
-//
-// When --debug-dir is set, clawproxy writes one log file per compat session.
-// Content is written incrementally — every significant frame hits disk
-// immediately, so tail -f works live.
-
 import (
 	"fmt"
 	"os"
@@ -20,21 +14,19 @@ type debugWriter struct {
 	f    *os.File
 	path string
 
-	agent string // "zc" or "pc"
-	key   string // session key short hash
+	agent string
+	key   string
 
 	turnNum       int
 	turnStart     time.Time
 	frameCounts   map[string]int
-	chunkChars    int // accumulated from chunk frames
-	chunkCharsPre int // before last chunk_reset
+	chunkChars    int
+	chunkCharsPre int
 	voiceInjected bool
-	thinkBuf      strings.Builder // accumulated think content across chunk frames
-	inThink       bool            // true when inside a <think> block
+	thinkBuf      strings.Builder
+	inThink       bool
 }
 
-// newDebugWriter creates a debug log file for one compat session.
-// Returns nil if baseDir is empty (debug disabled).
 func newDebugWriter(baseDir, agent, sessionKey string) *debugWriter {
 	if baseDir == "" {
 		return nil
@@ -86,12 +78,8 @@ func (dw *debugWriter) logAppMessage(content string, voiceInjected bool) {
 	dw.startTurnLocked()
 	dw.voiceInjected = voiceInjected
 
-	prev := content
-	if len(prev) > 1000 {
-		prev = prev[:1000] + "…"
-	}
 	dw.write("  App→Agent:\n")
-	dw.write("    %s\n\n", strings.ReplaceAll(prev, "\n", "\n    "))
+	dw.write("    %s\n\n", strings.ReplaceAll(content, "\n", "\n    "))
 	dw.syncLocked()
 }
 
@@ -110,13 +98,8 @@ func (dw *debugWriter) logAgentFrame(frameType, content string, extra map[string
 	switch frameType {
 	case "thinking":
 		chars := len([]rune(content))
-		prev := content
-		if len(prev) > 500 {
-			prev = prev[:500] + "…"
-		}
-		dw.write("  ── Thinking ──\n")
-		dw.write("    %s\n", strings.ReplaceAll(prev, "\n", "\n    "))
-		dw.write("    (%d chars)\n\n", chars)
+		dw.write("  ── Thinking (%d chars) ──\n", chars)
+		dw.write("    %s\n\n", strings.ReplaceAll(content, "\n", "\n    "))
 		dw.syncLocked()
 
 	case "chunk":
@@ -158,7 +141,7 @@ func (dw *debugWriter) logAgentFrame(frameType, content string, extra map[string
 			}
 		}
 		status := fmt.Sprintf("%d chars", outputLen)
-		isErr := strings.HasPrefix(outputPrev, "Error") || strings.HasPrefix(outputPrev, "HTTP error")
+		isErr := strings.HasPrefix(outputPrev, "Error")
 		if isErr {
 			status = outputPrev
 			if len(status) > 200 {
@@ -180,8 +163,8 @@ func (dw *debugWriter) logAgentFrame(frameType, content string, extra map[string
 		// Flush any remaining think content.
 		if dw.thinkBuf.Len() > 0 {
 			text := dw.thinkBuf.String()
-			dw.write("  ── Thinking (remainder) ──\n    %s\n    (%d chars)\n\n",
-				strings.ReplaceAll(text, "\n", "\n    "), len([]rune(text)))
+			dw.write("  ── Thinking (%d chars, remainder) ──\n", len([]rune(text)))
+			dw.write("    %s\n\n", strings.ReplaceAll(text, "\n", "\n    "))
 			dw.thinkBuf.Reset()
 			dw.inThink = false
 		}
@@ -207,7 +190,6 @@ func (dw *debugWriter) logAgentFrame(frameType, content string, extra map[string
 				}
 			}
 		}
-
 		// Frame count summary.
 		dw.write("  ── Frame counts ──\n")
 		order := []string{"thinking", "chunk", "chunk_reset", "tool_call", "tool_result", "done", "error"}
@@ -220,7 +202,6 @@ func (dw *debugWriter) logAgentFrame(frameType, content string, extra map[string
 		dw.write("    %s\n\n", strings.Join(parts, "  "))
 		dw.syncLocked()
 
-		// Reset for next turn.
 		dw.turnNum = 0
 		dw.frameCounts = make(map[string]int)
 		dw.chunkChars = 0
@@ -262,8 +243,7 @@ func (dw *debugWriter) logWarning(msg string) {
 }
 
 // logThinkChunk handles think content embedded in ZeroClaw chunk frames.
-// It accumulates think text across frames and writes it as one block when
-// the </think> tag closes.
+// Accumulates across frames and writes one block when </think> closes.
 func (dw *debugWriter) logThinkChunk(content string) {
 	if dw == nil {
 		return
@@ -277,17 +257,11 @@ func (dw *debugWriter) logThinkChunk(content string) {
 	}
 	dw.inThink = stillInThink
 
-	// Flush when think block closes or buffer gets large.
 	if !dw.inThink && dw.thinkBuf.Len() > 0 {
 		text := dw.thinkBuf.String()
 		chars := len([]rune(text))
-		prev := text
-		if len(prev) > 500 {
-			prev = prev[:500] + "…"
-		}
-		dw.write("  ── Thinking ──\n")
-		dw.write("    %s\n", strings.ReplaceAll(prev, "\n", "\n    "))
-		dw.write("    (%d chars)\n\n", chars)
+		dw.write("  ── Thinking (%d chars) ──\n", chars)
+		dw.write("    %s\n\n", strings.ReplaceAll(text, "\n", "\n    "))
 		dw.syncLocked()
 		dw.thinkBuf.Reset()
 	}
