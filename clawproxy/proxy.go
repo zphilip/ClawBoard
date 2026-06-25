@@ -993,7 +993,12 @@ func (cs *pcCompatSession) deliverOrBuffer(data []byte, keyShort string) {
 				cs.debug.logAgentFrame(dbgPeek.Type, dbgPeek.Output, extra)
 			case "thinking":
 				cs.debug.logAgentFrame(dbgPeek.Type, dbgPeek.Content, nil)
-			case "chunk", "chunk_reset":
+			case "chunk":
+				// ZeroClaw embeds thinking inside <think> tags within chunk frames.
+				if strings.Contains(dbgPeek.Content, "<think>") || strings.Contains(dbgPeek.Content, "</think>") {
+					cs.debug.logAgentFrame("thinking", dbgPeek.Content, nil)
+				}
+			case "chunk_reset":
 				cs.debug.logAgentFrame(dbgPeek.Type, dbgPeek.Content, nil)
 			case "done":
 				ttsText, _ := extractZCFinalText(data)
@@ -1416,7 +1421,12 @@ func (cs *zcCompatSession) deliverOrBuffer(data []byte, keyShort string) {
 				cs.debug.logAgentFrame(dbgPeek.Type, dbgPeek.Output, extra)
 			case "thinking":
 				cs.debug.logAgentFrame(dbgPeek.Type, dbgPeek.Content, nil)
-			case "chunk", "chunk_reset":
+			case "chunk":
+				// ZeroClaw embeds thinking inside <think> tags within chunk frames.
+				if strings.Contains(dbgPeek.Content, "<think>") || strings.Contains(dbgPeek.Content, "</think>") {
+					cs.debug.logAgentFrame("thinking", dbgPeek.Content, nil)
+				}
+			case "chunk_reset":
 				cs.debug.logAgentFrame(dbgPeek.Type, dbgPeek.Content, nil)
 			case "done":
 				ttsText, _ := extractZCFinalText(data)
