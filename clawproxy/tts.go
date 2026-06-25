@@ -1194,7 +1194,7 @@ func synthQwen3TTS(ctx context.Context, text, voice string, cfg *TtsConfig) ([]b
 		baseURL = "http://apicn.aiworm.cn:8011"
 	}
 	if voice == "" {
-		voice = "Vivian"
+		voice = "vivian"
 	}
 	modelName := cfg.Qwen3Model
 	if modelName == "" {
