@@ -740,14 +740,8 @@ func synthesize(ctx context.Context, text, provider, voice, format string, cfg *
 		fallback := canonicalProvider(cfg.FallbackProvider)
 		fmt.Printf("%s[tts] primary provider %s failed (%v) — trying fallback %s\n",
 			prefixSYS(), provider, err, fallback)
-		// Use fallback voice: try requested voice first, then config default, then provider default.
-		fbVoice := voice
-		if fbVoice == "" || fbVoice == defaultVoiceFor(provider) {
-			fbVoice = cfg.Voice
-		}
-		if fbVoice == "" {
-			fbVoice = defaultVoiceFor(fallback)
-		}
+		// Primary voice is provider-specific; use fallback provider's default.
+		fbVoice := defaultVoiceFor(fallback)
 		audio2, outFmt2, err2 := synthesizeOne(ctx, text, fallback, fbVoice, format, cfg)
 		if err2 != nil {
 			fmt.Printf("%s[tts] fallback %s also failed: %v\n", prefixERR(), fallback, err2)
