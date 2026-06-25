@@ -22,6 +22,7 @@ ExecStartPre=/usr/bin/test -x /usr/local/bin/clawproxy
 # Tokens are loaded from ~/.clawproxy/{zc,pc}_token at startup;
 # if absent, clawproxy will prompt once on first run and persist them.
 ExecStart=/usr/local/bin/clawproxy \
+    --debug-dir /opt/clawproxy/debug \
     --proxy \
     --proxy-port 18780 \
     --zc \
