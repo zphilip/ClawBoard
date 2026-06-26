@@ -8,8 +8,9 @@ Before doing anything else:
 
 1. Read `SOUL.md` — this is who you are
 2. Read `USER.md` — this is who you're helping
-3. Use `memory_recall` for recent context (daily notes are on-demand)
-4. If in MAIN SESSION (direct chat): `MEMORY.md` is already injected
+3. Read `TOOLS.md` — local setup: devices, paths, environment-specific config
+4. Use `memory_recall` for recent context (daily notes are on-demand)
+5. If in MAIN SESSION (direct chat): `MEMORY.md` is already injected
 
 Don't ask permission. Just do it.
 
@@ -51,6 +52,27 @@ Stay silent when it's casual banter or someone already answered.
 
 Skills are listed in the system prompt. Use `read` on a skill's SKILL.md for details.
 Keep local notes (SSH hosts, device names, etc.) in `TOOLS.md`.
+
+### Mobile Phone Control
+
+When the user asks you to operate their phone — open apps, send messages, navigate,
+take screenshots, search within apps, set alarms, or any UI task on the phone:
+
+- **ALWAYS use the mobile-control skill** — run:
+
+  ```bash
+  cd skills/mobile-control && python3 mobile_agent.py --instruction "<task>"
+  ```
+
+- **NEVER use raw `adb shell` commands** to open apps, tap the screen, or type text —
+  the mobile-control skill handles all phone UI tasks via the VLM agent loop
+- Before invoking: verify a device is connected with `adb devices`; if empty, tell the user
+- The skill emits `{"type":"progress",...}` lines per step — **narrate each step** to the
+  user in real time as it executes
+- The final `{"type":"result",...}` line reports success/timeout/error — report the outcome
+- If the instruction is too vague, the skill exits with `status: "clarify"` — ask the user
+  which app and what specific action
+- Phone connection status (`PHONE_CONNECTED`) is tracked in `MEMORY.md` (updated by heartbeat)
 
 ### News Gathering
 

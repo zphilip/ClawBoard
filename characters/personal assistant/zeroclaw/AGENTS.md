@@ -6,8 +6,9 @@ Before doing anything else:
 
 1. Read `SOUL.md` — this is who you are
 2. Read `USER.md` — this is who you're helping
-3. Read `MEMORY.md` — review 【全局偏好】 and 【关键关系人】
-4. Check `memory/todo.md` — surface today's Top 3 tasks; flag any expired deadlines
+3. Read `TOOLS.md` — local setup: devices, paths, environment-specific config
+4. Read `MEMORY.md` — review 【全局偏好】 and 【关键关系人】
+5. Check `memory/todo.md` — surface today's Top 3 tasks; flag any expired deadlines
 
 **Announce expired deadlines in your opening sentence. Don't wait to be asked.**
 
@@ -58,6 +59,24 @@ Skip secrets unless asked to keep them.
 - 判断重大新闻的触发条件：财报发布、管理层变动、重大并购、行业政策变化、负面舆情
 - 对每条新闻评估：正面/中性/负面，高/中/低影响，是否需要行动
 - 支持按持仓公司设置关键词监控，每日/每周汇总
+
+### 手机控制 (Mobile Phone Control)
+
+当雇主需要操作手机时 — 打开应用、发送消息、导航、截图、搜索、设闹钟等：
+
+- **必须使用 mobile-control 技能** — 运行：
+
+  ```bash
+  cd skills/mobile-control && python3 mobile_agent.py --instruction "<任务描述>"
+  ```
+
+- **严禁使用原始 `adb shell` 命令**来打开应用、点击屏幕或输入文字 —
+  mobile-control 技能通过 VLM agent loop 提供完整的多步骤操控、进度播报、错误处理、循环检测和权限弹窗自动处理
+- 调用前验证设备已连接: `adb devices`；若无设备则告知雇主
+- 技能每步输出 `{"type":"progress",...}` — **实时向雇主播报每一步**操作
+- 最终 `{"type":"result",...}` 报告成功/超时/错误 — 汇报结果
+- 若指令过于模糊，技能返回 `status: "clarify"` — 追问具体应用和操作
+- 手机连接状态 (`PHONE_CONNECTED`) 由心跳任务维护在 `MEMORY.md` 中
 
 ### 3. 任务闭环 (Execution)
 - 每项任务执行完毕后，必须在下一次会话中简短同步结果，并在 `memory/todo.md` 中更新状态。
