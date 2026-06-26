@@ -32,5 +32,56 @@ Things like:
 - Use when: memory is incorrect, stale, or explicitly requested to be removed.
 - Don't use when: uncertain about impact; verify before deleting.
 
+## mobile-control — Phone UI Automation
+
+- **ALWAYS use the mobile-control skill for phone UI tasks — NEVER use raw `adb shell`
+  to open apps or tap the screen.** The skill provides a VLM-powered agent loop with
+  progress narration, error handling, loop detection, and permission-auto-tapping that
+  raw ADB cannot match.
+
+### Invocation
+
+```bash
+cd skills/mobile-control && python3 mobile_agent.py --instruction "<task>"
+```
+
+With explicit device (multi-device setups):
+```bash
+cd skills/mobile-control && python3 mobile_agent.py \
+    --instruction "Open WeChat and send hello to Mom" \
+    --device "emulator-5554"
+```
+
+### Pre-flight
+
+```bash
+adb devices                          # confirm device is connected
+adb shell input keyevent 26          # wake screen if off
+adb shell ime set com.android.adbkeyboard/.AdbIME  # force ADB keyboard
+```
+
+### Key Parameters
+
+| Param | Default | Notes |
+|---|---|---|
+| `--max_steps` | 30 | Raise for complex multi-app tasks |
+| `--timeout` | 120 | Seconds before kill |
+| `--debug` | false | Writes full log to /tmp/mobile_agent.log |
+| `--dry_run` | false | Only check ADB + screen, no model calls |
+
+### When NOT to Use
+
+- No device connected (`adb devices` returns empty) — tell the user, don't try
+- File transfer — use `adb pull` / `adb push` instead
+- iOS devices — ADB doesn't work on iPhones
+
+### Troubleshooting
+
+```bash
+sudo systemctl restart adb-server && adb devices   # reset ADB
+tail -f /tmp/mobile_agent.log                       # watch live log
+pkill -f run_gui_owl_1_5_for_mobile.py              # kill stuck run
+```
+
 ---
 *Add whatever helps you do your job. This is your cheat sheet.*
