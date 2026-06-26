@@ -444,7 +444,7 @@ fi
 
 # ── Deploy ClawBoard dashboard to /opt/clawboard ─────────────────────────────
 log "Deploying ClawBoard dashboard to $CLAWBOARD_DST ..."
-mkdir -p "$CLAWBOARD_DST/config" "$CLAWBOARD_DST/locales" "$CLAWBOARD_DST/lib"
+mkdir -p "$CLAWBOARD_DST/config" "$CLAWBOARD_DST/locales" "$CLAWBOARD_DST/lib" "$CLAWBOARD_DST/characters"
 
 # dashboard.py and clawberry_*.py helper modules
 for f in "$WORK_DIR/dashboard.py" "$WORK_DIR"/clawberry_*.py "$WORK_DIR/publish_services.sh"; do
@@ -486,7 +486,15 @@ if [[ -d "$WORK_DIR/locales" ]]; then
 fi
 
 # characters/ directory (agent persona files)
-if [[ -d "$WORK_DIR/characters" ]]; then
+# Force-checkout from git — legacy sparse checkout may not materialize new dirs.
+_characters_ok=no
+if git -C "$WORK_DIR" ls-tree --name-only FETCH_HEAD characters/ &>/dev/null; then
+    git -C "$WORK_DIR" checkout -q FETCH_HEAD -- characters/
+    _characters_ok=yes
+elif [[ -d "$WORK_DIR/characters" ]]; then
+    _characters_ok=yes  # ZIP fallback — already on disk
+fi
+if [[ "$_characters_ok" == "yes" ]]; then
     rsync --archive --update "$WORK_DIR/characters/" "$CLAWBOARD_DST/characters/"
     log "  synced characters/"
 fi
