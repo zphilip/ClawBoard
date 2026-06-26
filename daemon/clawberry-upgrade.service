@@ -2,7 +2,6 @@
 Description=ClawBerry Onboarding & Workspace Sync
 After=network.target
 Wants=network.target
-Before=picoclaw.service zeroclaw.service
 
 [Service]
 Type=oneshot

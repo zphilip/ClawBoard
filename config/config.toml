@@ -27,6 +27,7 @@ allowed_commands = [
     "date",
     "python3",
     "echo",
+    "adb",
 ]
 forbidden_paths = [
     "/etc",

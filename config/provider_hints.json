@@ -47,8 +47,8 @@
   {"model_name": "kilocli (oauth)",         "model": "kilocli/custom-model",                    "provider_id": "kilocli",       "api_base": "", "auth_method": "oauth"},
 
   {"model_name": "glm-4.7",                 "model": "glm/glm-4.7",                            "provider_id": "glm",           "api_base": "https://open.bigmodel.cn/api/paas/v4", "suggested_alias": "glm"},
-  {"model_name": "MiniMax-M3",              "model": "minimax/MiniMax-M3",                      "provider_id": "minimax",       "api_base": "https://api.minimaxi.com/v1", "suggested_alias": "minimax"},
-  {"model_name": "MiniMax-M3 (CN)",         "model": "minimax/MiniMax-M3",                      "provider_id": "minimax",       "api_base": "https://api.minimaxi.com/v1", "suggested_alias": "minimax-cn"},
+  {"model_name": "MiniMax-M3",              "model": "MiniMax-M3",                             "provider_id": "minimax",       "api_base": "https://api.minimaxi.com/v1", "suggested_alias": "minimax"},
+  {"model_name": "MiniMax-M3 (CN)",         "model": "MiniMax-M3",                             "provider_id": "minimax",       "api_base": "https://api.minimaxi.com/v1", "suggested_alias": "minimax-cn"},
   {"model_name": "qwen-plus",               "model": "qwen/qwen-plus",                          "provider_id": "qwen",          "api_base": "https://dashscope.aliyuncs.com/compatible-mode/v1", "suggested_alias": "qwen"},
   {"model_name": "moonshot-v1-8k",          "model": "moonshot/moonshot-v1-8k",                 "provider_id": "moonshot",      "api_base": "https://api.moonshot.cn/v1", "suggested_alias": "moonshot-cn"},
   {"model_name": "moonshot-v1-8k (Intl)",   "model": "moonshot/moonshot-v1-8k",                 "provider_id": "moonshot",      "api_base": "https://api.moonshot.ai/v1", "suggested_alias": "moonshot-intl"},
