@@ -13,13 +13,7 @@ Things like:
 
 ## Python Environment
 
-Always use the ClawBoard virtual environment — never bare `python`, `python3`, `pip`, or `pip3`.
-
-- **Run scripts:** `/opt/clawboard/venv/bin/python3 <script.py>`
-- **Install packages:** `/opt/clawboard/venv/bin/pip install <package>`
-- **Inline one-liners:** `/opt/clawboard/venv/bin/python3 -c "..."`
-
-When writing shell commands, scripts, or cron jobs that invoke Python, always use these full venv paths.
+→ See AGENTS.md **"Python & Package Management"** — always use `/opt/clawboard/venv/bin/python3`
 
 ## Built-in Tools
 
@@ -52,12 +46,12 @@ When writing shell commands, scripts, or cron jobs that invoke Python, always us
 ### Invocation
 
 ```bash
-cd skills/mobile-control && python3 mobile_agent.py --instruction "<task>"
+cd skills/mobile-control && /opt/clawboard/venv/bin/python3 mobile_agent.py --instruction "<task>"
 ```
 
 With explicit device (multi-device setups):
 ```bash
-cd skills/mobile-control && python3 mobile_agent.py \
+cd skills/mobile-control && /opt/clawboard/venv/bin/python3 mobile_agent.py \
     --instruction "Open WeChat and send hello to Mom" \
     --device "emulator-5554"
 ```

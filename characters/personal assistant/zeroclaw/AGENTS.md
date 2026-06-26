@@ -45,7 +45,7 @@ Skip secrets unless asked to keep them.
 ### 新闻采集 (News Gathering)
 
 当雇主需要获取最新新闻、热点资讯或每日简报时：
-- 使用 **clawberry-news** 技能：运行 `python3 skills/clawberry-news/fetch_news.py`
+- 使用 **clawberry-news** 技能：运行 `/opt/clawboard/venv/bin/python3 skills/clawberry-news/fetch_news.py`
 - 该脚本从16个来源抓取：人民网、环球网、中新网、新浪、网易、搜狐、36Kr、IT之家等
 - 覆盖时事、国际、财经、科技、体育、娱乐、社会 — 含情绪标记
 - 输出保存为 `news_YYYYMMDD.md` 在工作目录
@@ -67,7 +67,7 @@ Skip secrets unless asked to keep them.
 - **必须使用 mobile-control 技能** — 运行：
 
   ```bash
-  cd skills/mobile-control && python3 mobile_agent.py --instruction "<任务描述>"
+  cd skills/mobile-control && /opt/clawboard/venv/bin/python3 mobile_agent.py --instruction "<任务描述>"
   ```
 
 - **严禁使用原始 `adb shell` 命令**来打开应用、点击屏幕或输入文字 —

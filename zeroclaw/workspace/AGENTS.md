@@ -59,7 +59,7 @@ take screenshots, search within apps, set alarms, or any UI task on the phone:
 - **ALWAYS use the mobile-control skill** — run:
 
   ```bash
-  cd skills/mobile-control && python3 mobile_agent.py --instruction "<task>"
+  cd skills/mobile-control && /opt/clawboard/venv/bin/python3 mobile_agent.py --instruction "<task>"
   ```
 
 - **NEVER use raw `adb shell` commands** to open apps, tap the screen, or type text —
@@ -71,6 +71,12 @@ take screenshots, search within apps, set alarms, or any UI task on the phone:
 - If the instruction is too vague, the skill exits with `status: "clarify"` — ask the user
   which app and what specific action
 - Phone connection status (`PHONE_CONNECTED`) is tracked in `MEMORY.md` (updated by heartbeat)
+
+## Python & Package Management
+
+- Always run Python scripts with `/opt/clawboard/venv/bin/python3` — never bare `python` or `python3`
+- Always install Python packages with `/opt/clawboard/venv/bin/pip` — never bare `pip` or `pip3`
+- When writing shell commands or scripts that invoke Python, use the full venv paths above
 
 ## Crash Recovery
 

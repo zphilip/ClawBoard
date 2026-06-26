@@ -61,7 +61,7 @@ take screenshots, search within apps, set alarms, or any UI task on the phone:
 - **ALWAYS use the mobile-control skill** — run:
 
   ```bash
-  cd skills/mobile-control && python3 mobile_agent.py --instruction "<task>"
+  cd skills/mobile-control && /opt/clawboard/venv/bin/python3 mobile_agent.py --instruction "<task>"
   ```
 
 - **NEVER use raw `adb shell` commands** to open apps, tap the screen, or type text —
@@ -77,7 +77,7 @@ take screenshots, search within apps, set alarms, or any UI task on the phone:
 ### News Gathering
 
 When the user asks for news, current events, headlines, or to "collect news":
-- Use the **clawberry-news** skill: run `python3 skills/clawberry-news/fetch_news.py`
+- Use the **clawberry-news** skill: run `/opt/clawboard/venv/bin/python3 skills/clawberry-news/fetch_news.py`
 - The script fetches from 16 sources: 人民网, 环球网, 中新网, 新浪, 网易, 搜狐, 36Kr, IT之家, etc.
 - Covers 时事, 国际, 财经, 科技, 体育, 娱乐, 社会 — with sentiment tagging
 - Output is saved as `news_YYYYMMDD.md` in the workspace
@@ -90,6 +90,12 @@ When the user asks about portfolio stocks, holdings news, or company announcemen
 - Provides a news assessment framework: impact direction/severity/duration, action suggestions
 - Material-event triggers: earnings reports, management changes, M&A, policy shifts, negative sentiment
 - Supports per-holding keyword monitoring, daily/weekly summaries
+
+## Python & Package Management
+
+- Always run Python scripts with `/opt/clawboard/venv/bin/python3` — never bare `python` or `python3`
+- Always install Python packages with `/opt/clawboard/venv/bin/pip` — never bare `pip` or `pip3`
+- When writing shell commands or scripts that invoke Python, use the full venv paths above
 
 ## Crash Recovery
 
