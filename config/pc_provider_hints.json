@@ -1,27 +1,77 @@
 [
-  {"model_name": "qwen3.5-plus",         "model": "qwen3.5-plus",       "provider": "qwen",       "api_base": "https://dashscope.aliyuncs.com/compatible-mode/v1"},
-  {"model_name": "qwen3-235b-a22b",      "model": "qwen3-235b-a22b",    "provider": "qwen",       "api_base": "https://dashscope.aliyuncs.com/compatible-mode/v1"},
-  {"model_name": "qwen-max",             "model": "qwen-max",            "provider": "qwen",       "api_base": "https://dashscope.aliyuncs.com/compatible-mode/v1"},
-  {"model_name": "qwen-plus",            "model": "qwen-plus",           "provider": "qwen",       "api_base": "https://dashscope.aliyuncs.com/compatible-mode/v1"},
-  {"model_name": "qwen-turbo",           "model": "qwen-turbo",          "provider": "qwen",       "api_base": "https://dashscope.aliyuncs.com/compatible-mode/v1"},
-  {"model_name": "glm-4-flash",          "model": "glm-4-flash",         "provider": "zhipu",      "api_base": "https://open.bigmodel.cn/api/paas/v4"},
-  {"model_name": "glm-4-plus",           "model": "glm-4-plus",          "provider": "zhipu",      "api_base": "https://open.bigmodel.cn/api/paas/v4"},
-  {"model_name": "glm-z1-flash",         "model": "glm-z1-flash",        "provider": "zhipu",      "api_base": "https://open.bigmodel.cn/api/paas/v4"},
-  {"model_name": "deepseek-chat",        "model": "deepseek-chat",        "provider": "deepseek",   "api_base": "https://api.deepseek.com/v1"},
-  {"model_name": "deepseek-reasoner",    "model": "deepseek-reasoner",    "provider": "deepseek",   "api_base": "https://api.deepseek.com/v1"},
-  {"model_name": "moonshot-v1-8k",       "model": "moonshot-v1-8k",       "provider": "moonshot",   "api_base": "https://api.moonshot.cn/v1"},
-  {"model_name": "moonshot-v1-32k",      "model": "moonshot-v1-32k",      "provider": "moonshot",   "api_base": "https://api.moonshot.cn/v1"},
-  {"model_name": "MiniMax-M2.7",         "model": "MiniMax-M2.7",         "provider": "minimax",    "api_base": "https://api.minimaxi.com/v1"},
-  {"model_name": "MiniMax-Text-01",      "model": "MiniMax-Text-01",      "provider": "minimax",    "api_base": "https://api.minimaxi.com/v1"},
-  {"model_name": "gpt-4.1",              "model": "gpt-4.1",              "provider": "openai",     "api_base": "https://api.openai.com/v1"},
-  {"model_name": "gpt-4o-mini",          "model": "gpt-4o-mini",          "provider": "openai",     "api_base": "https://api.openai.com/v1"},
-  {"model_name": "claude-sonnet-4-5",    "model": "claude-sonnet-4-5-20250514", "provider": "anthropic", "api_base": "https://api.anthropic.com/v1"},
-  {"model_name": "gemini-2.0-flash",     "model": "gemini-2.0-flash",     "provider": "gemini",     "api_base": "https://generativelanguage.googleapis.com/v1beta"},
-  {"model_name": "doubao-pro-32k",       "model": "doubao-pro-32k",       "provider": "doubao",     "api_base": "https://ark.cn-beijing.volces.com/api/v3"},
-  {"model_name": "llama-3.3-70b",        "model": "llama-3.3-70b-versatile", "provider": "groq",   "api_base": "https://api.groq.com/openai/v1"},
-  {"model_name": "mistral-small",        "model": "mistral-small-latest", "provider": "mistral",    "api_base": "https://api.mistral.ai/v1"},
-  {"model_name": "llama3 (Ollama)",      "model": "llama3",               "provider": "ollama",     "api_base": "http://localhost:11434/v1"},
-  {"model_name": "openrouter-auto",      "model": "auto",                 "provider": "openrouter", "api_base": "https://openrouter.ai/api/v1"},
-  {"model_name": "gemini-flash (oauth)", "model": "gemini-3-flash",       "provider": "antigravity","api_base": "", "auth_method": "oauth"},
-  {"model_name": "copilot-gpt-4.1",     "model": "gpt-4.1",              "provider": "copilot",    "api_base": "http://localhost:4321", "auth_method": "oauth"}
+  {"model_name": "qwen3.5-plus",         "model": "qwen/qwen3.5-plus",       "provider": "qwen",       "api_base": "https://dashscope.aliyuncs.com/compatible-mode/v1"},
+  {"model_name": "qwen3-235b-a22b",      "model": "qwen/qwen3-235b-a22b",    "provider": "qwen",       "api_base": "https://dashscope.aliyuncs.com/compatible-mode/v1"},
+  {"model_name": "qwen-max",             "model": "qwen/qwen-max",            "provider": "qwen",       "api_base": "https://dashscope.aliyuncs.com/compatible-mode/v1"},
+  {"model_name": "qwen-plus",            "model": "qwen/qwen-plus",           "provider": "qwen",       "api_base": "https://dashscope.aliyuncs.com/compatible-mode/v1"},
+  {"model_name": "qwen-turbo",           "model": "qwen/qwen-turbo",          "provider": "qwen",       "api_base": "https://dashscope.aliyuncs.com/compatible-mode/v1"},
+
+  {"model_name": "glm-4.7",              "model": "zai/glm-4.7",              "provider": "zai",        "api_base": "https://open.bigmodel.cn/api/paas/v4"},
+  {"model_name": "glm-4-flash",          "model": "zai/glm-4-flash",          "provider": "zai",        "api_base": "https://open.bigmodel.cn/api/paas/v4"},
+  {"model_name": "glm-4-plus",           "model": "zai/glm-4-plus",           "provider": "zai",        "api_base": "https://open.bigmodel.cn/api/paas/v4"},
+  {"model_name": "glm-z1-flash",         "model": "zai/glm-z1-flash",         "provider": "zai",        "api_base": "https://open.bigmodel.cn/api/paas/v4"},
+
+  {"model_name": "deepseek-chat",        "model": "deepseek/deepseek-chat",        "provider": "deepseek",   "api_base": "https://api.deepseek.com/v1"},
+  {"model_name": "deepseek-reasoner",    "model": "deepseek/deepseek-reasoner",    "provider": "deepseek",   "api_base": "https://api.deepseek.com/v1"},
+
+  {"model_name": "kimi-k2.6",            "model": "moonshot/kimi-k2.6",       "provider": "moonshot",   "api_base": "https://api.moonshot.ai/v1"},
+  {"model_name": "kimi-k2-thinking",     "model": "moonshot/kimi-k2-thinking", "provider": "moonshot",   "api_base": "https://api.moonshot.ai/v1"},
+  {"model_name": "moonshot-v1-8k",       "model": "moonshot/moonshot-v1-8k",   "provider": "moonshot",   "api_base": "https://api.moonshot.ai/v1"},
+
+  {"model_name": "MiniMax-M3",           "model": "minimax/MiniMax-M3",       "provider": "minimax",    "api_base": "https://api.minimaxi.com/v1"},
+  {"model_name": "MiniMax-M2.5",         "model": "minimax/MiniMax-M2.5",     "provider": "minimax",    "api_base": "https://api.minimaxi.com/v1", "extra_body": {"reasoning_split": true}},
+
+  {"model_name": "gpt-5.4",              "model": "openai/gpt-5.4",              "provider": "openai",     "api_base": "https://api.openai.com/v1"},
+  {"model_name": "gpt-4.1",              "model": "openai/gpt-4.1",              "provider": "openai",     "api_base": "https://api.openai.com/v1"},
+  {"model_name": "gpt-4o-mini",          "model": "openai/gpt-4o-mini",          "provider": "openai",     "api_base": "https://api.openai.com/v1"},
+
+  {"model_name": "claude-sonnet-4-6",    "model": "anthropic/claude-sonnet-4-6", "provider": "anthropic", "api_base": "https://api.anthropic.com/v1"},
+  {"model_name": "claude-opus-4-8",      "model": "anthropic/claude-opus-4-8",   "provider": "anthropic", "api_base": "https://api.anthropic.com/v1"},
+  {"model_name": "claude-haiku-4-5",     "model": "anthropic/claude-haiku-4-5",  "provider": "anthropic", "api_base": "https://api.anthropic.com/v1"},
+
+  {"model_name": "gemini-2.5-flash",     "model": "google/gemini-2.5-flash",  "provider": "google",     "api_base": "https://generativelanguage.googleapis.com/v1beta"},
+  {"model_name": "gemini-3-flash",       "model": "google/gemini-3-flash",    "provider": "google",     "api_base": "https://generativelanguage.googleapis.com/v1beta"},
+
+  {"model_name": "gemini-3-flash (CLI)", "model": "google-gemini-cli/gemini-3-flash-preview", "provider": "google-gemini-cli", "api_base": "", "auth_method": "oauth"},
+
+  {"model_name": "grok-4.3",             "model": "xai/grok-4.3",              "provider": "xai",        "api_base": "https://api.x.ai/v1"},
+  {"model_name": "grok-build-0.1",       "model": "xai/grok-build-0.1",        "provider": "xai",        "api_base": "https://api.x.ai/v1"},
+
+  {"model_name": "doubao-pro-32k",       "model": "volcengine/doubao-pro-32k",  "provider": "volcengine", "api_base": "https://ark.cn-beijing.volces.com/api/v3"},
+  {"model_name": "doubao-seed-code",     "model": "volcengine/doubao-seed-code-preview", "provider": "volcengine", "api_base": "https://ark.cn-beijing.volces.com/api/v3"},
+  {"model_name": "ark-code-latest",      "model": "volcengine-plan/ark-code-latest", "provider": "volcengine-plan", "api_base": "https://ark.cn-beijing.volces.com/api/v3"},
+
+  {"model_name": "mistral-large",        "model": "mistral/mistral-large-latest", "provider": "mistral",  "api_base": "https://api.mistral.ai/v1"},
+  {"model_name": "mistral-small",        "model": "mistral/mistral-small-latest", "provider": "mistral",  "api_base": "https://api.mistral.ai/v1"},
+
+  {"model_name": "llama-3.3-70b",        "model": "groq/llama-3.3-70b-versatile", "provider": "groq",     "api_base": "https://api.groq.com/openai/v1"},
+
+  {"model_name": "command-a",            "model": "cohere/command-a-03-2025",  "provider": "cohere",     "api_base": "https://api.cohere.ai/v1"},
+
+  {"model_name": "nemotron-3-ultra",     "model": "nvidia/nvidia/nemotron-3-ultra-550b-a55b", "provider": "nvidia", "api_base": "https://integrate.api.nvidia.com/v1"},
+
+  {"model_name": "llama-3.3-turbo",      "model": "together/meta-llama/Llama-3.3-70B-Instruct-Turbo", "provider": "together", "api_base": "https://api.together.xyz/v1"},
+
+  {"model_name": "deepseek-v3-0324",     "model": "novita/deepseek/deepseek-v3-0324", "provider": "novita", "api_base": "https://api.novita.ai/v3/openai"},
+
+  {"model_name": "openrouter-auto",      "model": "openrouter/auto",               "provider": "openrouter", "api_base": "https://openrouter.ai/api/v1"},
+
+  {"model_name": "ollama-cloud",         "model": "ollama-cloud/kimi-k2.6",       "provider": "ollama-cloud", "api_base": "https://api.ollama.ai/v1"},
+
+  {"model_name": "llama3 (Ollama)",      "model": "ollama/llama3",               "provider": "ollama",     "api_base": "http://localhost:11434/v1"},
+
+  {"model_name": "local (vLLM)",         "model": "vllm/custom-model",            "provider": "vllm",       "api_base": "http://localhost:8000/v1"},
+
+  {"model_name": "local (SGLang)",       "model": "sglang/custom-model",          "provider": "sglang",     "api_base": "http://localhost:30000/v1"},
+
+  {"model_name": "local (LM Studio)",    "model": "lmstudio/custom-model",        "provider": "lmstudio",   "api_base": "http://localhost:1234/v1"},
+
+  {"model_name": "copilot-gpt-5.4",      "model": "github-copilot/gpt-5.4",      "provider": "github-copilot", "api_base": "http://localhost:4321", "auth_method": "oauth"},
+
+  {"model_name": "huggingface-r1",       "model": "huggingface/deepseek-ai/DeepSeek-R1", "provider": "huggingface", "api_base": "https://api-inference.huggingface.co/v1"},
+
+  {"model_name": "synthetic-m2.5",       "model": "synthetic/hf:MiniMaxAI/MiniMax-M2.5", "provider": "synthetic", "api_base": "https://api.synthetic.new/anthropic"},
+
+  {"model_name": "mimo-v2-flash",        "model": "xiaomi/mimo-v2-flash",         "provider": "xiaomi",     "api_base": "https://api.xiaomi.com/v1"},
+
+  {"model_name": "vercel-gateway",       "model": "vercel-ai-gateway/anthropic/claude-opus-4.8", "provider": "vercel-ai-gateway", "api_base": "https://api.ai-gateway.vercel.sh/v1"}
 ]
