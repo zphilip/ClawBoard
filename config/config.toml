@@ -37,7 +37,6 @@ forbidden_paths = [
     "/bin",
     "/sbin",
     "/lib",
-    "/opt",
     "/boot",
     "/dev",
     "/proc",
