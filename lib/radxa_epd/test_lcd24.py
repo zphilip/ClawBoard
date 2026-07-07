@@ -13,12 +13,12 @@ Usage:
 """
 
 import time
-from periphery import GPIO, SPI, PWM
+from periphery import GPIO, SPI
 
 # ── Pin definitions ───────────────────────────────────────────────────────────
 RST_CHIP, RST_LINE = "/dev/gpiochip0", 33
 DC_CHIP,  DC_LINE  = "/dev/gpiochip0", 110
-BL_CHIP,  BL_LINE  = 0, 13
+BL_CHIP,  BL_LINE  = "/dev/gpiochip0", 13
 SPI_DEV   = "/dev/spidev1.0"
 SPI_SPEED = 40_000_000
 
@@ -38,13 +38,11 @@ def lcd_test():
         # 1. Init hardware
         rst = GPIO(RST_CHIP, RST_LINE, "out")
         dc  = GPIO(DC_CHIP,  DC_LINE,  "out")
-        bl  = PWM(BL_CHIP,   BL_LINE)
+        bl  = GPIO(BL_CHIP,  BL_LINE,  "out")
         spi = SPI(SPI_DEV, 0, SPI_SPEED)
 
-        # Backlight on at 80%
-        bl.enable()
-        bl.frequency = 1000
-        bl.duty_cycle = 0.80
+        # Backlight on (GPIO on/off only — no hardware PWM)
+        bl.write(True)
 
         def write_cmd(c):
             dc.write(False)
@@ -154,7 +152,7 @@ def lcd_test():
 
         print("Colour cycle complete. Backlight off in 3s...")
         time.sleep(3)
-        bl.duty_cycle = 0.0
+        bl.write(False)
 
     except Exception as e:
         print(f"Test failed: {e}")

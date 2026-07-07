@@ -45,7 +45,9 @@ class LCD_2inch4:
         spi_speed:  int = _DEFAULT_SPI_SPEED,
         gpiochip:   str = _DEFAULT_GPIOCHIP,
     ):
-        from periphery import GPIO, SPI, PWM  # deferred — not available on Pi
+        from periphery import GPIO, SPI  # deferred — not available on Pi
+# Note: PWM is NOT used — the Radxa Cubie A7Z lacks sysfs PWM.
+# Backlight is controlled via GPIO on/off instead.
 
         logger.info(
             "Radxa LCD 2.4\" ILI9341: SPI=%s  RST=%d  DC=%d  BL=%d",
@@ -54,17 +56,14 @@ class LCD_2inch4:
         self.spi        = SPI(spi_dev, 0, spi_speed)
         self.reset_gpio = GPIO(gpiochip, rst_line, "out")
         self.dc_gpio    = GPIO(gpiochip, dc_line,  "out")
-        # PWM expects chip number (int), not path — extract from e.g. "/dev/gpiochip0"
-        _pwm_chip = int(gpiochip.split("chip")[-1]) if "chip" in gpiochip else 0
-        self.bl_pwm     = PWM(_pwm_chip, bl_line)
+        self.bl_gpio    = GPIO(gpiochip, bl_line,  "out")
 
         self.width  = LCD_WIDTH    # 240
         self.height = LCD_HEIGHT   # 320
 
-        # Enable backlight at 80% by default
-        self.bl_pwm.enable()
-        self.bl_pwm.frequency = 1000
-        self.bl_pwm.duty_cycle = 0.80
+        # Enable backlight (GPIO on/off — no hardware PWM on this board)
+        self._bl_duty = 100
+        self.bl_gpio.write(True)
 
     # ── Internal helpers ──────────────────────────────────────────────────────
 
@@ -98,12 +97,17 @@ class LCD_2inch4:
     # ── Backlight control ─────────────────────────────────────────────────────
 
     def bl_DutyCycle(self, duty: int) -> None:
-        """Set backlight duty cycle 0–100 (percent)."""
-        self.bl_pwm.duty_cycle = max(0.0, min(1.0, duty / 100.0))
+        """Set backlight duty cycle 0–100 (percent).
+
+        Since this board lacks hardware PWM, duty > 0 turns the backlight ON
+        and duty == 0 turns it OFF.  The stored value is preserved for
+        compatibility with callers that expect PWM granularity.
+        """
+        self._bl_duty = duty
+        self.bl_gpio.write(duty > 0)
 
     def bl_Frequency(self, freq: int) -> None:
-        """Set backlight PWM frequency in Hz."""
-        self.bl_pwm.frequency = freq
+        """No-op — no hardware PWM on this board."""
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -305,7 +309,7 @@ class LCD_2inch4:
 
     def _release(self) -> None:
         """Close all periphery handles (safe to call multiple times)."""
-        self.bl_pwm.close()
+        self.bl_gpio.close()
         for handle in (self.spi, self.reset_gpio, self.dc_gpio):
             try:
                 handle.close()
