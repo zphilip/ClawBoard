@@ -23,6 +23,7 @@ if os.path.exists(libdir):
 _eink_mod        = None   # waveshare_epd.epd2in13_V4 when e-ink is active
 _lcd_mod         = None   # LCD_1inch69 module when LCD is active
 _lcd_0in96_mod   = None   # waveshare_lcd_rpi.LCD_0inch96 module when 0.96" LCD is active
+_lcd_radxa_24_mod = None  # radxa_epd.lcd_adapter.LCDRadxa24 when Radxa 2.4" LCD is active
 _oled_mod        = None   # waveshare_OLED.OLED_0in96_rgb module when OLED is active
 _oled_radxa_mod  = None   # radxa_epd.oled_adapter.OLEDRadxa when Radxa 0.96" OLED is active
 
@@ -40,7 +41,8 @@ _HERE            = os.path.dirname(os.path.realpath(__file__))
 DISPLAY_REQUEST_FILE      = os.path.join(_HERE, 'config', 'clawberry_paircode.txt')
 DISPLAY_TYPE_OVERRIDE_FILE = os.path.join(_HERE, 'config', 'display_type.txt')
 # Override file: create config/display_type.txt containing 'eink', 'lcd',
-# 'lcd_0in96', or 'oled' to skip auto-detection and force a specific driver.
+# 'lcd_0in96', 'lcd_radxa_2_4', 'oled', 'oled_radxa_0_96', or
+# 'eink_radxa_1_54' to skip auto-detection and force a specific driver.
 # Fallback hold duration used ONLY when the payload written by clawberry_paircode.py
 # has no 'seconds' field. The primary source of truth is always the 'seconds' value
 # inside clawberry_paircode.txt — change it there, not here.
@@ -54,7 +56,7 @@ _FONT_REG  = '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf'
 
 # ── Global display handle & type ────────────────────────────────────────
 _disp         = None   # active display object (EPD, LCD_1inch69, LCD_0inch96, or OLED)
-_display_type = None   # 'eink' | 'lcd' | 'lcd_0in96' | 'oled'
+_display_type = None   # 'eink' | 'lcd' | 'lcd_0in96' | 'lcd_radxa_2_4' | 'oled' | 'oled_radxa_0_96' | 'eink_radxa_1_54'
 _qr_cache     = {}     # {(url, size): PIL.Image} — avoid regenerating unchanged QR codes
 _oled_scroll_offset: int = 0   # advances each scroll frame; drives IP text animation
 
@@ -88,7 +90,7 @@ def _epd_render(epd, image, force_full=False):
 def _shutdown(signum=None, frame=None):
     logging.info("Shutdown signal %s — releasing display hardware...", signum)
     if _disp is not None:
-        if _display_type in ('lcd', 'lcd_0in96'):
+        if _display_type in ('lcd', 'lcd_0in96', 'lcd_radxa_2_4'):
             try:
                 _disp.module_exit()
             except Exception as e:
@@ -133,17 +135,21 @@ def _detect_display():
       1. LCD  1.69\"  (LCD_1inch69)    — tried first; touch controller init
                                           fails reliably when hardware absent
       2. LCD  0.96\"  (LCD_0inch96)    — Waveshare 0.96" 160×80 LCD HAT
-      3. E-ink 2.13\" (epd2in13_V4)   — SPI-only, always succeeds on a Pi
+      3. E-ink 1.54\" Radxa (epd_adapter) — Radxa 1.54" e-paper
+      4. LCD  2.4\"  Radxa (lcd_adapter)  — Radxa 2.4" ILI9341 LCD
+      5. E-ink 2.13\" (epd2in13_V4)   — SPI-only, always succeeds on a Pi
                                           even without display connected
-      4. OLED 0.96\"  (OLED_0in96_rgb)
+      6. OLED 0.96\"  (OLED_0in96_rgb)
+      7. OLED 0.96\"  Radxa (oled_adapter) — Radxa 0.96" SSD1357 OLED
 
     To force a type, create config/display_type.txt with one of:
-      'lcd', 'lcd_0in96', 'eink', 'oled', 'eink_radxa_1_54'
+      'lcd', 'lcd_0in96', 'eink', 'oled', 'eink_radxa_1_54',
+      'lcd_radxa_2_4', 'oled_radxa_0_96'
     Sets the module globals ``_disp``, ``_display_type``, ``_eink_mod`` /
     ``_lcd_mod`` / ``_lcd_0in96_mod`` / ``_oled_mod`` and returns the active
     display object.
     """
-    global _disp, _display_type, _eink_mod, _lcd_mod, _lcd_0in96_mod, _oled_mod, _LCD_LANDSCAPE
+    global _disp, _display_type, _eink_mod, _lcd_mod, _lcd_0in96_mod, _lcd_radxa_24_mod, _oled_mod, _LCD_LANDSCAPE
 
     # ── 0. Check for a manual override file ───────────────────────────────
     _forced = None
@@ -165,7 +171,7 @@ def _detect_display():
         _forced = 'lcd'
 
     # ── 1. Try LCD 1.69\" ────────────────────────────────────────────────
-    if _forced not in ('eink', 'oled', 'eink_radxa_1_54', 'lcd_0in96', 'oled_radxa_0_96'):
+    if _forced not in ('eink', 'oled', 'eink_radxa_1_54', 'lcd_0in96', 'oled_radxa_0_96', 'lcd_radxa_2_4'):
         import importlib as _il
         # LCD_1inch69.py uses relative imports (from . import ...) so it MUST
         # be loaded as part of a package.  We add the *parent* of the package
@@ -213,7 +219,7 @@ def _detect_display():
                 logging.info('LCD 1.69\" not available: %s', e)
 
     # ── 1b. Try LCD 0.96" (Waveshare 160×80) ─────────────────────────────
-    if _forced not in ('eink', 'oled', 'eink_radxa_1_54', 'lcd', 'oled_radxa_0_96'):
+    if _forced not in ('eink', 'oled', 'eink_radxa_1_54', 'lcd', 'oled_radxa_0_96', 'lcd_radxa_2_4'):
         import importlib as _il
         _lcd0_candidates = [
             (os.path.join(current_dir, 'lib'), 'waveshare_lcd_rpi'),
@@ -270,8 +276,24 @@ def _detect_display():
         except Exception as e:
             logging.info('Radxa 1.54" e-ink not available: %s', e)
 
+    # ── 2a2. Radxa 2.4" LCD (ILI9341, same SPI/GPIO as e-ink) ─────────────────
+    if _forced == 'lcd_radxa_2_4':
+        try:
+            from radxa_epd.lcd_adapter import LCDRadxa24 as _LCDRadxa24
+            _obj = _LCDRadxa24()
+            _obj.Init()
+            _obj.clear()
+            _obj.bl_DutyCycle(80)
+            _lcd_radxa_24_mod = _LCDRadxa24
+            _disp             = _obj
+            _display_type     = 'lcd_radxa_2_4'
+            logging.info('Display detected: Radxa LCD 2.4" ILI9341 (radxa_epd.lcd_adapter)')
+            return _obj
+        except Exception as e:
+            logging.info('Radxa LCD 2.4" not available: %s', e)
+
     # ── 2b. Try e-ink 2.13" Waveshare ────────────────────────────────────────────
-    if _forced not in ('lcd', 'oled', 'eink_radxa_1_54', 'oled_radxa_0_96'):
+    if _forced not in ('lcd', 'oled', 'eink_radxa_1_54', 'oled_radxa_0_96', 'lcd_radxa_2_4'):
         try:
             from waveshare_epd import epd2in13_V4 as _em
             _obj = _em.EPD()
@@ -286,7 +308,7 @@ def _detect_display():
             logging.info('E-ink 2.13" not available: %s', e)
 
     # ── 3. Try OLED 0.96" RGB (waveshare) ──────────────────────────────────
-    if _forced not in ('lcd', 'eink', 'eink_radxa_1_54', 'oled_radxa_0_96'):
+    if _forced not in ('lcd', 'eink', 'eink_radxa_1_54', 'oled_radxa_0_96', 'lcd_radxa_2_4'):
         try:
             from waveshare_OLED import OLED_0in96_rgb as _om
             _obj = _om.OLED_0in96_rgb()
@@ -317,7 +339,7 @@ def _detect_display():
 
     logging.warning(
         'No supported display detected '
-        '(tried LCD 1.69", e-ink 2.13", OLED 0.96"). '
+        '(tried LCD 1.69", LCD 2.4" Radxa, e-ink 2.13", OLED 0.96"). '
         'Running in headless mode (no rendering). '
         'Override file: %s',
         DISPLAY_TYPE_OVERRIDE_FILE,
@@ -1194,7 +1216,7 @@ def draw_picoclaw_qr_lcd_0in96(disp, url, token=''):
 def _render_monitor(force_full=False):
     if _disp is None:
         return
-    if _display_type == 'lcd':
+    if _display_type in ('lcd', 'lcd_radxa_2_4'):
         draw_monitor_lcd(_disp)
     elif _display_type == 'lcd_0in96':
         draw_monitor_lcd_0in96(_disp)
@@ -1207,7 +1229,7 @@ def _render_monitor(force_full=False):
 def _render_paircode(code):
     if _disp is None:
         return
-    if _display_type == 'lcd':
+    if _display_type in ('lcd', 'lcd_radxa_2_4'):
         draw_paircode_lcd(_disp, code)
     elif _display_type == 'lcd_0in96':
         draw_paircode_lcd_0in96(_disp, code)
@@ -1220,7 +1242,7 @@ def _render_paircode(code):
 def _render_picoclaw_qr(url, token=''):
     if _disp is None:
         return
-    if _display_type == 'lcd':
+    if _display_type in ('lcd', 'lcd_radxa_2_4'):
         draw_picoclaw_qr_lcd(_disp, url, token)
     elif _display_type == 'lcd_0in96':
         draw_picoclaw_qr_lcd_0in96(_disp, url, token)
