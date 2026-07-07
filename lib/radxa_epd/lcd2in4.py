@@ -54,7 +54,9 @@ class LCD_2inch4:
         self.spi        = SPI(spi_dev, 0, spi_speed)
         self.reset_gpio = GPIO(gpiochip, rst_line, "out")
         self.dc_gpio    = GPIO(gpiochip, dc_line,  "out")
-        self.bl_pwm     = PWM(gpiochip, bl_line)
+        # PWM expects chip number (int), not path — extract from e.g. "/dev/gpiochip0"
+        _pwm_chip = int(gpiochip.split("chip")[-1]) if "chip" in gpiochip else 0
+        self.bl_pwm     = PWM(_pwm_chip, bl_line)
 
         self.width  = LCD_WIDTH    # 240
         self.height = LCD_HEIGHT   # 320

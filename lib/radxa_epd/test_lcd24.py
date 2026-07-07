@@ -18,7 +18,7 @@ from periphery import GPIO, SPI, PWM
 # ── Pin definitions ───────────────────────────────────────────────────────────
 RST_CHIP, RST_LINE = "/dev/gpiochip0", 33
 DC_CHIP,  DC_LINE  = "/dev/gpiochip0", 110
-BL_CHIP,  BL_LINE  = "/dev/gpiochip0", 13
+BL_CHIP,  BL_LINE  = 0, 13
 SPI_DEV   = "/dev/spidev1.0"
 SPI_SPEED = 40_000_000
 
