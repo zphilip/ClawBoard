@@ -282,8 +282,9 @@ class LCD_2inch4:
 
         if imwidth == self.height and imheight == self.width:
             # Landscape image (320×240) → rotate to fit portrait panel
+            # MADCTL: MV=1 (swap X/Y), MX=0 (no column reversal), BGR=1
             self._send_command(0x36)
-            self._send_data(0x78)   # MV=1: X/Y swapped
+            self._send_data(0x28)   # MY=0 MX=0 MV=1 ML=0 BGR=1 MH=0
             self.SetWindows(0, 0, self.width, self.height)
             # With MV=1 the GRAM walks X-major — transpose to (320,240,2)
             # so that C-order flatten produces column-major pixel data.
