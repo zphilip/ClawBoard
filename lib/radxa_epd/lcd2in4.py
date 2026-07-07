@@ -5,7 +5,7 @@ boards that expose SPI/GPIO via the Linux periphery library instead of RPi.GPIO)
 Pin mapping (defaults match the 1.54" e-paper wiring; override via constructor kwargs):
   RST  → gpiochip0 line 33   (Pin 11)
   DC   → gpiochip0 line 110  (Pin 26)
-  BL   → gpiochip0 line 12   (PWM-capable backlight pin)
+  BL   → gpiochip1 line 6    (Pin 13 — backlight on separate gpiochip)
   SPI  → /dev/spidev1.0 at 40 MHz
 
 The ILI9341 LCD controller is a 240×320 RGB565 TFT panel.  All init sequences
@@ -24,7 +24,8 @@ LCD_HEIGHT = 320
 # ── Default hardware pins ─────────────────────────────────────────────────────
 _DEFAULT_RST_LINE  = 33     # GPIO line number on /dev/gpiochip0
 _DEFAULT_DC_LINE   = 110
-_DEFAULT_BL_LINE   = 13     # backlight PWM pin
+_DEFAULT_BL_LINE   = 6      # backlight GPIO line on /dev/gpiochip1 (Pin 13)
+_DEFAULT_BL_CHIP   = "/dev/gpiochip1"
 _DEFAULT_SPI_DEV   = "/dev/spidev1.0"
 _DEFAULT_SPI_SPEED = 40_000_000
 _DEFAULT_GPIOCHIP  = "/dev/gpiochip0"
@@ -41,22 +42,21 @@ class LCD_2inch4:
         rst_line:   int = _DEFAULT_RST_LINE,
         dc_line:    int = _DEFAULT_DC_LINE,
         bl_line:    int = _DEFAULT_BL_LINE,
+        bl_chip:    str = _DEFAULT_BL_CHIP,
         spi_dev:    str = _DEFAULT_SPI_DEV,
         spi_speed:  int = _DEFAULT_SPI_SPEED,
         gpiochip:   str = _DEFAULT_GPIOCHIP,
     ):
         from periphery import GPIO, SPI  # deferred — not available on Pi
-# Note: PWM is NOT used — the Radxa Cubie A7Z lacks sysfs PWM.
-# Backlight is controlled via GPIO on/off instead.
 
         logger.info(
-            "Radxa LCD 2.4\" ILI9341: SPI=%s  RST=%d  DC=%d  BL=%d",
-            spi_dev, rst_line, dc_line, bl_line,
+            "Radxa LCD 2.4\" ILI9341: SPI=%s  RST=%d  DC=%d  BL=%s:%d",
+            spi_dev, rst_line, dc_line, bl_chip, bl_line,
         )
         self.spi        = SPI(spi_dev, 0, spi_speed)
         self.reset_gpio = GPIO(gpiochip, rst_line, "out")
         self.dc_gpio    = GPIO(gpiochip, dc_line,  "out")
-        self.bl_gpio    = GPIO(gpiochip, bl_line,  "out")
+        self.bl_gpio    = GPIO(bl_chip, bl_line,  "out")
 
         self.width  = LCD_WIDTH    # 240
         self.height = LCD_HEIGHT   # 320
