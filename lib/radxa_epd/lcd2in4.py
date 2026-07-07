@@ -257,13 +257,9 @@ class LCD_2inch4:
     def display_image(self, pil_image) -> None:
         """Push a PIL RGB image to the display.
 
-        Accepts either portrait (240×320) or landscape (320×240) images and
-        automatically sets the MADCTL register for correct orientation.
-
-        When MADCTL swaps X/Y axes (MV=1, landscape mode), the GRAM expects
-        data in column-major order (X-major).  We transpose the numpy array
-        before flattening so the SPI byte stream matches what the controller
-        reads row-by-row through the swapped coordinate window.
+        Accepts either portrait (240×320) or landscape (320×240) images.
+        Landscape images are transposed in numpy and sent with the proven
+        MADCTL=0x08 portrait mode — no controller-level axis swap needed.
         """
         imwidth, imheight = pil_image.size
 
@@ -281,20 +277,19 @@ class LCD_2inch4:
         )
 
         if imwidth == self.height and imheight == self.width:
-            # Landscape image (320×240) → rotate to fit portrait panel
-            # MADCTL: MV=1 (swap X/Y), MX=0 (no column reversal), BGR=1
-            self._send_command(0x36)
-            self._send_data(0x28)   # MY=0 MX=0 MV=1 ML=0 BGR=1 MH=0
-            self.SetWindows(0, 0, self.width, self.height)
-            # With MV=1 the GRAM walks X-major — transpose to (320,240,2)
-            # so that C-order flatten produces column-major pixel data.
-            pix = np.transpose(pix, (1, 0, 2)).flatten().tolist()
+            # Landscape (320×240) → transpose to 240×320 for portrait GRAM.
+            # pix shape (Y=240, X=320, ch=2) → swap axes → (X=320, Y=240, ch=2)
+            # C-order flatten then walks X=0,Y=0..239; X=1,Y=0..239; ...
+            # which fills GRAM row 0..319 with image columns 0..319.
+            pix = np.swapaxes(pix, 0, 1).flatten().tolist()
         else:
-            # Portrait image (240×320) — C-order flatten is correct
-            self._send_command(0x36)
-            self._send_data(0x08)   # MV=0: no axis swap
-            self.SetWindows(0, 0, self.width, self.height)
+            # Portrait (240×320) — C-order flatten is correct
             pix = pix.flatten().tolist()
+
+        # Always use portrait MADCTL (no axis swap, no address reversal)
+        self._send_command(0x36)
+        self._send_data(0x08)
+        self.SetWindows(0, 0, self.width, self.height)
 
         self._send_data_bulk(bytes(pix))
 
