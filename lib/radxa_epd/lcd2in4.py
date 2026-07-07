@@ -259,6 +259,11 @@ class LCD_2inch4:
 
         Accepts either portrait (240×320) or landscape (320×240) images and
         automatically sets the MADCTL register for correct orientation.
+
+        When MADCTL swaps X/Y axes (MV=1, landscape mode), the GRAM expects
+        data in column-major order (X-major).  We transpose the numpy array
+        before flattening so the SPI byte stream matches what the controller
+        reads row-by-row through the swapped coordinate window.
         """
         imwidth, imheight = pil_image.size
 
@@ -274,18 +279,21 @@ class LCD_2inch4:
             np.bitwise_and(np.left_shift(img[..., [1]], 3), 0xE0),
             np.right_shift(img[..., [2]], 3),
         )
-        pix = pix.flatten().tolist()
 
         if imwidth == self.height and imheight == self.width:
             # Landscape image (320×240) → rotate to fit portrait panel
             self._send_command(0x36)
-            self._send_data(0x78)   # MY=1, MX=1, MV=1, BGR=0
+            self._send_data(0x78)   # MV=1: X/Y swapped
             self.SetWindows(0, 0, self.width, self.height)
+            # With MV=1 the GRAM walks X-major — transpose to (320,240,2)
+            # so that C-order flatten produces column-major pixel data.
+            pix = np.transpose(pix, (1, 0, 2)).flatten().tolist()
         else:
-            # Portrait image (240×320)
+            # Portrait image (240×320) — C-order flatten is correct
             self._send_command(0x36)
-            self._send_data(0x08)   # MY=0, MX=0, MV=0, BGR=0
+            self._send_data(0x08)   # MV=0: no axis swap
             self.SetWindows(0, 0, self.width, self.height)
+            pix = pix.flatten().tolist()
 
         self._send_data_bulk(bytes(pix))
 
