@@ -280,7 +280,19 @@ def _detect_display():
     if _forced == 'lcd_radxa_2_4':
         try:
             from radxa_epd.lcd_adapter import LCDRadxa24 as _LCDRadxa24
-            _obj = _LCDRadxa24()
+            _lcd_kwargs = {}
+            for _env, _key in [
+                ('RADXA_LCD_RST', 'rst_line'),
+                ('RADXA_LCD_DC',  'dc_line'),
+                ('RADXA_LCD_BL',  'bl_line'),
+                ('RADXA_LCD_BL_CHIP', 'bl_chip'),
+                ('RADXA_LCD_SPI', 'spi_dev'),
+                ('RADXA_LCD_CHIP','gpiochip'),
+            ]:
+                _val = os.environ.get(_env)
+                if _val is not None:
+                    _lcd_kwargs[_key] = int(_val) if 'line' in _key else _val
+            _obj = _LCDRadxa24(**_lcd_kwargs)
             _obj.Init()
             _obj.clear()
             _obj.bl_DutyCycle(80)
