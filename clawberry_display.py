@@ -722,21 +722,25 @@ def _lcd_dims(disp):
 
 
 def draw_monitor_lcd(disp):
-    """Render the normal status screen for the 1.69\" LCD.
-    Landscape (280×240): QR left, info right.
-    Portrait  (240×280): QR centred, info stacked below.
+    """Render the normal status screen for LCD displays.
+    Landscape (280×240 or 320×240): QR left, info right.
+    Portrait  (240×280 or 240×320): QR centred, info stacked below.
     """
     W, H  = _lcd_dims(disp)
     image = Image.new('RGB', (W, H), _C_BG)
     draw  = ImageDraw.Draw(image)
 
-    f_hdr   = _load_font(_FONT_BOLD, 18)
-    f_body  = _load_font(_FONT_REG,  13)
-    f_small = _load_font(_FONT_REG,  12)
+    # Scale fonts based on canvas width (2.4" LCD is 320px wide vs 280px for 1.69")
+    _wide = (W >= 300)
+    f_hdr   = _load_font(_FONT_BOLD, 22 if _wide else 18)
+    f_body  = _load_font(_FONT_REG,  15 if _wide else 13)
+    f_small = _load_font(_FONT_REG,  14 if _wide else 12)
+
+    HDR_H = 44 if _wide else 40
 
     # Header bar
-    draw.rectangle((0, 0, W, 40), fill=_C_HDR_ZC)
-    draw.text((10, 9), 'ClawBerry', font=f_hdr, fill=_C_WHITE)
+    draw.rectangle((0, 0, W, HDR_H), fill=_C_HDR_ZC)
+    draw.text((10, 10 if _wide else 9), 'ClawBerry', font=f_hdr, fill=_C_WHITE)
 
     # Gather IPs
     w_ip = get_ip_address('wlan0')
@@ -786,14 +790,14 @@ def draw_monitor_lcd(disp):
     if _LCD_LANDSCAPE:
         # Landscape: QR left, info panel right
         QR_SIZE = 128
-        QR_X, QR_Y = 6, 40 + (H - 40 - QR_SIZE) // 2
+        QR_X, QR_Y = 6, HDR_H + (H - HDR_H - QR_SIZE) // 2
         _draw_qr(QR_X, QR_Y, QR_SIZE)
-        _draw_ifaces_and_svcs(QR_X + QR_SIZE + 8, 48)
+        _draw_ifaces_and_svcs(QR_X + QR_SIZE + 8, HDR_H + 8)
     else:
         # Portrait: QR centred below header, info below
         QR_SIZE = 120
         QR_X = (W - QR_SIZE) // 2
-        QR_Y = 48
+        QR_Y = HDR_H + 8
         _draw_qr(QR_X, QR_Y, QR_SIZE)
         _draw_ifaces_and_svcs(6, QR_Y + QR_SIZE + 10)
 
@@ -801,18 +805,20 @@ def draw_monitor_lcd(disp):
 
 
 def draw_paircode_lcd(disp, code):
-    """Render the ZeroClaw pair-code screen on the 1.69\" LCD.
+    """Render the ZeroClaw pair-code screen on LCD displays.
     Auto-sizes the code to fill the available width in either orientation.
     """
     W, H  = _lcd_dims(disp)
     image = Image.new('RGB', (W, H), _C_BG)
     draw  = ImageDraw.Draw(image)
 
-    f_hdr  = _load_font(_FONT_BOLD, 18)
-    f_hint = _load_font(_FONT_REG,  14)
+    _wide = (W >= 300)
+    f_hdr  = _load_font(_FONT_BOLD, 22 if _wide else 18)
+    f_hint = _load_font(_FONT_REG,  16 if _wide else 14)
+    HDR_H  = 44 if _wide else 40
 
-    draw.rectangle((0, 0, W, 40), fill=_C_HDR_ZC)
-    draw.text((10, 9), 'ZeroClaw Pair Code', font=f_hdr, fill=_C_WHITE)
+    draw.rectangle((0, 0, W, HDR_H), fill=_C_HDR_ZC)
+    draw.text((10, 10 if _wide else 9), 'ZeroClaw Pair Code', font=f_hdr, fill=_C_WHITE)
 
     # Auto-size code to fit width
     for fsize in (80, 66, 52, 40):
@@ -822,7 +828,7 @@ def draw_paircode_lcd(disp, code):
         if tw <= W * 0.92:
             break
 
-    cy = 44 + (H - 44 - 30 - th) // 2
+    cy = HDR_H + 4 + (H - HDR_H - 4 - 30 - th) // 2
     draw.text(((W - tw) // 2, cy), code, font=f_code, fill=_C_DARK)
 
     hint = 'scan / type in app'
@@ -834,20 +840,22 @@ def draw_paircode_lcd(disp, code):
 
 
 def draw_picoclaw_qr_lcd(disp, url, token=''):
-    """Render the PicoClaw pairing QR on the 1.69\" LCD.
-    Landscape (280×240): QR left, URL/token right.
-    Portrait  (240×280): QR centred, URL/token below.
+    """Render the PicoClaw pairing QR on LCD displays.
+    Landscape (280×240 or 320×240): QR left, URL/token right.
+    Portrait  (240×280 or 240×320): QR centred, URL/token below.
     """
     W, H  = _lcd_dims(disp)
     image = Image.new('RGB', (W, H), _C_BG)
     draw  = ImageDraw.Draw(image)
 
-    f_hdr   = _load_font(_FONT_BOLD, 18)
-    f_small = _load_font(_FONT_REG,  12)
-    f_tiny  = _load_font(_FONT_REG,  11)
+    _wide = (W >= 300)
+    f_hdr   = _load_font(_FONT_BOLD, 22 if _wide else 18)
+    f_small = _load_font(_FONT_REG,  14 if _wide else 12)
+    f_tiny  = _load_font(_FONT_REG,  13 if _wide else 11)
+    HDR_H   = 44 if _wide else 40
 
-    draw.rectangle((0, 0, W, 40), fill=_C_HDR_PC)
-    draw.text((10, 9), 'PicoClaw Pair QR', font=f_hdr, fill=_C_WHITE)
+    draw.rectangle((0, 0, W, HDR_H), fill=_C_HDR_PC)
+    draw.text((10, 10 if _wide else 9), 'PicoClaw Pair QR', font=f_hdr, fill=_C_WHITE)
 
     def _paste_qr(qx, qy, qsize):
         try:
@@ -861,9 +869,9 @@ def draw_picoclaw_qr_lcd(disp, url, token=''):
     if _LCD_LANDSCAPE:
         # QR left, URL/token right
         QR_SIZE = min(H - 50, 150)
-        QR_X, QR_Y = 6, 40 + (H - 40 - QR_SIZE) // 2
+        QR_X, QR_Y = 6, HDR_H + (H - HDR_H - QR_SIZE) // 2
         _paste_qr(QR_X, QR_Y, QR_SIZE)
-        tx, ty = QR_X + QR_SIZE + 8, 48
+        tx, ty = QR_X + QR_SIZE + 8, HDR_H + 8
         for line in textwrap.wrap(url, width=16)[:4]:
             draw.text((tx, ty), line, font=f_small, fill=(60, 60, 60))
             ty += 15
@@ -874,7 +882,7 @@ def draw_picoclaw_qr_lcd(disp, url, token=''):
         # QR centred, URL/token below
         QR_SIZE = min(W - 20, 180)
         QR_X = (W - QR_SIZE) // 2
-        QR_Y = 48
+        QR_Y = HDR_H + 8
         _paste_qr(QR_X, QR_Y, QR_SIZE)
         ty = QR_Y + QR_SIZE + 8
         for line in textwrap.wrap(url, width=30)[:3]:
