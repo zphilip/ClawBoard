@@ -27,7 +27,7 @@ Pin overrides (optional environment variables for e-ink):
     RADXA_EPD_SPI=/dev/spidev1.0  RADXA_EPD_CHIP=/dev/gpiochip0
 
 Pin overrides for LCD 2.4":
-    RADXA_LCD_RST=33   RADXA_LCD_DC=110  RADXA_LCD_BL=12
+    RADXA_LCD_RST=33   RADXA_LCD_DC=110  RADXA_LCD_BL=13
     RADXA_LCD_SPI=/dev/spidev1.0  RADXA_LCD_CHIP=/dev/gpiochip0
 
 To run as a systemd service, see daemon/clawberry-display-radxa.service.

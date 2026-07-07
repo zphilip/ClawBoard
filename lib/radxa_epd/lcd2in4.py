@@ -24,7 +24,7 @@ LCD_HEIGHT = 320
 # ── Default hardware pins ─────────────────────────────────────────────────────
 _DEFAULT_RST_LINE  = 33     # GPIO line number on /dev/gpiochip0
 _DEFAULT_DC_LINE   = 110
-_DEFAULT_BL_LINE   = 12     # backlight PWM pin
+_DEFAULT_BL_LINE   = 13     # backlight PWM pin
 _DEFAULT_SPI_DEV   = "/dev/spidev1.0"
 _DEFAULT_SPI_SPEED = 40_000_000
 _DEFAULT_GPIOCHIP  = "/dev/gpiochip0"
