@@ -10,8 +10,8 @@ Usage:
 import sys, os, time
 
 # Add lib to path like clawberry_display.py does
-_HERE = os.path.dirname(os.path.realpath(__file__))
-_LIB  = os.path.join(os.path.dirname(_HERE), 'lib')
+_HERE = os.path.dirname(os.path.realpath(__file__))  # .../ClawBoard/lib/radxa_epd
+_LIB  = os.path.dirname(_HERE)                         # .../ClawBoard/lib
 sys.path.insert(0, _LIB)
 
 from PIL import Image, ImageDraw, ImageFont
