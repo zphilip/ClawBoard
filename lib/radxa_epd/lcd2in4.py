@@ -279,10 +279,10 @@ class LCD_2inch4:
         if imwidth == self.height and imheight == self.width:
             # Landscape (320×240) → transpose to 240×320 for portrait GRAM.
             # pix shape (Y=240, X=320, ch=2) → swap axes → (X=320, Y=240, ch=2)
-            # Flip X so columns are sent in the correct order for this panel.
+            # Flip Y so each column's pixels are in the correct top-to-bottom order.
             # C-order flatten then walks: col0, col1, ... col319 (each with 240 Y pixels).
             pix = np.swapaxes(pix, 0, 1)
-            pix = np.flip(pix, axis=0)  # reverse column order
+            pix = np.flip(pix, axis=1)  # reverse Y order within each column
             pix = pix.flatten().tolist()
         else:
             # Portrait (240×320) — C-order flatten is correct
