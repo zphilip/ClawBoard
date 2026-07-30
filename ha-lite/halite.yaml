@@ -1,0 +1,25 @@
+# ha-lite Server - Configuration
+# Environment variables override these settings (prefix HALITE_).
+
+server:
+  host: "0.0.0.0"     # Listen address
+  port: 8090           # HTTP port
+
+xiaomi:
+  # Xiaomi/Mi account credentials.
+  # OPTIONAL: Leave empty to use QR code login (Mi Home app scan).
+  # QR login: POST /api/login/qr/start → scan with Mi Home → POST /api/login/qr/collect
+  username: ""          # Xiaomi account phone/email (or HALITE_XIAOMI_USERNAME)
+  password: ""          # Xiaomi account password (or HALITE_XIAOMI_PASSWORD)
+  region: "cn"          # Server region: cn, sg, de, us, ru, tw, in
+
+registry:
+  cache_file: "cache/mi_tokens.json"   # Local device token cache
+
+# Optional: static device entries for fallback (when cloud is unavailable).
+# devices:
+#   - name: "Living Room Light"
+#     did: "12345678"
+#     ip: "192.168.1.50"
+#     token: "abcdef1234567890abcdef12345678"
+#     model: "xiaomi.light.b1"

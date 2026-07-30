@@ -1,0 +1,32 @@
+[Unit]
+Description=HA Lite Server - Xiaomi Smart Home Control
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=pi
+WorkingDirectory=/home/pi/ha-lite
+ExecStart=/home/pi/ha-lite/halite
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=halite
+
+# Environment variables (set your credentials here or in halite.yaml)
+# Environment="HALITE_XIAOMI_USERNAME=your_phone_or_email"
+# Environment="HALITE_XIAOMI_PASSWORD=your_password"
+# Environment="HALITE_XIAOMI_REGION=cn"
+# Environment="HALITE_CONFIG=/home/pi/ha-lite/halite.yaml"
+
+# Security hardening
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/pi/ha-lite/cache
+ReadOnlyPaths=/home/pi/ha-lite/halite.yaml
+
+[Install]
+WantedBy=multi-user.target
