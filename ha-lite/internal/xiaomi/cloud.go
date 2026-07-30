@@ -207,13 +207,23 @@ func (c *CloudClient) DeviceList() ([]DeviceInfo, error) {
 	// Try encrypted API if ssecurity is available.
 	fmt.Printf("[xiaomi] ssecurity available: %v (len=%d)\n", c.ssecurity != "", len(c.ssecurity))
 	if c.ssecurity != "" {
+		// Try native Go encrypted API first.
 		devs, err := c.DeviceListEncrypted(c.ssecurity)
-		fmt.Printf("[xiaomi] encrypted result: %d devices, err=%v\n", len(devs), err)
+		fmt.Printf("[xiaomi] native encrypted result: %d devices, err=%v\n", len(devs), err)
 		if err == nil && len(devs) > 0 {
 			return devs, nil
 		}
 		if err != nil {
-			fmt.Printf("[xiaomi] encrypted API failed: %v, falling back\n", err)
+			fmt.Printf("[xiaomi] native encrypted API failed: %v, trying python fallback\n", err)
+		}
+
+		// Fallback to Python helper.
+		devs, err = c.deviceListViaPython(c.ssecurity)
+		if err == nil && len(devs) > 0 {
+			return devs, nil
+		}
+		if err != nil {
+			fmt.Printf("[xiaomi] python helper failed: %v\n", err)
 		}
 	}
 
@@ -320,13 +330,13 @@ func (c *CloudClient) getHomeDevices(baseURL, homeID, ownerID string) ([]DeviceI
 		Code    int    `json:"code"`
 		Message string `json:"message"`
 		Result  struct {
-			List []struct {
+			DeviceInfo []struct {
 				DID     string `json:"did"`
 				Name    string `json:"name"`
 				Model   string `json:"model"`
 				LocalIP string `json:"localip"`
 				Token   string `json:"token"`
-			} `json:"list"`
+			} `json:"device_info"`
 		} `json:"result"`
 	}
 	if err := json.Unmarshal(body, &result); err != nil {
@@ -337,7 +347,7 @@ func (c *CloudClient) getHomeDevices(baseURL, homeID, ownerID string) ([]DeviceI
 	}
 
 	var devices []DeviceInfo
-	for _, d := range result.Result.List {
+	for _, d := range result.Result.DeviceInfo {
 		if d.DID != "" {
 			devices = append(devices, DeviceInfo{
 				DID:   d.DID,
@@ -367,13 +377,13 @@ func (c *CloudClient) deviceListAll(baseURL string) ([]DeviceInfo, error) {
 		Code    int    `json:"code"`
 		Message string `json:"message"`
 		Result  struct {
-			List []struct {
+			DeviceInfo []struct {
 				DID     string `json:"did"`
 				Name    string `json:"name"`
 				Model   string `json:"model"`
 				LocalIP string `json:"localip"`
 				Token   string `json:"token"`
-			} `json:"list"`
+			} `json:"device_info"`
 		} `json:"result"`
 	}
 	if err := json.Unmarshal(body, &result); err != nil {
@@ -384,7 +394,7 @@ func (c *CloudClient) deviceListAll(baseURL string) ([]DeviceInfo, error) {
 	}
 
 	var devices []DeviceInfo
-	for _, d := range result.Result.List {
+	for _, d := range result.Result.DeviceInfo {
 		if d.DID != "" {
 			devices = append(devices, DeviceInfo{
 				DID:   d.DID,

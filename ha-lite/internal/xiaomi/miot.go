@@ -12,6 +12,8 @@ import (
 	"math/rand"
 	"net/http"
 	"net/url"
+	"os"
+	"os/exec"
 	"strings"
 	"time"
 )
@@ -182,7 +184,8 @@ func generateEncParams(fullURL, method string, params url.Values, ssecurity stri
 	// Step 3: signature on the encrypted params (data + rc4_hash__, no _nonce).
 	out.Set("signature", generateEncSignature(fullURL, method, signedNonce, out))
 
-	// Step 4: Add _nonce (unencrypted original).
+	// Step 4: Add signature, ssecurity, and _nonce (unencrypted).
+	out.Set("ssecurity", ssecurity)
 	out.Set("_nonce", nonce)
 
 	return out, signedNonce, nil
@@ -250,7 +253,8 @@ func sortStrings(s []string) {
 	}
 }
 
-// encryptRC4 encrypts a payload with RC4 using the given password (base64-encoded key).
+// encryptRC4 encrypts a payload with RC4, dropping the first 1024 bytes
+// of keystream (Xiaomi security measure to avoid RC4 key scheduling weaknesses).
 func encryptRC4(password, payload string) (string, error) {
 	key, err := base64.StdEncoding.DecodeString(password)
 	if err != nil {
@@ -260,13 +264,16 @@ func encryptRC4(password, payload string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	// Drop first 1024 bytes of RC4 keystream.
+	c.XORKeyStream(make([]byte, 1024), make([]byte, 1024))
 	plain := []byte(payload)
 	encrypted := make([]byte, len(plain))
 	c.XORKeyStream(encrypted, plain)
 	return base64.StdEncoding.EncodeToString(encrypted), nil
 }
 
-// decryptRC4 decrypts an RC4-encrypted payload.
+// decryptRC4 decrypts an RC4-encrypted payload, dropping the first 1024 bytes
+// of keystream (matching the encryption side).
 func decryptRC4(password, payload string) (string, error) {
 	key, err := base64.StdEncoding.DecodeString(password)
 	if err != nil {
@@ -280,9 +287,59 @@ func decryptRC4(password, payload string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	// Drop first 1024 bytes of RC4 keystream.
+	c.XORKeyStream(make([]byte, 1024), make([]byte, 1024))
 	plain := make([]byte, len(encrypted))
 	c.XORKeyStream(plain, encrypted)
 	return string(plain), nil
+}
+
+// deviceListViaPython calls the Python miot_api.py helper to get devices.
+// This is a fallback when the native Go encrypted API doesn't work.
+func (c *CloudClient) deviceListViaPython(ssecurity string) ([]DeviceInfo, error) {
+	if c.serviceToken == "" || c.userID == "" || ssecurity == "" {
+		return nil, fmt.Errorf("missing credentials for python helper")
+	}
+
+	// Find miot_api.py relative to the binary or in standard locations.
+	scriptPaths := []string{
+		"scripts/miot_api.py",
+		"../scripts/miot_api.py",
+		"/home/pi/ha-lite/scripts/miot_api.py",
+	}
+
+	var script string
+	for _, p := range scriptPaths {
+		if _, err := os.Stat(p); err == nil {
+			script = p
+			break
+		}
+	}
+	if script == "" {
+		return nil, fmt.Errorf("miot_api.py not found in %v", scriptPaths)
+	}
+
+	cmd := exec.Command("python3", script,
+		"--userId", c.userID,
+		"--serviceToken", c.serviceToken,
+		"--ssecurity", ssecurity,
+	)
+	cmd.Stderr = os.Stderr
+	output, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("python helper failed: %w (output: %s)", err, string(output[:min(200, len(output))]))
+	}
+
+	var result struct {
+		Count   int          `json:"count"`
+		Devices []DeviceInfo `json:"devices"`
+	}
+	if err := json.Unmarshal(output, &result); err != nil {
+		return nil, fmt.Errorf("parse python output: %w (output: %s)", err, string(output[:min(200, len(output))]))
+	}
+
+	fmt.Printf("[xiaomi] python helper returned %d devices\n", len(result.Devices))
+	return result.Devices, nil
 }
 
 // DeviceListEncrypted fetches devices using the encrypted MIoT API.
@@ -290,9 +347,9 @@ func decryptRC4(password, payload string) (string, error) {
 func (c *CloudClient) DeviceListEncrypted(ssecurity string) ([]DeviceInfo, error) {
 	// Step 1: Get homes.
 	type homeInfo struct {
-		ID      string `json:"id"`
-		Name    string `json:"name"`
-		OwnerID string `json:"uid"`
+		ID      string      `json:"id"`
+		Name    string      `json:"name"`
+		OwnerID json.Number `json:"uid"`
 	}
 
 	homesParams := url.Values{}
@@ -326,7 +383,7 @@ func (c *CloudClient) DeviceListEncrypted(ssecurity string) ([]DeviceInfo, error
 		devParams := url.Values{}
 		devParams.Set("data", fmt.Sprintf(
 			`{"home_owner":%s,"home_id":%s,"limit":200,"get_split_device":true,"support_smart_home":true}`,
-			h.OwnerID, h.ID))
+			h.OwnerID.String(), h.ID))
 
 		devBody, err := c.miotEncryptedCall("/v2/home/home_device_list", devParams, ssecurity)
 		if err != nil {
@@ -335,17 +392,18 @@ func (c *CloudClient) DeviceListEncrypted(ssecurity string) ([]DeviceInfo, error
 		}
 
 		devStr := trimPrefix(string(devBody), "&&&START&&&")
+		fmt.Printf("[xiaomi] home_device_list response (first 300): %s\n", devStr[:min(300, len(devStr))])
 		var devResult struct {
 			Code    int    `json:"code"`
 			Message string `json:"message"`
 			Result  struct {
-				List []struct {
+				DeviceInfo []struct {
 					DID     string `json:"did"`
 					Name    string `json:"name"`
 					Model   string `json:"model"`
 					LocalIP string `json:"localip"`
 					Token   string `json:"token"`
-				} `json:"list"`
+				} `json:"device_info"`
 			} `json:"result"`
 		}
 		if err := json.Unmarshal([]byte(devStr), &devResult); err != nil {
@@ -357,7 +415,7 @@ func (c *CloudClient) DeviceListEncrypted(ssecurity string) ([]DeviceInfo, error
 			continue
 		}
 
-		for _, d := range devResult.Result.List {
+		for _, d := range devResult.Result.DeviceInfo {
 			if d.DID != "" {
 				allDevices = append(allDevices, DeviceInfo{
 					DID:   d.DID,

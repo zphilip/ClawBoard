@@ -81,10 +81,12 @@ PI_USER ?= pi
 PI_DIR  ?= /home/pi/ha-lite
 
 deploy: pi-zero
-	ssh $(PI_USER)@$(PI_HOST) "mkdir -p $(PI_DIR)"
+	ssh $(PI_USER)@$(PI_HOST) "mkdir -p $(PI_DIR)/scripts"
 	scp $(BINARY)-linux-arm64 $(PI_USER)@$(PI_HOST):$(PI_DIR)/$(BINARY)
 	scp halite.yaml $(PI_USER)@$(PI_HOST):$(PI_DIR)/
-	ssh $(PI_USER)@$(PI_HOST) "chmod +x $(PI_DIR)/$(BINARY)"
+	scp -r scripts/miot_api.py $(PI_USER)@$(PI_HOST):$(PI_DIR)/scripts/
+	ssh $(PI_USER)@$(PI_HOST) "chmod +x $(PI_DIR)/$(BINARY) $(PI_DIR)/scripts/miot_api.py"
+	@echo "✔ Deployed. Don't forget: pip3 install pycryptodome --break-system-packages"
 
 deploy-service: deploy
 	scp halite.service $(PI_USER)@$(PI_HOST):/tmp/
