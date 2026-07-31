@@ -119,6 +119,7 @@ wifi-connect/
 skills/
 clawproxy/
 dashboard/
+ha-lite/
 nginx/nginx.openclaw
 dashboard.py
 clawberry_bluetooth.py
@@ -768,6 +769,62 @@ if [[ ! -d "/var/lib/zeroclaw/.zeroclaw" ]]; then
     chown -R zeroclaw:zeroclaw /var/lib/zeroclaw/.zeroclaw
 else
     chown -R zeroclaw:zeroclaw /var/lib/zeroclaw/.zeroclaw
+fi
+
+# ── Deploy ha-lite binary ──────────────────────────────────────────────────────
+HALITE_SRC="$WORK_DIR/ha-lite"
+HALITE_DST="/opt/clawboard/ha-lite"
+if [[ -d "$HALITE_SRC" ]]; then
+    log "Deploying ha-lite (Xiaomi smart home control)..."
+    mkdir -p "$HALITE_DST/cache"
+
+    # Determine the appropriate binary for this architecture.
+    _arch=$(uname -m)
+    _halite_bin=""
+    case "$_arch" in
+        aarch64|arm64)   _halite_bin="$HALITE_SRC/halite-linux-arm64" ;;
+        armv7l|armv7)    _halite_bin="$HALITE_SRC/halite-linux-armv7" ;;
+        armv6l)          _halite_bin="$HALITE_SRC/halite-linux-armv6" ;;
+        x86_64|amd64)    _halite_bin="$HALITE_SRC/halite-linux-amd64" ;;
+    esac
+
+    if [[ -n "$_halite_bin" && -f "$_halite_bin" ]]; then
+        rsync --archive "$_halite_bin" "$HALITE_DST/halite"
+        chmod +x "$HALITE_DST/halite"
+        chown -R "$CLAWBOARD_USER:$CLAWBOARD_USER" "$HALITE_DST"
+        log "ha-lite binary deployed: $_halite_bin → $HALITE_DST/halite"
+
+        # Deploy config template if not already present.
+        if [[ ! -f "$HALITE_DST/halite.yaml" ]]; then
+            rsync --archive "$HALITE_SRC/halite.yaml" "$HALITE_DST/halite.yaml"
+            log "ha-lite config seeded: halite.yaml"
+        fi
+
+        # Deploy Python helper for device API.
+        if [[ -f "$HALITE_SRC/scripts/miot_api.py" ]]; then
+            mkdir -p "$HALITE_DST/scripts"
+            rsync --archive "$HALITE_SRC/scripts/miot_api.py" "$HALITE_DST/scripts/miot_api.py"
+            log "ha-lite miot_api.py deployed"
+        fi
+
+        # Install/update systemd service.
+        if [[ -f "$HALITE_SRC/halite.service" ]]; then
+            cp "$HALITE_SRC/halite.service" /etc/systemd/system/halite.service
+            sed -i "s|WorkingDirectory=/home/pi/ha-lite|WorkingDirectory=$HALITE_DST|" /etc/systemd/system/halite.service
+            sed -i "s|ExecStart=/home/pi/ha-lite/halite|ExecStart=$HALITE_DST/halite|" /etc/systemd/system/halite.service
+            sed -i "s|User=pi|User=$CLAWBOARD_USER|" /etc/systemd/system/halite.service
+            sed -i "s|ReadWritePaths=/home/pi/ha-lite/cache|ReadWritePaths=$HALITE_DST/cache|" /etc/systemd/system/halite.service
+            sed -i "s|ReadOnlyPaths=/home/pi/ha-lite/halite.yaml|ReadOnlyPaths=$HALITE_DST/halite.yaml|" /etc/systemd/system/halite.service
+            systemctl daemon-reload
+            systemctl enable halite 2>/dev/null || log "WARNING: systemctl enable halite failed"
+            systemctl restart halite 2>/dev/null || log "WARNING: systemctl restart halite failed"
+            log "ha-lite systemd service installed & started"
+        fi
+    else
+        log "WARNING: No ha-lite binary found for architecture $_arch"
+    fi
+else
+    log "WARNING: ha-lite/ not found in repo — skipping"
 fi
 
 log "Workspace sync complete."

@@ -44,6 +44,7 @@ from dashboard.panels_proxy import build_proxy_panel
 from dashboard.panels_zeroclaw import build_zeroclaw_panel
 from dashboard.panels_picoclaw import build_picoclaw_panel
 from dashboard.panels_openclaw import build_openclaw_panel
+from dashboard.panels_halite import build_halite_panel
 
 
 def _get_lan_ip() -> str:
@@ -593,6 +594,7 @@ def index(request: Request):
         btn_zc   = ui.button('🦾 ZeroClaw',    icon='terminal').props('flat align=left color=blue-8').classes('w-full q-mt-xs')
         btn_pc   = ui.button('🐾 PicoClaw',     icon='memory'  ).props('flat align=left color=grey-7').classes('w-full')
         btn_oc   = ui.button('📂 OpenClaw',     icon='folder'  ).props('flat align=left color=grey-7').classes('w-full')
+        btn_halite = ui.button('🏠 HA Lite',      icon='home'    ).props('flat align=left color=grey-7').classes('w-full')
         btn_wifi    = ui.button(T['btn_wifi'],    icon='wifi'    ).props('flat align=left color=grey-7').classes('w-full')
         btn_proxy   = ui.button(T['btn_proxy'],   icon='swap_horiz').props('flat align=left color=grey-7').classes('w-full')
         btn_upgrade = ui.button(T['btn_upgrade'], icon='system_update_alt').props('flat align=left color=grey-7').classes('w-full')
@@ -777,23 +779,29 @@ def index(request: Request):
     # ══ Proxy & Upgrade panels ═══════════════════════════════════════════════
     proxy_content, upgrade_content, upgrade_content_inner, _proxy_refresh = build_proxy_panel(T)
 
+    # ══ HA Lite panel ═══════════════════════════════════════════════════════════
+    halite_content = build_halite_panel(T, conf, lang)
+
     # ── Sidebar navigation wiring ──────────────────────────────────────────────
     def _switch_dash(name):
         zc_content.set_visibility(name == 'zeroclaw')
         pc_content.set_visibility(name == 'picoclaw')
         oc_content.set_visibility(name == 'openclaw')
+        halite_content.set_visibility(name == 'halite')
         wifi_content.set_visibility(name == 'wifi')
         proxy_content.set_visibility(name == 'proxy')
         upgrade_content.set_visibility(name == 'upgrade')
         btn_zc._props['color']      = 'blue-8'        if name == 'zeroclaw' else 'grey-7'
         btn_pc._props['color']      = 'purple-8'      if name == 'picoclaw' else 'grey-7'
         btn_oc._props['color']      = 'teal-8'        if name == 'openclaw' else 'grey-7'
+        btn_halite._props['color']  = 'green-8'       if name == 'halite'   else 'grey-7'
         btn_wifi._props['color']    = 'teal-8'        if name == 'wifi'     else 'grey-7'
         btn_proxy._props['color']   = 'indigo-7'      if name == 'proxy'    else 'grey-7'
         btn_upgrade._props['color'] = 'orange-9'      if name == 'upgrade'  else 'grey-7'
         btn_zc.update()
         btn_pc.update()
         btn_oc.update()
+        btn_halite.update()
         btn_wifi.update()
         btn_proxy.update()
         btn_upgrade.update()
@@ -801,6 +809,7 @@ def index(request: Request):
     btn_zc.on('click',      lambda: _switch_dash('zeroclaw'))
     btn_pc.on('click',      lambda: _switch_dash('picoclaw'))
     btn_oc.on('click',      lambda: _switch_dash('openclaw'))
+    btn_halite.on('click',  lambda: _switch_dash('halite'))
     btn_wifi.on('click',    lambda: _switch_dash('wifi'))
     btn_proxy.on('click',   lambda: (_proxy_refresh(), _switch_dash('proxy')))
     btn_upgrade.on('click', lambda: _switch_dash('upgrade'))
