@@ -74,6 +74,13 @@ def build_halite_panel(T: dict, conf: dict, lang: str):
         device_count_label = ui.label('').classes('text-caption')
         cloud_label = ui.label('').classes('text-caption')
 
+        # ── Server offline banner ─────────────────────────────────────────────
+        offline_banner = ui.card().classes('w-full q-pa-md q-mb-sm bg-red-1')
+        offline_banner.set_visibility(False)
+        with offline_banner:
+            ui.label('⚠️ ha-lite server is not reachable').classes('text-subtitle2 text-red-9')
+            ui.label(f'Expected at {HALITE_BASE} — start it: sudo systemctl start halite').classes('text-caption text-grey-7')
+
         # ── QR Login section ──────────────────────────────────────────────────
         qr_card = ui.card().classes('w-full q-pa-md q-mb-sm bg-blue-1')
         with qr_card:
@@ -84,7 +91,15 @@ def build_halite_panel(T: dict, conf: dict, lang: str):
             qr_iframe = ui.html('').classes('w-full')
             with ui.row().classes('q-mt-sm gap-x-2'):
                 def _start_qr():
-                    result = _halite_qr_start()
+                    try:
+                        result = _halite_qr_start()
+                    except Exception as e:
+                        qr_msg.set_text(f'Cannot reach ha-lite server at {HALITE_BASE}: {e}')
+                        qr_status_badge.set_text('Server offline')
+                        qr_status_badge.props('color=red icon=error')
+                        ui.notify(f'ha-lite server unreachable: {e}', type='negative')
+                        return
+
                     if result.get("status") == "waiting":
                         qr_status_badge.set_text('Waiting for scan…')
                         qr_status_badge.props('color=blue icon=qr_code')
@@ -104,13 +119,14 @@ def build_halite_panel(T: dict, conf: dict, lang: str):
                         else:
                             # Fallback: use image URL endpoint with ?format=raw for PNG.
                             img_url = result.get("qr_image_url", "") or f"{HALITE_BASE}/api/login/qr/image"
-                            if "?" not in img_url:
+                            if img_url and "?" not in img_url:
                                 img_url += "?format=raw"
-                            img_html = (
-                                f'<img src="{img_url}" '
-                                f'style="max-width:280px;border-radius:12px;display:block;margin:12px auto;" '
-                                f'alt="Xiaomi QR Code">'
-                            )
+                            if img_url:
+                                img_html = (
+                                    f'<img src="{img_url}" '
+                                    f'style="max-width:280px;border-radius:12px;display:block;margin:12px auto;" '
+                                    f'alt="Xiaomi QR Code">'
+                                )
 
                         link_html = ""
                         if direct_url:
@@ -130,8 +146,16 @@ def build_halite_panel(T: dict, conf: dict, lang: str):
                         qr_msg.set_text('QR code ready. Scan with Mi Home app on your phone.')
                         _start_polling_qr()
                     else:
-                        qr_msg.set_text(f'QR start failed: {result.get("message", "unknown error")}')
-                        ui.notify(f'QR login failed: {result.get("message", "")}', type='negative')
+                        err_msg = result.get("message", "") or result.get("error", "") or str(result)
+                        qr_msg.set_text(f'QR start failed: {err_msg}')
+                        qr_iframe.set_content(
+                            f'<div style="padding:12px;color:#c00;font-size:0.8rem;">'
+                            f'QR login could not start.<br>'
+                            f'Error: {err_msg}<br>'
+                            f'Check ha-lite logs: <code>journalctl -u halite -f</code>'
+                            f'</div>'
+                        )
+                        ui.notify(f'QR login failed: {err_msg}', type='negative')
 
                 ui.button('📱 Start QR Login', on_click=_start_qr).props('color=blue-8')
                 ui.button('🔄 Refresh Devices', on_click=lambda: _halite_refresh()).props('color=teal-8')
@@ -165,6 +189,16 @@ def build_halite_panel(T: dict, conf: dict, lang: str):
         def _halite_refresh():
             """Refresh device list and status."""
             health = _halite_health()
+            if health.get("error") or health.get("status") != "ok":
+                offline_banner.set_visibility(True)
+                health_label.set_text('🔴 Server: unreachable')
+                device_count_label.set_text('')
+                cloud_label.set_text('')
+                # Also hide QR card if server is down.
+                qr_card.set_visibility(False)
+                return
+            offline_banner.set_visibility(False)
+            qr_card.set_visibility(True)
             health_label.set_text(f'🟢 Server: {health.get("version", "?")}')
             device_count_label.set_text(f'Devices: {health.get("device_count", 0)}')
             cloud_label.set_text(f'Cloud: {"✅" if health.get("cloud_authed") else "❌"}')
