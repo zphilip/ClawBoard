@@ -86,23 +86,51 @@ def build_halite_panel(T: dict, conf: dict, lang: str):
                 def _start_qr():
                     result = _halite_qr_start()
                     if result.get("status") == "waiting":
-                        qr_msg.set_text('✅ QR code ready. Open the link below or scan the QR in server terminal.')
                         qr_status_badge.set_text('Waiting for scan…')
                         qr_status_badge.props('color=blue icon=qr_code')
-                        img_url = result.get("qr_image_url", "")
-                        if img_url:
-                            qr_iframe.set_content(
-                                f'<div style="text-align:center;margin-top:12px;">'
-                                f'<img src="{img_url}" style="max-width:280px;border-radius:12px;" '
-                                f'onerror="this.parentElement.innerHTML=\'<p style=color:red>QR image not loaded. '
-                                f'Check ha-lite server logs.</p>\'">'
-                                f'<p style="color:#666;font-size:0.8rem;">Scan with Mi Home app → Profile → top-right → Scan</p>'
-                                f'<p style="color:#999;font-size:0.75rem;">After scan, click Refresh Devices</p>'
-                                f'</div>'
+
+                        # Build HTML with embedded base64 QR image + direct link.
+                        data_uri = result.get("qr_image_b64_data_uri", "") or result.get("qr_image_b64", "")
+                        if data_uri and not data_uri.startswith("data:"):
+                            data_uri = "data:image/png;base64," + data_uri
+                        direct_url = result.get("login_url", "")
+                        img_html = ""
+                        if data_uri:
+                            img_html = (
+                                f'<img src="{data_uri}" '
+                                f'style="max-width:280px;border-radius:12px;display:block;margin:12px auto;" '
+                                f'alt="Xiaomi QR Code">'
                             )
+                        else:
+                            # Fallback: use image URL endpoint with ?format=raw for PNG.
+                            img_url = result.get("qr_image_url", "") or f"{HALITE_BASE}/api/login/qr/image"
+                            if "?" not in img_url:
+                                img_url += "?format=raw"
+                            img_html = (
+                                f'<img src="{img_url}" '
+                                f'style="max-width:280px;border-radius:12px;display:block;margin:12px auto;" '
+                                f'alt="Xiaomi QR Code">'
+                            )
+
+                        link_html = ""
+                        if direct_url:
+                            link_html = (
+                                f'<p style="color:#999;font-size:0.7rem;word-break:break-all;margin-top:8px;">'
+                                f'Or open: <code style="font-size:0.65rem;">{direct_url}</code></p>'
+                            )
+
+                        qr_iframe.set_content(
+                            f'<div style="text-align:center;margin-top:12px;">'
+                            f'{img_html}'
+                            f'<p style="color:#666;font-size:0.8rem;">📱 Open Mi Home app → Profile → top-right → Scan</p>'
+                            f'<p style="color:#999;font-size:0.75rem;">After scan, click Refresh Devices</p>'
+                            f'{link_html}'
+                            f'</div>'
+                        )
+                        qr_msg.set_text('QR code ready. Scan with Mi Home app on your phone.')
                         _start_polling_qr()
                     else:
-                        qr_msg.set_text(f'❌ QR start failed: {result.get("message", "unknown error")}')
+                        qr_msg.set_text(f'QR start failed: {result.get("message", "unknown error")}')
                         ui.notify(f'QR login failed: {result.get("message", "")}', type='negative')
 
                 ui.button('📱 Start QR Login', on_click=_start_qr).props('color=blue-8')
