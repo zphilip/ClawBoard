@@ -73,8 +73,27 @@ print(f"  {C.G}Found targets:{C.N}")
 for d in targets:
     print(f"    {d['name']:<30} {d['model']:<30} {d['did']:<20} online={d.get('online')}  ip={d.get('ip','?')}")
 
-# ── Step 2: Test control on each target ─────────────────────────────────────────
-print(f"\n{C.B}═══ Step 2: Test Control ═══{C.N}")
+# ── Step 2: Quick UDP reachability check ────────────────────────────────────────
+print(f"\n{C.B}═══ Step 2: UDP Reachability Check ═══{C.N}")
+for d in targets:
+    ip = d.get("ip", "")
+    name = d["name"]
+    if not ip:
+        continue
+    import socket
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.settimeout(2)
+    try:
+        sock.sendto(b"", (ip, 54321))
+        # This will NOT get a response but verifies the network path.
+        print(f"  {name}: UDP packet sent to {ip}:54321 (no error = reachable)")
+    except Exception as e:
+        print(f"  {C.R}{name}: UDP send to {ip}:54321 failed — {e}{C.N}")
+    finally:
+        sock.close()
+
+# ── Step 3: Test control on each target ─────────────────────────────────────────
+print(f"\n{C.B}═══ Step 3: Test Control ═══{C.N}")
 
 for d in targets:
     name = d["name"]

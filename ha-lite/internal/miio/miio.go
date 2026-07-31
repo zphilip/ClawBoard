@@ -46,8 +46,15 @@ type Packet struct {
 	RawPayload []byte // encrypted bytes
 }
 
-// encodePacket builds a raw miio packet ready for sending.
+// encodePacket builds a raw miio packet (Variant 2: key=MD5(token)).
 func (d *Device) encodePacket(cmd interface{}, deviceID uint32) ([]byte, error) {
+	return d.encodePacketVariant(cmd, deviceID, false)
+}
+
+// encodePacketVariant builds a raw miio packet with the specified encryption variant.
+// alt=false → V2: key=MD5(token), iv=MD5(key+token) (newer devices)
+// alt=true  → V1: key=token, iv=MD5(token) (older devices)
+func (d *Device) encodePacketVariant(cmd interface{}, deviceID uint32, alt bool) ([]byte, error) {
 	payload, err := json.Marshal(cmd)
 	if err != nil {
 		return nil, fmt.Errorf("marshal command: %w", err)
@@ -58,9 +65,16 @@ func (d *Device) encodePacket(cmd interface{}, deviceID uint32) ([]byte, error) 
 		return nil, fmt.Errorf("decode token: %w", err)
 	}
 
-	// Compute encryption key and IV.
-	key := md5Hash(tokenBytes)
-	iv := md5Hash(append(key, tokenBytes...))
+	var key, iv []byte
+	if alt {
+		// V1: key=token directly, iv=MD5(token).
+		key = tokenBytes
+		iv = md5Hash(tokenBytes)
+	} else {
+		// V2: key=MD5(token), iv=MD5(key+token).
+		key = md5Hash(tokenBytes)
+		iv = md5Hash(append(key, tokenBytes...))
+	}
 
 	encrypted, err := aesEncrypt(key, iv, payload)
 	if err != nil {
@@ -73,7 +87,6 @@ func (d *Device) encodePacket(cmd interface{}, deviceID uint32) ([]byte, error) 
 	headerPrefix := make([]byte, 16)
 	binary.BigEndian.PutUint16(headerPrefix[0:2], Magic)
 	binary.BigEndian.PutUint16(headerPrefix[2:4], uint16(HeaderLen+len(encrypted)))
-	// headerPrefix[4:8] stays zero
 	binary.BigEndian.PutUint32(headerPrefix[8:12], deviceID)
 	binary.BigEndian.PutUint32(headerPrefix[12:16], stamp)
 
@@ -84,7 +97,6 @@ func (d *Device) encodePacket(cmd interface{}, deviceID uint32) ([]byte, error) 
 	checksumData = append(checksumData, encrypted...)
 	checksum := md5Hash(checksumData)
 
-	// Assemble full packet.
 	packet := make([]byte, 0, HeaderLen+len(encrypted))
 	packet = append(packet, headerPrefix...)
 	packet = append(packet, checksum...)
@@ -93,8 +105,13 @@ func (d *Device) encodePacket(cmd interface{}, deviceID uint32) ([]byte, error) 
 	return packet, nil
 }
 
-// decodePacket parses a raw miio response packet.
+// decodePacket parses a raw miio response packet (V2 by default).
 func (d *Device) decodePacket(data []byte) (*Packet, error) {
+	return d.decodePacketVariant(data, false)
+}
+
+// decodePacketVariant parses a miio response packet with a specific encryption variant.
+func (d *Device) decodePacketVariant(data []byte, alt bool) (*Packet, error) {
 	if len(data) < HeaderLen {
 		return nil, fmt.Errorf("packet too short: %d bytes", len(data))
 	}
@@ -102,11 +119,6 @@ func (d *Device) decodePacket(data []byte) (*Packet, error) {
 	magic := binary.BigEndian.Uint16(data[0:2])
 	if magic != Magic {
 		return nil, fmt.Errorf("bad magic: 0x%04x", magic)
-	}
-
-	length := binary.BigEndian.Uint16(data[2:4])
-	if int(length) != len(data) {
-		return nil, fmt.Errorf("length mismatch: header=%d actual=%d", length, len(data))
 	}
 
 	deviceID := binary.BigEndian.Uint32(data[8:12])
@@ -118,9 +130,14 @@ func (d *Device) decodePacket(data []byte) (*Packet, error) {
 		return nil, fmt.Errorf("decode token: %w", err)
 	}
 
-	// Decrypt.
-	key := md5Hash(tokenBytes)
-	iv := md5Hash(append(key, tokenBytes...))
+	var key, iv []byte
+	if alt {
+		key = tokenBytes
+		iv = md5Hash(tokenBytes)
+	} else {
+		key = md5Hash(tokenBytes)
+		iv = md5Hash(append(key, tokenBytes...))
+	}
 
 	plain, err := aesDecrypt(key, iv, encrypted)
 	if err != nil {
@@ -135,19 +152,38 @@ func (d *Device) decodePacket(data []byte) (*Packet, error) {
 	}, nil
 }
 
+// decodePacketAlt tries the alternative encryption scheme (V1).
+func (d *Device) decodePacketAlt(data []byte) (*Packet, error) {
+	return d.decodePacketVariant(data, true)
+}
+
 // Send sends a command to the device and returns the decrypted JSON response.
+// Tries both encryption variants (V1: key=token, V2: key=MD5(token)).
 func (d *Device) Send(cmd interface{}) (json.RawMessage, error) {
-	// Determine device ID. For most control commands, 0 works.
-	// For "hello" discovery, we use 0xFFFFFFFF.
 	deviceID := uint32(0)
 
-	packet, err := d.encodePacket(cmd, deviceID)
+	// Try Variant 2 first (key=MD5(token), iv=MD5(key+token)).
+	resp, err := d.sendWithVariant(cmd, deviceID, false)
+	if err == nil {
+		return resp, nil
+	}
+	// If timeout/error, try Variant 1 (key=token, iv=MD5(token)).
+	resp2, err2 := d.sendWithVariant(cmd, deviceID, true)
+	if err2 == nil {
+		return resp2, nil
+	}
+	return nil, fmt.Errorf("send failed: v2=%v, v1=%v", err, err2)
+}
+
+// sendWithVariant sends a command with a specific encryption variant.
+// alt=true → older device variant (key=token directly, no MD5 wrapper).
+func (d *Device) sendWithVariant(cmd interface{}, deviceID uint32, alt bool) (json.RawMessage, error) {
+	packet, err := d.encodePacketVariant(cmd, deviceID, alt)
 	if err != nil {
 		return nil, fmt.Errorf("encode: %w", err)
 	}
 
 	addr := &net.UDPAddr{IP: net.ParseIP(d.IP), Port: DefaultPort}
-
 	conn, err := net.DialUDP("udp", nil, addr)
 	if err != nil {
 		return nil, fmt.Errorf("dial %s: %w", addr.String(), err)
@@ -168,54 +204,18 @@ func (d *Device) Send(cmd interface{}) (json.RawMessage, error) {
 		return nil, fmt.Errorf("read: %w", err)
 	}
 
-	resp, err := d.decodePacket(buf[:n])
+	// Decode with matching variant first.
+	resp, err := d.decodePacketVariant(buf[:n], alt)
 	if err != nil {
-		// Try alternative encryption scheme (some devices use different IV).
-		resp, err2 := d.decodePacketAlt(buf[:n])
+		// Try the other variant for decoding.
+		resp, err2 := d.decodePacketVariant(buf[:n], !alt)
 		if err2 != nil {
-			return nil, fmt.Errorf("decode: %w (alt: %v)", err, err2)
+			return nil, fmt.Errorf("decode: v=%v (alt decode: %v)", err, err2)
 		}
 		return json.RawMessage(resp.Payload), nil
 	}
 
 	return json.RawMessage(resp.Payload), nil
-}
-
-// decodePacketAlt tries an alternative encryption scheme.
-// Some devices use key=token (no MD5) and IV=MD5(token).
-func (d *Device) decodePacketAlt(data []byte) (*Packet, error) {
-	if len(data) < HeaderLen {
-		return nil, fmt.Errorf("packet too short: %d bytes", len(data))
-	}
-
-	magic := binary.BigEndian.Uint16(data[0:2])
-	if magic != Magic {
-		return nil, fmt.Errorf("bad magic: 0x%04x", magic)
-	}
-
-	deviceID := binary.BigEndian.Uint32(data[8:12])
-	stamp := binary.BigEndian.Uint32(data[12:16])
-	encrypted := data[HeaderLen:]
-
-	tokenBytes, err := hex.DecodeString(d.Token)
-	if err != nil {
-		return nil, err
-	}
-
-	// Alt: key = token_bytes directly, IV = MD5(token_bytes)
-	iv := md5Hash(tokenBytes)
-
-	plain, err := aesDecrypt(tokenBytes, iv, encrypted)
-	if err != nil {
-		return nil, err
-	}
-
-	return &Packet{
-		DeviceID:   deviceID,
-		Stamp:      stamp,
-		Payload:    plain,
-		RawPayload: encrypted,
-	}, nil
 }
 
 // Hello sends a discovery "hello" packet and returns the parsed device info.
