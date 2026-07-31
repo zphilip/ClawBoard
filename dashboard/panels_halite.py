@@ -132,7 +132,8 @@ def build_halite_panel(T: dict, conf: dict, lang: str):
                         if direct_url:
                             link_html = (
                                 f'<p style="color:#999;font-size:0.7rem;word-break:break-all;margin-top:8px;">'
-                                f'Or open: <code style="font-size:0.65rem;">{direct_url}</code></p>'
+                                f'Or: <a href="{direct_url}" target="_blank" style="font-size:0.65rem;color:#1976d2;">'
+                                f'open direct login link</a></p>'
                             )
 
                         qr_iframe.set_content(
@@ -169,9 +170,9 @@ def build_halite_panel(T: dict, conf: dict, lang: str):
                         timer.deactivate()
                         qr_status_badge.set_text('Logged in ✅')
                         qr_status_badge.props('color=green icon=check_circle')
-                        qr_msg.set_text('Login successful! Syncing devices...')
-                        # Auto-collect and refresh.
-                        _halite_sync()
+                        qr_msg.set_text('Login successful! Syncing devices from cloud...')
+                        # Call collect to sync devices, then refresh UI.
+                        _api("POST", "/api/login/qr/collect")
                         _halite_refresh()
                         ui.notify('✅ Xiaomi login complete', type='positive')
                     elif status.get("status") == "scanned":
@@ -189,19 +190,28 @@ def build_halite_panel(T: dict, conf: dict, lang: str):
         def _halite_refresh():
             """Refresh device list and status."""
             health = _halite_health()
+            offline_banner.set_visibility(False)
+
             if health.get("error") or health.get("status") != "ok":
                 offline_banner.set_visibility(True)
                 health_label.set_text('🔴 Server: unreachable')
                 device_count_label.set_text('')
                 cloud_label.set_text('')
-                # Also hide QR card if server is down.
                 qr_card.set_visibility(False)
+                device_container.clear()
                 return
-            offline_banner.set_visibility(False)
-            qr_card.set_visibility(True)
+
+            is_authed = health.get("cloud_authed", False)
+            dev_count = health.get("device_count", 0)
             health_label.set_text(f'🟢 Server: {health.get("version", "?")}')
-            device_count_label.set_text(f'Devices: {health.get("device_count", 0)}')
-            cloud_label.set_text(f'Cloud: {"✅" if health.get("cloud_authed") else "❌"}')
+            device_count_label.set_text(f'Devices: {dev_count}')
+            cloud_label.set_text(f'Cloud: {"✅" if is_authed else "❌"}')
+
+            # Hide QR card after successful login.
+            if is_authed:
+                qr_card.set_visibility(False)
+            else:
+                qr_card.set_visibility(True)
 
             devices = _halite_devices()
             device_container.clear()
@@ -210,13 +220,13 @@ def build_halite_panel(T: dict, conf: dict, lang: str):
                 with device_container:
                     ui.card().classes('w-full q-pa-md q-mb-sm bg-grey-2')
                     with ui.row().classes('w-full items-center'):
-                        ui.icon('info', color='grey').classes('q-mr-sm')
-                        ui.label('No devices found. Login to Xiaomi Cloud first or add devices via Mi Home app.').classes('text-grey-7')
+                        if is_authed:
+                            ui.icon('cloud_done', color='green').classes('q-mr-sm')
+                            ui.label('Cloud connected but no devices found. Add devices in Mi Home app, then re-login.').classes('text-grey-7')
+                        else:
+                            ui.icon('info', color='grey').classes('q-mr-sm')
+                            ui.label('No devices yet. Click "Start QR Login" to sync devices from Xiaomi Cloud.').classes('text-grey-7')
                 return
-
-            # Hide QR card if already authenticated.
-            if health.get("cloud_authed"):
-                qr_card.set_visibility(False)
 
             with device_container:
                 for d in devices:
