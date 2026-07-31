@@ -32,7 +32,7 @@ def _halite_devices() -> list[dict]:
 
 
 def _halite_control(did: str, action: str) -> dict:
-    _, data = _api("POST", "/api/control", {"did": did, "action": action})
+    _, data = _api("POST", "/api/control", {"did": did, "action": action}, timeout=15)
     return data
 
 

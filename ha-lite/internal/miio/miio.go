@@ -19,7 +19,7 @@ const (
 	// DefaultPort is the standard miio UDP port.
 	DefaultPort = 54321
 	// ReadTimeout is the maximum time to wait for a device response.
-	ReadTimeout = 5 * time.Second
+	ReadTimeout = 10 * time.Second
 	// Magic is the miio protocol magic number.
 	Magic = 0x2131
 	// HeaderLen is the length of the miio packet header.
