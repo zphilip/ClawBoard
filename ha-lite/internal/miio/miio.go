@@ -48,13 +48,12 @@ type Packet struct {
 
 // encodePacket builds a raw miio packet (Variant 2: key=MD5(token)).
 func (d *Device) encodePacket(cmd interface{}, deviceID uint32) ([]byte, error) {
-	return d.encodePacketVariant(cmd, deviceID, false)
+	return d.encodePacketVariant(cmd, deviceID, false, false)
 }
 
-// encodePacketVariant builds a raw miio packet with the specified encryption variant.
-// alt=false → V2: key=MD5(token), iv=MD5(key+token) (newer devices)
-// alt=true  → V1: key=token, iv=MD5(token) (older devices)
-func (d *Device) encodePacketVariant(cmd interface{}, deviceID uint32, alt bool) ([]byte, error) {
+// encodePacketVariant builds a raw miio packet.
+// alt/ffIV control the encryption variant (see sendWithVariant).
+func (d *Device) encodePacketVariant(cmd interface{}, deviceID uint32, alt, ffIV bool) ([]byte, error) {
 	payload, err := json.Marshal(cmd)
 	if err != nil {
 		return nil, fmt.Errorf("marshal command: %w", err)
@@ -66,12 +65,21 @@ func (d *Device) encodePacketVariant(cmd interface{}, deviceID uint32, alt bool)
 	}
 
 	var key, iv []byte
-	if alt {
-		// V1: key=token directly, iv=MD5(token).
+	switch {
+	case alt && !ffIV:
+		// V1: key=token, iv=MD5(token) — older devices.
 		key = tokenBytes
 		iv = md5Hash(tokenBytes)
-	} else {
-		// V2: key=MD5(token), iv=MD5(key+token).
+	case ffIV:
+		// V3: key=MD5(token), iv=MD5(0xFF*16 + token) — MIoT devices.
+		key = md5Hash(tokenBytes)
+		ff := make([]byte, 16)
+		for i := range ff {
+			ff[i] = 0xFF
+		}
+		iv = md5Hash(append(ff, tokenBytes...))
+	default:
+		// V2: key=MD5(token), iv=MD5(key+token) — newer devices.
 		key = md5Hash(tokenBytes)
 		iv = md5Hash(append(key, tokenBytes...))
 	}
@@ -107,11 +115,11 @@ func (d *Device) encodePacketVariant(cmd interface{}, deviceID uint32, alt bool)
 
 // decodePacket parses a raw miio response packet (V2 by default).
 func (d *Device) decodePacket(data []byte) (*Packet, error) {
-	return d.decodePacketVariant(data, false)
+	return d.decodePacketVariant(data, false, false)
 }
 
-// decodePacketVariant parses a miio response packet with a specific encryption variant.
-func (d *Device) decodePacketVariant(data []byte, alt bool) (*Packet, error) {
+// decodePacketVariant parses a miio response packet.
+func (d *Device) decodePacketVariant(data []byte, alt, ffIV bool) (*Packet, error) {
 	if len(data) < HeaderLen {
 		return nil, fmt.Errorf("packet too short: %d bytes", len(data))
 	}
@@ -131,10 +139,18 @@ func (d *Device) decodePacketVariant(data []byte, alt bool) (*Packet, error) {
 	}
 
 	var key, iv []byte
-	if alt {
+	switch {
+	case alt && !ffIV:
 		key = tokenBytes
 		iv = md5Hash(tokenBytes)
-	} else {
+	case ffIV:
+		key = md5Hash(tokenBytes)
+		ff := make([]byte, 16)
+		for i := range ff {
+			ff[i] = 0xFF
+		}
+		iv = md5Hash(append(ff, tokenBytes...))
+	default:
 		key = md5Hash(tokenBytes)
 		iv = md5Hash(append(key, tokenBytes...))
 	}
@@ -152,33 +168,41 @@ func (d *Device) decodePacketVariant(data []byte, alt bool) (*Packet, error) {
 	}, nil
 }
 
-// decodePacketAlt tries the alternative encryption scheme (V1).
+// decodePacketAlt tries the V1 alternative (key=token, iv=MD5(token)).
 func (d *Device) decodePacketAlt(data []byte) (*Packet, error) {
-	return d.decodePacketVariant(data, true)
+	return d.decodePacketVariant(data, true, false)
 }
 
 // Send sends a command to the device and returns the decrypted JSON response.
-// Tries both encryption variants (V1: key=token, V2: key=MD5(token)).
+// Tries all three encryption variants.
 func (d *Device) Send(cmd interface{}) (json.RawMessage, error) {
 	deviceID := uint32(0)
 
-	// Try Variant 2 first (key=MD5(token), iv=MD5(key+token)).
+	// Variant 2: key=MD5(token), iv=MD5(key+token) — newer devices
 	resp, err := d.sendWithVariant(cmd, deviceID, false)
 	if err == nil {
 		return resp, nil
 	}
-	// If timeout/error, try Variant 1 (key=token, iv=MD5(token)).
-	resp2, err2 := d.sendWithVariant(cmd, deviceID, true)
-	if err2 == nil {
-		return resp2, nil
+	// Variant 3: key=MD5(token), iv=MD5(0xFF*16 + token) — MIoT devices
+	resp3, err3 := d.sendWithVariant(cmd, deviceID, false, true)
+	if err3 == nil {
+		return resp3, nil
 	}
-	return nil, fmt.Errorf("send failed: v2=%v, v1=%v", err, err2)
+	// Variant 1: key=token, iv=MD5(token) — older devices
+	resp1, err1 := d.sendWithVariant(cmd, deviceID, true, false)
+	if err1 == nil {
+		return resp1, nil
+	}
+	return nil, fmt.Errorf("v2=%v, v3=%v, v1=%v", err, err3, err1)
 }
 
 // sendWithVariant sends a command with a specific encryption variant.
-// alt=true → older device variant (key=token directly, no MD5 wrapper).
-func (d *Device) sendWithVariant(cmd interface{}, deviceID uint32, alt bool) (json.RawMessage, error) {
-	packet, err := d.encodePacketVariant(cmd, deviceID, alt)
+// alt=true, ffIV=false → V1: key=token, iv=MD5(token)
+// alt=false, ffIV=false → V2: key=MD5(token), iv=MD5(key+token)
+// alt=false, ffIV=true  → V3: key=MD5(token), iv=MD5(0xFF*16+token)
+func (d *Device) sendWithVariant(cmd interface{}, deviceID uint32, alt bool, ffIV ...bool) (json.RawMessage, error) {
+	useFF := len(ffIV) > 0 && ffIV[0]
+	packet, err := d.encodePacketVariant(cmd, deviceID, alt, useFF)
 	if err != nil {
 		return nil, fmt.Errorf("encode: %w", err)
 	}
@@ -204,68 +228,56 @@ func (d *Device) sendWithVariant(cmd interface{}, deviceID uint32, alt bool) (js
 		return nil, fmt.Errorf("read: %w", err)
 	}
 
-	// Decode with matching variant first.
-	resp, err := d.decodePacketVariant(buf[:n], alt)
-	if err != nil {
-		// Try the other variant for decoding.
-		resp, err2 := d.decodePacketVariant(buf[:n], !alt)
-		if err2 != nil {
-			return nil, fmt.Errorf("decode: v=%v (alt decode: %v)", err, err2)
+	// Try all three variants to decode the response.
+	for _, v := range [][2]bool{{false, false}, {false, true}, {true, false}} {
+		if resp, err := d.decodePacketVariant(buf[:n], v[0], v[1]); err == nil {
+			return json.RawMessage(resp.Payload), nil
 		}
-		return json.RawMessage(resp.Payload), nil
 	}
-
-	return json.RawMessage(resp.Payload), nil
+	return nil, fmt.Errorf("decode: all 3 variants failed")
 }
 
 // Hello sends a discovery "hello" packet and returns the parsed device info.
 func (d *Device) Hello() (*HelloResponse, error) {
-	// Hello packet uses a special device ID.
 	cmd := map[string]interface{}{
-		"id":      rand.Intn(9999) + 1,
-		"method":  "miIO.info",
-		"params":  []interface{}{},
+		"id":     rand.Intn(9999) + 1,
+		"method": "miIO.info",
+		"params": []interface{}{},
 	}
-
 	deviceID := uint32(0xFFFFFFFF)
-	packet, err := d.encodePacket(cmd, deviceID)
-	if err != nil {
-		return nil, fmt.Errorf("encode hello: %w", err)
+
+	// Try all 3 variants for hello.
+	for _, v := range [][2]bool{{false, true}, {false, false}, {true, false}} {
+		alt, ffIV := v[0], v[1]
+		packet, err := d.encodePacketVariant(cmd, deviceID, alt, ffIV)
+		if err != nil {
+			continue
+		}
+		addr := &net.UDPAddr{IP: net.ParseIP(d.IP), Port: DefaultPort}
+		conn, err := net.DialUDP("udp", nil, addr)
+		if err != nil {
+			continue
+		}
+		conn.SetDeadline(time.Now().Add(ReadTimeout))
+		conn.Write(packet)
+		buf := make([]byte, 4096)
+		n, err := conn.Read(buf)
+		conn.Close()
+		if err != nil {
+			continue
+		}
+		for _, dv := range [][2]bool{{false, true}, {false, false}, {true, false}} {
+			resp, err := d.decodePacketVariant(buf[:n], dv[0], dv[1])
+			if err != nil {
+				continue
+			}
+			var hello HelloResponse
+			if json.Unmarshal(resp.Payload, &hello) == nil {
+				return &hello, nil
+			}
+		}
 	}
-
-	addr := &net.UDPAddr{IP: net.ParseIP(d.IP), Port: DefaultPort}
-
-	conn, err := net.DialUDP("udp", nil, addr)
-	if err != nil {
-		return nil, fmt.Errorf("dial %s: %w", addr.String(), err)
-	}
-	defer conn.Close()
-
-	if err := conn.SetDeadline(time.Now().Add(ReadTimeout)); err != nil {
-		return nil, err
-	}
-
-	if _, err := conn.Write(packet); err != nil {
-		return nil, err
-	}
-
-	buf := make([]byte, 4096)
-	n, err := conn.Read(buf)
-	if err != nil {
-		return nil, fmt.Errorf("read hello: %w", err)
-	}
-
-	resp, err := d.decodePacket(buf[:n])
-	if err != nil {
-		return nil, fmt.Errorf("decode hello: %w", err)
-	}
-
-	var hello HelloResponse
-	if err := json.Unmarshal(resp.Payload, &hello); err != nil {
-		return nil, fmt.Errorf("unmarshal hello: %w", err)
-	}
-
-	return &hello, nil
+	return nil, fmt.Errorf("hello: all variants failed")
 }
 
 // HelloResponse is the device info returned by miIO.info.
