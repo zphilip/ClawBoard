@@ -827,36 +827,13 @@ func mapActionToMIoT(action string) (siid, piid int, value interface{}) {
 
 func buildCommand(action string) map[string]interface{} {
 	action = strings.ToLower(strings.TrimSpace(action))
-
 	switch {
 	case action == "on":
-		return miio.SwitchCommands(true)
+		return map[string]interface{}{"method": "set_power", "params": []interface{}{"on"}}
 	case action == "off":
-		return miio.SwitchCommands(false)
-	case action == "toggle":
-		return miio.SwitchCommands(true)
-	case strings.HasPrefix(action, "brightness:"):
-		var level int
-		fmt.Sscanf(action, "brightness:%d", &level)
-		if level < 0 {
-			level = 0
-		}
-		if level > 100 {
-			level = 100
-		}
-		return miio.BrightnessCommand(level)
-	case strings.HasPrefix(action, "color_temp:"):
-		var temp int
-		fmt.Sscanf(action, "color_temp:%d", &temp)
-		return miio.ColorTempCommand(temp)
+		return map[string]interface{}{"method": "set_power", "params": []interface{}{"off"}}
 	default:
-		return map[string]interface{}{
-			"id":     1,
-			"method": "set_properties",
-			"params": []map[string]interface{}{
-				{"siid": 2, "piid": 1, "value": action == "on"},
-			},
-		}
+		return map[string]interface{}{"method": "set_power", "params": []interface{}{action}}
 	}
 }
 
