@@ -20,7 +20,7 @@ except ImportError:
     from Cryptodome.Cipher import ARC4
 
 CACHE = "cache/mi_tokens.json"
-API_BASE = "https://api.io.mi.com/app"
+API_BASE = "https://api.mijia.tech/app"
 
 # ── RC4 encryption helpers (matching token_extractor.py) ──────────────────────
 
@@ -69,7 +69,9 @@ def api_call(url, data, ssecurity, service_token, user_id):
     sn = signed_nonce(nonce, ssecurity)
     fields = enc_params(url, "POST", sn, nonce, {"data": data}, ssecurity)
 
-    req = urllib.request.Request(url + "?" + urlencode(fields), data=b"", method="POST")
+    full_url = url + "?" + urlencode(fields)
+    print(f"    DEBUG URL: {full_url[:120]}...", file=sys.stderr)
+    req = urllib.request.Request(full_url, data=b"", method="POST")
     req.add_header("Accept-Encoding", "identity")
     req.add_header("User-Agent", "MIoT/Android APP/com.xiaomi.mihome APPV/10.5.201")
     req.add_header("Content-Type", "application/x-www-form-urlencoded")
@@ -78,11 +80,15 @@ def api_call(url, data, ssecurity, service_token, user_id):
     cookies = f"userId={user_id}; serviceToken={service_token}; yetAnotherServiceToken={service_token}; locale=en_GB; timezone=GMT+02:00; is_daylight=1; dst_offset=3600000; channel=MI_APP_STORE"
     req.add_header("Cookie", cookies)
 
-    resp = urllib.request.urlopen(req, timeout=15)
-    body = resp.read().decode()
-    if resp.status == 200:
-        decrypted = decrypt_rc4(signed_nonce(fields["_nonce"], ssecurity), body)
-        return json.loads(decrypted)
+    try:
+        resp = urllib.request.urlopen(req, timeout=15)
+        body = resp.read().decode()
+        if resp.status == 200:
+            decrypted = decrypt_rc4(signed_nonce(fields["_nonce"], ssecurity), body)
+            return json.loads(decrypted)
+        print(f"    HTTP {resp.status}: {body[:200]}", file=sys.stderr)
+    except urllib.error.HTTPError as e:
+        print(f"    HTTP {e.code}: {e.read().decode(errors='replace')[:200]}", file=sys.stderr)
     return None
 
 # ── Main ──────────────────────────────────────────────────────────────────────
