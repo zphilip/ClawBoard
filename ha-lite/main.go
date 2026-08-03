@@ -761,12 +761,25 @@ func controlDevice(dev *registry.DeviceInfo, action string) map[string]interface
 	miioDev = miio.NewDevice(updatedDev.IP, updatedDev.Token, updatedDev.Model)
 	resp, err = miioDev.Send(cmd)
 	if err != nil {
-		return map[string]interface{}{
-			"status": "failed",
-			"did":    dev.DID,
-			"name":   dev.Name,
-			"action": action,
-			"error":  fmt.Sprintf("Control failed after token refresh: %v", err),
+		// Local UDP failed — try cloud control as last resort.
+		log.Printf("⚠️  Local retry failed for %s: %v. Attempting cloud control...", dev.Name, err)
+		if cloudErr := cloudControlDevice(updatedDev, action); cloudErr == nil {
+			return map[string]interface{}{
+				"status": "success",
+				"did":    dev.DID,
+				"name":   dev.Name,
+				"action": action,
+				"via":    "cloud",
+			}
+		} else {
+			log.Printf("❌ Cloud control also failed for %s: %v", dev.Name, cloudErr)
+			return map[string]interface{}{
+				"status": "failed",
+				"did":    dev.DID,
+				"name":   dev.Name,
+				"action": action,
+				"error":  fmt.Sprintf("Local + cloud control both failed: %v / %v", err, cloudErr),
+			}
 		}
 	}
 
@@ -777,6 +790,38 @@ func controlDevice(dev *registry.DeviceInfo, action string) map[string]interface
 		"action":   action,
 		"via":      "local (token refreshed)",
 		"response": json.RawMessage(resp),
+	}
+
+}
+
+// cloudControlDevice sends a control command via Xiaomi cloud API.
+func cloudControlDevice(dev *registry.DeviceInfo, action string) error {
+	if cloud == nil || !cloud.HasCredentials() || cloud.Ssecurity() == "" {
+		return fmt.Errorf("cloud credentials not available")
+	}
+
+	siid, piid, value := mapActionToMIoT(action)
+	return cloud.DeviceControlEncrypted(dev.DID, siid, piid, value, cloud.Ssecurity())
+}
+
+// mapActionToMIoT maps a ha-lite action to MIoT siid/piid/value.
+func mapActionToMIoT(action string) (siid, piid int, value interface{}) {
+	action = strings.ToLower(strings.TrimSpace(action))
+	switch {
+	case action == "on" || action == "true":
+		return 2, 1, true
+	case action == "off" || action == "false":
+		return 2, 1, false
+	case strings.HasPrefix(action, "brightness:"):
+		var level int
+		fmt.Sscanf(action, "brightness:%d", &level)
+		return 2, 2, level
+	case strings.HasPrefix(action, "color_temp:"):
+		var temp int
+		fmt.Sscanf(action, "color_temp:%d", &temp)
+		return 2, 3, temp
+	default:
+		return 2, 1, action == "on"
 	}
 }
 

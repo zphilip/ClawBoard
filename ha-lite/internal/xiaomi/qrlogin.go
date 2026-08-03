@@ -482,6 +482,11 @@ func (c *CloudClient) SetSsecurity(s string) {
 	c.ssecurity = s
 }
 
+// Ssecurity returns the ssecurity for encrypted API calls.
+func (c *CloudClient) Ssecurity() string {
+	return c.ssecurity
+}
+
 // QRImagePNG returns the raw QR image bytes for serving over HTTP.
 func (m *QRLoginManager) QRImagePNG() []byte {
 	m.mu.Lock()

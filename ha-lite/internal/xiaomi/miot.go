@@ -342,6 +342,58 @@ func (c *CloudClient) deviceListViaPython(ssecurity string) ([]DeviceInfo, error
 	return result.Devices, nil
 }
 
+// DeviceControlEncrypted sends a control command to a device via Xiaomi Cloud.
+// Uses the MIoT encrypted API (same as device listing).
+// did: device ID, siid: service ID (usually 2 for switch), piid: property ID (usually 1 for on/off), value: true=on, false=off
+func (c *CloudClient) DeviceControlEncrypted(did string, siid, piid int, value interface{}, ssecurity string) error {
+	params := url.Values{}
+	params.Set("data", fmt.Sprintf(
+		`{"did":"%s","siid":%d,"piid":%d,"value":%s}`,
+		did, siid, piid, toJSONValue(value)))
+
+	body, err := c.miotEncryptedCall("/miotspec/prop/set", params, ssecurity)
+	if err != nil {
+		// Fallback: try legacy endpoint.
+		params2 := url.Values{}
+		params2.Set("data", fmt.Sprintf(
+			`{"params":[{"did":"%s","siid":%d,"piid":%d,"value":%s}]}`,
+			did, siid, piid, toJSONValue(value)))
+		body, err = c.miotEncryptedCall("/v2/device/set_properties", params2, ssecurity)
+		if err != nil {
+			return fmt.Errorf("cloud control failed: %w", err)
+		}
+	}
+
+	bodyStr := trimPrefix(string(body), "&&&START&&&")
+	var result struct {
+		Code    int    `json:"code"`
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal([]byte(bodyStr), &result); err != nil {
+		return fmt.Errorf("parse control response: %w", err)
+	}
+	if result.Code != 0 {
+		return fmt.Errorf("control API code=%d: %s", result.Code, result.Message)
+	}
+	return nil
+}
+
+func toJSONValue(v interface{}) string {
+	switch val := v.(type) {
+	case bool:
+		if val {
+			return "true"
+		}
+		return "false"
+	case string:
+		return fmt.Sprintf(`"%s"`, val)
+	case int, int64, float64:
+		return fmt.Sprintf("%v", val)
+	default:
+		return fmt.Sprintf(`"%v"`, val)
+	}
+}
+
 // DeviceListEncrypted fetches devices using the encrypted MIoT API.
 // Flow: get homes → for each home get devices.
 func (c *CloudClient) DeviceListEncrypted(ssecurity string) ([]DeviceInfo, error) {
