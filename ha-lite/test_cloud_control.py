@@ -20,7 +20,7 @@ except ImportError:
     from Cryptodome.Cipher import ARC4
 
 CACHE = "cache/mi_tokens.json"
-API_BASE = "https://api.mijia.tech/app"
+API_BASE = "https://api.io.mi.com/app"
 
 # ── RC4 encryption helpers (matching token_extractor.py) ──────────────────────
 
@@ -77,7 +77,7 @@ def api_call(url, data, ssecurity, service_token, user_id):
     req.add_header("Content-Type", "application/x-www-form-urlencoded")
     req.add_header("x-xiaomi-protocal-flag-cli", "PROTOCAL-HTTP2")
     req.add_header("MIOT-ENCRYPT-ALGORITHM", "ENCRYPT-RC4")
-    cookies = f"userId={user_id}; serviceToken={service_token}; yetAnotherServiceToken={service_token}; locale=en_GB; timezone=GMT+02:00; is_daylight=1; dst_offset=3600000; channel=MI_APP_STORE"
+    cookies = f"userId={user_id}; serviceToken={service_token}; yetAnotherServiceToken={service_token}; cUserId={user_id}; locale=en_GB; timezone=GMT+02:00; is_daylight=1; dst_offset=3600000; channel=MI_APP_STORE; countryCode=CN"
     req.add_header("Cookie", cookies)
 
     try:
