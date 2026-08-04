@@ -101,14 +101,21 @@ def exchange_code_for_token(code, local_ip="127.0.0.1"):
         "grant_type": "authorization_code",
     })
     url = f"{OAUTH_TOKEN_URL}?data={urllib.parse.quote(data)}"
+    print(f"  Token endpoint: {url[:120]}...")
     req = urllib.request.Request(url, method="GET")
     req.add_header("Content-Type", "application/x-www-form-urlencoded")
+    req.add_header("X-Client-BizId", "haapi")
     try:
         resp = urllib.request.urlopen(req, timeout=15)
-        return json.loads(resp.read().decode())
+        result = json.loads(resp.read().decode())
+        print(f"  Token response: {json.dumps(result, indent=2)[:500]}")
+        return result
     except urllib.error.HTTPError as e:
         body = e.read().decode(errors="replace")
-        print(f"  Token exchange failed: HTTP {e.code} — {body}")
+        print(f"  Token exchange HTTP {e.code}: {body}")
+        return None
+    except Exception as e:
+        print(f"  Token exchange error: {e}")
         return None
 
 
