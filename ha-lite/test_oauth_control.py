@@ -143,6 +143,7 @@ def api_get_prop(access_token, did, siid=2, piid=1):
     req.add_header("Content-Type", "application/json")
     req.add_header("Authorization", f"Bearer{access_token}")
     req.add_header("X-Client-BizId", "haapi")
+    req.add_header("X-Client-AppId", CLIENT_ID)
     req.add_header("Host", "ha.api.io.mi.com")
     try:
         resp = urllib.request.urlopen(req, timeout=15)
@@ -159,6 +160,7 @@ def api_set_prop(access_token, did, siid, piid, value):
     req.add_header("Content-Type", "application/json")
     req.add_header("Authorization", f"Bearer{access_token}")
     req.add_header("X-Client-BizId", "haapi")
+    req.add_header("X-Client-AppId", CLIENT_ID)
     req.add_header("Host", "ha.api.io.mi.com")
     try:
         resp = urllib.request.urlopen(req, timeout=15)
