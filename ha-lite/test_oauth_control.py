@@ -95,9 +95,11 @@ def get_authorization_url(local_ip="127.0.0.1"):
 
 def exchange_code_for_token(code, local_ip="127.0.0.1"):
     """Exchange auth code for access_token via Xiaomi's custom OAuth endpoint."""
+    redirect_uri = f"http://{local_ip}:{REDIRECT_PORT}{REDIRECT_PATH}"
     data = json.dumps({
         "client_id": CLIENT_ID,
         "code": code,
+        "redirect_uri": redirect_uri,
         "grant_type": "authorization_code",
     })
     url = f"{OAUTH_TOKEN_URL}?data={urllib.parse.quote(data)}"
