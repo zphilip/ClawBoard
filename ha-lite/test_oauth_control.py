@@ -21,7 +21,7 @@ import argparse, hashlib, http.server, json, os, random, string, sys, time, urll
 # ── Constants (from ha_xiaomi_home) ───────────────────────────────────────────
 CLIENT_ID = "2882303761520251711"
 OAUTH_AUTHORIZE_URL = "https://account.xiaomi.com/oauth2/authorize"
-OAUTH_TOKEN_URL = "https://account.xiaomi.com/oauth2/token"
+OAUTH_TOKEN_URL = "https://ha.api.io.mi.com/app/v2/ha/oauth/get_token"
 API_HOST = "https://ha.api.io.mi.com"
 REDIRECT_PORT = 8123
 REDIRECT_PATH = "/callback"
@@ -94,18 +94,14 @@ def get_authorization_url(local_ip="127.0.0.1"):
 
 
 def exchange_code_for_token(code, local_ip="127.0.0.1"):
-    redirect_uri = f"http://{local_ip}:{REDIRECT_PORT}{REDIRECT_PATH}"
-    data = {
+    """Exchange auth code for access_token via Xiaomi's custom OAuth endpoint."""
+    data = json.dumps({
         "client_id": CLIENT_ID,
-        "redirect_uri": redirect_uri,
-        "grant_type": "authorization_code",
         "code": code,
-    }
-    req = urllib.request.Request(
-        OAUTH_TOKEN_URL,
-        data=urllib.parse.urlencode(data).encode(),
-        method="POST",
-    )
+        "grant_type": "authorization_code",
+    })
+    url = f"{OAUTH_TOKEN_URL}?data={urllib.parse.quote(data)}"
+    req = urllib.request.Request(url, method="GET")
     req.add_header("Content-Type", "application/x-www-form-urlencoded")
     try:
         resp = urllib.request.urlopen(req, timeout=15)
