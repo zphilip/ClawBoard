@@ -62,7 +62,21 @@ def miio_send(ip, token_hex, method, params, timeout=5):
         sock.sendto(pkt, (ip, 54321))
         data, _ = sock.recvfrom(4096)
 
-        return True, f"OK (device_id=0x{device_id:08x})"
+        # Decrypt response
+        tb = bytes.fromhex(token_hex)
+        key = hashlib.md5(tb).digest()
+        iv = hashlib.md5(key + tb).digest()
+        try:
+            plain = AES.new(key, AES.MODE_CBC, iv).decrypt(data[32:])
+            pad = plain[-1]
+            if pad <= 16:
+                plain = plain[:-pad]
+            resp = json.loads(plain)
+            if "result" in resp:
+                return True, str(resp["result"])
+            return True, str(resp)
+        except:
+            return True, f"response: {data[32:].hex()[:40]}"
     except socket.timeout:
         return False, "Timeout — device not responding"
     except Exception as e:
@@ -111,11 +125,29 @@ def main():
     action = "on" if args.on else "off"
     print(f"Device: {dev['name']} ({dev['model']})")
     print(f"IP: {ip}  DID: {dev['did']}")
-    print(f"Sending set_power(['{action}'])...")
 
+    # Read current state first
+    ok, msg = miio_send(ip, token, "get_prop", ["power"])
+    if ok:
+        print(f"Current: {msg}")
+
+    print(f"Sending set_power(['{action}'])...")
     ok, msg = miio_send(ip, token, "set_power", [action])
     if ok:
-        print(f"✅ {action.upper()} success — {msg}")
+        print(f"✅ {action.upper()} sent")
+
+        # Verify
+        import time as _t
+        _t.sleep(0.5)
+        ok2, msg2 = miio_send(ip, token, "get_prop", ["power"])
+        if ok2:
+            expected = f"'{action}'"
+            if expected in msg2 or action in msg2.lower():
+                print(f"✅ Verified: power={msg2}")
+            else:
+                print(f"⚠️  State: power={msg2} (expected '{action}')")
+        else:
+            print(f"⚠️  Could not verify state: {msg2}")
     else:
         print(f"❌ Failed: {msg}")
 
