@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 """
-Control Xiaomi devices locally via miIO (RAW hello + encrypted command).
-Reads IP and token from cache/mi_tokens.json.
+Control Xiaomi devices via local miIO.
+Reads IP/token from cache/mi_tokens.json. Verified working for philips.light.downlight.
 
 Usage:
   python3 test_light.py --name "筒灯沙发上1" --on
   python3 test_light.py --name "筒灯沙发上1" --off
   python3 test_light.py --name "风扇" --on
-  python3 test_light.py --list                          # list all devices
+  python3 test_light.py --list
 """
 
-import argparse, hashlib, json, socket, struct, time
+import argparse, hashlib, json, socket, struct, sys
 from Crypto.Cipher import AES
 
 CACHE = "cache/mi_tokens.json"
@@ -27,17 +27,15 @@ def find_device(name):
             return d
     return None
 
-def miio_encrypt(token_hex, plain_bytes):
+def miio_control(ip, token_hex, method, params, timeout=5):
+    """Send miIO command. Returns (ok, message)."""
+    if not ip or ip == "0.0.0.0":
+        return False, "No IP (Zigbee/BLE device)"
+
     tb = bytes.fromhex(token_hex)
     key = hashlib.md5(tb).digest()
     iv = hashlib.md5(key + tb).digest()
-    pad = 16 - len(plain_bytes) % 16
-    padded = plain_bytes + bytes([pad] * pad)
-    return AES.new(key, AES.MODE_CBC, iv).encrypt(padded)
 
-def miio_send(ip, token_hex, method, params, timeout=5):
-    """Send miIO command with RAW hello handshake. Returns (ok, message)."""
-    # Create socket (matching python-miio + Go v0.6.3)
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
     sock.bind(("0.0.0.0", 0))
@@ -48,49 +46,41 @@ def miio_send(ip, token_hex, method, params, timeout=5):
         for _ in range(3):
             sock.sendto(RAW_HELLO, (ip, 54321))
         data, _ = sock.recvfrom(4096)
-        device_id = struct.unpack('>I', data[8:12])[0]
-        dev_ts = struct.unpack('>I', data[12:16])[0] + 1
+        did = struct.unpack('>I', data[8:12])[0]
+        ts = struct.unpack('>I', data[12:16])[0] + 1
 
-        # Step 2: Encrypted command
+        # Step 2: Encrypted command (header: HHIII = 16 bytes)
         cmd = json.dumps({"id": 1, "method": method, "params": params}, separators=(",", ":")).encode()
-        enc = miio_encrypt(token_hex, cmd)
-        tb = bytes.fromhex(token_hex)
-        key = hashlib.md5(tb).digest()
-        header = struct.pack('>HHIII', 0x2131, 32 + len(enc), 0, device_id, dev_ts)
-        csum = hashlib.md5(header[:16] + tb + enc).digest()
-        pkt = header[:16] + csum + enc
-        sock.sendto(pkt, (ip, 54321))
+        pad = 16 - len(cmd) % 16
+        enc = AES.new(key, AES.MODE_CBC, iv).encrypt(cmd + bytes([pad] * pad))
+        hdr = struct.pack('>HHIII', 0x2131, 32 + len(enc), 0, did, ts)
+        csum = hashlib.md5(hdr + tb + enc).digest()
+
+        sock.sendto(hdr + csum + enc, (ip, 54321))
         data, _ = sock.recvfrom(4096)
 
-        # Decrypt response if there's a payload (length > 32)
-        if len(data) > 32:
-            tb = bytes.fromhex(token_hex)
-            key = hashlib.md5(tb).digest()
-            iv = hashlib.md5(key + tb).digest()
-            try:
-                plain = AES.new(key, AES.MODE_CBC, iv).decrypt(data[32:])
-                pad = plain[-1]
-                if pad <= 16:
-                    plain = plain[:-pad]
-                resp = json.loads(plain)
-                if "result" in resp:
-                    return True, str(resp["result"])
-                return True, json.dumps(resp)
-            except:
-                pass
-        # 32-byte response = ACK (success, no payload)
-        return True, "ok"
+        # Device ACK = success (32-byte response = no error)
+        return True, f"OK (did=0x{did:08x})"
     except socket.timeout:
-        return False, "Timeout — device not responding"
+        return False, "Timeout"
     except Exception as e:
         return False, str(e)
     finally:
         sock.close()
 
+def verify_state(ip, token):
+    """Use python-miio to check device power state."""
+    try:
+        from miio import Device
+        dev = Device(ip=ip, token=token)
+        return str(dev.send("get_prop", ["power"]))
+    except:
+        return "?"
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--name", help="Device name substring")
-    p.add_argument("--did", help="Device ID (exact)")
+    p.add_argument("--did", help="Device ID")
     p.add_argument("--on", action="store_true")
     p.add_argument("--off", action="store_true")
     p.add_argument("--list", action="store_true")
@@ -103,56 +93,29 @@ def main():
             print(f"{d.get('name','?'):<30} {d.get('ip','?'):<16} {d.get('model','?'):<30} {d.get('did','?'):<15}")
         return
 
-    if not args.name and not args.did:
-        p.print_help()
-        return
-
     dev = find_device(args.name) if args.name else None
     if args.did:
         for d in load_devices():
             if d.get("did") == args.did:
-                dev = d
-                break
-
+                dev = d; break
     if not dev:
-        print(f"Device not found: {args.name or args.did}")
-        return
+        print(f"Not found: {args.name or args.did}"); return
 
-    ip = dev.get("ip", "")
-    token = dev.get("token", "")
-
-    if not ip or ip == "0.0.0.0":
-        print(f"Device '{dev['name']}' has no IP — cannot control locally (try OAuth cloud control)")
-        return
-
+    ip, token, name, model = dev["ip"], dev["token"], dev["name"], dev["model"]
     action = "on" if args.on else "off"
-    print(f"Device: {dev['name']} ({dev['model']})")
-    print(f"IP: {ip}  DID: {dev['did']}")
 
-        print(f"Sending set_power(['{action}'])...")
-    ok, msg = miio_send(ip, token, "set_power", [action])
+    print(f"{name} ({model})  IP={ip}")
+    before = verify_state(ip, token)
+    print(f"  Before: {before}")
+
+    ok, msg = miio_control(ip, token, "set_power", [action])
     if ok:
-        print(f"✅ {action.upper()} sent — check the light visually")
-
-        # Verify with python-miio if available
-        try:
-            from miio import Device
-            import time as _t
-            _t.sleep(0.5)
-            dev = Device(ip=ip, token=token)
-            power = dev.send("get_prop", ["power"])
-            expected = f"['{action}']"
-            actual = str(power)
-            if action in actual.lower():
-                print(f"✅ Verified by python-miio: power={actual}")
-            else:
-                print(f"⚠️  python-miio reports: power={actual} (expected {expected})")
-        except ImportError:
-            print(f"   (install python-miio to verify state)")
-        except Exception as e:
-            print(f"⚠️  Could not verify: {e}")
+        import time; time.sleep(0.3)
+        after = verify_state(ip, token)
+        status = "✅" if action in after.lower() else "⚠️"
+        print(f"  After:  {after}  {status} {action.upper()}")
     else:
-        print(f"❌ Failed: {msg}")
+        print(f"  ❌ {msg}")
 
 if __name__ == "__main__":
     main()
