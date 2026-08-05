@@ -171,19 +171,16 @@ def test_local_control_full(ip, token, name):
     data, _ = sock.recvfrom(4096)
     print(f"  miIO.info: {len(data)}B response")
 
-    dev_ts += 1
-
     # ON
     pkt = build_cmd_pkt(token, device_id, dev_ts, "set_power", ["on"])
     sock.sendto(pkt, (ip, 54321))
     data, _ = sock.recvfrom(4096)
+    dev_ts = struct.unpack('>I', data[12:16])[0] + 1  # sync from response
     print(f"  set_power ON: {len(data)}B response")
     print(f"  ✅ Light should be ON now — check {name}")
 
     import time as _t
     _t.sleep(2)
-
-    dev_ts += 1
 
     # OFF
     pkt = build_cmd_pkt(token, device_id, dev_ts, "set_power", ["off"])
