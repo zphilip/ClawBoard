@@ -129,30 +129,28 @@ def main():
     print(f"Device: {dev['name']} ({dev['model']})")
     print(f"IP: {ip}  DID: {dev['did']}")
 
-    # Read current state first (get_prop returns value only for newer devices)
-    ok, msg = miio_send(ip, token, "get_prop", ["power"])
-    if ok and msg != "ok":
-        print(f"Current: {msg}")
-    elif ok:
-        print(f"Current: (device responded, use python-miio for state check)")
-
-    print(f"Sending set_power(['{action}'])...")
+        print(f"Sending set_power(['{action}'])...")
     ok, msg = miio_send(ip, token, "set_power", [action])
     if ok:
-        print(f"✅ {action.upper()} sent")
+        print(f"✅ {action.upper()} sent — check the light visually")
 
-        # Verify
-        import time as _t
-        _t.sleep(0.5)
-        ok2, msg2 = miio_send(ip, token, "get_prop", ["power"])
-        if ok2:
-            expected = f"'{action}'"
-            if expected in msg2 or action in msg2.lower():
-                print(f"✅ Verified: power={msg2}")
+        # Verify with python-miio if available
+        try:
+            from miio import Device
+            import time as _t
+            _t.sleep(0.5)
+            dev = Device(ip=ip, token=token)
+            power = dev.send("get_prop", ["power"])
+            expected = f"['{action}']"
+            actual = str(power)
+            if action in actual.lower():
+                print(f"✅ Verified by python-miio: power={actual}")
             else:
-                print(f"⚠️  State: power={msg2} (expected '{action}')")
-        else:
-            print(f"⚠️  Could not verify state: {msg2}")
+                print(f"⚠️  python-miio reports: power={actual} (expected {expected})")
+        except ImportError:
+            print(f"   (install python-miio to verify state)")
+        except Exception as e:
+            print(f"⚠️  Could not verify: {e}")
     else:
         print(f"❌ Failed: {msg}")
 
