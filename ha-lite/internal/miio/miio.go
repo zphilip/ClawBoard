@@ -170,21 +170,23 @@ func (d *Device) Send(cmd interface{}) (json.RawMessage, error) {
 	}
 
 	// Step 1: Send RAW hello 3 times (matching python-miio discover).
-	fmt.Printf("[miio] sending RAW hello to %s (3x)\n", d.IP)
+	fmt.Printf("[miio] sending RAW hello to %s:%d (len=%d, local=%s)\n", d.IP, DefaultPort, len(RawHello), conn.LocalAddr())
 	for i := 0; i < 3; i++ {
 		conn.SetWriteDeadline(time.Now().Add(ReadTimeout))
-		if _, err := conn.WriteTo(RawHello, addr); err != nil {
+		nw, err := conn.WriteTo(RawHello, addr)
+		fmt.Printf("[miio] hello send #%d: wrote=%d err=%v\n", i+1, nw, err)
+		if err != nil {
 			return nil, fmt.Errorf("miio: write raw hello: %w", err)
 		}
 	}
 	conn.SetReadDeadline(time.Now().Add(ReadTimeout))
 	buf := make([]byte, 4096)
-	n, _, err := conn.ReadFrom(buf)
+	n, from, err := conn.ReadFrom(buf)
 	if err != nil {
-		fmt.Printf("[miio] RAW hello response error: %v\n", err)
+		fmt.Printf("[miio] RAW hello response error from %v: %v\n", from, err)
 		return nil, fmt.Errorf("miio: read raw hello response: %w", err)
 	}
-	fmt.Printf("[miio] RAW hello response: %d bytes, hex=%x\n", n, buf[:min(n, 32)])
+	fmt.Printf("[miio] RAW hello response: %d bytes from %v, hex=%x\n", n, from, buf[:min(n, 32)])
 	if n < 16 {
 		return nil, fmt.Errorf("miio: raw hello response too short: %d", n)
 	}
