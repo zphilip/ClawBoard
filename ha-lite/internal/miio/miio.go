@@ -106,7 +106,8 @@ func buildEncryptedPacket(tokenHex string, payload []byte, deviceID uint32, time
 	header := make([]byte, 16)
 	binary.BigEndian.PutUint16(header[0:2], Magic)
 	binary.BigEndian.PutUint16(header[2:4], uint16(HeaderLen+len(encrypted)))
-	// header[4:8] = 0
+	// header[4:8] = 0 (unknown field)
+	binary.BigEndian.PutUint32(header[4:8], 0)
 	binary.BigEndian.PutUint32(header[8:12], deviceID)
 	binary.BigEndian.PutUint32(header[12:16], timestamp)
 

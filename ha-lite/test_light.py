@@ -56,7 +56,7 @@ def miio_send(ip, token_hex, method, params, timeout=5):
         enc = miio_encrypt(token_hex, cmd)
         tb = bytes.fromhex(token_hex)
         key = hashlib.md5(tb).digest()
-        header = struct.pack('>HHIIII', 0x2131, 32 + len(enc), 0, 0, device_id, dev_ts)
+        header = struct.pack('>HHIII', 0x2131, 32 + len(enc), 0, device_id, dev_ts)
         csum = hashlib.md5(header[:16] + tb + enc).digest()
         pkt = header[:16] + csum + enc
         sock.sendto(pkt, (ip, 54321))
