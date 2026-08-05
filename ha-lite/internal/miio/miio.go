@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"math/rand"
 	"net"
+	"syscall"
 	"time"
 )
 
@@ -159,11 +160,23 @@ func (d *Device) Send(cmd interface{}) (json.RawMessage, error) {
 	}
 	defer conn.Close()
 
-	// Step 1: Send RAW hello (matching python-miio discover).
-	conn.SetDeadline(time.Now().Add(ReadTimeout))
-	if _, err := conn.WriteTo(RawHello, addr); err != nil {
-		return nil, fmt.Errorf("miio: write raw hello: %w", err)
+	// Set SO_BROADCAST (matching python-miio). Required for RAW hello packets
+	// that use 0xFFFFFFFF as device_id. SO_BROADCAST = 0x0006 on Linux.
+	if sc, err := conn.SyscallConn(); err == nil {
+		sc.Control(func(fd uintptr) {
+			syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, 0x6, 1)
+		})
 	}
+
+	// Step 1: Send RAW hello 3 times (matching python-miio discover).
+	// Some devices need multiple hello packets to wake up.
+	for i := 0; i < 3; i++ {
+		conn.SetWriteDeadline(time.Now().Add(ReadTimeout))
+		if _, err := conn.WriteTo(RawHello, addr); err != nil {
+			return nil, fmt.Errorf("miio: write raw hello: %w", err)
+		}
+	}
+	conn.SetReadDeadline(time.Now().Add(ReadTimeout))
 	buf := make([]byte, 4096)
 	n, _, err := conn.ReadFrom(buf)
 	if err != nil {
