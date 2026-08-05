@@ -150,19 +150,22 @@ func (d *Device) Send(cmd interface{}) (json.RawMessage, error) {
 	}
 
 	addr := &net.UDPAddr{IP: net.ParseIP(d.IP), Port: DefaultPort}
-	conn, err := net.DialUDP("udp", nil, addr)
+
+	// Use ListenUDP + WriteTo (like Python socket.sendto) to avoid routing issues
+	// with multi-homed hosts where DialUDP picks the wrong source IP.
+	conn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4zero, Port: 0})
 	if err != nil {
-		return nil, fmt.Errorf("miio: dial: %w", err)
+		return nil, fmt.Errorf("miio: listen: %w", err)
 	}
 	defer conn.Close()
 
 	// Step 1: Send RAW hello (matching python-miio discover).
 	conn.SetDeadline(time.Now().Add(ReadTimeout))
-	if _, err := conn.Write(RawHello); err != nil {
+	if _, err := conn.WriteTo(RawHello, addr); err != nil {
 		return nil, fmt.Errorf("miio: write raw hello: %w", err)
 	}
 	buf := make([]byte, 4096)
-	n, err := conn.Read(buf)
+	n, _, err := conn.ReadFrom(buf)
 	if err != nil {
 		return nil, fmt.Errorf("miio: read raw hello response: %w", err)
 	}
@@ -188,10 +191,10 @@ func (d *Device) Send(cmd interface{}) (json.RawMessage, error) {
 	}
 
 	conn.SetDeadline(time.Now().Add(ReadTimeout))
-	if _, err := conn.Write(cmdPkt); err != nil {
+	if _, err := conn.WriteTo(cmdPkt, addr); err != nil {
 		return nil, fmt.Errorf("miio: write command: %w", err)
 	}
-	n, err = conn.Read(buf)
+	n, _, err = conn.ReadFrom(buf)
 	if err != nil {
 		return nil, fmt.Errorf("miio: read command response: %w", err)
 	}
