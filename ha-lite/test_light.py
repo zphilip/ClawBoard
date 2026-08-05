@@ -62,21 +62,24 @@ def miio_send(ip, token_hex, method, params, timeout=5):
         sock.sendto(pkt, (ip, 54321))
         data, _ = sock.recvfrom(4096)
 
-        # Decrypt response
-        tb = bytes.fromhex(token_hex)
-        key = hashlib.md5(tb).digest()
-        iv = hashlib.md5(key + tb).digest()
-        try:
-            plain = AES.new(key, AES.MODE_CBC, iv).decrypt(data[32:])
-            pad = plain[-1]
-            if pad <= 16:
-                plain = plain[:-pad]
-            resp = json.loads(plain)
-            if "result" in resp:
-                return True, str(resp["result"])
-            return True, str(resp)
-        except:
-            return True, f"response: {data[32:].hex()[:40]}"
+        # Decrypt response if there's a payload (length > 32)
+        if len(data) > 32:
+            tb = bytes.fromhex(token_hex)
+            key = hashlib.md5(tb).digest()
+            iv = hashlib.md5(key + tb).digest()
+            try:
+                plain = AES.new(key, AES.MODE_CBC, iv).decrypt(data[32:])
+                pad = plain[-1]
+                if pad <= 16:
+                    plain = plain[:-pad]
+                resp = json.loads(plain)
+                if "result" in resp:
+                    return True, str(resp["result"])
+                return True, json.dumps(resp)
+            except:
+                pass
+        # 32-byte response = ACK (success, no payload)
+        return True, "ok"
     except socket.timeout:
         return False, "Timeout — device not responding"
     except Exception as e:
@@ -126,10 +129,12 @@ def main():
     print(f"Device: {dev['name']} ({dev['model']})")
     print(f"IP: {ip}  DID: {dev['did']}")
 
-    # Read current state first
+    # Read current state first (get_prop returns value only for newer devices)
     ok, msg = miio_send(ip, token, "get_prop", ["power"])
-    if ok:
+    if ok and msg != "ok":
         print(f"Current: {msg}")
+    elif ok:
+        print(f"Current: (device responded, use python-miio for state check)")
 
     print(f"Sending set_power(['{action}'])...")
     ok, msg = miio_send(ip, token, "set_power", [action])
