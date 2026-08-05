@@ -169,7 +169,7 @@ func (d *Device) Send(cmd interface{}) (json.RawMessage, error) {
 	}
 
 	// Step 1: Send RAW hello 3 times (matching python-miio discover).
-	// Some devices need multiple hello packets to wake up.
+	fmt.Printf("[miio] sending RAW hello to %s (3x)\n", d.IP)
 	for i := 0; i < 3; i++ {
 		conn.SetWriteDeadline(time.Now().Add(ReadTimeout))
 		if _, err := conn.WriteTo(RawHello, addr); err != nil {
@@ -180,8 +180,10 @@ func (d *Device) Send(cmd interface{}) (json.RawMessage, error) {
 	buf := make([]byte, 4096)
 	n, _, err := conn.ReadFrom(buf)
 	if err != nil {
+		fmt.Printf("[miio] RAW hello response error: %v\n", err)
 		return nil, fmt.Errorf("miio: read raw hello response: %w", err)
 	}
+	fmt.Printf("[miio] RAW hello response: %d bytes, hex=%x\n", n, buf[:min(n, 32)])
 	if n < 16 {
 		return nil, fmt.Errorf("miio: raw hello response too short: %d", n)
 	}
