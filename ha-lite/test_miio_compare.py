@@ -13,7 +13,7 @@ import json, socket, struct, hashlib, time, sys
 from Crypto.Cipher import AES
 
 CACHE = "cache/mi_tokens.json"
-RAW_HELLO = bytes.fromhex("21310020ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff")
+RAW_HELLO = bytes.fromhex("21310020" + "ff" * 28)  # 32 bytes, matching python-miio exactly
 
 def find_device(name):
     with open(CACHE) as f:
@@ -113,6 +113,89 @@ def test_raw_socket_dial(ip, token):
         return False
 
 
+def test_go_approach(ip, token):
+    """Test 5: Exact Go approach — udp4, SO_BROADCAST, 3 sends, ReadFrom."""
+    print(f"\n=== Test 5: Exact Go approach (udp4 + SO_BROADCAST) ===")
+
+    # Create socket like Go's ListenUDP("udp4")
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+    sock.bind(("0.0.0.0", 0))
+    sock.settimeout(5)
+
+    print(f"  Local addr: {sock.getsockname()}")
+
+    # Send 3 times (matching Go)
+    for i in range(3):
+        sock.sendto(RAW_HELLO, (ip, 54321))
+
+    try:
+        data, addr = sock.recvfrom(4096)
+        print(f"  ✅ Hello response: {len(data)}B from {addr}")
+        device_id = struct.unpack('>I', data[8:12])[0]
+        dev_ts = struct.unpack('>I', data[12:16])[0] + 1
+
+        # Send set_power (matching Go)
+        pkt = build_cmd_pkt(token, device_id, dev_ts, "set_power", ["on"])
+        sock.sendto(pkt, (ip, 54321))
+        data2, _ = sock.recvfrom(4096)
+        print(f"  ✅ set_power response: {len(data2)}B")
+        print(f"  ✅ Go approach WORKS!")
+        sock.close()
+        return True
+    except socket.timeout:
+        print(f"  ❌ Timeout")
+        sock.close()
+        return False
+
+
+def test_local_control_full(ip, token, name):
+    """Test 6: Full local control cycle — info → on → off → on."""
+    print(f"\n=== Test 6: Full local control cycle ===")
+
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+    sock.bind(("0.0.0.0", 0))
+    sock.settimeout(5)
+
+    # Get device info
+    for _ in range(3):
+        sock.sendto(RAW_HELLO, (ip, 54321))
+    data, _ = sock.recvfrom(4096)
+    device_id = struct.unpack('>I', data[8:12])[0]
+    dev_ts = struct.unpack('>I', data[12:16])[0] + 1
+
+    # miIO.info
+    pkt = build_cmd_pkt(token, device_id, dev_ts, "miIO.info", [])
+    sock.sendto(pkt, (ip, 54321))
+    data, _ = sock.recvfrom(4096)
+    print(f"  miIO.info: {len(data)}B response")
+
+    dev_ts += 1
+
+    # ON
+    pkt = build_cmd_pkt(token, device_id, dev_ts, "set_power", ["on"])
+    sock.sendto(pkt, (ip, 54321))
+    data, _ = sock.recvfrom(4096)
+    print(f"  set_power ON: {len(data)}B response")
+    print(f"  ✅ Light should be ON now — check {name}")
+
+    import time as _t
+    _t.sleep(2)
+
+    dev_ts += 1
+
+    # OFF
+    pkt = build_cmd_pkt(token, device_id, dev_ts, "set_power", ["off"])
+    sock.sendto(pkt, (ip, 54321))
+    data, _ = sock.recvfrom(4096)
+    print(f"  set_power OFF: {len(data)}B response")
+    print(f"  ✅ Light should be OFF now — check {name}")
+
+    sock.close()
+    return True
+
+
 def test_python_miio_capture(ip, token):
     """Test 4: python-miio with packet capture — see exact bytes sent."""
     print(f"\n=== Test 4: python-miio packet capture ===")
@@ -156,7 +239,8 @@ def main():
     test_python_miio(ip, token)
     test_raw_socket_listen(ip, token)
     test_raw_socket_dial(ip, token)
-    test_python_miio_capture(ip, token)
+    test_go_approach(ip, token)
+    test_local_control_full(ip, token, name)
 
 if __name__ == "__main__":
     main()
