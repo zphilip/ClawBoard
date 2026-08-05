@@ -22,14 +22,14 @@ const (
 	HeaderLen   = 32
 )
 
-// RawHello is the 32-byte discovery packet (matches python-miio MiIOProtocol.discover).
-// It uses 0xFF padding and requests the device to respond with its device_id and timestamp.
+// RawHello is the 32-byte discovery packet (matches python-miio).
+// python-miio uses: bytes.fromhex("21310020" + "ff" * 28)
 var RawHello = []byte{
-	0x21, 0x31, 0x00, 0x20, // magic + length
-	0xFF, 0xFF, 0xFF, 0xFF, // device_id = broadcast
-	0xFF, 0xFF, 0xFF, 0xFF, // timestamp
-	0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, // checksum
-	0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, // (no payload)
+	0x21, 0x31, 0x00, 0x20,
+	0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+	0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+	0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+	0xFF, 0xFF, 0xFF, 0xFF,
 }
 
 type Device struct {
@@ -152,20 +152,21 @@ func (d *Device) Send(cmd interface{}) (json.RawMessage, error) {
 
 	addr := &net.UDPAddr{IP: net.ParseIP(d.IP), Port: DefaultPort}
 
-	// Use ListenUDP + WriteTo (like Python socket.sendto) to avoid routing issues
-	// with multi-homed hosts where DialUDP picks the wrong source IP.
-	conn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4zero, Port: 0})
+	// Use ListenUDP("udp4") + WriteTo (matching Python socket.sendto exactly).
+	// "udp4" forces IPv4-only to avoid dual-stack issues.
+	conn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4zero, Port: 0})
 	if err != nil {
 		return nil, fmt.Errorf("miio: listen: %w", err)
 	}
 	defer conn.Close()
 
-	// Set SO_BROADCAST (matching python-miio). Required for RAW hello packets
-	// that use 0xFFFFFFFF as device_id. SO_BROADCAST = 0x0006 on Linux.
+	// Set SO_BROADCAST (matching python-miio). SO_BROADCAST = 0x0006 on Linux.
 	if sc, err := conn.SyscallConn(); err == nil {
 		sc.Control(func(fd uintptr) {
 			syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, 0x6, 1)
 		})
+	} else {
+		fmt.Printf("[miio] WARNING: cannot set SO_BROADCAST: %v\n", err)
 	}
 
 	// Step 1: Send RAW hello 3 times (matching python-miio discover).
