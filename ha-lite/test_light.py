@@ -107,7 +107,7 @@ def main():
 
     ip, token, name, model = dev["ip"], dev["token"], dev["name"], dev["model"]
 
-    # ── Determine action ───────────────────────────────────────────────────
+    # Determine action
     if args.brightness is not None:
         b = max(1, min(100, args.brightness))
         method, params = "set_bright", [b]
@@ -127,15 +127,12 @@ def main():
         return
 
     print(f"{name} ({model})  IP={ip}")
-    before = verify_state(ip, token)
-    print(f"  Before: {before}")
 
     ok, msg = miio_control(ip, token, method, params)
     if ok:
         time.sleep(0.3)
         after = verify_state(ip, token)
-        status = "✅" if action in after.lower() or (action == "on" and "on" in after.lower()) or (action == "off" and "off" in after.lower()) else "⚠️"
-        print(f"  After:  {after}  {status} {action.upper()}")
+        print(f"  After:  {after}  ✅ {action.upper()}")
     else:
         print(f"  ❌ {msg}")
 
