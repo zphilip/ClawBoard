@@ -271,6 +271,64 @@ def build_halite_panel(T: dict, conf: dict, lang: str):
                                 ui.button('ON', on_click=_on).props('size=sm color=green-7 dense')
                                 ui.button('OFF', on_click=_off).props('size=sm color=red-7 dense')
 
+                            # ── Brightness & color temperature sliders for lights ──
+                            if online and _device_is_light(model):
+                                with ui.row().classes('w-full items-center q-mt-xs'):
+                                    # Brightness slider with debounce (600ms)
+                                    ui.icon('light_mode', size='xs').classes('text-amber-5')
+                                    bright_lbl = ui.label('50%').classes('text-caption')
+                                    bright_lbl.props('style="min-width:45px;text-align:right;"')
+                                    bright_slider = ui.slider(min=1, max=100, value=50, step=1).classes('q-mx-sm')
+                                    bright_timer_holder = [None]  # mutable container to avoid nonlocal issues
+
+                                    def _mk_bright_handler(d, n, lbl, slider, holder):
+                                        def _handler():
+                                            val = int(slider.value)
+                                            lbl.set_text(f'{val}%')
+                                            return _send_brightness(d, n, val, lbl)
+                                        def _on_slide():
+                                            lbl.set_text(f'{int(slider.value)}%')
+                                            if holder[0] is not None:
+                                                holder[0].deactivate()
+                                            holder[0] = ui.timer(0.6, _handler, once=True)
+                                        return _on_slide
+
+                                    def _send_brightness(did, name, val, lbl):
+                                        lbl.set_text(f'{val}% ✅')
+                                        r = _halite_control(did, f"brightness:{val}")
+                                        if r.get("status") != "success":
+                                            ui.notify(f'{name}: {r.get("error", "?")}', type='warning')
+
+                                    bright_slider.on('change', _mk_bright_handler(did, name, bright_lbl, bright_slider, bright_timer_holder))
+
+                                with ui.row().classes('w-full items-center q-mt-xs'):
+                                    # Color temperature slider with debounce (600ms)
+                                    ui.icon('thermostat', size='xs').classes('text-blue-5')
+                                    cct_lbl = ui.label('4000K').classes('text-caption')
+                                    cct_lbl.props('style="min-width:45px;text-align:right;"')
+                                    cct_slider = ui.slider(min=2700, max=6500, value=4000, step=100).classes('q-mx-sm')
+                                    cct_timer_holder = [None]
+
+                                    def _mk_cct_handler(d, n, lbl, slider, holder):
+                                        def _handler():
+                                            val = int(slider.value)
+                                            lbl.set_text(f'{val}K')
+                                            return _send_cct(d, n, val, lbl)
+                                        def _on_slide():
+                                            lbl.set_text(f'{int(slider.value)}K')
+                                            if holder[0] is not None:
+                                                holder[0].deactivate()
+                                            holder[0] = ui.timer(0.6, _handler, once=True)
+                                        return _on_slide
+
+                                    def _send_cct(did, name, val, lbl):
+                                        lbl.set_text(f'{val}K ✅')
+                                        r = _halite_control(did, f"color_temp:{val}")
+                                        if r.get("status") != "success":
+                                            ui.notify(f'{name}: {r.get("error", "?")}', type='warning')
+
+                                    cct_slider.on('change', _mk_cct_handler(did, name, cct_lbl, cct_slider, cct_timer_holder))
+
         # Initial load.
         _halite_refresh()
 
@@ -294,3 +352,10 @@ def _device_supports_control(model: str) -> bool:
                 continue
             return False
     return True
+
+
+def _device_is_light(model: str) -> bool:
+    """Check if a device supports brightness / color temperature control."""
+    model_lower = model.lower()
+    light_keywords = ("light", "lamp", "bulb", "candle", "downlight", "ceiling")
+    return any(kw in model_lower for kw in light_keywords)
