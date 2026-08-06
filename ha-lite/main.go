@@ -722,8 +722,31 @@ func handleControl(w http.ResponseWriter, r *http.Request) {
 
 func controlDevice(dev *registry.DeviceInfo, action string) map[string]interface{} {
 	miioDev := miio.NewDevice(dev.IP, dev.Token, dev.Model)
-	cmd := buildCommand(action)
 
+	// Handle toggle: read current power state, then flip.
+	if strings.ToLower(strings.TrimSpace(action)) == "toggle" {
+		statusCmd := map[string]interface{}{"method": "get_prop", "params": []interface{}{"power"}}
+		resp, err := miioDev.Send(statusCmd)
+		if err == nil {
+			var result []interface{}
+			if json.Unmarshal(resp, &result) == nil && len(result) > 0 {
+				current := fmt.Sprintf("%v", result[0])
+				current = strings.ToLower(current)
+				if current == "on" {
+					action = "off"
+				} else {
+					action = "on"
+				}
+				log.Printf("🔄 Toggle: current=%s → %s", current, action)
+			}
+		}
+		// If toggle detection fails, default to "on".
+		if action == "toggle" {
+			action = "on"
+		}
+	}
+
+	cmd := buildCommand(action)
 	resp, err := miioDev.Send(cmd)
 	if err == nil {
 		return map[string]interface{}{
@@ -832,6 +855,32 @@ func buildCommand(action string) map[string]interface{} {
 		return map[string]interface{}{"method": "set_power", "params": []interface{}{"on"}}
 	case action == "off":
 		return map[string]interface{}{"method": "set_power", "params": []interface{}{"off"}}
+	case action == "toggle":
+		return map[string]interface{}{"method": "toggle", "params": []interface{}{}}
+	case action == "status":
+		return map[string]interface{}{"method": "get_prop", "params": []interface{}{"power", "bright", "cct"}}
+	case strings.HasPrefix(action, "brightness:"):
+		val := strings.TrimPrefix(action, "brightness:")
+		var level int
+		fmt.Sscanf(val, "%d", &level)
+		if level < 1 {
+			level = 1
+		}
+		if level > 100 {
+			level = 100
+		}
+		return map[string]interface{}{"method": "set_bright", "params": []interface{}{level}}
+	case strings.HasPrefix(action, "color_temp:"):
+		val := strings.TrimPrefix(action, "color_temp:")
+		var temp int
+		fmt.Sscanf(val, "%d", &temp)
+		if temp < 2700 {
+			temp = 2700
+		}
+		if temp > 6500 {
+			temp = 6500
+		}
+		return map[string]interface{}{"method": "set_cct", "params": []interface{}{temp}}
 	default:
 		return map[string]interface{}{"method": "set_power", "params": []interface{}{action}}
 	}

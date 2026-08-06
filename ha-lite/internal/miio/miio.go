@@ -45,6 +45,24 @@ func md5Hash(data []byte) []byte {
 	return h[:]
 }
 
+func aesDecrypt(key, iv, ciphertext []byte) ([]byte, error) {
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, err
+	}
+	if len(ciphertext) == 0 || len(ciphertext)%aes.BlockSize != 0 {
+		return nil, fmt.Errorf("miio: invalid ciphertext length %d", len(ciphertext))
+	}
+	plain := make([]byte, len(ciphertext))
+	cipher.NewCBCDecrypter(block, iv).CryptBlocks(plain, ciphertext)
+	// Remove PKCS7 padding.
+	padLen := int(plain[len(plain)-1])
+	if padLen < 1 || padLen > aes.BlockSize {
+		return plain, nil // no valid padding, return as-is
+	}
+	return plain[:len(plain)-padLen], nil
+}
+
 func aesEncrypt(key, iv, plain []byte) ([]byte, error) {
 	block, err := aes.NewCipher(key)
 	if err != nil {
@@ -144,10 +162,18 @@ func (d *Device) Send(cmd interface{}) (json.RawMessage, error) {
 	if _, err := conn.WriteTo(pkt, addr); err != nil {
 		return nil, fmt.Errorf("miio: write command: %w", err)
 	}
-	_, _, err = conn.ReadFrom(buf)
+	n, _, err = conn.ReadFrom(buf)
 	if err != nil {
 		return nil, fmt.Errorf("miio: read response: %w", err)
 	}
 
+	// Decrypt response (skip 32-byte header: 16 header + 16 checksum).
+	if n > 32 {
+		decrypted, err := aesDecrypt(key, iv, buf[32:n])
+		if err == nil && len(decrypted) > 0 {
+			return json.RawMessage(decrypted), nil
+		}
+		// Fallback: return raw "ok" if decryption fails (device ACK).
+	}
 	return json.RawMessage(`"ok"`), nil
 }
