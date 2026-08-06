@@ -73,6 +73,18 @@ def build_halite_panel(T: dict, conf: dict, lang: str):
         health_label = ui.label('').classes('text-caption')
         device_count_label = ui.label('').classes('text-caption')
         cloud_label = ui.label('').classes('text-caption')
+        auto_refresh_switch = ui.switch('Auto-refresh', value=True).props('dense color=teal-8').classes('q-ml-auto')
+        auto_refresh_timer_holder = [None]
+
+        def _on_auto_refresh_change(e):
+            if e.value:
+                auto_refresh_timer_holder[0] = ui.timer(10.0, _halite_refresh)
+            else:
+                if auto_refresh_timer_holder[0] is not None:
+                    auto_refresh_timer_holder[0].deactivate()
+                    auto_refresh_timer_holder[0] = None
+
+        auto_refresh_switch.on('change', _on_auto_refresh_change)
 
         # ── Server offline banner ─────────────────────────────────────────────
         offline_banner = ui.card().classes('w-full q-pa-md q-mb-sm bg-red-1')
@@ -228,109 +240,131 @@ def build_halite_panel(T: dict, conf: dict, lang: str):
                             ui.label('No devices yet. Click "Start QR Login" to sync devices from Xiaomi Cloud.').classes('text-grey-7')
                 return
 
+            online_devices = [d for d in devices if d.get("online", False)]
+            offline_devices = [d for d in devices if not d.get("online", False)]
+
+            def _render_device(d):
+                did = d.get("did", "")
+                name = d.get("name", "?")
+                model = d.get("model", "?")
+                ip = d.get("ip", "?")
+                online = d.get("online", False)
+
+                with ui.card().classes('w-full q-pa-sm q-mb-xs'):
+                    with ui.row().classes('w-full items-center'):
+                        status_icon = '🟢' if online else '🔴'
+                        ui.label(f'{status_icon} {name}').classes('text-subtitle2')
+                        ui.space()
+                        ui.label(model).classes('text-caption text-grey-6')
+                        ui.label(f'IP: {ip}').classes('text-caption text-grey-6 q-ml-sm')
+
+                        # On/Off buttons for controllable devices.
+                        if online and _device_supports_control(model):
+                            dev_state = ui.label('').classes('text-caption q-mx-sm')
+
+                            def _on(did=did, name=name, lbl=dev_state):
+                                lbl.set_text('⏳')
+                                r = _halite_control(did, "on")
+                                if r.get("status") == "success":
+                                    lbl.set_text('✅ ON')
+                                    ui.notify(f'{name}: turned ON', type='positive')
+                                else:
+                                    lbl.set_text('❌')
+                                    ui.notify(f'{name}: failed — {r.get("error", "?")}', type='negative')
+
+                            def _off(did=did, name=name, lbl=dev_state):
+                                lbl.set_text('⏳')
+                                r = _halite_control(did, "off")
+                                if r.get("status") == "success":
+                                    lbl.set_text('✅ OFF')
+                                    ui.notify(f'{name}: turned OFF', type='positive')
+                                else:
+                                    lbl.set_text('❌')
+                                    ui.notify(f'{name}: failed — {r.get("error", "?")}', type='negative')
+
+                            ui.button('ON', on_click=_on).props('size=sm color=green-7 dense')
+                            ui.button('OFF', on_click=_off).props('size=sm color=red-7 dense')
+
+                        # ── Brightness & color temperature sliders for lights ──
+                        if online and _device_is_light(model):
+                            with ui.row().classes('w-full items-center q-mt-xs'):
+                                # Brightness slider with debounce (600ms)
+                                ui.icon('light_mode', size='xs').classes('text-amber-5')
+                                bright_lbl = ui.label('50%').classes('text-caption')
+                                bright_lbl.props('style="min-width:45px;text-align:right;"')
+                                bright_slider = ui.slider(min=1, max=100, value=50, step=1).classes('q-mx-sm')
+                                bright_timer_holder = [None]  # mutable container to avoid nonlocal issues
+
+                                def _mk_bright_handler(d, n, lbl, slider, holder):
+                                    def _handler():
+                                        val = int(slider.value)
+                                        lbl.set_text(f'{val}%')
+                                        return _send_brightness(d, n, val, lbl)
+                                    def _on_slide():
+                                        lbl.set_text(f'{int(slider.value)}%')
+                                        if holder[0] is not None:
+                                            holder[0].deactivate()
+                                        holder[0] = ui.timer(0.6, _handler, once=True)
+                                    return _on_slide
+
+                                def _send_brightness(did, name, val, lbl):
+                                    lbl.set_text(f'{val}% ✅')
+                                    r = _halite_control(did, f"brightness:{val}")
+                                    if r.get("status") != "success":
+                                        ui.notify(f'{name}: {r.get("error", "?")}', type='warning')
+
+                                bright_slider.on('change', _mk_bright_handler(did, name, bright_lbl, bright_slider, bright_timer_holder))
+
+                            with ui.row().classes('w-full items-center q-mt-xs'):
+                                # Color temperature slider with debounce (600ms)
+                                ui.icon('thermostat', size='xs').classes('text-blue-5')
+                                cct_lbl = ui.label('4000K').classes('text-caption')
+                                cct_lbl.props('style="min-width:45px;text-align:right;"')
+                                cct_slider = ui.slider(min=2700, max=6500, value=4000, step=100).classes('q-mx-sm')
+                                cct_timer_holder = [None]
+
+                                def _mk_cct_handler(d, n, lbl, slider, holder):
+                                    def _handler():
+                                        val = int(slider.value)
+                                        lbl.set_text(f'{val}K')
+                                        return _send_cct(d, n, val, lbl)
+                                    def _on_slide():
+                                        lbl.set_text(f'{int(slider.value)}K')
+                                        if holder[0] is not None:
+                                            holder[0].deactivate()
+                                        holder[0] = ui.timer(0.6, _handler, once=True)
+                                    return _on_slide
+
+                                def _send_cct(did, name, val, lbl):
+                                    lbl.set_text(f'{val}K ✅')
+                                    r = _halite_control(did, f"color_temp:{val}")
+                                    if r.get("status") != "success":
+                                        ui.notify(f'{name}: {r.get("error", "?")}', type='warning')
+
+                                cct_slider.on('change', _mk_cct_handler(did, name, cct_lbl, cct_slider, cct_timer_holder))
+
             with device_container:
-                for d in devices:
-                    did = d.get("did", "")
-                    name = d.get("name", "?")
-                    model = d.get("model", "?")
-                    ip = d.get("ip", "?")
-                    online = d.get("online", False)
-
-                    with ui.card().classes('w-full q-pa-sm q-mb-xs'):
+                # ── Online devices section ──
+                if online_devices:
+                    with ui.card().classes('w-full q-pa-xs q-mb-xs bg-green-1'):
                         with ui.row().classes('w-full items-center'):
-                            status_icon = '🟢' if online else '🔴'
-                            ui.label(f'{status_icon} {name}').classes('text-subtitle2')
-                            ui.space()
-                            ui.label(model).classes('text-caption text-grey-6')
-                            ui.label(f'IP: {ip}').classes('text-caption text-grey-6 q-ml-sm')
+                            ui.icon('wifi', color='green').classes('q-mr-xs')
+                            ui.label(f'Online ({len(online_devices)})').classes('text-subtitle2 text-green-9')
+                    for d in online_devices:
+                        _render_device(d)
 
-                            # On/Off buttons for controllable devices.
-                            if online and _device_supports_control(model):
-                                dev_state = ui.label('').classes('text-caption q-mx-sm')
-
-                                def _on(did=did, name=name, lbl=dev_state):
-                                    lbl.set_text('⏳')
-                                    r = _halite_control(did, "on")
-                                    if r.get("status") == "success":
-                                        lbl.set_text('✅ ON')
-                                        ui.notify(f'{name}: turned ON', type='positive')
-                                    else:
-                                        lbl.set_text('❌')
-                                        ui.notify(f'{name}: failed — {r.get("error", "?")}', type='negative')
-
-                                def _off(did=did, name=name, lbl=dev_state):
-                                    lbl.set_text('⏳')
-                                    r = _halite_control(did, "off")
-                                    if r.get("status") == "success":
-                                        lbl.set_text('✅ OFF')
-                                        ui.notify(f'{name}: turned OFF', type='positive')
-                                    else:
-                                        lbl.set_text('❌')
-                                        ui.notify(f'{name}: failed — {r.get("error", "?")}', type='negative')
-
-                                ui.button('ON', on_click=_on).props('size=sm color=green-7 dense')
-                                ui.button('OFF', on_click=_off).props('size=sm color=red-7 dense')
-
-                            # ── Brightness & color temperature sliders for lights ──
-                            if online and _device_is_light(model):
-                                with ui.row().classes('w-full items-center q-mt-xs'):
-                                    # Brightness slider with debounce (600ms)
-                                    ui.icon('light_mode', size='xs').classes('text-amber-5')
-                                    bright_lbl = ui.label('50%').classes('text-caption')
-                                    bright_lbl.props('style="min-width:45px;text-align:right;"')
-                                    bright_slider = ui.slider(min=1, max=100, value=50, step=1).classes('q-mx-sm')
-                                    bright_timer_holder = [None]  # mutable container to avoid nonlocal issues
-
-                                    def _mk_bright_handler(d, n, lbl, slider, holder):
-                                        def _handler():
-                                            val = int(slider.value)
-                                            lbl.set_text(f'{val}%')
-                                            return _send_brightness(d, n, val, lbl)
-                                        def _on_slide():
-                                            lbl.set_text(f'{int(slider.value)}%')
-                                            if holder[0] is not None:
-                                                holder[0].deactivate()
-                                            holder[0] = ui.timer(0.6, _handler, once=True)
-                                        return _on_slide
-
-                                    def _send_brightness(did, name, val, lbl):
-                                        lbl.set_text(f'{val}% ✅')
-                                        r = _halite_control(did, f"brightness:{val}")
-                                        if r.get("status") != "success":
-                                            ui.notify(f'{name}: {r.get("error", "?")}', type='warning')
-
-                                    bright_slider.on('change', _mk_bright_handler(did, name, bright_lbl, bright_slider, bright_timer_holder))
-
-                                with ui.row().classes('w-full items-center q-mt-xs'):
-                                    # Color temperature slider with debounce (600ms)
-                                    ui.icon('thermostat', size='xs').classes('text-blue-5')
-                                    cct_lbl = ui.label('4000K').classes('text-caption')
-                                    cct_lbl.props('style="min-width:45px;text-align:right;"')
-                                    cct_slider = ui.slider(min=2700, max=6500, value=4000, step=100).classes('q-mx-sm')
-                                    cct_timer_holder = [None]
-
-                                    def _mk_cct_handler(d, n, lbl, slider, holder):
-                                        def _handler():
-                                            val = int(slider.value)
-                                            lbl.set_text(f'{val}K')
-                                            return _send_cct(d, n, val, lbl)
-                                        def _on_slide():
-                                            lbl.set_text(f'{int(slider.value)}K')
-                                            if holder[0] is not None:
-                                                holder[0].deactivate()
-                                            holder[0] = ui.timer(0.6, _handler, once=True)
-                                        return _on_slide
-
-                                    def _send_cct(did, name, val, lbl):
-                                        lbl.set_text(f'{val}K ✅')
-                                        r = _halite_control(did, f"color_temp:{val}")
-                                        if r.get("status") != "success":
-                                            ui.notify(f'{name}: {r.get("error", "?")}', type='warning')
-
-                                    cct_slider.on('change', _mk_cct_handler(did, name, cct_lbl, cct_slider, cct_timer_holder))
+                # ── Offline devices section ──
+                if offline_devices:
+                    with ui.card().classes('w-full q-pa-xs q-mb-xs bg-grey-3'):
+                        with ui.row().classes('w-full items-center'):
+                            ui.icon('wifi_off', color='grey').classes('q-mr-xs')
+                            ui.label(f'Offline ({len(offline_devices)})').classes('text-subtitle2 text-grey-7')
+                    for d in offline_devices:
+                        _render_device(d)
 
         # Initial load.
         _halite_refresh()
+        auto_refresh_timer_holder[0] = ui.timer(10.0, _halite_refresh)
 
     return halite_content
 
