@@ -451,15 +451,12 @@ mkdir -p "$CLAWBOARD_DST/config" "$CLAWBOARD_DST/locales" "$CLAWBOARD_DST/lib" "
 for f in "$WORK_DIR/dashboard.py" "$WORK_DIR"/clawberry_*.py "$WORK_DIR/publish_services.sh"; do
     [[ -f "$f" ]] || continue
     fname="$(basename "$f")"
-    _pre_hash="none"
-    [[ "$fname" == "dashboard.py" ]] && _pre_hash=$(sha256sum "$CLAWBOARD_DST/$fname" 2>/dev/null | cut -d' ' -f1 || echo "none")
+    _pre_hash=$(sha256sum "$CLAWBOARD_DST/$fname" 2>/dev/null | cut -d' ' -f1 || echo "none")
     if cp "$f" "$CLAWBOARD_DST/$fname" 2>/dev/null; then
         chmod 755 "$CLAWBOARD_DST/$fname" || true
         log "  installed $fname"
-        if [[ "$fname" == "dashboard.py" ]]; then
-            _post_hash=$(sha256sum "$CLAWBOARD_DST/$fname" | cut -d' ' -f1)
-            [[ "$_pre_hash" != "$_post_hash" ]] && DASHBOARD_CHANGED=yes
-        fi
+        _post_hash=$(sha256sum "$CLAWBOARD_DST/$fname" | cut -d' ' -f1)
+        [[ "$_pre_hash" != "$_post_hash" ]] && DASHBOARD_CHANGED=yes
     else
         log "WARNING: failed to install $fname to $CLAWBOARD_DST"
     fi
@@ -476,8 +473,11 @@ elif [[ -d "$WORK_DIR/dashboard" ]]; then
 fi
 if [[ "$_dashboard_ok" == "yes" ]]; then
     mkdir -p "$CLAWBOARD_DST/dashboard"
+    _pre_hash=$(find "$CLAWBOARD_DST/dashboard" -type f -exec sha256sum {} \; 2>/dev/null | sort | sha256sum | cut -d' ' -f1 || echo "none")
     rsync --archive --update "$WORK_DIR/dashboard/" "$CLAWBOARD_DST/dashboard/"
+    _post_hash=$(find "$CLAWBOARD_DST/dashboard" -type f -exec sha256sum {} \; 2>/dev/null | sort | sha256sum | cut -d' ' -f1)
     log "  synced dashboard/"
+    [[ "$_pre_hash" != "$_post_hash" ]] && DASHBOARD_CHANGED=yes
 fi
 
 # locales/ directory (locale string modules)
