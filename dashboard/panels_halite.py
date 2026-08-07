@@ -56,6 +56,21 @@ def _halite_sync() -> dict:
     return data
 
 
+def _halite_oauth_start() -> dict:
+    _, data = _api("POST", "/api/login/oauth/start")
+    return data
+
+
+def _halite_oauth_status() -> dict:
+    _, data = _api("GET", "/api/login/oauth/status")
+    return data
+
+
+def _halite_oauth_collect() -> dict:
+    _, data = _api("POST", "/api/login/oauth/collect")
+    return data
+
+
 def build_halite_panel(T: dict, conf: dict, lang: str):
     """Build the ha-lite device control panel."""
 
@@ -99,6 +114,7 @@ def build_halite_panel(T: dict, conf: dict, lang: str):
             with ui.row().classes('w-full items-center'):
                 ui.label('🔑 Login to Xiaomi Cloud').classes('text-subtitle2 text-blue-9')
                 qr_status_badge = ui.chip('Not logged in', color='orange', icon='lock')
+                oauth_status_badge = ui.chip('OAuth', color='grey', icon='link')
             qr_msg = ui.label('Scan QR code with Mi Home app to sync devices.').classes('text-caption text-grey-7 q-mt-xs')
             qr_iframe = ui.html('').classes('w-full')
             with ui.row().classes('q-mt-sm gap-x-2'):
@@ -171,6 +187,7 @@ def build_halite_panel(T: dict, conf: dict, lang: str):
                         ui.notify(f'QR login failed: {err_msg}', type='negative')
 
                 ui.button('📱 Start QR Login', on_click=_start_qr).props('color=blue-8')
+                ui.button('🌐 Login with OAuth', on_click=_start_oauth).props('color=purple-8')
                 ui.button('🔄 Refresh Devices', on_click=lambda: _halite_refresh()).props('color=teal-8')
 
                 def _start_polling_qr():
@@ -195,6 +212,75 @@ def build_halite_panel(T: dict, conf: dict, lang: str):
                         qr_status_badge.set_text('Expired')
                         qr_status_badge.props('color=red icon=timer_off')
                         qr_msg.set_text('QR code expired. Click "Start QR Login" to get a new one.')
+
+                # ── OAuth login flow ──────────────────────────────────────────
+                def _start_oauth():
+                    try:
+                        result = _halite_oauth_start()
+                    except Exception as e:
+                        oauth_status_badge.set_text('Server offline')
+                        oauth_status_badge.props('color=red icon=error')
+                        ui.notify(f'OAuth start failed: {e}', type='negative')
+                        return
+
+                    if result.get("status") == "waiting":
+                        auth_url = result.get("auth_url", "")
+                        oauth_status_badge.set_text('Waiting for login…')
+                        oauth_status_badge.props('color=purple icon=link')
+                        qr_msg.set_text('OAuth: Open the link below in your browser to login with Xiaomi account.')
+                        # Show the auth URL as a clickable link.
+                        qr_iframe.set_content(
+                            f'<div style="text-align:center;margin-top:12px;">'
+                            f'<p style="color:#666;font-size:0.9rem;">🌐 Open this link in your browser:</p>'
+                            f'<a href="{auth_url}" target="_blank" '
+                            f'style="display:inline-block;padding:10px 20px;background:#7c3aed;color:#fff;'
+                            f'border-radius:8px;text-decoration:none;font-size:0.9rem;margin:8px 0;">'
+                            f'🔑 Login with Xiaomi Account</a>'
+                            f'<p style="color:#999;font-size:0.75rem;margin-top:8px;">'
+                            f'After login, the browser will redirect back and complete automatically.</p>'
+                            f'<p style="color:#999;font-size:0.7rem;word-break:break-all;">Or copy: {auth_url}</p>'
+                            f'</div>'
+                        )
+                        _start_polling_oauth()
+                    else:
+                        err_msg = result.get("message", "") or str(result)
+                        oauth_status_badge.set_text('Error')
+                        oauth_status_badge.props('color=red icon=error')
+                        ui.notify(f'OAuth start failed: {err_msg}', type='negative')
+
+                def _start_polling_oauth():
+                    oauth_timer = ui.timer(2.0, lambda: _check_oauth(oauth_timer), active=True)
+
+                def _check_oauth(timer):
+                    status = _halite_oauth_status()
+                    if status.get("has_service_token"):
+                        timer.deactivate()
+                        oauth_status_badge.set_text('Logged in ✅')
+                        oauth_status_badge.props('color=green icon=check_circle')
+                        qr_status_badge.set_text('Logged in ✅')
+                        qr_status_badge.props('color=green icon=check_circle')
+                        qr_msg.set_text('OAuth login successful! Syncing devices from cloud...')
+                        _api("POST", "/api/login/oauth/collect")
+                        _halite_refresh()
+                        ui.notify('✅ OAuth login complete', type='positive')
+                    elif status.get("status") == "authorized":
+                        oauth_status_badge.set_text('Authorized — finishing…')
+                        oauth_status_badge.props('color=orange icon=link')
+                        # Auto-collect when authorized.
+                        _api("POST", "/api/login/oauth/collect")
+                        _halite_refresh()
+                        timer.deactivate()
+                        oauth_status_badge.set_text('Logged in ✅')
+                        oauth_status_badge.props('color=green icon=check_circle')
+                        ui.notify('✅ OAuth login complete', type='positive')
+                    elif status.get("status") == "error":
+                        timer.deactivate()
+                        oauth_status_badge.set_text('Error')
+                        oauth_status_badge.props('color=red icon=error')
+                    elif status.get("status") == "disabled":
+                        timer.deactivate()
+                        oauth_status_badge.set_text('Disabled')
+                        oauth_status_badge.props('color=grey icon=block')
 
         # ── Device list ───────────────────────────────────────────────────────
         device_container = ui.column().classes('w-full')

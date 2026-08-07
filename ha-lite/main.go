@@ -26,7 +26,7 @@ var (
 	reg       *registry.Registry
 	cloud     *xiaomi.CloudClient
 	buildTime = "dev"
-	version   = "0.10.0"
+	version   = "0.11.0"
 
 	// QR login state.
 	qrMu       sync.Mutex
@@ -34,6 +34,10 @@ var (
 	qrImagePNG []byte
 	qrStatus   string // "idle", "waiting", "scanned", "authenticated", "timeout", "error"
 	qrMessage  string
+
+	// OAuth login state.
+	oauthMu     sync.Mutex
+	oauthClient *xiaomi.OAuthClient
 )
 
 // ── Main ──────────────────────────────────────────────────────────────────────
@@ -71,6 +75,18 @@ func main() {
 	qrMgr = xiaomi.NewQRLoginManager(cfg.Xiaomi.Region, 120)
 	qrStatus = "idle"
 
+	// Initialize OAuth client (if enabled).
+	if cfg.OAuth.Enabled {
+		oauthClient = xiaomi.NewOAuthClient(cfg.OAuth.TokenCache)
+		if err := oauthClient.LoadToken(); err != nil {
+			log.Printf("[oauth] No saved token: %v", err)
+		} else {
+			log.Printf("[oauth] Loaded saved token from %s", cfg.OAuth.TokenCache)
+		}
+	} else {
+		log.Println("[oauth] OAuth disabled in config")
+	}
+
 	// Initial cloud sync — try password first, then fall back to QR.
 	if cfg.Xiaomi.HasPasswordAuth() {
 		if err := syncFromCloud(); err != nil {
@@ -101,6 +117,12 @@ func main() {
 	mux.HandleFunc("/api/login/qr/collect", handleQRCollect) // POST
 	mux.HandleFunc("/api/login/qr/cancel", handleQRCancel)  // POST
 	mux.HandleFunc("/api/login/qr/image", handleQRImage)    // GET - PNG or HTML
+
+	// ── OAuth login endpoints ───────────────────────────────────────────────
+	mux.HandleFunc("/api/login/oauth/start", handleOAuthStart)     // POST
+	mux.HandleFunc("/api/login/oauth/status", handleOAuthStatus)   // GET
+	mux.HandleFunc("/api/login/oauth/collect", handleOAuthCollect) // POST
+	mux.HandleFunc("/api/login/oauth/cancel", handleOAuthCancel)   // POST
 
 	// ── OpenClaw / AI Agent endpoints ──────────────────────────────────────
 	mux.HandleFunc("/openclaw/schema", handleSchema)
@@ -150,7 +172,7 @@ func main() {
 // ── Cloud sync ────────────────────────────────────────────────────────────────
 
 func syncFromCloud() error {
-	// Try password login first.
+	// ── Try password login first ────────────────────────────────────────────
 	if cfg.Xiaomi.HasPasswordAuth() {
 		if err := cloud.Login(); err != nil {
 			return fmt.Errorf("cloud login: %w", err)
@@ -168,17 +190,35 @@ func syncFromCloud() error {
 				cloud.SetSsecurity(ss)
 			}
 		}
-		if !cloud.HasCredentials() {
-			return fmt.Errorf("not authenticated: configure password or complete QR login (POST /api/login/qr/start)")
-		}
-	} else {
-		// Already has credentials from previous QR login.
+		// Don't fail yet — OAuth may be available.
 	}
 
+	// ── Fetch devices from cloud (password/QR serviceToken) ────────────────
 	devices, err := cloud.DeviceList()
 	if err != nil {
-		// If device list fails, may be token expired. Clear and let caller retry.
-		return fmt.Errorf("device list: %w", err)
+		log.Printf("⚠️  Cloud device list (password/QR): %v", err)
+	}
+
+	// ── Fallback: try OAuth device list ─────────────────────────────────────
+	if len(devices) == 0 && oauthClient != nil && oauthClient.IsAuthenticated() {
+		log.Println("[oauth] Trying OAuth device list as fallback...")
+		oauthDevices, oauthErr := oauthClient.DeviceList()
+		if oauthErr != nil {
+			log.Printf("⚠️  OAuth device list failed: %v", oauthErr)
+		} else if len(oauthDevices) > 0 {
+			devices = oauthDevices
+			log.Printf("[oauth] OAuth returned %d devices", len(devices))
+		}
+	}
+
+	// If still no devices and no credentials, report error.
+	if len(devices) == 0 && !cloud.HasCredentials() && (oauthClient == nil || !oauthClient.IsAuthenticated()) {
+		return fmt.Errorf("not authenticated: configure password, complete QR login, or use OAuth (POST /api/login/oauth/start)")
+	}
+
+	if len(devices) == 0 {
+		log.Println("☁️  Cloud returned 0 devices")
+		return nil
 	}
 
 	log.Printf("☁️  Cloud returned %d devices", len(devices))
@@ -573,6 +613,158 @@ func handleQRImage(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(page))
 }
 
+// ── OAuth Handlers ────────────────────────────────────────────────────────────
+
+// handleOAuthStart starts the OAuth 2.0 login flow.
+func handleOAuthStart(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]interface{}{"error": "POST only"})
+		return
+	}
+
+	if oauthClient == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]interface{}{
+			"status":  "error",
+			"message": "OAuth is disabled. Set oauth.enabled=true in halite.yaml",
+		})
+		return
+	}
+
+	// Check callback port is available.
+	if err := xiaomi.CheckCallbackPort(); err != nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]interface{}{
+			"status":  "error",
+			"message": fmt.Sprintf("OAuth callback port not available: %v", err),
+		})
+		return
+	}
+
+	// Get the host from the request.
+	host := strings.Split(r.Host, ":")[0]
+	if host == "" || host == "0.0.0.0" {
+		host = cfg.Server.Host
+	}
+
+	authURL, err := oauthClient.StartAuth(host)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]interface{}{
+			"status":  "error",
+			"message": fmt.Sprintf("Failed to start OAuth: %v", err),
+		})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"status":   "waiting",
+		"auth_url": authURL,
+		"message":  "Open the auth_url in your browser to login with Xiaomi account.",
+		"hint":     "After login, the browser will redirect back to this server. Then call POST /api/login/oauth/collect.",
+	})
+}
+
+// handleOAuthStatus returns the current OAuth status.
+func handleOAuthStatus(w http.ResponseWriter, r *http.Request) {
+	if oauthClient == nil {
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"status":           "disabled",
+			"has_service_token": false,
+		})
+		return
+	}
+
+	status, msg, authed := oauthClient.Status()
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"status":            status,
+		"message":           msg,
+		"has_service_token": authed,
+	})
+}
+
+// handleOAuthCollect exchanges the auth code and syncs devices.
+func handleOAuthCollect(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]interface{}{"error": "POST only"})
+		return
+	}
+
+	if oauthClient == nil {
+		writeJSON(w, http.StatusBadRequest, map[string]interface{}{
+			"status":  "error",
+			"message": "OAuth is disabled",
+		})
+		return
+	}
+
+	status, _, _ := oauthClient.Status()
+	if status == "authenticated" {
+		// Already authenticated — just sync devices.
+		if err := syncFromCloud(); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]interface{}{
+				"status":  "login_ok_sync_failed",
+				"message": fmt.Sprintf("Already authenticated but sync failed: %v", err),
+			})
+			return
+		}
+		devices := reg.GetAll()
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"status":  "success",
+			"message": fmt.Sprintf("Already authenticated. %d device(s) synced.", len(devices)),
+			"count":   len(devices),
+			"devices": devices,
+		})
+		return
+	}
+
+	if status != "authorized" {
+		writeJSON(w, http.StatusBadRequest, map[string]interface{}{
+			"status":  "not_ready",
+			"message": fmt.Sprintf("OAuth not yet complete. Current status: %s. Start OAuth flow first.", status),
+		})
+		return
+	}
+
+	// Exchange code for token.
+	if err := oauthClient.ExchangeCode(); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]interface{}{
+			"status":  "error",
+			"message": fmt.Sprintf("Token exchange failed: %v", err),
+		})
+		return
+	}
+
+	// Sync devices from cloud.
+	if err := syncFromCloud(); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]interface{}{
+			"status":  "login_ok_sync_failed",
+			"message": fmt.Sprintf("OAuth login succeeded but device sync failed: %v", err),
+		})
+		return
+	}
+
+	devices := reg.GetAll()
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"status":  "success",
+		"message": fmt.Sprintf("OAuth login complete. %d device(s) synced.", len(devices)),
+		"count":   len(devices),
+		"devices": devices,
+	})
+}
+
+// handleOAuthCancel cancels the OAuth flow.
+func handleOAuthCancel(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]interface{}{"error": "POST only"})
+		return
+	}
+
+	if oauthClient != nil {
+		oauthClient.Cancel()
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"status": "cancelled",
+	})
+}
+
 // ── HTTP Handlers ─────────────────────────────────────────────────────────────
 
 // handleSchema returns the OpenClaw-compatible tool schema.
@@ -818,13 +1010,31 @@ func controlDevice(dev *registry.DeviceInfo, action string) map[string]interface
 }
 
 // cloudControlDevice sends a control command via Xiaomi cloud API.
+// Tries RC4-encrypted API first, falls back to OAuth Bearer API.
 func cloudControlDevice(dev *registry.DeviceInfo, action string) error {
-	if cloud == nil || !cloud.HasCredentials() || cloud.Ssecurity() == "" {
-		return fmt.Errorf("cloud credentials not available")
+	siid, piid, value := mapActionToMIoT(action)
+
+	// Try RC4-encrypted API (password/QR login).
+	if cloud != nil && cloud.HasCredentials() && cloud.Ssecurity() != "" {
+		if err := cloud.DeviceControlEncrypted(dev.DID, siid, piid, value, cloud.Ssecurity()); err == nil {
+			return nil
+		} else {
+			log.Printf("⚠️  RC4 cloud control failed: %v", err)
+		}
 	}
 
-	siid, piid, value := mapActionToMIoT(action)
-	return cloud.DeviceControlEncrypted(dev.DID, siid, piid, value, cloud.Ssecurity())
+	// Fallback: try OAuth Bearer API.
+	if oauthClient != nil && oauthClient.IsAuthenticated() {
+		log.Println("[oauth] Trying OAuth cloud control...")
+		if err := oauthClient.ControlDevice(dev.DID, siid, piid, value); err == nil {
+			return nil
+		} else {
+			log.Printf("⚠️  OAuth cloud control failed: %v", err)
+			return fmt.Errorf("OAuth cloud control failed: %w", err)
+		}
+	}
+
+	return fmt.Errorf("cloud control not available: no valid credentials")
 }
 
 // mapActionToMIoT maps a ha-lite action to MIoT siid/piid/value.
@@ -973,12 +1183,14 @@ func handleSync(w http.ResponseWriter, r *http.Request) {
 
 // handleHealth returns server health status.
 func handleHealth(w http.ResponseWriter, r *http.Request) {
+	oauthAuthed := oauthClient != nil && oauthClient.IsAuthenticated()
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"status":       "ok",
 		"version":      version,
 		"build_time":   buildTime,
 		"device_count": reg.Count(),
 		"cloud_authed": cloud.HasCredentials(),
+		"oauth_authed": oauthAuthed,
 		"qr_active":    qrStatus == "waiting",
 		"uptime":       time.Now().Format(time.RFC3339),
 	})

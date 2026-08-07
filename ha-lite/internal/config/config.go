@@ -15,6 +15,15 @@ type Config struct {
 	Xiaomi   XiaomiConfig   `yaml:"xiaomi"`
 	Devices  []DeviceConfig `yaml:"devices"`
 	Registry RegistryConfig `yaml:"registry"`
+	OAuth    OAuthConfig    `yaml:"oauth"`
+}
+
+// OAuthConfig holds OAuth 2.0 settings.
+type OAuthConfig struct {
+	Enabled      bool   `yaml:"enabled"`
+	ClientID     string `yaml:"client_id"`
+	CallbackPort int    `yaml:"callback_port"`
+	TokenCache   string `yaml:"token_cache"`
 }
 
 // ServerConfig holds HTTP server settings.
@@ -61,6 +70,12 @@ func DefaultConfig() Config {
 		},
 		Registry: RegistryConfig{
 			CacheFile: "cache/mi_tokens.json",
+		},
+		OAuth: OAuthConfig{
+			Enabled:      true,
+			ClientID:     "2882303761520251711",
+			CallbackPort: 8123,
+			TokenCache:   "cache/oauth_token.json",
 		},
 	}
 }
@@ -112,6 +127,9 @@ func applyEnvOverrides(cfg *Config) {
 	}
 	if v := os.Getenv("HALITE_CACHE_FILE"); v != "" {
 		cfg.Registry.CacheFile = v
+	}
+	if v := os.Getenv("HALITE_OAUTH_ENABLED"); v != "" {
+		cfg.OAuth.Enabled = strings.ToLower(v) == "true" || v == "1"
 	}
 }
 
