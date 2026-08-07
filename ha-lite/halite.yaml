@@ -16,6 +16,14 @@ xiaomi:
 registry:
   cache_file: "cache/mi_tokens.json"   # Local device token cache
 
+# OAuth 2.0 login (browser-based, no phone needed).
+# Uses HA's registered client_id for Xiaomi cloud API access.
+oauth:
+  enabled: true                                # Enable OAuth login
+  client_id: "2882303761520251711"              # Xiaomi OAuth client_id (HA's registered ID)
+  callback_port: 8123                          # Local callback server port
+  token_cache: "cache/oauth_token.json"        # OAuth token persistence
+
 # Optional: static device entries for fallback (when cloud is unavailable).
 # devices:
 #   - name: "Living Room Light"
