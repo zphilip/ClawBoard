@@ -344,23 +344,41 @@ def build_halite_panel(T: dict, conf: dict, lang: str):
                                 cct_slider.on('change', _mk_cct_handler(did, name, cct_lbl, cct_slider, cct_timer_holder))
 
             with device_container:
-                # ── Online devices section ──
+                # ── Online devices section (collapsible) ──
                 if online_devices:
-                    with ui.card().classes('w-full q-pa-xs q-mb-xs bg-green-1'):
-                        with ui.row().classes('w-full items-center'):
-                            ui.icon('wifi', color='green').classes('q-mr-xs')
-                            ui.label(f'Online ({len(online_devices)})').classes('text-subtitle2 text-green-9')
-                    for d in online_devices:
-                        _render_device(d)
+                    with ui.expansion(
+                        f'Online ({len(online_devices)})',
+                        icon='wifi', value=True
+                    ).classes('w-full q-pa-xs q-mb-xs bg-green-1').props('header-class=text-green-9 text-subtitle2'):
+                        online_by_cat = _group_by_category(online_devices)
+                        for cat_key in _CATEGORY_ORDER:
+                            if cat_key not in online_by_cat:
+                                continue
+                            cat_devices = online_by_cat[cat_key]
+                            meta = _CATEGORY_META.get(cat_key, _CATEGORY_META['other'])
+                            if len(online_by_cat) > 1:
+                                with ui.row().classes('w-full items-center q-mt-sm q-mb-xs'):
+                                    ui.label(f'{meta["icon"]} {meta["label"]} ({len(cat_devices)})').classes('text-caption text-grey-6')
+                            for d in cat_devices:
+                                _render_device(d)
 
-                # ── Offline devices section ──
+                # ── Offline devices section (collapsible) ──
                 if offline_devices:
-                    with ui.card().classes('w-full q-pa-xs q-mb-xs bg-grey-3'):
-                        with ui.row().classes('w-full items-center'):
-                            ui.icon('wifi_off', color='grey').classes('q-mr-xs')
-                            ui.label(f'Offline ({len(offline_devices)})').classes('text-subtitle2 text-grey-7')
-                    for d in offline_devices:
-                        _render_device(d)
+                    with ui.expansion(
+                        f'Offline ({len(offline_devices)})',
+                        icon='wifi_off', value=True
+                    ).classes('w-full q-pa-xs q-mb-xs bg-grey-3').props('header-class=text-grey-7 text-subtitle2'):
+                        offline_by_cat = _group_by_category(offline_devices)
+                        for cat_key in _CATEGORY_ORDER:
+                            if cat_key not in offline_by_cat:
+                                continue
+                            cat_devices = offline_by_cat[cat_key]
+                            meta = _CATEGORY_META.get(cat_key, _CATEGORY_META['other'])
+                            if len(offline_by_cat) > 1:
+                                with ui.row().classes('w-full items-center q-mt-sm q-mb-xs'):
+                                    ui.label(f'{meta["icon"]} {meta["label"]} ({len(cat_devices)})').classes('text-caption text-grey-6')
+                            for d in cat_devices:
+                                _render_device(d)
 
         # Initial load.
         _halite_refresh()
@@ -393,3 +411,67 @@ def _device_is_light(model: str) -> bool:
     model_lower = model.lower()
     light_keywords = ("light", "lamp", "bulb", "candle", "downlight", "ceiling")
     return any(kw in model_lower for kw in light_keywords)
+
+
+# ── Device auto-categorization ────────────────────────────────────────────────
+
+_CATEGORY_META = {
+    'lights':    {'icon': '💡', 'label': 'Lights'},
+    'vacuum':    {'icon': '🧹', 'label': 'Vacuums'},
+    'fan':       {'icon': '🌀', 'label': 'Fans'},
+    'sensor':    {'icon': '📡', 'label': 'Sensors'},
+    'air':       {'icon': '🌬️', 'label': 'Air Purifiers'},
+    'switch':    {'icon': '🔌', 'label': 'Switches & Plugs'},
+    'camera':    {'icon': '📷', 'label': 'Cameras'},
+    'curtain':   {'icon': '🪟', 'label': 'Curtains'},
+    'lock':      {'icon': '🔐', 'label': 'Locks'},
+    'gateway':   {'icon': '🌐', 'label': 'Gateways'},
+    'speaker':   {'icon': '🔊', 'label': 'Speakers'},
+    'appliance': {'icon': '🏠', 'label': 'Appliances'},
+    'other':     {'icon': '📦', 'label': 'Other'},
+}
+
+_CATEGORY_ORDER = ['lights', 'switch', 'fan', 'air', 'vacuum', 'curtain',
+                   'camera', 'sensor', 'lock', 'gateway', 'speaker',
+                   'appliance', 'other']
+
+
+def _device_category(model: str) -> str:
+    """Auto-categorize a Xiaomi device by model name."""
+    m = model.lower()
+    if any(kw in m for kw in ('light', 'lamp', 'bulb', 'candle', 'downlight', 'ceiling', 'led')):
+        return 'lights'
+    if any(kw in m for kw in ('vacuum', 'clean', 'sweep', 'dust')):
+        return 'vacuum'
+    if any(kw in m for kw in ('fan', 'airer', 'dryer')):
+        return 'fan'
+    if any(kw in m for kw in ('sensor', 'motion', 'contact', 'flood', 'temp', 'humid', 'weather', 'smoke', 'gas', 'magnet')):
+        return 'sensor'
+    if any(kw in m for kw in ('purifier', 'filter')):
+        return 'air'
+    if any(kw in m for kw in ('plug', 'outlet', 'switch', 'relay', 'strip', 'power', 'socket')):
+        return 'switch'
+    if any(kw in m for kw in ('camera', 'doorbell', 'monitor', 'cam', 'isp')):
+        return 'camera'
+    if any(kw in m for kw in ('curtain', 'blind', 'window', 'shade', 'roller')):
+        return 'curtain'
+    if any(kw in m for kw in ('lock', 'door', 'deadbolt')):
+        return 'lock'
+    if any(kw in m for kw in ('gateway', 'hub', 'bridge', 'repeater')):
+        return 'gateway'
+    if any(kw in m for kw in ('speaker', 'box', 'audio', 'sound', 'alarm', 'story')):
+        return 'speaker'
+    if any(kw in m for kw in ('kettle', 'cooker', 'rice', 'oven', 'microwave', 'fridge', 'washer', 'heater', 'water', 'toothbrush', 'scale', 'watch', 'band')):
+        return 'appliance'
+    return 'other'
+
+
+def _group_by_category(devices):
+    """Group devices by category, ordered by _CATEGORY_ORDER."""
+    groups = {}
+    for d in devices:
+        cat = _device_category(d.get("model", ""))
+        if cat not in groups:
+            groups[cat] = []
+        groups[cat].append(d)
+    return groups
