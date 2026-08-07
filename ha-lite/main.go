@@ -26,7 +26,7 @@ var (
 	reg       *registry.Registry
 	cloud     *xiaomi.CloudClient
 	buildTime = "dev"
-	version   = "0.2.0"
+	version   = "0.10.0"
 
 	// QR login state.
 	qrMu       sync.Mutex
@@ -887,6 +887,8 @@ func buildCommand(action string) map[string]interface{} {
 }
 
 // handleListDevices returns all registered devices.
+// By default, probes device reachability via miIO hello before returning.
+// Use ?probe=false to skip probing for fast listing.
 func handleListDevices(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]interface{}{"error": "GET only"})
@@ -894,10 +896,33 @@ func handleListDevices(w http.ResponseWriter, r *http.Request) {
 	}
 
 	devices := reg.GetAll()
+
+	// Probe device reachability via miIO RAW hello handshake.
+	// Only the hello response determines online status — no IP filtering.
+	if r.URL.Query().Get("probe") != "false" {
+		probeOnline(devices)
+	}
+
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"count":   len(devices),
 		"devices": devices,
 	})
+}
+
+// probeOnline checks device reachability via miIO hello handshake.
+// Each device is probed concurrently with a 2s timeout.
+// Only the hello response determines online status — no IP filtering.
+func probeOnline(devices []*registry.DeviceInfo) {
+	var wg sync.WaitGroup
+	for _, d := range devices {
+		wg.Add(1)
+		go func(d *registry.DeviceInfo) {
+			defer wg.Done()
+			online := miio.Ping(d.IP, 2*time.Second)
+			reg.SetOnline(d.DID, online)
+		}(d)
+	}
+	wg.Wait()
 }
 
 // handleDeviceByID handles GET /api/devices/<did>.

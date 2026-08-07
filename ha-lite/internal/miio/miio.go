@@ -79,6 +79,52 @@ func aesEncrypt(key, iv, plain []byte) ([]byte, error) {
 	return enc, nil
 }
 
+// Ping checks if a device is reachable via RAW hello handshake.
+// Returns true if the device responds within timeout, false otherwise.
+// No token or encryption needed — just the discovery handshake.
+func Ping(ip string, timeout time.Duration) bool {
+	if ip == "" || ip == "0.0.0.0" {
+		return false
+	}
+
+	addr := &net.UDPAddr{IP: net.ParseIP(ip), Port: DefaultPort}
+	conn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4zero, Port: 0})
+	if err != nil {
+		return false
+	}
+	defer conn.Close()
+
+	// SO_BROADCAST (matching python-miio).
+	if sc, err := conn.SyscallConn(); err == nil {
+		sc.Control(func(fd uintptr) {
+			syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, 0x6, 1)
+		})
+	}
+
+	// Send RAW hello ×3.
+	for i := 0; i < 3; i++ {
+		conn.SetWriteDeadline(time.Now().Add(timeout))
+		if _, err := conn.WriteTo(RawHello, addr); err != nil {
+			return false
+		}
+	}
+
+	// Read response.
+	conn.SetReadDeadline(time.Now().Add(timeout))
+	buf := make([]byte, 4096)
+	n, _, err := conn.ReadFrom(buf)
+	if err != nil {
+		return false
+	}
+	if n < 16 {
+		return false
+	}
+
+	// Validate device_id from response.
+	deviceID := binary.BigEndian.Uint32(buf[8:12])
+	return deviceID != 0 && deviceID != 0xFFFFFFFF
+}
+
 // Send sends a miIO command using RAW hello handshake (matching python-miio).
 // cmd must be map[string]interface{} with "method" and "params" keys.
 func (d *Device) Send(cmd interface{}) (json.RawMessage, error) {

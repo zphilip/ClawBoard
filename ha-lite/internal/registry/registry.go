@@ -189,6 +189,16 @@ func (r *Registry) MarkOffline(did string) {
 	}
 }
 
+// SetOnline sets the online status of a device (thread-safe).
+func (r *Registry) SetOnline(did string, online bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if d, ok := r.devices[did]; ok {
+		d.Online = online
+	}
+}
+
 // Count returns the number of devices in the registry.
 func (r *Registry) Count() int {
 	r.mu.RLock()
