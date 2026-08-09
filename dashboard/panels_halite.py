@@ -187,7 +187,7 @@ def build_halite_panel(T: dict, conf: dict, lang: str):
                         ui.notify(f'QR login failed: {err_msg}', type='negative')
 
                 ui.button('📱 Start QR Login', on_click=_start_qr).props('color=blue-8')
-                ui.button('🌐 Login with OAuth', on_click=_start_oauth).props('color=purple-8')
+                ui.button('🌐 Login with OAuth', on_click=lambda: _start_oauth()).props('color=purple-8')
                 ui.button('🔄 Refresh Devices', on_click=lambda: _halite_refresh()).props('color=teal-8')
 
                 def _start_polling_qr():
