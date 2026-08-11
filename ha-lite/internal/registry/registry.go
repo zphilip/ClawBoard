@@ -97,7 +97,7 @@ func (r *Registry) MergeFromCloud(cloudDevices []xiaomi.DeviceInfo) int {
 				Model:     cd.Model,
 				DID:       cd.DID,
 				UpdatedAt: time.Now(),
-				Online:    true,
+				Online:    false, // Determined by miIO probe, not cloud presence
 			}
 			log.Printf("[registry] New device: %s (%s) @ %s", cd.Name, cd.Model, cd.IP)
 			updated++
@@ -126,7 +126,7 @@ func (r *Registry) MergeFromCloud(cloudDevices []xiaomi.DeviceInfo) int {
 		}
 		if changed {
 			existing.UpdatedAt = time.Now()
-			existing.Online = true
+			// Keep existing Online status — determined by miIO probe, not cloud
 			updated++
 		}
 	}
