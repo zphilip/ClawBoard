@@ -11,6 +11,7 @@
 
 # --- 配置区 ---
 PICOCLAW_CONFIG="/var/lib/picoclaw/.picoclaw/config.json"
+PICOCLAW_SECURITY="/var/lib/picoclaw/.picoclaw/.security.yml"
 DASHBOARD_PORT=8080
 ZEROCLAW_PORT=42617
 PICOCLAW_PORT=18790
@@ -41,9 +42,19 @@ publish_services() {
         echo "ZeroClaw: 提取到配对码 $PAIR_CODE"
     fi
 
-    # 2. 提取 Picoclaw Token
-    if [ -f "$PICOCLAW_CONFIG" ]; then
-        PICO_TOKEN=$(jq -r '.channels.pico.token // .token // empty' "$PICOCLAW_CONFIG")
+    # 2. 提取 Picoclaw Token（token 在 .security.yml 中，不在 config.json 中）
+    if [ -f "$PICOCLAW_SECURITY" ]; then
+        PICO_TOKEN=$(python3 -c "
+import yaml, sys
+try:
+    with open('$PICOCLAW_SECURITY') as f:
+        data = yaml.safe_load(f)
+    token = data.get('channel_list', {}).get('pico', {}).get('settings', {}).get('token', '')
+    if token and str(token) != 'None':
+        print(token)
+except Exception:
+    pass
+" 2>/dev/null)
         if [ -z "$PICO_TOKEN" ]; then
             PICO_TXT="<txt-record>status=no_token</txt-record>"
             echo "Picoclaw: 配置文件存在，但未找到 Token 字段。"
@@ -53,7 +64,7 @@ publish_services() {
         fi
     else
         PICO_TXT="<txt-record>status=config_missing</txt-record>"
-        echo "Picoclaw: 未找到配置文件 $PICOCLAW_CONFIG"
+        echo "Picoclaw: 未找到配置文件 $PICOCLAW_SECURITY"
     fi
 
     # 3. 写入 XML 服务文件（avahi-daemon 通过 inotify 自动加载，无需重启）
