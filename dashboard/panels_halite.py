@@ -1,10 +1,16 @@
 """ClawBoard dashboard — ha-lite panel (Xiaomi smart home device control)."""
 import json
+import time
 import urllib.request
 import urllib.error
 from nicegui import ui
 
 HALITE_BASE = "http://127.0.0.1:8090"
+
+# Client-side device state cache: did → last known state string.
+# Survives auto-refresh re-renders so the UI always shows the last known
+# on/off/brightness/color_temp state even when the server doesn't return it.
+_device_state_cache: dict[str, str] = {}
 
 def _api(method: str, path: str, body: dict | None = None, timeout: int = 5) -> tuple[int, dict]:
     """Call ha-lite REST API."""
@@ -31,9 +37,24 @@ def _halite_devices() -> list[dict]:
     return data.get("devices", [])
 
 
-def _halite_control(did: str, action: str) -> dict:
-    _, data = _api("POST", "/api/control", {"did": did, "action": action}, timeout=15)
-    return data
+def _halite_control(did: str, action: str, retries: int = 3, retry_delay: float = 0.8) -> dict:
+    """Send a control command to a device with retry logic.
+
+    Xiaomi LAN control uses UDP (port 54321) which is inherently unreliable.
+    Retries with a short gap between attempts to handle packet loss, device
+    busy states, and transient network issues.
+
+    Returns the last response dict (success or final failure).
+    """
+    last = None
+    for attempt in range(1, retries + 1):
+        _, data = _api("POST", "/api/control", {"did": did, "action": action}, timeout=15)
+        last = data
+        if data.get("status") == "success":
+            return data
+        if attempt < retries:
+            time.sleep(retry_delay)
+    return last
 
 
 def _halite_schema() -> dict:
@@ -346,13 +367,16 @@ def build_halite_panel(T: dict, conf: dict, lang: str):
 
                         # On/Off buttons for controllable devices.
                         if online and _device_supports_control(model):
-                            dev_state = ui.label('').classes('text-caption q-mx-sm')
+                            # Show last known state from cache, or empty if unknown.
+                            cached_state = _device_state_cache.get(did, '')
+                            dev_state = ui.label(cached_state).classes('text-caption q-mx-sm')
 
                             def _on(did=did, name=name, lbl=dev_state):
                                 lbl.set_text('⏳')
                                 r = _halite_control(did, "on")
                                 if r.get("status") == "success":
                                     lbl.set_text('✅ ON')
+                                    _device_state_cache[did] = '✅ ON'
                                     ui.notify(f'{name}: turned ON', type='positive')
                                 else:
                                     lbl.set_text('❌')
@@ -363,6 +387,7 @@ def build_halite_panel(T: dict, conf: dict, lang: str):
                                 r = _halite_control(did, "off")
                                 if r.get("status") == "success":
                                     lbl.set_text('✅ OFF')
+                                    _device_state_cache[did] = '✅ OFF'
                                     ui.notify(f'{name}: turned OFF', type='positive')
                                 else:
                                     lbl.set_text('❌')
@@ -396,7 +421,9 @@ def build_halite_panel(T: dict, conf: dict, lang: str):
                                 def _send_brightness(did, name, val, lbl):
                                     lbl.set_text(f'{val}% ✅')
                                     r = _halite_control(did, f"brightness:{val}")
-                                    if r.get("status") != "success":
+                                    if r.get("status") == "success":
+                                        _device_state_cache[did] = f'💡 {val}%'
+                                    else:
                                         ui.notify(f'{name}: {r.get("error", "?")}', type='warning')
 
                                 bright_slider.on('change', _mk_bright_handler(did, name, bright_lbl, bright_slider, bright_timer_holder))
@@ -424,7 +451,9 @@ def build_halite_panel(T: dict, conf: dict, lang: str):
                                 def _send_cct(did, name, val, lbl):
                                     lbl.set_text(f'{val}K ✅')
                                     r = _halite_control(did, f"color_temp:{val}")
-                                    if r.get("status") != "success":
+                                    if r.get("status") == "success":
+                                        _device_state_cache[did] = f'🌡️ {val}K'
+                                    else:
                                         ui.notify(f'{name}: {r.get("error", "?")}', type='warning')
 
                                 cct_slider.on('change', _mk_cct_handler(did, name, cct_lbl, cct_slider, cct_timer_holder))
@@ -553,11 +582,14 @@ def _device_category(model: str) -> str:
 
 
 def _group_by_category(devices):
-    """Group devices by category, ordered by _CATEGORY_ORDER."""
+    """Group devices by category, sorted by name within each category for stable ordering."""
     groups = {}
     for d in devices:
         cat = _device_category(d.get("model", ""))
         if cat not in groups:
             groups[cat] = []
         groups[cat].append(d)
+    # Sort each category's devices by name for stable ordering across refreshes.
+    for cat in groups:
+        groups[cat].sort(key=lambda d: d.get("name", "").lower())
     return groups
