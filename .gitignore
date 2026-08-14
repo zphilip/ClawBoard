@@ -12,3 +12,4 @@ __pycache__/
 
 # copies / scratch
 *copy*
+config/display_type.txt
