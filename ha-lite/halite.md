@@ -1,6 +1,6 @@
 # ha-lite Device Control API
 
-**Server:** `http://<pi-ip>:8090`
+**Server:** `http://localhost:8090`
 
 20MB RAM | Pure Go | Local UDP control | Cloud token auto-sync
 
@@ -12,6 +12,7 @@
 |--------|------|---------|
 | `GET` | `/api/devices` | List all devices with name, model, DID, IP, online status |
 | `GET` | `/api/devices/:did` | Get a single device's info |
+| `POST` | `/api/devices/import` | Import device tokens from external source (e.g., Xiaomi-Token-Extractor) |
 | `POST` | `/api/control` | Send a control command to a device |
 | `POST` | `/api/sync` | Force cloud sync to refresh tokens and IPs |
 | `GET` | `/api/health` | Server health check + cloud auth status |
@@ -131,6 +132,55 @@ Returns all registered devices. By default, probes each device's online status v
 Get a single device by its DID.
 
 **Response:** Same device object as above, or `{"error": "Device not found: <did>"}` (404).
+
+---
+
+## Device Import (Token Extractor Bridge)
+
+### `POST /api/devices/import`
+
+Accepts device tokens from an external source (e.g., [Xiaomi-Token-Extractor](skills/Xiaomi-Token-Extractor/)) and merges them into the local registry. This is the bridge between the token extractor's output and ha-lite's device cache — use it when the extractor has fresh tokens and ha-lite needs to pick them up without a full cloud re-sync.
+
+**Request body:** Array of device objects (matches the extractor's `devices.json` format):
+
+```json
+[
+  {
+    "name": "热水器",
+    "did": "12345678",
+    "ip": "192.168.1.10",
+    "token": "181f7c047098b594883f88191a9e6c3a",
+    "model": "cuco.plug.v3"
+  }
+]
+```
+
+Only `did` and `token` are required. `name`, `ip`, and `model` are optional (will be updated if provided).
+
+**Success response (200):**
+```json
+{
+  "status": "imported",
+  "updated": 3,
+  "total": 3
+}
+```
+
+- `updated`: number of devices that were new or had changed tokens/IPs
+- `total`: total devices in the import request
+
+**Error responses:**
+```json
+{"error": "Invalid JSON body: expected array of device objects. ..."}
+{"error": "Empty device list"}
+```
+
+**Typical flow with Xiaomi-Token-Extractor:**
+```
+1. extract_tokens.py --server cn          → QR login → devices.json
+2. POST /api/devices/import ← devices.json → tokens merged into registry
+3. halite_control.py on "热水器"           → now works with fresh token
+```
 
 ---
 

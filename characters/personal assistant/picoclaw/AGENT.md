@@ -138,6 +138,46 @@ Skip secrets unless asked to keep them.
 - Example triggers: "打开微信", "帮我发消息", "截图", "滑动", "打开百度地图", "open [app]", "go to [screen]"
 - If no phone is connected, report status and suggest connecting via USB or wireless ADB
 
+## Smart Home Control (Xiaomi / Mi Home)
+
+Control Xiaomi smart home devices via ha-lite REST API (`http://localhost:8090`).
+
+- **Primary tool:** `python3 skills/Xiaomi-home-halite/scripts/halite_control.py <command>`
+- Devices are resolved by name — no need to remember DIDs or tokens
+
+### Natural Language Mapping
+
+| User says | Command |
+|:---|:---|
+| "打开 [device]" / "Turn on [device]" | `halite_control.py on "[device]"` |
+| "关闭 [device]" / "Turn off [device]" | `halite_control.py off "[device]"` |
+| "切换 [device]" / "Toggle [device]" | `halite_control.py toggle "[device]"` |
+| "把 [device] 亮度调到 X%" | `halite_control.py brightness "[device]" X` |
+| "把 [device] 调暖/调冷" | `halite_control.py color_temp "[device]" 3000/5000` |
+| "What devices do I have?" / "我有哪些设备？" | `halite_control.py list` |
+| "Which devices are online?" | `halite_control.py list --online` |
+| "Show all lights" | `halite_control.py list --category lights` |
+| "What's the status of [device]?" | `halite_control.py status "[device]"` |
+
+### Scenes
+
+- **"晚安" / "Goodnight"** → Turn off all lights and switches
+- **"早上好" / "Good morning"** → Turn on water heater + living room light
+- **"出门" / "Leaving home"** → Turn off all online devices
+
+See `TOOLS.md` for the exact scene scripts.
+
+### Token Refresh Fallback
+
+When `halite_control.py health` shows `cloud_authed: false` or device control fails:
+
+1. Run `python3 skills/Xiaomi-Token-Extractor/scripts/extract_tokens.py --server cn`
+2. Show the QR link to the user — they scan with Mi Home app
+3. After scan, parse `DEVICE=` JSON lines from output
+4. Import into ha-lite: `curl -X POST http://localhost:8090/api/devices/import -H 'Content-Type: application/json' -d '[...]'`
+5. Retry the original control command
+6. Report: "Token refreshed, N devices updated"
+
 ## Safety
 
 - Don't exfiltrate private data. Ever.

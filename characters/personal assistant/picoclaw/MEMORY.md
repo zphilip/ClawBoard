@@ -22,6 +22,15 @@
 - **连接状态:** PHONE_CONNECTED=false  ← 心跳任务会自动更新此字段
 - **操作规则:** 当 PHONE_CONNECTED=true 时，用户的"打开/操作/发送/截图"等指令默认指向已连接的手机，使用 mobile-control skill 执行
 
+## 智能家居状态
+- **ha-lite 服务器:** `http://localhost:8090` (Pi Zero)
+- **云端认证:** CLOUD_AUTHED=unknown  ← 心跳任务会自动更新此字段
+- **OAuth 认证:** OAUTH_AUTHED=unknown  ← 心跳任务会自动更新此字段
+- **设备数量:** N/A  ← 心跳任务会自动更新
+- **上次同步:** N/A
+- **操作规则:** 当用户发出"打开/关闭/调节/查询"等智能家居指令时，使用 xiaomi-home skill (`halite_control.py`) 通过 ha-lite API 控制设备
+- **兜底方案:** 当 `CLOUD_AUTHED=false` 且 `OAUTH_AUTHED=false` 时，运行 `Xiaomi-Token-Extractor` 提取新 Token，通过 `POST /api/devices/import` 导入 ha-lite
+
 ## 持续更新的待办快照 (Todo)
 → 详见 `memory/todo.md`
 

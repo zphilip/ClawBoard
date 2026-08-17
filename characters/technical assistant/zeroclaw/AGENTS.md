@@ -91,6 +91,66 @@ When the user asks about portfolio stocks, holdings news, or company announcemen
 - Material-event triggers: earnings reports, management changes, M&A, policy shifts, negative sentiment
 - Supports per-holding keyword monitoring, daily/weekly summaries
 
+### Smart Home Control (Xiaomi / Mi Home)
+
+Control and monitor Xiaomi smart home devices via ha-lite REST API (`http://localhost:8090`).
+
+**Primary tool:** `python3 skills/Xiaomi-home-halite/scripts/halite_control.py` — CLI wrapper around ha-lite's REST API. Resolves device names to DIDs automatically.
+
+**Health monitoring:**
+```bash
+python3 skills/Xiaomi-home-halite/scripts/halite_control.py health
+# OR: curl -s http://localhost:8090/api/health
+```
+
+**Device inventory:**
+```bash
+python3 skills/Xiaomi-home-halite/scripts/halite_control.py list
+python3 skills/Xiaomi-home-halite/scripts/halite_control.py list --online
+python3 skills/Xiaomi-home-halite/scripts/halite_control.py categories
+```
+
+**Control:**
+```bash
+python3 skills/Xiaomi-home-halite/scripts/halite_control.py on "Device Name"
+python3 skills/Xiaomi-home-halite/scripts/halite_control.py off "Device Name"
+python3 skills/Xiaomi-home-halite/scripts/halite_control.py brightness "Device Name" 75
+python3 skills/Xiaomi-home-halite/scripts/halite_control.py status "Device Name"
+```
+
+**Token Refresh Fallback — when ha-lite auth is broken (cloud_authed: false):**
+
+This is a two-phase process using the Xiaomi-Token-Extractor:
+
+*Phase 1 — Extract:*
+```bash
+python3 skills/Xiaomi-Token-Extractor/scripts/extract_tokens.py --server cn
+# → QR_IMAGE_URL emitted → show to user → scan with Mi Home app
+# → SESSION_FILE path emitted → use in Phase 2
+```
+
+*Phase 2 — Collect & Import:*
+```bash
+# Run the exact QR_COLLECT_CMD from Phase 1 output:
+python3 skills/Xiaomi-Token-Extractor/scripts/extract_tokens.py --collect /tmp/qr_session_xxxx.json
+# → DEVICE={"name":"...","did":"...","ip":"...","token":"...","model":"..."} lines emitted
+# → Collect all DEVICE= lines, build JSON array, import into ha-lite:
+curl -s -X POST http://localhost:8090/api/devices/import \
+  -H 'Content-Type: application/json' \
+  -d '[<all DEVICE JSON objects>]'
+```
+
+After import, the registry is updated and local UDP control will use the fresh tokens. Report the result: "Imported N devices, M updated."
+
+### Direct miIO Debugging (when ha-lite is completely down)
+
+If ha-lite is unreachable and the user needs immediate control, use `miiocli` directly with tokens from the extractor:
+```bash
+miiocli miotdevice --ip <IP> --token <TOKEN> raw_command set_properties \
+  '[{"siid": 2, "piid": 1, "value": true}]'
+```
+See `skills/Xiaomi-home-halite/references/capabilities.md` for per-model MIoT property IDs.
+
 ## Python & Package Management
 
 - Always run Python scripts with `/opt/clawboard/venv/bin/python3` — never bare `python` or `python3`

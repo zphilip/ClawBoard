@@ -97,7 +97,7 @@ func main() {
 			log.Println("📂 Continuing with cached devices only.")
 		}
 	} else {
-		log.Println("💡 No password configured. Open http://<pi-ip>:8090/api/login/qr in browser to scan QR")
+		log.Println("💡 No password configured. Open http://localhost:8090/api/login/qr in browser to scan QR")
 		if reg.Count() == 0 {
 			log.Println("⚠️  No cached devices and no login credentials — server will start but cloud sync is unavailable.")
 		}
@@ -131,6 +131,7 @@ func main() {
 	// ── Device control endpoints ───────────────────────────────────────────
 	mux.HandleFunc("/api/control", handleControl)
 	mux.HandleFunc("/api/control/", handleControl)
+	mux.HandleFunc("/api/devices/import", handleImportDevices)
 	mux.HandleFunc("/api/devices", handleListDevices)
 	mux.HandleFunc("/api/devices/", handleDeviceByID)
 	mux.HandleFunc("/api/sync", handleSync)
@@ -159,9 +160,9 @@ func main() {
 	}()
 
 	log.Printf("🚀 ha-lite server listening on %s", addr)
-	log.Printf("🤖 OpenClaw schema: http://<pi-ip>:%d/openclaw/schema", cfg.Server.Port)
-	log.Printf("📋 Device list:    http://<pi-ip>:%d/api/devices", cfg.Server.Port)
-	log.Printf("📱 QR login:       http://<pi-ip>:%d/api/login/qr (open in browser)", cfg.Server.Port)
+	log.Printf("🤖 OpenClaw schema: http://localhost:%d/openclaw/schema", cfg.Server.Port)
+	log.Printf("📋 Device list:    http://localhost:%d/api/devices", cfg.Server.Port)
+	log.Printf("📱 QR login:       http://localhost:%d/api/login/qr (open in browser)", cfg.Server.Port)
 
 	if err := server.ListenAndServe(); err != http.ErrServerClosed {
 		log.Fatalf("❌ Server error: %v", err)
@@ -795,6 +796,11 @@ func handleSchema(w http.ResponseWriter, r *http.Request) {
 				"path":        "/api/devices",
 				"description": "List all registered devices with their current state.",
 			},
+			"import_devices": map[string]interface{}{
+				"method":      "POST",
+				"path":        "/api/devices/import",
+				"description": "Import device tokens from an external source (e.g., Xiaomi-Token-Extractor). Accepts an array of {did, token, ip, name, model} objects. Merges into the local registry.",
+			},
 			"sync": map[string]interface{}{
 				"method":      "POST",
 				"path":        "/api/sync",
@@ -1160,6 +1166,50 @@ func handleDeviceByID(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, dev)
 }
 
+// handleImportDevices imports device tokens from external sources (e.g., Xiaomi-Token-Extractor).
+// Accepts the extractor's devices.json format: an array of {name, did, ip, token, model} objects.
+// Merges into the registry and saves the cache file.
+func handleImportDevices(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]interface{}{"error": "POST only"})
+		return
+	}
+
+	var imported []xiaomi.DeviceInfo
+	if err := json.NewDecoder(r.Body).Decode(&imported); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]interface{}{
+			"error": fmt.Sprintf("Invalid JSON body: expected array of device objects. %v", err),
+		})
+		return
+	}
+
+	if len(imported) == 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": "Empty device list"})
+		return
+	}
+
+	updated := reg.MergeFromCloud(imported)
+	if updated > 0 {
+		if err := reg.SaveCache(); err != nil {
+			log.Printf("⚠️  Import cache save: %v", err)
+			writeJSON(w, http.StatusInternalServerError, map[string]interface{}{
+				"status":  "partial",
+				"message": fmt.Sprintf("Devices merged but cache save failed: %v", err),
+				"updated": updated,
+				"total":   len(imported),
+			})
+			return
+		}
+		log.Printf("📥 Imported %d device(s) from external source, cached to %s", updated, cfg.Registry.CacheFile)
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"status":  "imported",
+		"updated": updated,
+		"total":   len(imported),
+	})
+}
+
 // handleSync forces a cloud sync.
 func handleSync(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -1209,6 +1259,7 @@ func handleRoot(w http.ResponseWriter, r *http.Request) {
 			"/openclaw/schema":      "GET  - AI agent tool schema",
 			"/api/devices":          "GET  - List all devices",
 			"/api/devices/:did":     "GET  - Get device info",
+			"/api/devices/import":   "POST - Import device tokens from external source",
 			"/api/control":          "POST - Control a device (body: {did, action})",
 			"/api/sync":             "POST - Force cloud sync",
 			"/api/health":           "GET  - Health check",

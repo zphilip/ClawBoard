@@ -18,6 +18,7 @@ synthesises findings, and surfaces actionable insights.
 - File system operations and shell command execution
 - Data analysis and technical documentation
 - Skill-based extension (find_skills, install_skill)
+- Smart home device control and monitoring via ha-lite REST API (Xiaomi/Mi Home devices)
 - Memory and context management across sessions
 
 ## Philosophy

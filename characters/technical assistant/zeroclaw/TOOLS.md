@@ -87,5 +87,92 @@ tail -f /tmp/mobile_agent.log                       # watch live log
 pkill -f run_gui_owl_1_5_for_mobile.py              # kill stuck run
 ```
 
+## xiaomi-home — Smart Home Control
+
+Control Xiaomi/Mi Home smart devices via ha-lite REST API on the local Pi.
+
+- **Primary path:** `skills/Xiaomi-home-halite/scripts/halite_control.py` — wraps ha-lite's REST API
+- **Server:** `http://localhost:8090` (ha-lite on Pi)
+- **Fallback:** `skills/Xiaomi-Token-Extractor/scripts/extract_tokens.py` — extracts tokens from Xiaomi Cloud when ha-lite auth is broken
+
+### Quick Reference
+
+```bash
+# Discovery
+python3 skills/Xiaomi-home-halite/scripts/halite_control.py list
+python3 skills/Xiaomi-home-halite/scripts/halite_control.py list --online
+python3 skills/Xiaomi-home-halite/scripts/halite_control.py categories
+
+# Control (resolves name → DID automatically)
+python3 skills/Xiaomi-home-halite/scripts/halite_control.py on "热水器"
+python3 skills/Xiaomi-home-halite/scripts/halite_control.py off "Living Room Light"
+python3 skills/Xiaomi-home-halite/scripts/halite_control.py toggle "Bedroom Fan"
+python3 skills/Xiaomi-home-halite/scripts/halite_control.py brightness "Desk Lamp" 75
+python3 skills/Xiaomi-home-halite/scripts/halite_control.py color_temp "Desk Lamp" 4000
+
+# Status
+python3 skills/Xiaomi-home-halite/scripts/halite_control.py status "热水器"
+python3 skills/Xiaomi-home-halite/scripts/halite_control.py status --all
+
+# Maintenance
+python3 skills/Xiaomi-home-halite/scripts/halite_control.py health
+python3 skills/Xiaomi-home-halite/scripts/halite_control.py sync
+```
+
+### Health Check
+
+```bash
+curl -s http://localhost:8090/api/health
+# → {"status":"ok","version":"0.11.0","device_count":50,"cloud_authed":true}
+```
+
+### Token Refresh Fallback
+
+When `halite_control.py health` reports `cloud_authed: false` or device control fails with token errors:
+
+1. **Extract fresh tokens from Xiaomi Cloud:**
+   ```bash
+   python3 skills/Xiaomi-Token-Extractor/scripts/extract_tokens.py --server cn
+   ```
+   → Show QR URL to user → scan with Mi Home app → collect DEVICE= lines
+
+2. **Import tokens into ha-lite:**
+   ```bash
+   # Collect all DEVICE= JSON lines from extractor output, wrap in array, POST to ha-lite:
+   curl -s -X POST http://localhost:8090/api/devices/import \
+     -H 'Content-Type: application/json' \
+     -d '[{"name":"热水器","did":"12345678","ip":"192.168.1.10","token":"abc123...","model":"cuco.plug.v3"}]'
+   ```
+
+3. **Retry the control command** — now works with fresh tokens.
+
+### Scenes (Multi-Device)
+
+**"晚安" / "Goodnight"** — Turn off all lights:
+```bash
+python3 skills/Xiaomi-home-halite/scripts/halite_control.py list --online --category lights | \
+  while read -r line; do
+    did=$(echo "$line" | grep -oP 'DID: \K\S+')
+    [ -n "$did" ] && curl -s -X POST http://localhost:8090/api/control \
+      -H 'Content-Type: application/json' -d "{\"did\":\"$did\",\"action\":\"off\"}"
+  done
+```
+
+**"早上好" / "Good morning"** — Turn on morning devices:
+```bash
+python3 skills/Xiaomi-home-halite/scripts/halite_control.py on "热水器"
+python3 skills/Xiaomi-home-halite/scripts/halite_control.py on "Living Room Light"
+```
+
+**"出门" / "Leaving home"** — Turn off everything:
+```bash
+python3 skills/Xiaomi-home-halite/scripts/halite_control.py list --online | \
+  while read -r line; do
+    did=$(echo "$line" | grep -oP 'DID: \K\S+')
+    [ -n "$did" ] && curl -s -X POST http://localhost:8090/api/control \
+      -H 'Content-Type: application/json' -d "{\"did\":\"$did\",\"action\":\"off\"}"
+  done
+```
+
 ---
 *Add whatever helps you do your job. This is your cheat sheet.*

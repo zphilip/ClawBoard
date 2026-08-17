@@ -16,6 +16,16 @@
 - **连接状态:** PHONE_CONNECTED=false  ← 心跳任务会自动更新此字段
 - **操作规则:** 当 PHONE_CONNECTED=true 时，用户的"打开/操作/发送/截图"等指令默认指向已连接的手机，使用 mobile-control skill 执行
 
+## Smart Home Status
+- **ha-lite server:** `http://localhost:8090` (Pi Zero)
+- **Cloud auth:** CLOUD_AUTHED=unknown  ← updated by heartbeat
+- **OAuth auth:** OAUTH_AUTHED=unknown  ← updated by heartbeat
+- **Device count:** N/A  ← updated by heartbeat
+- **Last sync:** N/A
+- **Control path:** `halite_control.py` → ha-lite REST API → UDP miIO → device
+- **Fallback:** When `CLOUD_AUTHED=false` and `OAUTH_AUTHED=false`, run `Xiaomi-Token-Extractor` → `POST /api/devices/import` → ha-lite
+- **Direct debug:** `miiocli` with tokens from `references/my_private_devices.md` when ha-lite is completely down
+
 ### 港股行情接口
 - 腾讯行情：`https://qt.gtimg.cn/q=hkXXXXX`
 - 港股代码格式：`hk` + 股票代码（无后缀）

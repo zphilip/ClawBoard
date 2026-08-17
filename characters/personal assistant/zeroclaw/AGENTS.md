@@ -78,6 +78,46 @@ Skip secrets unless asked to keep them.
 - 若指令过于模糊，技能返回 `status: "clarify"` — 追问具体应用和操作
 - 手机连接状态 (`PHONE_CONNECTED`) 由心跳任务维护在 `MEMORY.md` 中
 
+### 智能家居控制 (Smart Home Control)
+
+当雇主需要控制小米/米家智能设备时 — 开关灯、调节亮度、查询状态、执行场景等：
+
+**主要路径：** 使用 `skills/Xiaomi-home-halite/scripts/halite_control.py` 通过 ha-lite 服务器控制设备。
+
+**自然语言指令映射：**
+
+| 雇主说 | 执行命令 |
+|:---|:---|
+| "打开 [设备]" | `halite_control.py on "[设备]"` |
+| "关闭 [设备]" | `halite_control.py off "[设备]"` |
+| "切换 [设备]" | `halite_control.py toggle "[设备]"` |
+| "把 [设备] 亮度调到 X%" | `halite_control.py brightness "[设备]" X` |
+| "把 [设备] 调暖/调冷一点" | `halite_control.py color_temp "[设备]" 3000/5000` |
+| "[设备] 的状态？" | `halite_control.py status "[设备]"` |
+| "我有哪些设备？" | `halite_control.py list` |
+| "哪些设备在线？" | `halite_control.py list --online` |
+| "显示所有灯" | `halite_control.py list --category lights` |
+
+**场景执行：**
+
+- **"晚安"** → 关闭所有灯和开关（见 TOOLS.md 场景脚本）
+- **"早上好"** → 打开热水器 + 客厅灯
+- **"出门"** → 关闭所有在线设备
+
+**定时操作：** 雇主提到"每天早上 X 点"或"定时"时，使用 `at` 或 cron 安排：
+```bash
+echo "python3 skills/Xiaomi-home-halite/scripts/halite_control.py on '热水器'" | at 07:00
+```
+
+**兜底流程（Token 过期时）：**
+1. 检测到 `halite_control.py health` 返回 `cloud_authed: false` 或控制命令失败
+2. 运行 `python3 skills/Xiaomi-Token-Extractor/scripts/extract_tokens.py --server cn`
+3. 展示 QR 链接给雇主，请雇主用米家 App 扫码
+4. 扫码成功后，解析输出的 `DEVICE=` 行，组装 JSON 数组
+5. `POST` 到 `http://localhost:8090/api/devices/import` 导入 Token
+6. 重试控制命令
+7. 向雇主汇报："Token 已刷新，N 个设备已更新"
+
 ### 3. 任务闭环 (Execution)
 - 每项任务执行完毕后，必须在下一次会话中简短同步结果，并在 `memory/todo.md` 中更新状态。
 

@@ -38,3 +38,12 @@ Add your heartbeat tasks below this line:
 - If a device is connected (status `device`), remember the device serial and set a context flag: **PHONE_CONNECTED=true**
 - If no device is connected, clear the flag: **PHONE_CONNECTED=false**
 - Report connection status only if it changed since the last check (connected → disconnected or vice versa)
+
+## Check ha-lite Smart Home Server
+
+- Run `curl -s http://localhost:8090/api/health` to check ha-lite server status
+- Parse the response: record `cloud_authed`, `oauth_authed`, `device_count`
+- If `status` is not `"ok"` or the server is unreachable, report: "⚠️ ha-lite server unreachable — smart home control unavailable"
+- If `cloud_authed: false` AND `oauth_authed: false`, report: "⚠️ ha-lite not authenticated — run token refresh fallback (see TOOLS.md)"
+- If all healthy, update `MEMORY.md` smart home status section silently
+- Report only if status changed since last check
