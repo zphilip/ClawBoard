@@ -23,7 +23,7 @@
 - **Device count:** N/A  ← updated by heartbeat
 - **Last sync:** N/A
 - **Control path:** `halite_control.py` → ha-lite REST API → UDP miIO → device
-- **Fallback:** When `CLOUD_AUTHED=false` and `OAUTH_AUTHED=false`, run `Xiaomi-Token-Extractor` → `POST /api/devices/import` → ha-lite
+- **Fallback:** When `CLOUD_AUTHED=false` and `OAUTH_AUTHED=false`, use Xiaomi-Token-Extractor two-phase QR login (Phase 1 get QR → user scans → Phase 2 `--collect` tokens → `POST /api/devices/import` → ha-lite). See AGENT.md "Token Refresh Fallback".
 - **Direct debug:** `miiocli` with tokens from `references/my_private_devices.md` when ha-lite is completely down
 
 ### 港股行情接口

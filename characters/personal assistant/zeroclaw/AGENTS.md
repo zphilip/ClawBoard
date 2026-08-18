@@ -109,14 +109,51 @@ Skip secrets unless asked to keep them.
 echo "python3 skills/Xiaomi-home-halite/scripts/halite_control.py on '热水器'" | at 07:00
 ```
 
-**兜底流程（Token 过期时）：**
-1. 检测到 `halite_control.py health` 返回 `cloud_authed: false` 或控制命令失败
-2. 运行 `python3 skills/Xiaomi-Token-Extractor/scripts/extract_tokens.py --server cn`
-3. 展示 QR 链接给雇主，请雇主用米家 App 扫码
-4. 扫码成功后，解析输出的 `DEVICE=` 行，组装 JSON 数组
-5. `POST` 到 `http://localhost:8090/api/devices/import` 导入 Token
-6. 重试控制命令
-7. 向雇主汇报："Token 已刷新，N 个设备已更新"
+**兜底流程（Token 过期时，或雇主明确说"用xxxclaw登录"）：**
+
+使用 **Xiaomi-Token-Extractor** 技能的两阶段流程。Phase 1 约2秒快速退出，确保 QR 码在雇主扫码时仍然有效。
+
+**Phase 1 — 获取 QR 码（~2s，禁止用后台/spawn）：**
+
+```bash
+python3 skills/Xiaomi-Token-Extractor/scripts/extract_tokens.py --server cn
+```
+
+解析输出中的关键字段：
+- `QR_IMAGE_URL=http://<ip>:<port>/qr/<token>` — 雇主在手机上打开的 QR 图片链接
+- `SESSION_FILE=/tmp/qr_session_xxxx.json` — 会话状态文件，Phase 2 使用
+- `QR_COLLECT_CMD=python3 ... --collect /tmp/qr_session_xxxx.json` — Phase 2 的精确命令
+
+向雇主展示："请在手机浏览器打开这个链接（需同一WiFi）：**[QR_IMAGE_URL]** — 然后用**米家 App** 扫码（我的 → 右上角 → 扫一扫）。"
+
+> ⚠️ 必须展示完整的 `QR_IMAGE_URL` 值，不要截断 `/qr/...` 路径。
+> ⚠️ 禁止传 `--interactive` 参数 — 该参数会阻塞120秒，导致 QR 在 agent 看到输出前就已过期。
+
+**Phase 2 — 完成登录并采集 Token（阻塞式前台执行）：**
+
+运行 Phase 1 输出中的 **精确** `QR_COLLECT_CMD`：
+
+```bash
+python3 skills/Xiaomi-Token-Extractor/scripts/extract_tokens.py --collect /tmp/qr_session_xxxx.json
+```
+
+> ⚠️ 必须用阻塞式/前台执行 — 禁止后台/spawn。此命令会 long-poll 直到雇主扫码完成。
+
+输出中包含 `DEVICE={"name":"...","did":"...","ip":"...","token":"...","model":"..."}` 行和 `DONE count=N`。
+
+**导入 ha-lite 并汇报：**
+
+收集所有 `DEVICE=` 行中的 JSON 对象，组装为数组，POST 到 ha-lite：
+
+```bash
+curl -s -X POST http://localhost:8090/api/devices/import \
+  -H 'Content-Type: application/json' \
+  -d '[<所有 DEVICE JSON 对象>]'
+```
+
+重试原控制命令。向雇主汇报："Token 已刷新，N 个设备已更新。"
+
+**超时处理：** 若出现 `STATUS=login_timeout` → 告知雇主会话已过期，从 Phase 1 重新开始。
 
 ### 3. 任务闭环 (Execution)
 - 每项任务执行完毕后，必须在下一次会话中简短同步结果，并在 `memory/todo.md` 中更新状态。

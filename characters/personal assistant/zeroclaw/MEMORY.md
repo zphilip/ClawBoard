@@ -29,7 +29,7 @@
 - **设备数量:** N/A  ← 心跳任务会自动更新
 - **上次同步:** N/A
 - **操作规则:** 当用户发出"打开/关闭/调节/查询"等智能家居指令时，使用 xiaomi-home skill (`halite_control.py`) 通过 ha-lite API 控制设备
-- **兜底方案:** 当 `CLOUD_AUTHED=false` 且 `OAUTH_AUTHED=false` 时，运行 `Xiaomi-Token-Extractor` 提取新 Token，通过 `POST /api/devices/import` 导入 ha-lite
+- **兜底方案:** 当 `CLOUD_AUTHED=false` 且 `OAUTH_AUTHED=false` 时，使用 Xiaomi-Token-Extractor 两阶段 QR 登录流程（Phase 1 获取 QR → 雇主扫码 → Phase 2 `--collect` 采集 Token → `POST /api/devices/import` 导入 ha-lite）。详见 AGENTS.md「兜底流程」。
 
 ## 持续更新的待办快照 (Todo)
 → 详见 `memory/todo.md`

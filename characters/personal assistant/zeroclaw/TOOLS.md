@@ -126,25 +126,37 @@ curl -s http://localhost:8090/api/health
 # → {"status":"ok","version":"0.11.0","device_count":50,"cloud_authed":true}
 ```
 
-### Token Refresh Fallback
+### Token Refresh Fallback (Two-Phase QR Login)
 
-When `halite_control.py health` reports `cloud_authed: false` or device control fails with token errors:
+When `halite_control.py health` reports `cloud_authed: false`, device control fails with token errors, or the user explicitly asks to "login with xxxclaw" / "刷新小米Token":
 
-1. **Extract fresh tokens from Xiaomi Cloud:**
-   ```bash
-   python3 skills/Xiaomi-Token-Extractor/scripts/extract_tokens.py --server cn
-   ```
-   → Show QR URL to user → scan with Mi Home app → collect DEVICE= lines
+This is a two-phase process using the **Xiaomi-Token-Extractor** skill. Phase 1 exits fast (~2s) so the QR is fresh when the user scans.
 
-2. **Import tokens into ha-lite:**
-   ```bash
-   # Collect all DEVICE= JSON lines from extractor output, wrap in array, POST to ha-lite:
-   curl -s -X POST http://localhost:8090/api/devices/import \
-     -H 'Content-Type: application/json' \
-     -d '[{"name":"热水器","did":"12345678","ip":"192.168.1.10","token":"abc123...","model":"cuco.plug.v3"}]'
-   ```
+**Phase 1 — Extract QR (exits ~2s):**
+```bash
+python3 skills/Xiaomi-Token-Extractor/scripts/extract_tokens.py --server cn
+```
+→ Parses `QR_IMAGE_URL` (show to user), `SESSION_FILE`, and `QR_COLLECT_CMD` (save for Phase 2)
+→ Show user: "Open **[QR_IMAGE_URL]** on your phone, scan with Mi Home app"
+→ ⚠️ NEVER pass `--interactive` — it blocks for 120s and QR expires before agent sees output
 
-3. **Retry the control command** — now works with fresh tokens.
+**Phase 2 — Collect tokens (blocking, foreground):**
+```bash
+# Run the EXACT QR_COLLECT_CMD from Phase 1 output:
+python3 skills/Xiaomi-Token-Extractor/scripts/extract_tokens.py --collect /tmp/qr_session_xxxx.json
+```
+→ ⚠️ MUST use blocking/foreground exec — NOT background/spawn
+→ Long-polls until user scans; emits `DEVICE=` JSON lines and `DONE count=N`
+
+**Import into ha-lite:**
+```bash
+# Collect all DEVICE= JSON lines, wrap in array, POST to ha-lite:
+curl -s -X POST http://localhost:8090/api/devices/import \
+  -H 'Content-Type: application/json' \
+  -d '[<all DEVICE JSON objects>]'
+```
+
+**If timeout** (`STATUS=login_timeout`): tell user session expired, re-run from Phase 1.
 
 ### Scenes (Multi-Device)
 

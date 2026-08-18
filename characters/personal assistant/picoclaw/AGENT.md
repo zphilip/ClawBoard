@@ -167,16 +167,52 @@ Control Xiaomi smart home devices via ha-lite REST API (`http://localhost:8090`)
 
 See `TOOLS.md` for the exact scene scripts.
 
-### Token Refresh Fallback
+### Token Refresh Fallback (Two-Phase QR Login)
 
-When `halite_control.py health` shows `cloud_authed: false` or device control fails:
+When `halite_control.py health` shows `cloud_authed: false` or device control fails with token errors — or when the user explicitly asks to "login with xxxclaw" / "刷新小米Token" / "重新登录小米":
 
-1. Run `python3 skills/Xiaomi-Token-Extractor/scripts/extract_tokens.py --server cn`
-2. Show the QR link to the user — they scan with Mi Home app
-3. After scan, parse `DEVICE=` JSON lines from output
-4. Import into ha-lite: `curl -X POST http://localhost:8090/api/devices/import -H 'Content-Type: application/json' -d '[...]'`
-5. Retry the original control command
-6. Report: "Token refreshed, N devices updated"
+This uses the **Xiaomi-Token-Extractor** skill in a two-phase flow. The script exits fast (~2s) in Phase 1 so the QR is still fresh when the user scans.
+
+**Phase 1 — Get QR code (exits in ~2s, do NOT use background/spawn):**
+
+```bash
+python3 skills/Xiaomi-Token-Extractor/scripts/extract_tokens.py --server cn
+```
+
+Parse the output for these keys:
+- `QR_IMAGE_URL=http://<ip>:<port>/qr/<token>` — the URL the user opens on their phone
+- `SESSION_FILE=/tmp/qr_session_xxxx.json` — session state for Phase 2
+- `QR_COLLECT_CMD=python3 ... --collect /tmp/qr_session_xxxx.json` — exact Phase 2 command
+
+Show the user: "Open this link on your phone (same WiFi): **[QR_IMAGE_URL]** — then scan with **Mi Home app** (Profile → top-right → Scan)."
+
+> ⚠️ Show the FULL `QR_IMAGE_URL` value verbatim — never truncate the `/qr/...` path.
+> ⚠️ Do NOT pass `--interactive` — that flag blocks for 120s and causes the QR to expire before the agent sees output.
+
+**Phase 2 — Complete login & collect tokens (blocking, foreground exec):**
+
+Run the **exact** `QR_COLLECT_CMD` from Phase 1 output:
+
+```bash
+python3 skills/Xiaomi-Token-Extractor/scripts/extract_tokens.py --collect /tmp/qr_session_xxxx.json
+```
+
+> ⚠️ MUST use blocking/foreground exec — NOT background/spawn. This long-polls until the user scans.
+
+This emits `DEVICE={"name":"...","did":"...","ip":"...","token":"...","model":"..."}` lines and `DONE count=N`.
+
+**Import into ha-lite & report:**
+
+```bash
+# Collect all DEVICE= JSON lines, wrap in array, POST to ha-lite:
+curl -s -X POST http://localhost:8090/api/devices/import \
+  -H 'Content-Type: application/json' \
+  -d '[<all DEVICE JSON objects>]'
+```
+
+Retry the original control command. Report: "Token refreshed, N devices imported."
+
+**If timeout:** `STATUS=login_timeout` → tell user the session expired, re-run from Phase 1.
 
 ## Safety
 
