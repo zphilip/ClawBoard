@@ -524,15 +524,15 @@ def index(request: Request):
             collect()
             save_config(conf)
             # 2. Deploy to runtime
-            ok_deploy, deploy_err = deploy_config()
+            ok_deploy, deploy_err = deploy_config(conf)
             if not ok_deploy:
-                ui.notify(f'⚠️ Saved locally but deploy failed: {deploy_err}', type='warning')
+                ui.notify(f'⚠️ Saved locally but deploy failed: {deploy_err}', type='warning', timeout=0)
                 return
             ui.notify(T['notify_saved_restarted'], type='positive')
             ui.timer(2.0, lambda: ui.navigate.to(
                 f'/?lang={lang}&zc_source={zc_source}'))
         except Exception as e:
-            ui.notify(T['notify_op_fail'].format(e), type='negative')
+            ui.notify(T['notify_op_fail'].format(e), type='negative', timeout=0)
 
     def do_status():
         st = service_status()

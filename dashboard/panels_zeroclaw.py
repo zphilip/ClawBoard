@@ -850,8 +850,12 @@ def build_zeroclaw_panel(T, conf, zc_source, lang, other_lang, _ph_hints, _ph_ma
                     default_timeout = to_int(w_prov_timeout.value, 120)
                     default_model   = w_default_model.value.strip() or ''
                     default_key     = w_api_key.value or ''
-                    conf.setdefault('providers', {}).setdefault('models', {})
-                    conf['providers']['models'] = {}
+                    models = conf.setdefault('providers', {}).setdefault('models', {})
+                    # Mutate the existing tomlkit table in-place — replacing it
+                    # with a plain dict breaks tomlkit's internal document graph
+                    # and can cause silent serialization loss on save.
+                    for _k in list(models.keys()):
+                        del models[_k]
                     for alias, wmap in provider_panels.items():
                         entry = {
                             'name':                 wmap['name'].value,
@@ -866,7 +870,7 @@ def build_zeroclaw_panel(T, conf, zc_source, lang, other_lang, _ph_hints, _ph_ma
                             key = default_key
                         if key:
                             entry['api_key'] = key
-                        conf['providers']['models'][alias] = entry
+                        models[alias] = entry
 
                     # ── Autonomy ──────────────────────────────────────────
                     a = conf.setdefault('autonomy', {})

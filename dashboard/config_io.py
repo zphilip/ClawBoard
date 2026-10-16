@@ -417,11 +417,14 @@ def deploy_config(conf=None):
     except Exception:
         pass  # live file may not exist yet; proceed without
     content = tomlkit.dumps(conf_to_deploy)
-    # Step 3: ensure target directory exists (best-effort, may already exist)
-    subprocess.run(
+    # Step 3: ensure target directory exists
+    r_mkdir = subprocess.run(
         ['sudo', '/usr/bin/mkdir', '-p', os.path.dirname(DEPLOY_CONFIG_PATH)],
-        capture_output=True
+        capture_output=True, text=True
     )
+    if r_mkdir.returncode != 0:
+        err = r_mkdir.stderr.strip() or f'mkdir failed (exit {r_mkdir.returncode})'
+        return False, err
     # Step 4: write via sudo tee (stdin pipe, no shell glob needed)
     r = subprocess.run(
         ['sudo', '/usr/bin/tee', DEPLOY_CONFIG_PATH],
@@ -431,10 +434,13 @@ def deploy_config(conf=None):
         err = r.stderr.strip() or f'sudo tee failed (exit {r.returncode})'
         return False, err
     # Ensure zeroclaw can read/write its own config (for key encryption).
-    subprocess.run(
+    r_chown = subprocess.run(
         ['sudo', '/usr/bin/chown', 'zeroclaw:zeroclaw', DEPLOY_CONFIG_PATH],
-        capture_output=True
+        capture_output=True, text=True
     )
+    if r_chown.returncode != 0:
+        err = r_chown.stderr.strip() or f'chown failed (exit {r_chown.returncode})'
+        return False, err
     # Step 5: read-back verification — ensure the deploy target actually
     # has the content we wrote (catches silent tee failures and cases where
     # a concurrently-running zeroclaw rewrites the file between steps).
@@ -443,23 +449,42 @@ def deploy_config(conf=None):
             ['sudo', '/usr/bin/cat', DEPLOY_CONFIG_PATH],
             capture_output=True, text=True
         )
-        if r2.returncode == 0:
-            _deployed = tomlkit.loads(r2.stdout)
-            _wrote = tomlkit.loads(content)
-            _wrote_models = _wrote.get('providers', {}).get('models', {})
-            _deployed_models = _deployed.get('providers', {}).get('models', {})
-            if set(_wrote_models.keys()) != set(_deployed_models.keys()):
-                # Extract just the models section from both for diagnosis
-                _wrote_keys = sorted(_wrote_models.keys())
-                _deployed_keys = sorted(_deployed_models.keys())
-                return False, (
-                    f'Deploy verification failed.\n'
-                    f'Source ({CONFIG_PATH}): {_wrote_keys}\n'
-                    f'Target ({DEPLOY_CONFIG_PATH}): {_deployed_keys}\n'
-                    f'Extra keys in target: {sorted(set(_deployed_keys) - set(_wrote_keys))}'
-                )
-    except Exception:
-        pass  # verification is best-effort; don't block deploy
+        if r2.returncode != 0:
+            return False, (
+                f'Deploy verification failed: cannot read target.\n'
+                f'sudo cat {DEPLOY_CONFIG_PATH}: {r2.stderr.strip() or f"exit {r2.returncode}"}'
+            )
+        _deployed = tomlkit.loads(r2.stdout)
+        _wrote = tomlkit.loads(content)
+        _wrote_models = _wrote.get('providers', {}).get('models', {})
+        _deployed_models = _deployed.get('providers', {}).get('models', {})
+        # Check key names match
+        if set(_wrote_models.keys()) != set(_deployed_models.keys()):
+            _wrote_keys = sorted(_wrote_models.keys())
+            _deployed_keys = sorted(_deployed_models.keys())
+            return False, (
+                f'Deploy verification failed: model keys mismatch.\n'
+                f'Source ({CONFIG_PATH}): {_wrote_keys}\n'
+                f'Target ({DEPLOY_CONFIG_PATH}): {_deployed_keys}\n'
+                f'Extra keys in target: {sorted(set(_deployed_keys) - set(_wrote_keys))}'
+            )
+        # Check each model entry has its essential content (name + at least
+        # api_key or uri), not just that the alias exists.
+        for alias, wrote_entry in _wrote_models.items():
+            deployed_entry = _deployed_models.get(alias, {})
+            # Compare as plain dicts so tomlkit types don't interfere
+            _we = dict(wrote_entry) if hasattr(wrote_entry, 'items') else {}
+            _de = dict(deployed_entry) if hasattr(deployed_entry, 'items') else {}
+            # Fields that must match exactly
+            for field in ('name', 'uri', 'model', 'api_key'):
+                if _we.get(field) != _de.get(field):
+                    return False, (
+                        f'Deploy verification failed: [{alias}].{field} mismatch.\n'
+                        f'  Wrote:   {_we.get(field)!r}\n'
+                        f'  Deployed: {_de.get(field)!r}'
+                    )
+    except Exception as e:
+        return False, f'Deploy verification failed: {e}'
     return True, ''
 
 def deploy_picoclaw_config():
