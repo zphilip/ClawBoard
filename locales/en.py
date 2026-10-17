@@ -228,6 +228,16 @@ STRINGS = {
     'proxy_disabled':       'disabled',
     'proxy_active':         '🟢 running',
     'proxy_inactive':       '🔴 stopped',
+    # ── Agent Status (from clawproxy /proxy/status) ──────────────────────────────
+    'proxy_agents_title':     '🔗 Agent Status',
+    'proxy_agents_hint':      'Live connection state from clawproxy health probe (refreshes every 30s).',
+    'proxy_zc_label':         '🦾 ZeroClaw',
+    'proxy_pc_label':         '🐾 PicoClaw',
+    'proxy_zc_reset_pairing': '🔄 Reset Pairing',
+    'proxy_pc_reset_pairing': '🔄 Reset Pairing',
+    'proxy_pc_reset_hint':    'Not yet implemented for PicoClaw',
+    'proxy_reset_ok':         '✅ Token cleared & proxy restarted — re-pairing…',
+    'proxy_reset_fail':       '❌ Reset failed: {err}',
     # ── ClawProxy TTS Config ─────────────────────────────────────────────────
     'proxy_cp_cfg_title':       '🎤 ClawProxy TTS Config',
     'proxy_cp_cfg_hint':        'Edit clawproxy TTS provider settings (config.toml). Deploy to /opt/clawproxy/ when done.',

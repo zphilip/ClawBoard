@@ -270,13 +270,7 @@ for _u in zero zeroclaw picoclaw openclaw; do
     id -u "$_u" >/dev/null 2>&1 && usermod -aG clawboard "$_u" 2>/dev/null || true
 done
 mkdir -p /opt/clawproxy /opt/picoclaw /opt/zeroclaw
-chown zero:zero /opt/clawproxy 2>/dev/null || true
-if [ -d /opt/clawboard/venv ]; then
-    chgrp -R clawboard /opt/clawboard/venv 2>/dev/null || true
-    find /opt/clawboard/venv -type d -exec chmod g+rwx {} + 2>/dev/null || true
-    find /opt/clawboard/venv -type f ! -path "*/bin/*" -exec chmod g+rw {} + 2>/dev/null || true
-    find /opt/clawboard/venv/bin -type f -exec chmod g+rwx {} + 2>/dev/null || true
-fi
+chown zero:clawboard /opt/clawproxy 2>/dev/null || true
 log "clawboard group bootstrapped."
 
 # Record service states and stop services to allow binary replacement
@@ -361,7 +355,7 @@ fi
 if [[ -f "$WORK_DIR/clawproxy/clawproxy-arm64" ]]; then
     log "Installing clawproxy binary to /usr/local/bin/clawproxy"
     mkdir -p /opt/clawproxy
-    chown zero:zero /opt/clawproxy 2>/dev/null || true
+    chown zero:clawboard /opt/clawproxy 2>/dev/null || true
     if cp "$WORK_DIR/clawproxy/clawproxy-arm64" /usr/local/bin/clawproxy 2>/dev/null; then
         chmod +x /usr/local/bin/clawproxy || true
         log "clawproxy installed to /usr/local/bin/clawproxy"
@@ -374,11 +368,11 @@ fi
 if [[ -f "$WORK_DIR/clawproxy/config.toml.example" ]]; then
     # Always keep the example up-to-date in /opt/clawproxy
     cp "$WORK_DIR/clawproxy/config.toml.example" "/opt/clawproxy/config.toml.example"
-    chown zero:zero "/opt/clawproxy/config.toml.example" 2>/dev/null || true
+    chown zero:clawboard "/opt/clawproxy/config.toml.example" 2>/dev/null || true
     # On first install (no config.toml exists), seed from example
     if [[ ! -f "/opt/clawproxy/config.toml" ]]; then
         cp "$WORK_DIR/clawproxy/config.toml.example" "/opt/clawproxy/config.toml"
-        chown zero:zero "/opt/clawproxy/config.toml" 2>/dev/null || true
+        chown zero:clawboard "/opt/clawproxy/config.toml" 2>/dev/null || true
         log "clawproxy config.toml seeded from config.toml.example"
     fi
     log "clawproxy config.toml.example updated"
@@ -664,6 +658,18 @@ fi
 chown -R "$CLAWBOARD_USER:$CLAWBOARD_USER" "$CLAWBOARD_DST" 2>/dev/null || \
     log "WARNING: chown $CLAWBOARD_USER failed for $CLAWBOARD_DST"
 log "ClawBoard dashboard deploy complete."
+
+# Re-apply venv group permissions (line above does chown -R zero:zero,
+# which undoes the group-based access set up at image build time).
+if [ -d /opt/clawboard/venv ]; then
+    chgrp -R clawboard /opt/clawboard/venv 2>/dev/null || true
+    find /opt/clawboard/venv -type d -exec chmod g+rwx {} + 2>/dev/null || true
+    find /opt/clawboard/venv -type f ! -path "*/bin/*" -exec chmod g+rw {} + 2>/dev/null || true
+    find /opt/clawboard/venv/bin -type f -exec chmod g+rwx {} + 2>/dev/null || true
+    # setgid: new files/dirs created by pip install inherit group clawboard
+    find /opt/clawboard/venv -type d -exec chmod g+s {} + 2>/dev/null || true
+fi
+log "venv group permissions re-applied."
 
 # ── Helper: sync one workspace ───────────────────────────────────────────────
 sync_workspace() {

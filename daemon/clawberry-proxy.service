@@ -13,7 +13,6 @@ Group=zero
 Environment=CLAWPROXY_CONFIG=/opt/clawproxy/config.toml
 
 ExecStartPre=/bin/mkdir -p /opt/clawproxy
-ExecStartPre=/bin/chown zero:zero /opt/clawproxy
 ExecStartPre=/usr/bin/test -x /usr/local/bin/clawproxy
 
 # --proxy        : enable proxy server mode (listen on --proxy-port)

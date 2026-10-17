@@ -1,6 +1,8 @@
 """ClawBoard dashboard — proxy panel."""
+import json
 import subprocess
 import tomlkit
+import urllib.request
 from nicegui import ui
 
 
@@ -62,6 +64,118 @@ def build_proxy_panel(T):
                     .props('elevated color=indigo-7')
                 ui.button(T['proxy_btn_refresh'], on_click=_proxy_refresh) \
                     .props('flat color=grey-7')
+
+        # ── Agent Status (from clawproxy /proxy/status) ────────────────────
+        with ui.card().classes('w-full q-pa-md q-mt-sm'):
+            ui.label(T.get('proxy_agents_title', '🔗 Agent Status')).classes('text-subtitle1 text-bold q-mb-xs')
+            ui.label(T.get('proxy_agents_hint', 'Live connection state from clawproxy health probe (refreshes every 30s).')).classes('text-caption text-grey-6 q-mb-sm')
+
+            # ZC row
+            zc_status_lbl = ui.label('').classes('text-body2 q-mr-sm')
+            zc_reset_btn = ui.button(
+                T.get('proxy_zc_reset_pairing', '🔄 Reset Pairing'),
+                on_click=lambda: _proxy_reset_pairing('zc'),
+            ).props('flat dense color=blue-8 size=sm')
+
+            # PC row
+            pc_status_lbl = ui.label('').classes('text-body2 q-mr-sm')
+            pc_reset_btn = ui.button(
+                T.get('proxy_pc_reset_pairing', '🔄 Reset Pairing'),
+            ).props('flat dense color=grey-5 size=sm')
+            pc_reset_btn.disable()
+            pc_reset_btn.tooltip(T.get('proxy_pc_reset_hint', 'Not yet implemented for PicoClaw'))
+
+            def _proxy_fetch_agent_status():
+                """Fetch agent health from clawproxy /proxy/status."""
+                zc_text = '⚪ Unknown'
+                pc_text = '⚪ Unknown'
+                try:
+                    req = urllib.request.Request('http://127.0.0.1:18780/proxy/status')
+                    with urllib.request.urlopen(req, timeout=5) as resp:
+                        data = json.loads(resp.read().decode('utf-8'))
+                    agents = data.get('agents', {})
+                    # ── ZC ──
+                    zc = agents.get('zc', {})
+                    zc_configured = zc.get('configured', False)
+                    zc_status = zc.get('status', 'unknown')
+                    if not zc_configured:
+                        zc_text = '⚫ Not Configured'
+                    elif zc_status == 'online':
+                        zc_text = '🟢 ZeroClaw Online'
+                    elif zc_status == 'offline':
+                        zc_text = '🔴 ZeroClaw Offline'
+                    elif zc_status == 'auth_error':
+                        zc_text = '🟡 ZeroClaw Auth Error'
+                    else:
+                        zc_text = f'⚪ ZeroClaw: {zc_status}'
+                    # ── PC ──
+                    pc = agents.get('pc', {})
+                    pc_configured = pc.get('configured', False)
+                    pc_status_val = pc.get('status', 'unknown')
+                    if not pc_configured:
+                        pc_text = '⚫ Not Configured'
+                    elif pc_status_val == 'online':
+                        pc_text = '🟢 PicoClaw Online'
+                    elif pc_status_val == 'offline':
+                        pc_text = '🔴 PicoClaw Offline'
+                    elif pc_status_val == 'auth_error':
+                        pc_text = '🟡 PicoClaw Auth Error'
+                    else:
+                        pc_text = f'⚪ PicoClaw: {pc_status_val}'
+                except Exception:
+                    zc_text = '⚪ Proxy unreachable'
+                    pc_text = '⚪ Proxy unreachable'
+                zc_status_lbl.set_text(zc_text)
+                pc_status_lbl.set_text(pc_text)
+
+            def _proxy_reset_pairing(agent: str):
+                """Delete stored token and restart clawberry-proxy to force re-pair."""
+                token_file = f'/opt/clawproxy/{agent}_token'
+                try:
+                    subprocess.run(
+                        ['sudo', 'rm', '-f', token_file],
+                        capture_output=True, text=True, timeout=10,
+                    )
+                except Exception as exc:
+                    ui.notify(f'⚠️ Failed to remove token: {exc}', type='warning')
+                    return
+                try:
+                    rr = subprocess.run(
+                        ['sudo', '/usr/bin/systemctl', 'restart', 'clawberry-proxy.service'],
+                        capture_output=True, text=True, timeout=15,
+                    )
+                    if rr.returncode == 0:
+                        ui.notify(
+                            T.get('proxy_reset_ok', '✅ Token cleared & proxy restarted — re-pairing…'),
+                            type='positive',
+                        )
+                    else:
+                        err = rr.stderr.strip() or f'exit {rr.returncode}'
+                        ui.notify(
+                            T.get('proxy_reset_fail', '❌ Reset failed: {err}').format(err=err),
+                            type='negative',
+                        )
+                except Exception as exc:
+                    ui.notify(
+                        T.get('proxy_reset_fail', '❌ Reset failed: {err}').format(err=str(exc)),
+                        type='negative',
+                    )
+                # Refresh after a short delay to let the proxy restart and re-pair
+                ui.timer(3.0, _proxy_fetch_agent_status, once=True)
+
+            with ui.row().classes('w-full items-center gap-2'):
+                ui.label(T.get('proxy_zc_label', '🦾 ZeroClaw') + ':').classes('text-body2 text-bold')
+                zc_status_lbl
+                zc_reset_btn
+
+            with ui.row().classes('w-full items-center gap-2'):
+                ui.label(T.get('proxy_pc_label', '🐾 PicoClaw') + ':').classes('text-body2 text-bold')
+                pc_status_lbl
+                pc_reset_btn
+
+            # Initial fetch + periodic refresh every 5 seconds
+            _proxy_fetch_agent_status()
+            ui.timer(5.0, _proxy_fetch_agent_status)
 
         # ── ClawProxy TTS Config ──────────────────────────────────────────────
         with ui.card().classes('w-full q-pa-md q-mt-sm'):

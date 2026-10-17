@@ -228,6 +228,16 @@ STRINGS = {
     'proxy_disabled':       '已禁用',
     'proxy_active':         '🟢 运行中',
     'proxy_inactive':       '🔴 已停止',
+    # ── Agent Status (from clawproxy /proxy/status) ──────────────────────────────
+    'proxy_agents_title':     '🔗 Agent 状态',
+    'proxy_agents_hint':      '来自 clawproxy 健康探针的实时连接状态（每 30 秒刷新）。',
+    'proxy_zc_label':         '🦾 ZeroClaw',
+    'proxy_pc_label':         '🐾 PicoClaw',
+    'proxy_zc_reset_pairing': '🔄 重置配对',
+    'proxy_pc_reset_pairing': '🔄 重置配对',
+    'proxy_pc_reset_hint':    'PicoClaw 暂未支持',
+    'proxy_reset_ok':         '✅ Token 已清除 & 代理已重启 — 正在重新配对…',
+    'proxy_reset_fail':       '❌ 重置失败: {err}',
     # ── ClawProxy TTS 配置 ──────────────────────────────────────────────────
     'proxy_cp_cfg_title':       '🎤 ClawProxy TTS 配置',
     'proxy_cp_cfg_hint':        '编辑 clawproxy TTS 服务商设置（config.toml）。完成后部署到 /opt/clawproxy/。',
