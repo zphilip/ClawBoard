@@ -331,31 +331,16 @@ def ensure_screen_on(adb_path: str, device: str) -> None:
         _log("Screen is on.")
 
 
-def release_uiautomation_service(adb_path: str, device: str) -> None:
+def _kill_adb_uiautomator_dump(adb_path: str, device: str) -> bool:
+    """Kill any stale ADB uiautomator dump process on the device.
+
+    Only kills ``/system/bin/uiautomator`` (ADB dump binary) and
+    ``com.wetest.uia2`` — never touches atx-agent or the uiautomator2
+    APK (com.github.uiautomator*).
+
+    Returns True if any process was killed.
     """
-    Release ADB's UiAutomationService to prevent conflicts with uiautomator2.
-
-    When ADB runs ``uiautomator dump`` it registers a UiAutomationService
-    that can block uiautomator2 from connecting.  This function kills the
-    ADB uiautomator dump process WITHOUT touching the uiautomator2 server
-    (atx-agent) or its APK processes (com.github.uiautomator*).
-
-    IMPORTANT: This must NOT kill atx-agent — that IS the uiautomator2
-    server we rely on.  Only kill the ADB ``/system/bin/uiautomator``
-    dump process and the wetest uia2 compatibility layer.
-    """
-
-    # Patterns that match ONLY ADB's uiautomator dump process, NOT
-    # uiautomator2's atx-agent server or its Java APK processes.
-    #
-    #  "uiautomator dump"  — matches the ADB dump command line
-    #  "com.wetest.uia2"   — wetest ATX compatibility layer (safe to kill)
-    #
-    # We deliberately do NOT kill:
-    #  "atx-agent"         — this IS the uiautomator2 server
-    #  "com.github.uiautomator" — uiautomator2 APK (matched if we used bare "uiautomator")
-
-    _log("Releasing ADB UiAutomationService...")
+    killed = False
 
     # Method 1: pkill with targeted patterns
     for proc_pattern in ["uiautomator dump", "com.wetest.uia2"]:
@@ -365,6 +350,7 @@ def release_uiautomation_service(adb_path: str, device: str) -> None:
         )
         if rc == 0:
             _log(f"✅ Killed process matching '{proc_pattern}'")
+            killed = True
 
     # Method 2: PID scan as fallback — only kill the ADB uiautomator
     # binary, not atx-agent or the uiautomator2 APK.
@@ -391,10 +377,67 @@ def release_uiautomation_service(adb_path: str, device: str) -> None:
                         adb_path=adb_path, device=device,
                     )
                     _log(f"✅ Killed ADB uiautomator process PID={pid}")
+                    killed = True
 
-    # Brief delay to ensure service is fully released
-    time.sleep(0.8)
-    _log("✅ UiAutomationService cleanup complete")
+    return killed
+
+
+def release_uiautomation_service(adb_path: str, device: str) -> None:
+    """
+    Release ADB's UiAutomationService to prevent conflicts with uiautomator2.
+
+    When ADB runs ``uiautomator dump`` it registers a UiAutomationService
+    that can block uiautomator2 from connecting.  This function kills the
+    ADB uiautomator dump process WITHOUT touching the uiautomator2 server
+    (atx-agent) or its APK processes (com.github.uiautomator*).
+
+    After killing, it verifies the service is actually released by
+    attempting a uiautomator2 connection.  If the connection still fails
+    with "already registered", it re-kills and retries.
+
+    IMPORTANT: This must NOT kill atx-agent — that IS the uiautomator2
+    server we rely on.  Only kill the ADB ``/system/bin/uiautomator``
+    dump process and the wetest uia2 compatibility layer.
+    """
+
+    _log("Releasing ADB UiAutomationService...")
+
+    for attempt in range(3):
+        if attempt > 0:
+            _log(f"Retry {attempt}/2 — stale UiAutomationService still held...")
+
+        _kill_adb_uiautomator_dump(adb_path, device)
+
+        # Verification: try a uiautomator2 connect to confirm the service
+        # is actually released.  Wait progressively longer between attempts.
+        delay = 0.6 + attempt * 0.4  # 0.6s, 1.0s, 1.4s
+        time.sleep(delay)
+
+        try:
+            import uiautomator2 as u2
+            d = u2.connect(device) if device else u2.connect()
+            # Quick connectivity test — if this succeeds, the service is free
+            try:
+                info = d.info
+                if info and 'serial' in info:
+                    _log("✅ UiAutomationService cleanup complete (verified via u2 connect)")
+                    return
+            except Exception:
+                pass
+        except ImportError:
+            _log("⚠️ uiautomator2 not installed — cannot verify; assuming clean")
+            return
+        except Exception as e:
+            _msg = str(e)
+            if "already registered" in _msg or "UiAutomationService" in _msg:
+                _log(f"⚠️ UiAutomationService still registered — will re-kill and retry")
+                continue
+            # Some other error — the service is probably not the issue
+            _log(f"⚠️ uiautomator2 verify raised non-conflict error: {e}")
+            return
+
+    _log("⚠️ UiAutomationService could not be fully released after 3 attempts — "
+          "runner will use retry/fallback logic internally")
 
 
 def is_device_uia2_initialized(device: str, adb_path: str = "adb") -> bool:

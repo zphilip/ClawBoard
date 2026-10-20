@@ -1,0 +1,68 @@
+{
+  "_comment": "Artemis-control skill configuration. See SKILL.md for details.",
+
+  "provider": {
+    "_comment": "Primary VLM provider for Artemis. Supports Gemini, GPT-4o, Claude, Qwen-VL.",
+    "api_key": "sk-cp-FK_R1OhgcKbsD600QaM0L8KA6-rCQJqy7WprsGGCiCgTpDIB4MXfG-QD1z7NeQhZocI5--jKGcG3yyDvVYCsBWfWOCsXc1Wp3cJpyrdwOJ15hjwnzU5LpLU",
+    "model": "MiniMax-M3",
+    "base_url": "https://api.minimaxi.com/v1"
+  },
+
+  "fallback_provider": {
+    "_comment": "Fallback provider when primary is unavailable or returns persistent errors.",
+    "api_key": "not-needed",
+    "model": "gui-owl",
+    "base_url": "http://apicn.aiworm.cn:8809/v1"
+  },
+
+  "supervisor_provider": {
+    "_comment": "Optional text-only LLM for final task completion verification. Leave model empty to disable.",
+    "model": "",
+    "base_url": "",
+    "api_key": "",
+    "vision": false,
+    "reasoning_split": true
+  },
+
+  "profiles": {
+    "flash": {
+      "_comment": "Fast reactive loop (~3-5s/step). No plan, no safety net, no verification.",
+      "max_turns": 0,
+      "explorer_mode": "flash",
+      "video_recording": false
+    },
+    "pro": {
+      "_comment": "Full multi-agent graph (~15-40s/step). Plan + safety net + checkpoints + verification.",
+      "max_turns": 0,
+      "explorer_mode": "pro",
+      "verification": "final",
+      "video_recording": true
+    }
+  },
+
+  "safety_net": {
+    "_comment": "Pre-execution validation settings.",
+    "xml_enabled": true,
+    "pixel_fallback": true,
+    "retry_attempts": 3,
+    "retry_delay": 0.4,
+    "self_heal_threshold": 120,
+    "xml_cache_ttl": 2.0
+  },
+
+  "context": {
+    "_comment": "History and context management settings.",
+    "max_stored_screenshots": 6,
+    "budget_warn_pct": 0.75,
+    "budget_critical_pct": 0.90,
+    "visual_summaries": true,
+    "transcript_enabled": false
+  },
+
+  "explorer": {
+    "_comment": "Element indexer settings.",
+    "max_indexed_elements": 80,
+    "ocr_enabled": false,
+    "ocr_provider": ""
+  }
+}

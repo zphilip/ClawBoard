@@ -349,6 +349,51 @@ class AdbTools:
         except AttributeError:
             d.set_fastinput_ime(False)  # deprecated but still functional
 
+    def _kill_stale_uiautomation_service(self) -> None:
+        """Kill any stale ADB uiautomator dump process that may hold
+        UiAutomationService, blocking uiautomator2 connections.
+
+        Only kills ``/system/bin/uiautomator`` (ADB dump binary) and
+        ``com.wetest.uia2`` — never touches atx-agent or the uiautomator2
+        APK (com.github.uiautomator*).
+        """
+        device_flag = ["-s", self.device] if self.device else []
+        _adb = [self.adb_path] + device_flag
+
+        # pkill targeted patterns
+        for pattern in ["uiautomator dump", "com.wetest.uia2"]:
+            try:
+                subprocess.run(
+                    _adb + ["shell", "pkill", "-f", pattern],
+                    capture_output=True, text=True, timeout=5,
+                )
+            except Exception:
+                pass
+
+        # PID scan fallback
+        try:
+            r = subprocess.run(
+                _adb + ["shell", "ps", "-A"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if r.returncode == 0 and r.stdout:
+                for line in r.stdout.splitlines():
+                    _lower = line.lower()
+                    is_adb_dump = (
+                        "uiautomator" in _lower
+                        and "com.github.uiautomator" not in _lower
+                        and "atx-agent" not in _lower
+                    )
+                    if is_adb_dump:
+                        parts = line.split()
+                        if len(parts) >= 2:
+                            subprocess.run(
+                                _adb + ["shell", "kill", "-9", parts[1]],
+                                capture_output=True, text=True, timeout=5,
+                            )
+        except Exception:
+            pass
+
     def get_foreground_package(self) -> str:
         """
         Return the package name of the app currently in the foreground
@@ -356,43 +401,76 @@ class AdbTools:
 
         Uses uiautomator2's d.shell() as primary method (cleaner, no subprocess).
         Falls back to ADB subprocess for compatibility.
+        Retries on UiAutomationService conflicts (same pattern as _get_ui_dump_u2).
         Includes detailed logging for debugging.
         """
         print(f"[FG PKG DEBUG] Detecting foreground package...")
-        
-        # Priority 1: Try uiautomator2 shell command (cleaner API)
-        try:
-            d = self._u2_connect(self.device)
-            self._u2_disable_fast_ime(d)
 
-            # Execute dumpsys via uiautomator2 (no need for "adb -s XXX shell" prefix)
-            print(f"[FG PKG DEBUG] 🎯 Using uiautomator2 shell (primary method)")
-            output, exit_code = d.shell("dumpsys activity activities")
-            
-            if exit_code == 0 and output:
-                output_lines = output.splitlines()
-                print(f"[FG PKG DEBUG] ✅ uiautomator2 shell succeeded: {len(output_lines)} lines")
-                
-                for line_num, line in enumerate(output_lines, 1):
-                    if any(k in line for k in (
-                        "mResumedActivity", "topResumedActivity",
-                        "mCurrentFocus", "mFocusedApp",
-                    )):
-                        m = re.search(r'\s+([\w.]+)/[.\w]+', line)
-                        if m:
-                            pkg = m.group(1)
-                            print(f"[FG PKG DEBUG] ✅ Found package at line {line_num}: {pkg}")
-                            print(f"[FG PKG DEBUG] Context: {line.strip()[:120]}")
-                            return pkg
-                
-                print(f"[FG PKG DEBUG] ⚠️ uiautomator2: No matching lines in dumpsys output")
-            else:
-                print(f"[FG PKG DEBUG] ⚠️ uiautomator2 shell failed: exit_code={exit_code}")
-        
-        except ImportError:
-            print(f"[FG PKG DEBUG] ⚠️ uiautomator2 not installed, falling back to ADB")
-        except Exception as e:
-            print(f"[FG PKG DEBUG] ⚠️ uiautomator2 failed: {e}, falling back to ADB")
+        # Priority 1: Try uiautomator2 shell command (cleaner API)
+        # Retry up to 3 times on UiAutomationService conflicts with active
+        # cleanup between attempts (matching _get_ui_dump_u2 retry pattern).
+        _fg_u2_max_retries = 3
+        _fg_u2_last_error = ""
+        for _fg_u2_attempt in range(_fg_u2_max_retries):
+            try:
+                d = self._u2_connect(self.device)
+                self._u2_disable_fast_ime(d)
+
+                # Execute dumpsys via uiautomator2 (no need for "adb -s XXX shell" prefix)
+                print(f"[FG PKG DEBUG] 🎯 Using uiautomator2 shell (primary method)")
+                output, exit_code = d.shell("dumpsys activity activities")
+
+                if exit_code == 0 and output:
+                    output_lines = output.splitlines()
+                    print(f"[FG PKG DEBUG] ✅ uiautomator2 shell succeeded: {len(output_lines)} lines")
+
+                    for line_num, line in enumerate(output_lines, 1):
+                        if any(k in line for k in (
+                            "mResumedActivity", "topResumedActivity",
+                            "mCurrentFocus", "mFocusedApp",
+                        )):
+                            m = re.search(r'\s+([\w.]+)/[.\w]+', line)
+                            if m:
+                                pkg = m.group(1)
+                                print(f"[FG PKG DEBUG] ✅ Found package at line {line_num}: {pkg}")
+                                print(f"[FG PKG DEBUG] Context: {line.strip()[:120]}")
+                                return pkg
+
+                    print(f"[FG PKG DEBUG] ⚠️ uiautomator2: No matching lines in dumpsys output")
+                else:
+                    print(f"[FG PKG DEBUG] ⚠️ uiautomator2 shell failed: exit_code={exit_code}")
+                # uiautomator2 connected fine but dumpsys had no useful output —
+                # this is not a registration conflict, so don't retry.
+                break
+
+            except ImportError:
+                print(f"[FG PKG DEBUG] ⚠️ uiautomator2 not installed, falling back to ADB")
+                break
+            except Exception as e:
+                _fg_u2_last_error = str(e)
+                _is_conflict = (
+                    "already registered" in _fg_u2_last_error
+                    or "UiAutomationService" in _fg_u2_last_error
+                )
+                if _is_conflict and _fg_u2_attempt < _fg_u2_max_retries - 1:
+                    delay = 0.5 * (_fg_u2_attempt + 1)  # 0.5s, 1.0s
+                    print(
+                        f"[FG PKG DEBUG] ⚠️ uiautomator2 blocked by UiAutomationService "
+                        f"(attempt {_fg_u2_attempt+1}/{_fg_u2_max_retries}); "
+                        f"killing stale process, retrying in {delay}s..."
+                    )
+                    self._kill_stale_uiautomation_service()
+                    time.sleep(delay)
+                    continue
+                elif _is_conflict:
+                    print(
+                        f"[FG PKG DEBUG] ⚠️ uiautomator2 blocked by UiAutomationService "
+                        f"after {_fg_u2_max_retries} retries, falling back to ADB"
+                    )
+                    break
+                else:
+                    print(f"[FG PKG DEBUG] ⚠️ uiautomator2 failed: {e}, falling back to ADB")
+                    break
         
         # Priority 2: Fallback to ADB subprocess (traditional method)
         device_flag = f" -s {self.device}" if self.device else ""
@@ -587,9 +665,11 @@ class AdbTools:
         Requires ``pip install uiautomator2`` and the atx-agent running on
         the device (started separately via ``python3 -m uiautomator2 init``).
         Returns '' if the library is not installed or the connection fails.
-        
-        Note: Simple approach - just try to connect and dump directly.
-        Retries connection if blocked by UiAutomationService.
+
+        When blocked by a stale UiAutomationService (from ADB's
+        ``uiautomator dump``), actively kills the stale process between
+        retries rather than only waiting.  This handles the case where
+        ``handle_permission_dialog()`` re-creates the conflict mid-run.
         """
         max_retries = 3
         for attempt in range(max_retries):
@@ -599,7 +679,7 @@ class AdbTools:
                 self._u2_disable_fast_ime(d)
                 xml = d.dump_hierarchy()
                 return xml or ""
-                
+
             except ImportError:
                 return ""
             except Exception as _e:
@@ -607,20 +687,26 @@ class AdbTools:
                 # Check if this is a UiAutomationService conflict
                 if "already registered" in _msg or "UiAutomationService" in _msg:
                     if attempt < max_retries - 1:
-                        # Wait and retry - service might be released soon
+                        # Actively kill the stale ADB process, then wait
                         delay = 0.5 * (attempt + 1)  # 0.5s, 1.0s, 1.5s
-                        print(f"[UI DUMP DEBUG] ⚠️ uiautomator2 blocked (attempt {attempt+1}/{max_retries}), retrying in {delay}s...")
+                        print(
+                            f"[UI DUMP DEBUG] ⚠️ uiautomator2 blocked "
+                            f"(attempt {attempt+1}/{max_retries}); "
+                            f"killing stale process, retrying in {delay}s..."
+                        )
+                        self._kill_stale_uiautomation_service()
                         time.sleep(delay)
                         continue
                     else:
-                        # Last attempt failed
+                        # Last attempt failed — kill one more time before giving up
+                        self._kill_stale_uiautomation_service()
                         print(f"[UI DUMP DEBUG] ⚠️ uiautomator2 blocked by ADB UiAutomationService after {max_retries} retries")
                         return ""
                 else:
                     # Other error, don't retry
                     print(f"[UI DUMP DEBUG] ❌ uiautomator2 failed: {_e}")
                     return ""
-        
+
         return ""
 
     # -- helpers ----------------------------------------------------------
