@@ -744,6 +744,21 @@ do
         log "mobile-control config.json seeded from example → $_mc_config"
     fi
 done
+# ── Seed artemis-control config.json from example (first-time only) ───────────
+for _ac_user_dir in \
+    "/var/lib/picoclaw/.picoclaw/workspace" \
+    "/var/lib/zeroclaw/.zeroclaw/workspace" \
+    "/var/lib/openclaw/.openclaw/workspace"
+do
+    _ac_example="$_ac_user_dir/skills/artemis-control/config.json.example"
+    _ac_config="$_ac_user_dir/skills/artemis-control/config.json"
+    if [[ -f "$_ac_example" && ! -f "$_ac_config" ]]; then
+        cp "$_ac_example" "$_ac_config"
+        _ac_owner=$(stat -c '%U' "$_ac_user_dir" 2>/dev/null || echo "")
+        [[ -n "$_ac_owner" ]] && chown "${_ac_owner}:${_ac_owner}" "$_ac_config" 2>/dev/null || true
+        log "artemis-control config.json seeded from example → $_ac_config"
+    fi
+done
 # ── Seed MEMORY.md into picoclaw workspace/memory/ ───────────────────────────
 # MEMORY.md lives at the workspace root in the repo but picoclaw expects it
 # (and writes runtime updates to) ~/.picoclaw/workspace/memory/MEMORY.md.

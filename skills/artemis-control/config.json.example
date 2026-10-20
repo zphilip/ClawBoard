@@ -3,7 +3,7 @@
 
   "provider": {
     "_comment": "Primary VLM provider for Artemis. Supports Gemini, GPT-4o, Claude, Qwen-VL.",
-    "api_key": "sk-cp-FK_R1OhgcKbsD600QaM0L8KA6-rCQJqy7WprsGGCiCgTpDIB4MXfG-QD1z7NeQhZocI5--jKGcG3yyDvVYCsBWfWOCsXc1Wp3cJpyrdwOJ15hjwnzU5LpLU",
+    "api_key": "your-api-key-here",
     "model": "MiniMax-M3",
     "base_url": "https://api.minimaxi.com/v1"
   },
