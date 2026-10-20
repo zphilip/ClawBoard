@@ -113,25 +113,23 @@ _CONFIG_PATH = Path(__file__).parent / "config.json"
 
 # VLM system prompt for action decisions
 SYSTEM_PROMPT_FALLBACK = """You are a phone automation agent controlling an Android device via ADB.
-Your job: look at the screenshot, read the element index, and decide the NEXT SINGLE ACTION to take toward the user's goal.
+Your ONLY output format is: {"action": "...", ...} — a single JSON object. Nothing else.
 
-AVAILABLE ACTIONS (return as JSON):
-- {"action": "tap", "coordinate": [x, y]}           — tap at pixel (x, y). Use element index to find coords.
-- {"action": "long_press", "coordinate": [x, y]}     — long-press at (x, y)
-- {"action": "swipe", "coordinate1": [x1, y1], "coordinate2": [x2, y2], "duration": 300}
-- {"action": "type", "text": "hello"}                — type text via ADB Keyboard
-- {"action": "system_button", "button": "back"}      — press: back, home, enter, recent_apps
-- {"action": "open_app", "app_name": "微信"}          — open an app by name
-- {"action": "finish"}                                — task is complete
-- {"action": "fail", "reason": "why"}                 — task cannot be completed
+AVAILABLE ACTIONS:
+{"action": "open_app", "app_name": "微信"}   — launch an app (PREFER THIS for "打开X" tasks)
+{"action": "tap", "coordinate": [x, y]}       — tap at pixel (x,y)
+{"action": "long_press", "coordinate": [x, y]} — long-press
+{"action": "swipe", "coordinate1": [x1,y1], "coordinate2": [x2,y2], "duration": 300}
+{"action": "type", "text": "hello"}            — type text
+{"action": "system_button", "button": "back"}  — back/home/enter/recent_apps
+{"action": "finish"}                            — task done
+{"action": "fail", "reason": "why"}             — cannot complete
 
-RULES:
-1. Output ONLY a single JSON object. No markdown, no tags, no explanation — just the JSON.
-2. Use the element index for precise coordinates. Elements have format:
-   [N] "label" class=X bounds=(x1,y1,x2,y2) center=(cx,cy)
-3. If the current screen doesn't show what you need, try swipe to scroll or press back.
-4. If the task is done, return {"action": "finish"}.
-5. Do NOT use <thinking> tags. Do NOT explain your reasoning. Output raw JSON only."""
+STRATEGY (critical):
+- For "打开X" / "open X" tasks: use {"action": "open_app", "app_name": "X"} FIRST, skip navigation.
+- For search tasks: open the app, then tap the search bar, then type.
+- Check PREVIOUS ACTIONS — if you already typed/clicked something, DON'T repeat it.
+- If stuck after 2 similar attempts, press back and try a different approach."""
 
 def load_skill_config() -> dict:
     """Load config.json, falling back to hard-coded defaults."""
@@ -543,7 +541,7 @@ def _run_reactive_fallback(
 
         # 3. Determine action via VLM
         action_type, action_args, action_desc = _decide_action_fallback(
-            instruction, step, elements, incident_tracker, last_coords, shot_path
+            instruction, step, elements, incident_tracker, last_coords, shot_path, actions
         )
 
         # 4. Safety net check
@@ -637,8 +635,8 @@ def _encode_image(image_path: str) -> str:
 
 
 def _call_vlm(system_prompt: str, user_prompt: str, image_path: str,
-              max_tokens: int = 1024) -> Optional[str]:
-    """Send a prompt + screenshot to the configured VLM and return its response text."""
+              max_tokens: int = 2048) -> tuple[Optional[str], str]:
+    """Send a prompt + screenshot to the configured VLM. Returns (response_text, finish_reason)."""
     cfg = load_skill_config()
     base_url = cfg["base_url"].rstrip("/")
     api_key = cfg["api_key"]
@@ -673,11 +671,12 @@ def _call_vlm(system_prompt: str, user_prompt: str, image_path: str,
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
             result = json.loads(resp.read().decode("utf-8"))
-            return result["choices"][0]["message"]["content"]
+            choice = result["choices"][0]
+            return choice["message"]["content"], choice.get("finish_reason", "unknown")
     except Exception as e:
         _log(f"VLM call failed ({url}): {e}")
         _trace(f"[vlm] call failed: {e}")
-        return None
+        return None, "error"
 
 
 def _decide_action_fallback(
@@ -687,6 +686,7 @@ def _decide_action_fallback(
     incident_tracker,
     last_coords: list[str],
     screenshot_path,
+    previous_actions: list[str] = None,
 ) -> tuple[str, dict, str]:
     """
     Call the VLM with screenshot + element index + instruction to decide the next action.
@@ -694,6 +694,9 @@ def _decide_action_fallback(
     Returns (action_type, action_args, human_readable_description).
     On VLM failure, returns ("finish", {}, "finish") to stop gracefully.
     """
+    if previous_actions is None:
+        previous_actions = []
+
     # Build element index text
     if elements:
         MAX_ELEMENTS = 80
@@ -716,62 +719,74 @@ def _decide_action_fallback(
     else:
         index_text = "UI ELEMENTS: (unavailable — use visual analysis)"
 
+    # Previous actions — so VLM knows what already happened
+    prev_text = ""
+    if previous_actions:
+        recent = previous_actions[-6:]  # last 6 actions
+        prev_text = "PREVIOUS ACTIONS (do NOT repeat these):\n" + "\n".join(
+            f"  - {a}" for a in recent
+        ) + "\n"
+
     # Incident context
     incident_text = ""
     if incident_tracker and incident_tracker.count > 0:
-        incident_text = f"\nPREVIOUS INCIDENTS:\n{incident_tracker.render_for_prompt()}\n"
+        incident_text = f"PREVIOUS INCIDENTS:\n{incident_tracker.render_for_prompt()}\n"
 
     # Loop warning
     loop_text = ""
     if len(last_coords) >= LOOP_THRESHOLD:
         unique = len(set(last_coords))
         if unique == 1:
-            loop_text = "\n⚠️  LOOP DETECTED: same coordinate tapped 3+ times. Try a DIFFERENT approach.\n"
+            loop_text = "⚠️  LOOP DETECTED: same coordinate tapped 3+ times. Try a DIFFERENT approach.\n"
 
     user_prompt = (
         f"TASK: {instruction}\n"
         f"Step: {step}\n"
-        f"{loop_text}"
-        f"{incident_text}"
-        f"{index_text}"
+        + (f"\n{prev_text}" if prev_text else "")
+        + (f"\n{loop_text}" if loop_text else "")
+        + (f"\n{incident_text}" if incident_text else "")
+        + f"\n{index_text}"
     )
 
-    raw = _call_vlm(SYSTEM_PROMPT_FALLBACK, user_prompt, screenshot_path)
+    raw, finish_reason = _call_vlm(SYSTEM_PROMPT_FALLBACK, user_prompt, screenshot_path)
     if not raw:
         _log("VLM returned no response — assuming task is stuck, returning finish")
         return ("finish", {}, "VLM call failed — stopping")
 
-    # Extract JSON from response.
-    # Models like MiniMax-M3 may wrap output in &lt;thinking&gt; blocks.
-    # Others use ```json fences.  We strip all wrappers then find JSON.
-    json_str = raw.strip()
+    # If truncated by token limit, the JSON likely didn't fit — retry with back
+    if finish_reason == "length" and "{" not in raw:
+        _log("VLM output truncated (length) — injecting back action to retry")
+        return ("system_button", {"button": "back"}, "truncated: back")
 
-    # 1) Strip XML/HTML tag blocks (e.g. &lt;thinking&gt;...&lt;/thinking&gt;)
-    json_str = re.sub(r'<[^>]+>\s*', '', json_str)
-    json_str = re.sub(r'\s*</[^>]+>', '', json_str)
-    json_str = re.sub(r'<[^>]+/>', '', json_str)
+    # ── Robust JSON extraction ───────────────────────────────────────────────
+    # Strategy: search for the LAST { ... } pair in the raw output.
+    # Models may wrap output in <thinking>, ``` fences, or other text.
+    # We prefer content after </thinking> if present, else find any JSON.
+    json_str = raw
 
-    # 2) Strip markdown code fences
-    for fence in ["```json", "```"]:
-        if fence in json_str:
-            idx = json_str.index(fence) + len(fence)
-            json_str = json_str[idx:]
-            end = json_str.rfind("```")
-            if end > 0:
-                json_str = json_str[:end]
-            break
+    # If there's a closing </thinking> tag, take everything after it
+    think_end = json_str.rfind("</")
+    if think_end >= 0:
+        json_str = json_str[think_end:]
 
-    # 3) Try to find a JSON object by locating outermost { ... }
+    # Strip any remaining XML tags
+    json_str = re.sub(r'<[^>]+/?>', '', json_str)
+    json_str = re.sub(r'```\w*\n?', '', json_str)
+
+    # Find outermost { ... }
     brace_start = json_str.find("{")
     brace_end = json_str.rfind("}")
     if brace_start >= 0 and brace_end > brace_start:
         json_str = json_str[brace_start:brace_end + 1]
+    else:
+        _debug(f"VLM output has no JSON: {raw[:300]}")
+        return ("finish", {}, f"no JSON in response: {raw[:80]}")
 
     try:
         parsed = json.loads(json_str)
     except json.JSONDecodeError:
-        _debug(f"VLM returned non-JSON: {raw[:300]}")
-        return ("finish", {}, f"VLM parse error: {raw[:80]}")
+        _debug(f"VLM JSON parse failed: {json_str[:300]}")
+        return ("finish", {}, f"VLM parse error: {json_str[:80]}")
 
     action = parsed.get("action", "finish")
 
