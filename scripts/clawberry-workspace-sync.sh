@@ -654,13 +654,13 @@ else
     log "WARNING: nginx/nginx.openclaw not found in repo — skipping"
 fi
 
-# Fix ownership
-chown -R "$CLAWBOARD_USER:$CLAWBOARD_USER" "$CLAWBOARD_DST" 2>/dev/null || \
-    log "WARNING: chown $CLAWBOARD_USER failed for $CLAWBOARD_DST"
+# Fix ownership — use clawboard group so dashboard (zero) and agents
+# (picoclaw/zeroclaw/openclaw) can all access shared files.
+chown -R "$CLAWBOARD_USER:clawboard" "$CLAWBOARD_DST" 2>/dev/null || \
+    log "WARNING: chown $CLAWBOARD_USER:clawboard failed for $CLAWBOARD_DST"
 log "ClawBoard dashboard deploy complete."
 
-# Re-apply venv group permissions (line above does chown -R zero:zero,
-# which undoes the group-based access set up at image build time).
+# Re-apply venv group permissions — setgid so pip-installed deps inherit clawboard group.
 if [ -d /opt/clawboard/venv ]; then
     chgrp -R clawboard /opt/clawboard/venv 2>/dev/null || true
     find /opt/clawboard/venv -type d -exec chmod g+rwx {} + 2>/dev/null || true
