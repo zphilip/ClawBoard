@@ -67,6 +67,7 @@ def _trace(msg: str) -> None:
 DEFAULT_MAX_STEPS = 50
 DEFAULT_TIMEOUT = 900  # 15 minutes
 LOOP_THRESHOLD = 3
+VERSION = "1.1.0"  # bump on every meaningful change
 
 # Common Chinese app → Android package name mapping
 APP_PACKAGE_MAP = {
@@ -499,7 +500,7 @@ def _run_reactive_fallback(
     from runner.incidents import IncidentTracker
     from runner.explorer import ElementIndexer
 
-    _log("Running reactive fallback loop with safety net + explorer")
+    _log(f"Running reactive fallback loop v{VERSION} — model={load_skill_config()['model']} — safety net + explorer")
 
     screenshots_dir = _make_run_screenshots_dir()
     start = time.time()
@@ -903,6 +904,8 @@ def main() -> int:
     args = parse_args()
 
     _DEBUG = args.debug
+    cfg = load_skill_config()
+    _log(f"artemis_agent.py v{VERSION} — model={cfg['model']} base_url={cfg['base_url']} profile={args.profile} instruction={args.instruction!r}")
     if args.log_file:
         try:
             _LOG_FILE = open(args.log_file, "a", encoding="utf-8")
@@ -964,7 +967,7 @@ def main() -> int:
             "status": "success",
             "steps": 0,
             "last_action": "",
-            "message": f"Dry run OK — device {device} ready. Artemis: {'available' if check_artemis_available() else 'fallback mode'}.",
+            "message": f"Dry run OK — device {device} ready. model={cfg['model']} base_url={cfg['base_url']} version={VERSION}",
             "actions": [],
         })
         return 0
