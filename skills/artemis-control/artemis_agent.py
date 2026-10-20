@@ -740,8 +740,17 @@ def _decide_action_fallback(
         _log("VLM returned no response — assuming task is stuck, returning finish")
         return ("finish", {}, "VLM call failed — stopping")
 
-    # Extract JSON from response (may be wrapped in markdown code fences)
+    # Extract JSON from response.
+    # Models like MiniMax-M3 may wrap output in &lt;thinking&gt; blocks.
+    # Others use ```json fences.  We strip all wrappers then find JSON.
     json_str = raw.strip()
+
+    # 1) Strip XML/HTML tag blocks (e.g. &lt;thinking&gt;...&lt;/thinking&gt;)
+    json_str = re.sub(r'<[^>]+>\s*', '', json_str)
+    json_str = re.sub(r'\s*</[^>]+>', '', json_str)
+    json_str = re.sub(r'<[^>]+/>', '', json_str)
+
+    # 2) Strip markdown code fences
     for fence in ["```json", "```"]:
         if fence in json_str:
             idx = json_str.index(fence) + len(fence)
@@ -751,10 +760,16 @@ def _decide_action_fallback(
                 json_str = json_str[:end]
             break
 
+    # 3) Try to find a JSON object by locating outermost { ... }
+    brace_start = json_str.find("{")
+    brace_end = json_str.rfind("}")
+    if brace_start >= 0 and brace_end > brace_start:
+        json_str = json_str[brace_start:brace_end + 1]
+
     try:
         parsed = json.loads(json_str)
     except json.JSONDecodeError:
-        _debug(f"VLM returned non-JSON: {raw[:200]}")
+        _debug(f"VLM returned non-JSON: {raw[:300]}")
         return ("finish", {}, f"VLM parse error: {raw[:80]}")
 
     action = parsed.get("action", "finish")
