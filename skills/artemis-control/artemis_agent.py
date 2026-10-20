@@ -126,12 +126,12 @@ AVAILABLE ACTIONS (return as JSON):
 - {"action": "fail", "reason": "why"}                 — task cannot be completed
 
 RULES:
-1. Return EXACTLY ONE action as a JSON object, nothing else.
+1. Output ONLY a single JSON object. No markdown, no tags, no explanation — just the JSON.
 2. Use the element index for precise coordinates. Elements have format:
-   [N] class="..." text="..." content_desc="..." bounds="[x1,y1][x2,y2]" center=(cx,cy)
+   [N] "label" class=X bounds=(x1,y1,x2,y2) center=(cx,cy)
 3. If the current screen doesn't show what you need, try swipe to scroll or press back.
 4. If the task is done, return {"action": "finish"}.
-5. Think step by step, but only output the final JSON."""
+5. Do NOT use <thinking> tags. Do NOT explain your reasoning. Output raw JSON only."""
 
 def load_skill_config() -> dict:
     """Load config.json, falling back to hard-coded defaults."""
@@ -637,7 +637,7 @@ def _encode_image(image_path: str) -> str:
 
 
 def _call_vlm(system_prompt: str, user_prompt: str, image_path: str,
-              max_tokens: int = 256) -> Optional[str]:
+              max_tokens: int = 1024) -> Optional[str]:
     """Send a prompt + screenshot to the configured VLM and return its response text."""
     cfg = load_skill_config()
     base_url = cfg["base_url"].rstrip("/")
