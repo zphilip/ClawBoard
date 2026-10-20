@@ -29,6 +29,7 @@ Exit codes:
 """
 
 import argparse
+import base64
 import json
 import os
 import re
@@ -38,6 +39,8 @@ import sys
 import textwrap
 import threading
 import time
+import urllib.request
+import urllib.error
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -65,11 +68,102 @@ DEFAULT_MAX_STEPS = 50
 DEFAULT_TIMEOUT = 900  # 15 minutes
 LOOP_THRESHOLD = 3
 
+# Common Chinese app → Android package name mapping
+APP_PACKAGE_MAP = {
+    "微信": "com.tencent.mm", "wechat": "com.tencent.mm",
+    "支付宝": "com.eg.android.AlipayGphone",
+    "淘宝": "com.taobao.taobao", "taobao": "com.taobao.taobao",
+    "京东": "com.jingdong.app.mall",
+    "抖音": "com.ss.android.ugc.aweme",
+    "百度地图": "com.baidu.BaiduMap",
+    "高德地图": "com.autonavi.minimap",
+    "设置": "com.android.settings", "settings": "com.android.settings",
+    "美团": "com.sankuai.meituan",
+    "饿了么": "me.ele",
+    "拼多多": "com.xunmeng.pinduoduo",
+    "小红书": "com.xingin.xhs",
+    "哔哩哔哩": "tv.danmaku.bili", "bilibili": "tv.danmaku.bili",
+    "QQ": "com.tencent.mobileqq",
+    "网易云音乐": "com.netease.cloudmusic",
+    "酷狗音乐": "com.kugou.android",
+    "百度": "com.baidu.searchbox",
+    "知乎": "com.zhihu.android",
+    "微博": "com.sina.weibo",
+    "今日头条": "com.ss.android.article.news",
+    "滴滴出行": "com.sdu.didi.psnger",
+    "闲鱼": "com.taobao.idlefish",
+    "钉钉": "com.alibaba.android.rimet",
+    "企业微信": "com.tencent.wework",
+    "keep": "com.gotokeep.keep",
+    "携程": "ctrip.android.view",
+    "飞猪": "com.taobao.trip",
+    "大众点评": "com.dianping.v1",
+}
+
 # Vague instruction patterns → request clarification
 VAGUE_PATTERNS = [
     r"^(打开它|打开那个|开一下|open it|go there|帮我操作|操作一下)$",
     r"^(做一下|处理|搞一下|help me|do it|fix it)$",
 ]
+
+# Cached skill config (loaded lazily from config.json)
+_CONFIG: Optional[dict] = None
+_CONFIG_PATH = Path(__file__).parent / "config.json"
+
+# VLM system prompt for action decisions
+SYSTEM_PROMPT_FALLBACK = """You are a phone automation agent controlling an Android device via ADB.
+Your job: look at the screenshot, read the element index, and decide the NEXT SINGLE ACTION to take toward the user's goal.
+
+AVAILABLE ACTIONS (return as JSON):
+- {"action": "tap", "coordinate": [x, y]}           — tap at pixel (x, y). Use element index to find coords.
+- {"action": "long_press", "coordinate": [x, y]}     — long-press at (x, y)
+- {"action": "swipe", "coordinate1": [x1, y1], "coordinate2": [x2, y2], "duration": 300}
+- {"action": "type", "text": "hello"}                — type text via ADB Keyboard
+- {"action": "system_button", "button": "back"}      — press: back, home, enter, recent_apps
+- {"action": "open_app", "app_name": "微信"}          — open an app by name
+- {"action": "finish"}                                — task is complete
+- {"action": "fail", "reason": "why"}                 — task cannot be completed
+
+RULES:
+1. Return EXACTLY ONE action as a JSON object, nothing else.
+2. Use the element index for precise coordinates. Elements have format:
+   [N] class="..." text="..." content_desc="..." bounds="[x1,y1][x2,y2]" center=(cx,cy)
+3. If the current screen doesn't show what you need, try swipe to scroll or press back.
+4. If the task is done, return {"action": "finish"}.
+5. Think step by step, but only output the final JSON."""
+
+def load_skill_config() -> dict:
+    """Load config.json, falling back to hard-coded defaults."""
+    global _CONFIG
+    if _CONFIG is not None:
+        return _CONFIG
+
+    defaults = {
+        "api_key": "not-needed",
+        "model": "gui-owl",
+        "base_url": "http://apicn.aiworm.cn:8809/v1",
+    }
+
+    try:
+        if _CONFIG_PATH.exists():
+            raw = json.loads(_CONFIG_PATH.read_text(encoding="utf-8"))
+            provider = raw.get("provider", {})
+            if provider and provider.get("api_key", "").strip():
+                defaults["api_key"] = provider["api_key"].strip()
+                defaults["model"] = provider.get("model", defaults["model"])
+                defaults["base_url"] = provider.get("base_url", defaults["base_url"])
+            else:
+                fb = raw.get("fallback_provider", {})
+                if fb:
+                    defaults["api_key"] = fb.get("api_key", defaults["api_key"])
+                    defaults["model"] = fb.get("model", defaults["model"])
+                    defaults["base_url"] = fb.get("base_url", defaults["base_url"])
+    except Exception as e:
+        _trace(f"[config] Failed to load config.json: {e}")
+
+    _CONFIG = defaults
+    _trace(f"[config] model={defaults['model']} base_url={defaults['base_url']} api_key={'<set>' if defaults['api_key'] else '<empty>'}")
+    return defaults
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -446,9 +540,9 @@ def _run_reactive_fallback(
             _debug(f"Element indexing skipped: {e}")
             elements = []
 
-        # 3. Determine action (simplified: in real use this would call a VLM)
+        # 3. Determine action via VLM
         action_type, action_args, action_desc = _decide_action_fallback(
-            instruction, step, elements, incident_tracker, last_coords
+            instruction, step, elements, incident_tracker, last_coords, shot_path
         )
 
         # 4. Safety net check
@@ -535,22 +629,180 @@ def _run_reactive_fallback(
     }
 
 
+def _encode_image(image_path: str) -> str:
+    """Read an image file and return a base64 data URI."""
+    with open(image_path, "rb") as f:
+        return base64.b64encode(f.read()).decode("ascii")
+
+
+def _call_vlm(system_prompt: str, user_prompt: str, image_path: str,
+              max_tokens: int = 256) -> Optional[str]:
+    """Send a prompt + screenshot to the configured VLM and return its response text."""
+    cfg = load_skill_config()
+    base_url = cfg["base_url"].rstrip("/")
+    api_key = cfg["api_key"]
+    model = cfg["model"]
+
+    data_uri = f"data:image/png;base64,{_encode_image(image_path)}"
+
+    body = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": [
+                {"type": "image_url", "image_url": {"url": data_uri}},
+                {"type": "text", "text": user_prompt},
+            ]},
+        ],
+        "max_tokens": max_tokens,
+        "temperature": 0.1,
+    }
+
+    url = f"{base_url}/chat/completions"
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(body).encode("utf-8"),
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}",
+        },
+        method="POST",
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            result = json.loads(resp.read().decode("utf-8"))
+            return result["choices"][0]["message"]["content"]
+    except Exception as e:
+        _log(f"VLM call failed ({url}): {e}")
+        _trace(f"[vlm] call failed: {e}")
+        return None
+
+
 def _decide_action_fallback(
     instruction: str,
     step: int,
     elements: list,
     incident_tracker,
     last_coords: list[str],
+    screenshot_path,
 ) -> tuple[str, dict, str]:
     """
-    Placeholder decision function.
-    In production, this would call a VLM (Gemini/GPT-4o/Claude) with the
-    screenshot, element index, instruction, and incident context.
+    Call the VLM with screenshot + element index + instruction to decide the next action.
 
     Returns (action_type, action_args, human_readable_description).
+    On VLM failure, returns ("finish", {}, "finish") to stop gracefully.
     """
-    # Return finish for now — real implementation hooks into Artemis Explorer
-    return ("finish", {}, "finish")
+    # Build element index text
+    if elements:
+        MAX_ELEMENTS = 80
+        shown = elements[:MAX_ELEMENTS]
+        lines = [f"UI ELEMENTS ({len(shown)} shown of {len(elements)} indexed):"]
+        for el in shown:
+            label = el.display_text
+            rid = el.resource_id or ""
+            rid_short = rid.split("/")[-1] if "/" in rid else rid
+            cx, cy = el.center
+            bounds_str = f"bounds=({el.bounds[0]},{el.bounds[1]},{el.bounds[2]},{el.bounds[3]})"
+            cls_short = (el.class_name or "").split(".")[-1]
+            lines.append(
+                f'[{el.index}] "{label}" class={cls_short} {bounds_str} center=({cx},{cy})'
+                + (f" rid={rid_short}" if rid_short else "")
+                + (" clickable" if el.clickable and el.enabled else "")
+                + (" disabled" if not el.enabled else "")
+            )
+        index_text = "\n".join(lines)
+    else:
+        index_text = "UI ELEMENTS: (unavailable — use visual analysis)"
+
+    # Incident context
+    incident_text = ""
+    if incident_tracker and incident_tracker.count > 0:
+        incident_text = f"\nPREVIOUS INCIDENTS:\n{incident_tracker.render_for_prompt()}\n"
+
+    # Loop warning
+    loop_text = ""
+    if len(last_coords) >= LOOP_THRESHOLD:
+        unique = len(set(last_coords))
+        if unique == 1:
+            loop_text = "\n⚠️  LOOP DETECTED: same coordinate tapped 3+ times. Try a DIFFERENT approach.\n"
+
+    user_prompt = (
+        f"TASK: {instruction}\n"
+        f"Step: {step}\n"
+        f"{loop_text}"
+        f"{incident_text}"
+        f"{index_text}"
+    )
+
+    raw = _call_vlm(SYSTEM_PROMPT_FALLBACK, user_prompt, screenshot_path)
+    if not raw:
+        _log("VLM returned no response — assuming task is stuck, returning finish")
+        return ("finish", {}, "VLM call failed — stopping")
+
+    # Extract JSON from response (may be wrapped in markdown code fences)
+    json_str = raw.strip()
+    for fence in ["```json", "```"]:
+        if fence in json_str:
+            idx = json_str.index(fence) + len(fence)
+            json_str = json_str[idx:]
+            end = json_str.rfind("```")
+            if end > 0:
+                json_str = json_str[:end]
+            break
+
+    try:
+        parsed = json.loads(json_str)
+    except json.JSONDecodeError:
+        _debug(f"VLM returned non-JSON: {raw[:200]}")
+        return ("finish", {}, f"VLM parse error: {raw[:80]}")
+
+    action = parsed.get("action", "finish")
+
+    # Normalize action_type and args
+    if action == "tap":
+        coord = parsed.get("coordinate", [0, 0])
+        x, y = int(coord[0]), int(coord[1])
+        desc = f"tap({x},{y})"
+        return ("tap", {"coordinate": [x, y]}, desc)
+
+    elif action == "long_press":
+        coord = parsed.get("coordinate", [0, 0])
+        x, y = int(coord[0]), int(coord[1])
+        desc = f"long_press({x},{y})"
+        return ("long_press", {"coordinate": [x, y]}, desc)
+
+    elif action == "swipe":
+        c1 = parsed.get("coordinate1", [0, 0])
+        c2 = parsed.get("coordinate2", [0, 0])
+        dur = parsed.get("duration", 300)
+        desc = f"swipe({c1}→{c2})"
+        return ("swipe", {"coordinate1": c1, "coordinate2": c2, "duration": dur}, desc)
+
+    elif action == "type":
+        text = parsed.get("text", "")
+        desc = f"type({text[:30]})"
+        return ("type", {"text": text}, desc)
+
+    elif action == "system_button":
+        btn = parsed.get("button", "back")
+        desc = f"press({btn})"
+        return ("system_button", {"button": btn}, desc)
+
+    elif action == "open_app":
+        app = parsed.get("app_name", "")
+        # Try to resolve app display name to Android package name
+        pkg = APP_PACKAGE_MAP.get(app, app)
+        desc = f"open_app({app})"
+        return ("open", {"text": pkg}, desc)
+
+    elif action == "fail":
+        reason = parsed.get("reason", "unknown")
+        _log(f"VLM reports task cannot be completed: {reason}")
+        return ("finish", {}, f"Task failed: {reason}")
+
+    else:  # finish or unknown
+        return ("finish", {}, "task complete")
 
 
 def _execute_action_adb(
@@ -584,8 +836,13 @@ def _execute_action_adb(
              adb_path=adb_path, device=device)
     elif action_type == "open":
         app = action_args.get("text", "")
-        _adb(["shell", "monkey", "-p", app, "-c",
-              "android.intent.category.LAUNCHER", "1"],
+        # Use am start with resolved main activity (more reliable than monkey)
+        rc, out, _ = _adb(
+            ["shell", "cmd", "package", "resolve-activity", "--brief", app, "|", "tail", "-n", "1"],
+            adb_path=adb_path, device=device, timeout=5
+        )
+        # Fall back to monkey if resolve-activity fails
+        _adb(["shell", "monkey", "-p", app, "1"],
              adb_path=adb_path, device=device)
     elif action_type == "finish":
         pass  # No ADB action needed
