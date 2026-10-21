@@ -486,6 +486,7 @@ def _run_reactive_fallback(
     status = "timeout"
     end_reason = "flash_started"
     last_coords: list[str] = []
+    last_action_types: list[str] = []  # Track recent action types for loop detection
     indexer = ElementIndexer(adb_path=adb_path, device=device)
     history = HistoryStore(
         max_stored_screenshots=_ctx_cfg.get("max_stored_screenshots", 6),
@@ -619,7 +620,7 @@ def _run_reactive_fallback(
             screenshot=str(vshot_path) if vshot_path.exists() else None,
         )
 
-        # 8. Loop detection
+        # 8. Loop detection — tap coordinates
         if action_type == "tap" and "coordinate" in action_args:
             coord_str = f"{action_args['coordinate'][0]},{action_args['coordinate'][1]}"
             last_coords.append(coord_str)
@@ -629,6 +630,18 @@ def _run_reactive_fallback(
                 _log(f"Loop detected at {coord_str}")
         else:
             last_coords = []
+
+        # 8b. Loop detection — repeated open_app + dismiss cycles
+        last_action_types.append(action_type)
+        if len(last_action_types) > 6:
+            last_action_types = last_action_types[-6:]
+        recent = last_action_types[-4:]
+        if (
+            len(recent) >= 4
+            and recent.count("open_app") >= 2
+            and any(a in ("press", "system_button") for a in recent)
+        ):
+            _log("Action loop detected — repeated open_app + dismiss cycle")
 
         # 9. Check task completion
         if action_type == "finish":
@@ -719,6 +732,7 @@ def _run_plan_guided_fallback(
     status = "timeout"
     end_reason = "pro_started"
     last_coords: list[str] = []
+    last_action_types: list[str] = []  # Track recent action types for loop detection
     plan_text = ""
     plan_generated = False
     validator_stats = {"approved": 0, "warned": 0, "rejected": 0}
@@ -961,6 +975,22 @@ def _run_plan_guided_fallback(
                 )
         else:
             last_coords = []
+
+        # Loop detection — repeated open_app + dismiss cycles
+        last_action_types.append(action_type)
+        if len(last_action_types) > 6:
+            last_action_types = last_action_types[-6:]
+        recent = last_action_types[-4:]
+        if (
+            len(recent) >= 4
+            and recent.count("open_app") >= 2
+            and any(a in ("press", "system_button") for a in recent)
+        ):
+            _log("Action loop detected — repeated open_app + dismiss cycle")
+            incident_tracker.add_recovery_hint(
+                "ACTION LOOP: You are repeatedly opening and leaving the app. "
+                "The app may already be open. Look at the current screen carefully."
+            )
 
     # ── Phase 3: Checker Node — final audit ──────────────────────────────
     _log("Pro Phase 3: Checker node — auditing goal achievement...")
@@ -1773,8 +1803,9 @@ def _u2_set_text(device: str, text: str, adb_path: str = "adb") -> bool:
     Uses ``d(focused=True).set_text()`` which triggers ``ACTION_SET_TEXT`` on the
     focused accessibility node — no keyboard, no IME switch, no ADB Keyboard APK needed.
 
-    When no element has focus, auto-locates an EditText/SearchView in a UI XML dump
-    (via ``uiautomator dump``, not requiring u2 connectivity), taps it, then retries.
+    When no element has focus, auto-locates an EditText/SearchView via uiautomator2's
+    ``d.dump_hierarchy()`` (NOT ``adb shell uiautomator dump`` — that conflicts with
+    the ATX agent's UiAutomationService hold), taps it, then retries set_text.
     """
     try:
         import uiautomator2 as u2
@@ -1797,24 +1828,28 @@ def _u2_set_text(device: str, text: str, adb_path: str = "adb") -> bool:
                 raise
             _log("type: u2 — no focused element, trying auto-focus...")
 
-        # Auto-focus: dump UI, find editable, tap, then set_text
-        dump_path = "/sdcard/_u2_ui.xml"
-        rc, _, _ = _adb(
-            ["shell", "uiautomator", "dump", dump_path],
-            adb_path=adb_path, device=device, timeout=10,
-        )
-        if rc != 0:
-            _log("type: u2 auto-focus — UI dump failed")
-            return False
+        # Auto-focus: use d.dump_hierarchy() (NOT adb uiautomator dump)
+        # The ADB uiautomator dump uses a separate UiAutomationService instance
+        # that conflicts with u2's ATX agent.  d.dump_hierarchy() uses u2's
+        # own connection — no conflict.
+        xml_str = None
+        for _dmp_attempt in range(3):
+            try:
+                xml_str = d.dump_hierarchy()
+                if xml_str and xml_str.count("<node") >= 5:
+                    break
+                xml_str = None
+            except Exception as _dmp_err:
+                _dmp_msg = str(_dmp_err)
+                if "already registered" in _dmp_msg or "UiAutomation" in _dmp_msg:
+                    _kill_stale_uiautomation_service(adb_path, device)
+                    if _dmp_attempt < 2:
+                        time.sleep(0.5 * (_dmp_attempt + 1))
+                        continue
+                _log(f"type: u2 dump_hierarchy failed: {_dmp_msg}")
 
-        rc, xml_str, _ = _adb(
-            ["shell", "cat", dump_path],
-            adb_path=adb_path, device=device, timeout=5,
-        )
-        _adb(["shell", "rm", "-f", dump_path], adb_path=adb_path, device=device)
-
-        if rc != 0 or not xml_str:
-            _log("type: u2 auto-focus — no UI XML content")
+        if not xml_str:
+            _log("type: u2 auto-focus — dump_hierarchy failed after retries")
             return False
 
         target = _u2_find_editable_element(xml_str)
@@ -1840,6 +1875,22 @@ def _u2_set_text(device: str, text: str, adb_path: str = "adb") -> bool:
     except Exception as e:
         _log(f"type: u2 set_text failed: {e}")
         return False
+
+
+def _kill_stale_uiautomation_service(adb_path: str, device: str) -> None:
+    """Kill stale ADB uiautomator dump processes that block uiautomator2.
+
+    Only kills ``/system/bin/uiautomator`` (ADB dump binary) and
+    ``com.wetest.uia2`` — never touches atx-agent or the uiautomator2 APK.
+    """
+    for pattern in ["uiautomator dump", "com.wetest.uia2"]:
+        try:
+            _adb(
+                ["shell", "pkill", "-f", pattern],
+                adb_path=adb_path, device=device, timeout=5,
+            )
+        except Exception:
+            pass
 
 
 def _adb_focus_input_via_uidump(adb_path: str, device: str) -> bool:
