@@ -1619,6 +1619,175 @@ def _resolve_package(adb_path: str, device: str, app_name: str) -> str | None:
     return None
 
 
+# ── uiautomator2 helpers (optional — primary text input method) ──────────
+
+def _u2_connect(device: str | None = None):
+    """Connect to a device via uiautomator2, backward-compatibly.
+
+    uiautomator2 v3.x added ``init_atx_agent`` to ``connect()``;
+    older versions (2.x) and the latest v3.x (which removed it)
+    reject it with TypeError.  This wrapper tries the v3 signature
+    first and falls back gracefully.
+    """
+    import uiautomator2 as u2
+
+    try:
+        # v3.x intermediate path — skip atx-agent init (it's already running)
+        return (
+            u2.connect(device, init_atx_agent=False)
+            if device
+            else u2.connect(init_atx_agent=False)
+        )
+    except TypeError:
+        # v2.x / latest v3.x path — connect() takes only serial
+        return u2.connect(device) if device else u2.connect()
+
+
+def _u2_disable_fast_ime(d) -> None:
+    """Disable ATX FastInputIME so ACTION_SET_TEXT works without IME switching."""
+    try:
+        d.set_input_ime(False)
+    except AttributeError:
+        try:
+            d.set_fastinput_ime(False)  # deprecated but still functional
+        except AttributeError:
+            pass
+
+
+def _u2_find_editable_element(ui_xml: str) -> dict | None:
+    """Locate the best editable element (EditText / SearchView) in a UI XML dump.
+
+    Returns ``{"center": (x, y), "class": ..., "text": ...}`` or None.
+    Prefers already-focused elements, then search-related hints, then any editable.
+    """
+    import xml.etree.ElementTree as ET
+
+    if not ui_xml:
+        return None
+    try:
+        root = ET.fromstring(ui_xml)
+    except ET.ParseError:
+        return None
+
+    candidates: list[dict] = []
+
+    for node in root.iter("node"):
+        cls = (node.attrib.get("class", "") or "").lower()
+        is_editable = any(
+            kw in cls
+            for kw in ("edittext", "edit", "input", "searchview", "search")
+        )
+        if not is_editable:
+            continue
+        focusable = node.attrib.get("focusable", "false") == "true"
+        focused = node.attrib.get("focused", "false") == "true"
+        bounds_str = node.attrib.get("bounds", "")
+        m = re.match(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]", bounds_str)
+        if not m:
+            continue
+        x1, y1, x2, y2 = int(m[1]), int(m[2]), int(m[3]), int(m[4])
+        if x2 <= x1 or y2 <= y1:
+            continue
+
+        candidates.append({
+            "center": ((x1 + x2) // 2, (y1 + y2) // 2),
+            "class": node.attrib.get("class", ""),
+            "text": node.attrib.get("text", ""),
+            "hint": node.attrib.get("hint", ""),
+            "focused": focused,
+            "focusable": focusable,
+        })
+
+    if not candidates:
+        return None
+    # Prefer already-focused
+    for c in candidates:
+        if c["focused"]:
+            return c
+    # Then prefer ones with a search hint
+    for c in candidates:
+        if any(kw in (c.get("hint", "") or "").lower()
+               for kw in ("search", "搜索", "查找")):
+            return c
+    # Then return the first one
+    return candidates[0]
+
+
+def _u2_set_text(device: str, text: str, adb_path: str = "adb") -> bool:
+    """Primary: type text via uiautomator2 AccessibilityService (NO extra APK required).
+
+    Uses ``d(focused=True).set_text()`` which triggers ``ACTION_SET_TEXT`` on the
+    focused accessibility node — no keyboard, no IME switch, no ADB Keyboard APK needed.
+
+    When no element has focus, auto-locates an EditText/SearchView in a UI XML dump
+    (via ``uiautomator dump``, not requiring u2 connectivity), taps it, then retries.
+    """
+    try:
+        import uiautomator2 as u2
+
+        d = _u2_connect(device)
+        _u2_disable_fast_ime(d)
+
+        # Try set_text on currently-focused element first
+        try:
+            d(focused=True).set_text(text)
+            _log(f"type: u2 set_text on focused element OK ({len(text)} chars)")
+            return True
+        except Exception as _e1:
+            _err_str = str(_e1)
+            _is_focus_error = (
+                "focused=True" in _err_str
+                or "focused" in _err_str.lower()
+            )
+            if not _is_focus_error:
+                raise
+            _log("type: u2 — no focused element, trying auto-focus...")
+
+        # Auto-focus: dump UI, find editable, tap, then set_text
+        dump_path = "/sdcard/_u2_ui.xml"
+        rc, _, _ = _adb(
+            ["shell", "uiautomator", "dump", dump_path],
+            adb_path=adb_path, device=device, timeout=10,
+        )
+        if rc != 0:
+            _log("type: u2 auto-focus — UI dump failed")
+            return False
+
+        rc, xml_str, _ = _adb(
+            ["shell", "cat", dump_path],
+            adb_path=adb_path, device=device, timeout=5,
+        )
+        _adb(["shell", "rm", "-f", dump_path], adb_path=adb_path, device=device)
+
+        if rc != 0 or not xml_str:
+            _log("type: u2 auto-focus — no UI XML content")
+            return False
+
+        target = _u2_find_editable_element(xml_str)
+        if not target:
+            _log("type: u2 auto-focus — no editable element found in UI dump")
+            return False
+
+        bx, by = target["center"]
+        _log(
+            f"type: u2 auto-focus tapping {target['class'][:40]} "
+            f"at ({bx},{by}) text={target.get('text','')[:30]}"
+        )
+        d.click(bx, by)
+        time.sleep(0.5)
+
+        d(focused=True).set_text(text)
+        _log(f"type: u2 auto-focus + set_text OK ({len(text)} chars)")
+        return True
+
+    except ImportError:
+        _log("type: uiautomator2 not installed — skipping u2 (primary method)")
+        return False
+    except Exception as e:
+        _log(f"type: u2 set_text failed: {e}")
+        return False
+
+
 def _adb_focus_input_via_uidump(adb_path: str, device: str) -> bool:
     """Dump UI XML via uiautomator and tap the first EditText/SearchView found.
 
@@ -1692,27 +1861,31 @@ def _adb_type_text(
     text: str,
     elements: list | None = None,
 ) -> bool:
-    """Type text on the device via clipboard paste (no ADB Keyboard APK required).
+    """Type text on the device via a tiered fallback chain.
 
-    Before pasting, auto-focuses an EditText/SearchView from the element list
-    (if provided) by tapping its center. This ensures the paste lands in a
-    text field even when the VLM operator forgets to tap it first.
+    **Tier 0 (primary):** uiautomator2 ``set_text()`` — uses the ATX agent's
+    AccessibilityService to directly set text on the focused node via
+    ACTION_SET_TEXT.  No keyboard, no IME, no ADB Keyboard APK required.
+    If no element is focused, auto-finds an EditText/SearchView via UI dump,
+    taps it via u2, then retries set_text.
 
-    Tier 1: Clipboard paste — base64-encode, write to temp file, decode
+    **Tier 1:** Clipboard paste — base64-encode, write to temp file, decode
     on-device, ``cmd clipboard set``, PASTE keyevent (279), cleanup.
-    Works around NullPointerException in ``adb shell input text`` and
-    handles Unicode/Chinese natively via UTF-8.
+    Requires an element with IME focus (not just tap focus).
 
-    Tier 2 (fallback): ``adb shell input text`` with single-quote escaping
-    and literal spaces (no ``%s`` substitution needed for the ``input text``
-    convenience command).
+    **Tier 2 (last resort):** ``adb shell input text`` with single-quote
+    escaping and literal spaces.
 
     Returns True if text was successfully typed, False otherwise.
     """
-    # ── Step 0: Auto-focus an input field ──────────────────────────────
+    # ── Tier 0: uiautomator2 set_text (primary, no IME dependency) ──────
+    if _u2_set_text(device, text, adb_path=adb_path):
+        return True
+
+    # ── Step 1: Auto-focus an input field (for clipboard/input_text tiers) ─
     focused = False
 
-    # 0a: Try element list first (fast, no extra ADB call)
+    # 1a: Try element list first (fast, no extra ADB call)
     if elements:
         EDITABLE_CLASSES = ("EditText", "SearchView", "AutoCompleteTextView", "MultiAutoCompleteTextView")
         for el in elements:
@@ -1728,11 +1901,11 @@ def _adb_type_text(
                 time.sleep(0.3)
                 break
 
-    # 0b: Fallback — dump UI XML to find any EditText/SearchView
+    # 1b: Fallback — dump UI XML to find any EditText/SearchView
     if not focused:
         focused = _adb_focus_input_via_uidump(adb_path, device)
 
-    # ── Tier 1: Clipboard paste (most reliable, no IME dependency) ──────
+    # ── Tier 1: Clipboard paste ─────────────────────────────────────────
     b64 = base64.b64encode(text.encode("utf-8")).decode("ascii")
     clip_b64 = "/sdcard/_aclip_b64"
     clip_txt = "/sdcard/_aclip_txt"
