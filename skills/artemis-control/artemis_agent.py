@@ -1549,10 +1549,7 @@ def _execute_action_adb(
              adb_path=adb_path, device=device)
     elif action_type == "type":
         text = action_args.get("text", "")
-        # Replace spaces with %s — Android input text splits on whitespace
-        escaped = text.replace(" ", "%s")
-        _adb(["shell", "input", "text", escaped],
-             adb_path=adb_path, device=device)
+        _adb_type_text(adb_path, device, text)
     elif action_type == "system_button":
         btn = action_args.get("button", "").upper()
         key_map = {"HOME": "3", "BACK": "4", "ENTER": "66", "APP_SWITCH": "187"}
@@ -1571,6 +1568,62 @@ def _execute_action_adb(
              adb_path=adb_path, device=device)
     elif action_type == "finish":
         pass  # No ADB action needed
+
+def _adb_type_text(adb_path: str, device: str, text: str) -> bool:
+    """Type text on the device via clipboard paste (no ADB Keyboard APK required).
+
+    Tier 1: Clipboard paste — base64-encode, write to temp file, decode
+    on-device, ``cmd clipboard set``, PASTE keyevent (279), cleanup.
+    Works around NullPointerException in ``adb shell input text`` and
+    handles Unicode/Chinese natively via UTF-8.
+
+    Tier 2 (fallback): ``adb shell input text`` with single-quote escaping
+    and literal spaces (no ``%s`` substitution needed for the ``input text``
+    convenience command).
+
+    Returns True if text was successfully typed, False otherwise.
+    """
+    # ── Tier 1: Clipboard paste (most reliable, no IME dependency) ──────
+    b64 = base64.b64encode(text.encode("utf-8")).decode("ascii")
+    clip_b64 = "/sdcard/_aclip_b64"
+    clip_txt = "/sdcard/_aclip_txt"
+
+    # Write base64 to device temp file (base64 chars are shell-safe)
+    rc, _, _ = _adb(
+        ["shell", "printf", "%s", b64, ">", clip_b64],
+        adb_path=adb_path, device=device, timeout=5,
+    )
+    if rc == 0:
+        # Decode → set clipboard → PASTE → cleanup (single device-shell invocation)
+        rc2, _, _ = _adb(
+            ["shell",
+             f"base64 -d {clip_b64} > {clip_txt} && "
+             f"cmd clipboard set \"$(cat {clip_txt})\" && "
+             f"input keyevent 279 && "
+             f"rm -f {clip_b64} {clip_txt}"],
+            adb_path=adb_path, device=device, timeout=10,
+        )
+        if rc2 == 0:
+            _log(f"type: clipboard paste OK ({len(text)} chars)")
+            return True
+        # Best-effort cleanup on failure
+        _adb(["shell", "rm", "-f", clip_b64, clip_txt],
+             adb_path=adb_path, device=device, timeout=5)
+
+    # ── Tier 2: adb shell input text (fallback) ─────────────────────────
+    # Escape single quotes; literal spaces work with 'input text' (no %s needed)
+    escaped = text.replace("'", "\\'")
+    rc3, _, _ = _adb(
+        ["shell", "input", "text", f"'{escaped}'"],
+        adb_path=adb_path, device=device, timeout=5,
+    )
+    if rc3 == 0:
+        _log(f"type: input text OK ({len(text)} chars)")
+        return True
+
+    _log(f"type: ALL methods failed for text ({len(text)} chars)")
+    return False
+
 
 # ---------------------------------------------------------------------------
 # Main
