@@ -46,6 +46,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+# App package name resolution (bidirectional map from packages.py)
+from runner.packages import NAME_PACKAGE_DICT, normalize_package_name
+
 # Self-contained runner modules (no external SDK dependency)
 from runner.safety_net import SafetyNet, SafetyNetConfig
 from runner.incidents import IncidentTracker
@@ -1559,16 +1562,62 @@ def _execute_action_adb(
              adb_path=adb_path, device=device)
     elif action_type == "open":
         app = action_args.get("text", "")
-        # Use am start with resolved main activity (more reliable than monkey)
-        rc, out, _ = _adb(
-            ["shell", "cmd", "package", "resolve-activity", "--brief", app, "|", "tail", "-n", "1"],
-            adb_path=adb_path, device=device, timeout=5
-        )
-        # Fall back to monkey if resolve-activity fails
-        _adb(["shell", "monkey", "-p", app, "1"],
-             adb_path=adb_path, device=device)
+        pkg = _resolve_package(adb_path, device, app)
+        if pkg:
+            _log(f"open_app: resolved '{app}' → '{pkg}'")
+            # Try monkey first (reliable for known packages)
+            rc, _, _ = _adb(
+                ["shell", "monkey", "-p", pkg, "-c", "android.intent.category.LAUNCHER", "1"],
+                adb_path=adb_path, device=device, timeout=10,
+            )
+            if rc != 0:
+                # Fallback: am start with MAIN/LAUNCHER intent
+                _adb(
+                    ["shell", "am", "start", "-a", "android.intent.action.MAIN",
+                     "-c", "android.intent.category.LAUNCHER", pkg],
+                    adb_path=adb_path, device=device, timeout=10,
+                )
+        else:
+            _log(f"open_app: could not resolve '{app}' — trying raw monkey")
+            _adb(["shell", "monkey", "-p", app, "1"],
+                 adb_path=adb_path, device=device)
     elif action_type == "finish":
         pass  # No ADB action needed
+
+def _resolve_package(adb_path: str, device: str, app_name: str) -> str | None:
+    """Resolve an app display name to a package name.
+
+    Tries in order:
+      1. Static APP_PACKAGE_MAP
+      2. NAME_PACKAGE_DICT from packages.py (153-entry bidirectional map)
+      3. Dynamic: ``pm list packages`` grep on the device
+    Returns None if unresolvable.
+    """
+    # Tier 1: Static map
+    pkg = APP_PACKAGE_MAP.get(app_name)
+    if pkg:
+        return pkg
+
+    # Tier 2: packages.py bidirectional lookup
+    normalized = normalize_package_name(app_name)
+    candidates = NAME_PACKAGE_DICT.get(normalized)
+    if candidates:
+        return candidates[0]
+
+    # Tier 3: grep installed packages on the device
+    grep_term = app_name.lower().replace(" ", "")
+    rc, out, _ = _adb(
+        ["shell", "pm", "list", "packages", "|", "grep", "-i", grep_term],
+        adb_path=adb_path, device=device, timeout=5,
+    )
+    if rc == 0 and out:
+        for line in out.splitlines():
+            line = line.strip()
+            if line.startswith("package:"):
+                return line[len("package:"):]
+
+    return None
+
 
 def _adb_type_text(
     adb_path: str,
