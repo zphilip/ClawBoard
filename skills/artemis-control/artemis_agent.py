@@ -1558,8 +1558,9 @@ def _execute_action_adb(
              adb_path=adb_path, device=device)
     elif action_type == "type":
         text = action_args.get("text", "")
-        # Use ADB Keyboard for reliable input
-        _adb(["shell", "am", "broadcast", "-a", "ADB_INPUT_TEXT", "--es", "msg", text],
+        # Replace spaces with %s — Android input text splits on whitespace
+        escaped = text.replace(" ", "%s")
+        _adb(["shell", "input", "text", escaped],
              adb_path=adb_path, device=device)
     elif action_type == "system_button":
         btn = action_args.get("button", "").upper()
