@@ -216,6 +216,49 @@ Optional fields:
 - If an element's bounds overlap with another, prefer the one with a specific
   resource-id over one without."""
 
+# Compact system prompt — optimised for smaller/weaker vision models
+# (qwen3.8-flash, gui-owl, etc).  Drops the verbose protocol in favour of
+# direct instruction.  ~40% of the full prompt size.
+SYSTEM_PROMPT_COMPACT = """## Role
+Android device operator. Output ONLY a JSON object per turn.
+
+## Actions
+{"action":"tap","coordinate":[x,y]}
+{"action":"long_press","coordinate":[x,y]}
+{"action":"swipe","coordinate1":[x1,y1],"coordinate2":[x2,y2],"duration":300}
+{"action":"type","text":"text to type"}
+{"action":"system_button","button":"back|home|enter|recent_apps"}
+{"action":"open_app","app_name":"app name"}
+{"action":"finish"}
+{"action":"fail","reason":"why"}
+
+## Rules (MUST follow)
+1. **Look at the screenshot first.** Match what you see to the UI elements listed.
+2. **Use element INDEX when available.** Prefer elements with correct labels.
+3. **Tap BEFORE typing.** Always tap a text field before using type action.
+4. **Never repeat the same tap 3 times.** If a tap doesn't work, try a different element.
+5. **Check if app is already open.** Don't use open_app if you're already in the right app.
+6. **Dismiss popups immediately.** Permission dialogs, ads, update prompts — tap outside or press back.
+7. **Only finish when the goal is VISUALLY confirmed.** Don't guess.
+
+## Element Format
+Each UI element: `[N] "label" center=(x,y) (clickable|enabled)`
+Use the INDEX number to identify elements. Match labels against the screenshot.
+Trust elements with Chinese labels matching your task (e.g. "搜索" for search).
+
+## Recovery
+- Wrong screen → press back once, re-evaluate
+- App crashed → open_app to re-launch
+- Lost → press home, then open_app
+- Permission dialog → tap "允许" or "始终允许"
+- Loading spinner → wait one step, then try
+
+## Plan Updates (plan-guided only)
+```json
+{"plan_updates":{"set_active":"milestone text","mark_done":"milestone text"}}
+```
+Copy milestone text from the plan shown in the user message. Omit if no change."""
+
 def load_skill_config() -> dict:
     """Load config.json, falling back to hard-coded defaults."""
     global _CONFIG
@@ -248,6 +291,27 @@ def load_skill_config() -> dict:
     _CONFIG = defaults
     _trace(f"[config] model={defaults['model']} base_url={defaults['base_url']} api_key={'<set>' if defaults['api_key'] else '<empty>'}")
     return defaults
+
+
+def _get_operator_system_prompt() -> str:
+    """Choose system prompt based on model capability.
+
+    Smaller/weaker models (qwen flash, gui-owl, etc.) get a compact prompt
+    which is ~40% shorter and uses simpler language.  Full-size models
+    (gemini, gpt-4o, claude, MiniMax) get the full cognitive protocol.
+    """
+    cfg = load_skill_config()
+    model = (cfg.get("model", "") or "").lower()
+
+    # Heuristic: models with "flash", "mini", "small", "tiny", "nano" in the
+    # name, or known weak vision models, get the compact prompt.
+    COMPACT_KEYWORDS = (
+        "flash", "mini", "small", "tiny", "nano", "lite",
+        "gui-owl", "qwen2-vl", "qwen-vl",
+    )
+    if any(kw in model for kw in COMPACT_KEYWORDS):
+        return SYSTEM_PROMPT_COMPACT
+    return SYSTEM_PROMPT_FALLBACK
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -1292,13 +1356,19 @@ def _decide_action_fallback(
             rid = el.resource_id or ""
             rid_short = rid.split("/")[-1] if "/" in rid else rid
             cx, cy = el.center
-            bounds_str = f"bounds=({el.bounds[0]},{el.bounds[1]},{el.bounds[2]},{el.bounds[3]})"
             cls_short = (el.class_name or "").split(".")[-1]
+            # Compact format: index, label, center, clickable state
+            tags = []
+            if el.clickable and el.enabled:
+                tags.append("clickable")
+            if not el.enabled:
+                tags.append("disabled")
+            tag_str = "|".join(tags) if tags else ""
             lines.append(
-                f'[{el.index}] "{label}" class={cls_short} {bounds_str} center=({cx},{cy})'
+                f'[{el.index}] "{label}" center=({cx},{cy})'
+                + (f" cls={cls_short}" if cls_short else "")
                 + (f" rid={rid_short}" if rid_short else "")
-                + (" clickable" if el.clickable and el.enabled else "")
-                + (" disabled" if not el.enabled else "")
+                + (f" [{tag_str}]" if tag_str else "")
             )
         index_text = "\n".join(lines)
     else:
@@ -1333,11 +1403,12 @@ def _decide_action_fallback(
         + f"\n{index_text}"
     )
 
-    raw, finish_reason = _call_vlm(SYSTEM_PROMPT_FALLBACK, user_prompt, screenshot_path)
+    system_prompt = _get_operator_system_prompt()
+    raw, finish_reason = _call_vlm(system_prompt, user_prompt, screenshot_path)
     if not raw:
         _log("Operator VLM returned no response — retrying once after pause")
         time.sleep(2)
-        raw, finish_reason = _call_vlm(SYSTEM_PROMPT_FALLBACK, user_prompt, screenshot_path)
+        raw, finish_reason = _call_vlm(system_prompt, user_prompt, screenshot_path)
         if not raw:
             _log("Operator VLM failed after retry — returning system_button: back")
             return ("system_button", {"button": "back"}, "VLM failure: back")
@@ -1449,7 +1520,7 @@ def _decide_action_plan_guided(
     if previous_actions is None:
         previous_actions = []
 
-    # Build element index text (same as _decide_action_fallback)
+    # Build element index text — compact format for weaker models
     if elements:
         MAX_ELEMENTS = 80
         shown = elements[:MAX_ELEMENTS]
@@ -1459,13 +1530,18 @@ def _decide_action_plan_guided(
             rid = el.resource_id or ""
             rid_short = rid.split("/")[-1] if "/" in rid else rid
             cx, cy = el.center
-            bounds_str = f"bounds=({el.bounds[0]},{el.bounds[1]},{el.bounds[2]},{el.bounds[3]})"
             cls_short = (el.class_name or "").split(".")[-1]
+            tags = []
+            if el.clickable and el.enabled:
+                tags.append("clickable")
+            if not el.enabled:
+                tags.append("disabled")
+            tag_str = "|".join(tags) if tags else ""
             lines.append(
-                f'[{el.index}] "{label}" class={cls_short} {bounds_str} center=({cx},{cy})'
+                f'[{el.index}] "{label}" center=({cx},{cy})'
+                + (f" cls={cls_short}" if cls_short else "")
                 + (f" rid={rid_short}" if rid_short else "")
-                + (" clickable" if el.clickable and el.enabled else "")
-                + (" disabled" if not el.enabled else "")
+                + (f" [{tag_str}]" if tag_str else "")
             )
         index_text = "\n".join(lines)
     else:
@@ -1515,8 +1591,8 @@ def _decide_action_plan_guided(
         except Exception:
             plan_block = f"CURRENT PLAN:\n{plan_text}\n\n"
 
-    # Assemble system prompt: base + plan tracking
-    system_prompt = SYSTEM_PROMPT_FALLBACK + "\n\n" + build_operator_plan_system_prompt()
+    # Assemble system prompt: model-aware base + plan tracking
+    system_prompt = _get_operator_system_prompt() + "\n\n" + build_operator_plan_system_prompt()
 
     user_prompt = (
         f"TASK: {instruction}\n"
@@ -1530,11 +1606,12 @@ def _decide_action_plan_guided(
         + f"\n{index_text}"
     )
 
-    raw, finish_reason = _call_vlm(system_prompt, user_prompt, screenshot_path, max_tokens=2624)
+    # Use lower max_tokens to encourage concise JSON output
+    raw, finish_reason = _call_vlm(system_prompt, user_prompt, screenshot_path, max_tokens=1024)
     if not raw:
         _log("Operator VLM returned no response — retrying once after pause")
         time.sleep(2)
-        raw, finish_reason = _call_vlm(system_prompt, user_prompt, screenshot_path, max_tokens=2624)
+        raw, finish_reason = _call_vlm(system_prompt, user_prompt, screenshot_path, max_tokens=1024)
         if not raw:
             _log("Operator VLM failed after retry — returning system_button: back")
             return ("system_button", {"button": "back"}, "VLM failure: back", None, None)
