@@ -131,6 +131,12 @@ Available actions:
   {"action": "finish"}                                  — task completed
   {"action": "fail", "reason": "why"}                   — task cannot be completed
 
+Optional fields:
+  "plan_updates" — see Plan Tracking section above (plan-guided only)
+  "notes"        — dict of key→content for persistent scratchpad memory.
+                    Use this to record findings between steps, e.g.:
+                    {"notes": {"login_page": "Found login page — use 手机登录 tab next"}}
+
 ## Cognitive Protocol (follow in every turn)
 
 ### 1. Observation — read the screen
@@ -484,6 +490,7 @@ def _run_reactive_fallback(
     plan_text = ""
     plan_generated = False
     last_budget_warning_pct = 0.0  # Avoid repeated warnings for same level
+    scratchpad: dict[str, str] = {}  # Persistent cross-turn notes
 
     # ── Phase 1: Generate Plan ──────────────────────────────────────────
     _emit_progress(0, "planning", "Flash: generating task plan...")
@@ -546,12 +553,17 @@ def _run_reactive_fallback(
             elements = []
 
         # 3. Determine action via VLM (plan-guided)
-        action_type, action_args, action_desc, plan_updates = (
+        action_type, action_args, action_desc, plan_updates, notes_updates = (
             _decide_action_plan_guided(
                 instruction, step, elements, None, last_coords,
                 str(shot_path), actions, plan_text, history=history,
+                scratchpad=scratchpad,
             )
         )
+
+        # Merge any notes written by the VLM into the scratchpad
+        if notes_updates and isinstance(notes_updates, dict):
+            scratchpad.update(notes_updates)
 
         # 4. Apply plan updates from VLM
         if plan_updates and plan_text:
@@ -715,6 +727,7 @@ def _run_plan_guided_fallback(
         critical_at_pct=_ctx_cfg.get("budget_critical_pct", 0.90),
     )
     last_budget_warning_pct = 0.0
+    scratchpad: dict[str, str] = {}  # Persistent cross-turn notes
     safety_net = SafetyNet(SafetyNetConfig(
         adb_path=adb_path,
         device=device,
@@ -790,10 +803,15 @@ def _run_plan_guided_fallback(
             elements = []
 
         # ── 2. Operator Node: decide next action ─────────────────────
-        action_type, action_args, action_desc, plan_updates = _decide_action_plan_guided(
+        action_type, action_args, action_desc, plan_updates, notes_updates = _decide_action_plan_guided(
             instruction, step, elements, incident_tracker, last_coords,
             str(shot_path), actions, plan_text, history=history,
+            scratchpad=scratchpad,
         )
+
+        # Merge any notes written by the VLM into the scratchpad
+        if notes_updates and isinstance(notes_updates, dict):
+            scratchpad.update(notes_updates)
 
         # If operator says finish, check milestone completion
         if action_type == "finish":
@@ -1332,15 +1350,16 @@ def _decide_action_plan_guided(
     previous_actions: list[str] = None,
     plan_text: str = "",
     history=None,
-) -> tuple[str, dict, str, dict | None]:
+    scratchpad: dict[str, str] | None = None,
+) -> tuple[str, dict, str, dict | None, dict | None]:
     """Call the VLM with screenshot + element index + plan context to decide the next action.
 
-    Like ``_decide_action_fallback`` but includes the current plan state and
-    step history rendered from the HistoryStore. Expects plan progress updates
-    in the response.
+    Like ``_decide_action_fallback`` but includes the current plan state,
+    step history, and scratchpad notes rendered from the HistoryStore.
+    Expects plan progress updates in the response.
 
-    Returns (action_type, action_args, human_readable_description, plan_updates_dict).
-    On VLM failure, returns ("finish", {}, "VLM call failed — stopping", None).
+    Returns (action_type, action_args, human_readable_description, plan_updates_dict, notes_updates).
+    On VLM failure, returns ("finish", {}, "VLM call failed — stopping", None, None).
     """
     if previous_actions is None:
         previous_actions = []
@@ -1392,6 +1411,16 @@ def _decide_action_plan_guided(
         if unique == 1:
             loop_text = "⚠️  LOOP DETECTED: same coordinate tapped 3+ times. Try a DIFFERENT approach.\n"
 
+    # Scratchpad notes (persistent cross-turn memory)
+    scratchpad_block = ""
+    if scratchpad:
+        lines = ["## Scratchpad Notes"]
+        for key, content in scratchpad.items():
+            # Show key + first 200 chars of content
+            preview = content[:200] + "…" if len(content) > 200 else content
+            lines.append(f"  [{key}]: {preview}")
+        scratchpad_block = "\n".join(lines) + "\n\n"
+
     # Plan context
     from runner.planner import build_operator_plan_system_prompt, parse_plan
 
@@ -1409,6 +1438,7 @@ def _decide_action_plan_guided(
     user_prompt = (
         f"TASK: {instruction}\n"
         + (f"{history_block}\n" if history_block else "")
+        + (f"{scratchpad_block}" if scratchpad_block else "")
         + f"\n{plan_block}"
         f"Step: {step}\n"
         + (f"\n{prev_text}" if prev_text else "")
@@ -1420,11 +1450,11 @@ def _decide_action_plan_guided(
     raw, finish_reason = _call_vlm(system_prompt, user_prompt, screenshot_path, max_tokens=2624)
     if not raw:
         _log("VLM returned no response — assuming task is stuck, returning finish")
-        return ("finish", {}, "VLM call failed — stopping", None)
+        return ("finish", {}, "VLM call failed — stopping", None, None)
 
     if finish_reason == "length" and "{" not in raw:
         _log("VLM output truncated (length) — injecting back action to retry")
-        return ("system_button", {"button": "back"}, "truncated: back", None)
+        return ("system_button", {"button": "back"}, "truncated: back", None, None)
 
     # Robust JSON extraction
     json_str = raw
@@ -1440,16 +1470,17 @@ def _decide_action_plan_guided(
         json_str = json_str[brace_start : brace_end + 1]
     else:
         _debug(f"VLM output has no JSON: {raw[:300]}")
-        return ("finish", {}, f"no JSON in response: {raw[:80]}", None)
+        return ("finish", {}, f"no JSON in response: {raw[:80]}", None, None)
 
     try:
         parsed = json.loads(json_str)
     except json.JSONDecodeError:
         _debug(f"VLM JSON parse failed: {json_str[:300]}")
-        return ("finish", {}, f"VLM parse error: {json_str[:80]}", None)
+        return ("finish", {}, f"VLM parse error: {json_str[:80]}", None, None)
 
-    # Extract plan_updates before normalizing action
+    # Extract plan_updates and notes before normalizing action
     plan_updates = parsed.get("plan_updates")
+    notes_updates = parsed.get("notes")
 
     action = parsed.get("action", "finish")
 
@@ -1458,44 +1489,44 @@ def _decide_action_plan_guided(
         coord = parsed.get("coordinate", [0, 0])
         x, y = int(coord[0]), int(coord[1])
         desc = f"tap({x},{y})"
-        return ("tap", {"coordinate": [x, y]}, desc, plan_updates)
+        return ("tap", {"coordinate": [x, y]}, desc, plan_updates, notes_updates)
 
     elif action == "long_press":
         coord = parsed.get("coordinate", [0, 0])
         x, y = int(coord[0]), int(coord[1])
         desc = f"long_press({x},{y})"
-        return ("long_press", {"coordinate": [x, y]}, desc, plan_updates)
+        return ("long_press", {"coordinate": [x, y]}, desc, plan_updates, notes_updates)
 
     elif action == "swipe":
         c1 = parsed.get("coordinate1", [0, 0])
         c2 = parsed.get("coordinate2", [0, 0])
         dur = parsed.get("duration", 300)
         desc = f"swipe({c1}→{c2})"
-        return ("swipe", {"coordinate1": c1, "coordinate2": c2, "duration": dur}, desc, plan_updates)
+        return ("swipe", {"coordinate1": c1, "coordinate2": c2, "duration": dur}, desc, plan_updates, notes_updates)
 
     elif action == "type":
         text = parsed.get("text", "")
         desc = f"type({text[:30]})"
-        return ("type", {"text": text}, desc, plan_updates)
+        return ("type", {"text": text}, desc, plan_updates, notes_updates)
 
     elif action == "system_button":
         btn = parsed.get("button", "back")
         desc = f"press({btn})"
-        return ("system_button", {"button": btn}, desc, plan_updates)
+        return ("system_button", {"button": btn}, desc, plan_updates, notes_updates)
 
     elif action == "open_app":
         app = parsed.get("app_name", "")
         pkg = APP_PACKAGE_MAP.get(app, app)
         desc = f"open_app({app})"
-        return ("open", {"text": pkg}, desc, plan_updates)
+        return ("open", {"text": pkg}, desc, plan_updates, notes_updates)
 
     elif action == "fail":
         reason = parsed.get("reason", "unknown")
         _log(f"VLM reports task cannot be completed: {reason}")
-        return ("finish", {}, f"Task failed: {reason}", plan_updates)
+        return ("finish", {}, f"Task failed: {reason}", plan_updates, notes_updates)
 
     else:  # finish or unknown
-        return ("finish", {}, "task complete", plan_updates)
+        return ("finish", {}, "task complete", plan_updates, notes_updates)
 
 
 def _execute_action_adb(
