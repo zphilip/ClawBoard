@@ -46,6 +46,21 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+# Self-contained runner modules (no external SDK dependency)
+from runner.safety_net import SafetyNet, SafetyNetConfig
+from runner.incidents import IncidentTracker
+from runner.explorer import ElementIndexer
+from runner.context import ContextBudget, HistoryStore, StepRecord
+from runner.planner import (
+    apply_plan_updates,
+    build_operator_plan_system_prompt,
+    generate_plan,
+    is_task_complete,
+    parse_plan,
+)
+from runner.validator import call_validator
+from runner.checker import call_checker
+
 # ---------------------------------------------------------------------------
 # Global log handles
 # ---------------------------------------------------------------------------
@@ -446,17 +461,7 @@ def _run_reactive_fallback(
             max_steps=max_steps,
             timeout=timeout,
         )
-    from runner.safety_net import SafetyNet, SafetyNetConfig
-    from runner.incidents import IncidentTracker
-    from runner.explorer import ElementIndexer
-    from runner.context import HistoryStore, StepRecord, ContextBudget
-    from runner.planner import (
-        apply_plan_updates,
-        build_operator_plan_system_prompt,
-        generate_plan,
-        is_task_complete,
-        parse_plan,
-    )
+    # (runner imports are now module-level — no local duplication)
 
     # Read profile config
     _cfg = load_skill_config()
@@ -687,16 +692,7 @@ def _run_plan_guided_fallback(
     - SafetyNet (deterministic): XML + pixel pre-execution validation
     - Checker VLM/LLM: final audit of goal achievement vs execution history
     """
-    from runner.safety_net import SafetyNet, SafetyNetConfig
-    from runner.incidents import IncidentTracker
-    from runner.explorer import ElementIndexer
-    from runner.context import HistoryStore, StepRecord, ContextBudget
-    from runner.planner import (
-        apply_plan_updates, build_operator_plan_system_prompt,
-        generate_plan, is_task_complete, parse_plan,
-    )
-    from runner.validator import call_validator
-    from runner.checker import call_checker
+    # (runner imports are now module-level — no local duplication)
 
     # Read profile and safety-net config
     _cfg = load_skill_config()
@@ -1428,8 +1424,6 @@ def _decide_action_plan_guided(
         scratchpad_block = "\n".join(lines) + "\n\n"
 
     # Plan context
-    from runner.planner import build_operator_plan_system_prompt, parse_plan
-
     plan_block = ""
     if plan_text:
         try:
