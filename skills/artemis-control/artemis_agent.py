@@ -579,7 +579,7 @@ def _run_reactive_fallback(
                 _trace(f"[flash-plan] step {step}: progress {snap.done_count}/{snap.total_count}")
 
         # 5. Execute action (no safety net in flash mode)
-        _execute_action_adb(adb_path, device, action_type, action_args)
+        _execute_action_adb(adb_path, device, action_type, action_args, elements=elements)
         actions.append(action_desc)
         time.sleep(1.2)
 
@@ -899,7 +899,7 @@ def _run_plan_guided_fallback(
             safety_check = None
 
         # ── 5. Execute ──────────────────────────────────────────────
-        _execute_action_adb(adb_path, device, action_type, action_args)
+        _execute_action_adb(adb_path, device, action_type, action_args, elements=elements)
         actions.append(action_desc)
         time.sleep(1.2)
 
@@ -1534,6 +1534,7 @@ def _execute_action_adb(
     device: str,
     action_type: str,
     action_args: dict,
+    elements: list | None = None,
 ) -> None:
     """Execute an action via ADB."""
     if action_type == "tap":
@@ -1549,7 +1550,7 @@ def _execute_action_adb(
              adb_path=adb_path, device=device)
     elif action_type == "type":
         text = action_args.get("text", "")
-        _adb_type_text(adb_path, device, text)
+        _adb_type_text(adb_path, device, text, elements=elements)
     elif action_type == "system_button":
         btn = action_args.get("button", "").upper()
         key_map = {"HOME": "3", "BACK": "4", "ENTER": "66", "APP_SWITCH": "187"}
@@ -1569,8 +1570,17 @@ def _execute_action_adb(
     elif action_type == "finish":
         pass  # No ADB action needed
 
-def _adb_type_text(adb_path: str, device: str, text: str) -> bool:
+def _adb_type_text(
+    adb_path: str,
+    device: str,
+    text: str,
+    elements: list | None = None,
+) -> bool:
     """Type text on the device via clipboard paste (no ADB Keyboard APK required).
+
+    Before pasting, auto-focuses an EditText/SearchView from the element list
+    (if provided) by tapping its center. This ensures the paste lands in a
+    text field even when the VLM operator forgets to tap it first.
 
     Tier 1: Clipboard paste — base64-encode, write to temp file, decode
     on-device, ``cmd clipboard set``, PASTE keyevent (279), cleanup.
@@ -1583,6 +1593,21 @@ def _adb_type_text(adb_path: str, device: str, text: str) -> bool:
 
     Returns True if text was successfully typed, False otherwise.
     """
+    # ── Step 0: Auto-focus an input field if elements are available ──────
+    if elements:
+        EDITABLE_CLASSES = ("EditText", "SearchView", "AutoCompleteTextView", "MultiAutoCompleteTextView")
+        for el in elements:
+            cls = (el.class_name or "").split(".")[-1]
+            if cls in EDITABLE_CLASSES and el.clickable and el.enabled:
+                cx, cy = el.center
+                _adb(
+                    ["shell", "input", "tap", str(cx), str(cy)],
+                    adb_path=adb_path, device=device, timeout=5,
+                )
+                _log(f"type: auto-focused {cls} at ({cx},{cy})")
+                time.sleep(0.3)  # Brief pause for focus to settle
+                break
+
     # ── Tier 1: Clipboard paste (most reliable, no IME dependency) ──────
     b64 = base64.b64encode(text.encode("utf-8")).decode("ascii")
     clip_b64 = "/sdcard/_aclip_b64"
