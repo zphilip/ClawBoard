@@ -15,9 +15,11 @@ Methods:
 
 import argparse
 import base64
+import re
 import subprocess
 import sys
 import time
+import xml.etree.ElementTree as ET
 
 
 def adb(args: list[str], device: str | None = None, timeout: int = 10) -> tuple[int, str, str]:
@@ -87,6 +89,54 @@ def input_text_method(device: str, text: str) -> bool:
     return False
 
 
+def auto_focus_input(device: str) -> bool:
+    """Dump UI XML and tap the first EditText/SearchView found."""
+    dump_path = "/sdcard/_test_ui.xml"
+    rc, _, _ = adb(["shell", "uiautomator", "dump", dump_path], device=device)
+    if rc != 0:
+        return False
+    time.sleep(0.5)
+    rc, xml_str, _ = adb(["shell", "cat", dump_path], device=device)
+    adb(["shell", "rm", "-f", dump_path], device=device)
+    if rc != 0 or not xml_str:
+        return False
+
+    try:
+        root = ET.fromstring(xml_str)
+    except ET.ParseError:
+        return False
+
+    EDITABLE = {"EditText", "SearchView", "AutoCompleteTextView", "MultiAutoCompleteTextView"}
+    candidates = []
+
+    def _find(node):
+        cls = (node.attrib.get("class", "") or "").split(".")[-1]
+        if cls in EDITABLE:
+            bounds = node.attrib.get("bounds", "")
+            m = re.match(r'\[(\d+),(\d+)\]\[(\d+),(\d+)\]', bounds)
+            if m:
+                left, top, right, bottom = map(int, m.groups())
+                enabled = node.attrib.get("enabled", "true") == "true"
+                if enabled:
+                    cx = (left + right) // 2
+                    cy = (top + bottom) // 2
+                    candidates.append((cx, cy, cls))
+        for child in node:
+            _find(child)
+
+    _find(root)
+
+    if candidates:
+        cx, cy, cls = candidates[0]
+        print(f"[AUTO-FOCUS] Found {cls} at ({cx},{cy}) — tapping to focus")
+        adb(["shell", "input", "tap", str(cx), str(cy)], device=device)
+        time.sleep(0.3)
+        return True
+
+    print("[AUTO-FOCUS] No editable field found in UI dump")
+    return False
+
+
 def dump_ui(device: str) -> str | None:
     """Dump UI hierarchy and return the XML as a string."""
     dump_path = "/sdcard/_test_ui.xml"
@@ -123,6 +173,8 @@ def main():
                         help="Verify text appeared on screen (dumps UI XML)")
     parser.add_argument("--tap-first", type=str, default=None,
                         help="Tap at x,y before typing (e.g. '400,200')")
+    parser.add_argument("--auto-focus", action="store_true",
+                        help="Auto-find and tap an EditText/SearchView before typing")
     args = parser.parse_args()
 
     print("=" * 60)
@@ -137,6 +189,13 @@ def main():
         rc, _, _ = adb(["shell", "input", "tap", x, y], device=args.device)
         time.sleep(0.5)
         print(f"[PRE] Tap {'OK' if rc == 0 else 'FAILED'}")
+
+    if args.auto_focus:
+        print("[PRE] Auto-focus: searching for EditText/SearchView via uiautomator dump...")
+        if auto_focus_input(args.device):
+            print("[PRE] ✅ Input field focused")
+        else:
+            print("[PRE] ⚠️  No editable field found on screen")
 
     success = False
 

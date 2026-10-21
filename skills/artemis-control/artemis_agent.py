@@ -1619,6 +1619,73 @@ def _resolve_package(adb_path: str, device: str, app_name: str) -> str | None:
     return None
 
 
+def _adb_focus_input_via_uidump(adb_path: str, device: str) -> bool:
+    """Dump UI XML via uiautomator and tap the first EditText/SearchView found.
+
+    No extra Python libraries required — uses built-in ``adb shell uiautomator dump``.
+    Returns True if an input element was found and tapped.
+    """
+    import xml.etree.ElementTree as ET
+
+    dump_path = "/sdcard/_aclip_ui.xml"
+    rc, _, _ = _adb(
+        ["shell", "uiautomator", "dump", dump_path],
+        adb_path=adb_path, device=device, timeout=10,
+    )
+    if rc != 0:
+        return False
+
+    # Pull the XML from device (uiautomator dump writes to device path)
+    rc, xml_str, _ = _adb(
+        ["shell", "cat", dump_path],
+        adb_path=adb_path, device=device, timeout=5,
+    )
+    _adb(["shell", "rm", "-f", dump_path], adb_path=adb_path, device=device)
+    if rc != 0 or not xml_str:
+        return False
+
+    try:
+        root = ET.fromstring(xml_str)
+    except ET.ParseError:
+        return False
+
+    EDITABLE_CLASSES = {"EditText", "SearchView", "AutoCompleteTextView", "MultiAutoCompleteTextView"}
+
+    def _find_editable(node, results):
+        cls = (node.attrib.get("class", "") or "").split(".")[-1]
+        if cls in EDITABLE_CLASSES:
+            bounds = node.attrib.get("bounds", "")
+            # Parse bounds="[left,top][right,bottom]"
+            import re as _re
+            m = _re.match(r'\[(\d+),(\d+)\]\[(\d+),(\d+)\]', bounds)
+            if m:
+                left, top, right, bottom = map(int, m.groups())
+                # Check if clickable/focusable/enabled
+                clickable = node.attrib.get("clickable", "false") == "true"
+                enabled = node.attrib.get("enabled", "true") == "true"
+                if enabled:  # Tappable even if not explicitly clickable
+                    cx = (left + right) // 2
+                    cy = (top + bottom) // 2
+                    results.append((cx, cy, cls))
+        for child in node:
+            _find_editable(child, results)
+
+    candidates = []
+    _find_editable(root, candidates)
+
+    if candidates:
+        cx, cy, cls = candidates[0]
+        _adb(
+            ["shell", "input", "tap", str(cx), str(cy)],
+            adb_path=adb_path, device=device, timeout=5,
+        )
+        _log(f"type: auto-focused {cls} at ({cx},{cy}) [uidump]")
+        time.sleep(0.3)
+        return True
+
+    return False
+
+
 def _adb_type_text(
     adb_path: str,
     device: str,
@@ -1642,7 +1709,10 @@ def _adb_type_text(
 
     Returns True if text was successfully typed, False otherwise.
     """
-    # ── Step 0: Auto-focus an input field if elements are available ──────
+    # ── Step 0: Auto-focus an input field ──────────────────────────────
+    focused = False
+
+    # 0a: Try element list first (fast, no extra ADB call)
     if elements:
         EDITABLE_CLASSES = ("EditText", "SearchView", "AutoCompleteTextView", "MultiAutoCompleteTextView")
         for el in elements:
@@ -1653,9 +1723,14 @@ def _adb_type_text(
                     ["shell", "input", "tap", str(cx), str(cy)],
                     adb_path=adb_path, device=device, timeout=5,
                 )
-                _log(f"type: auto-focused {cls} at ({cx},{cy})")
-                time.sleep(0.3)  # Brief pause for focus to settle
+                _log(f"type: auto-focused {cls} at ({cx},{cy}) [elements]")
+                focused = True
+                time.sleep(0.3)
                 break
+
+    # 0b: Fallback — dump UI XML to find any EditText/SearchView
+    if not focused:
+        focused = _adb_focus_input_via_uidump(adb_path, device)
 
     # ── Tier 1: Clipboard paste (most reliable, no IME dependency) ──────
     b64 = base64.b64encode(text.encode("utf-8")).decode("ascii")
