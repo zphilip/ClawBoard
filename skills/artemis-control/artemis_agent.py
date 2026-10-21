@@ -1433,6 +1433,8 @@ def _decide_action_plan_guided(
             loop_text = "⚠️  LOOP DETECTED: same coordinate tapped 3+ times. Try a DIFFERENT approach.\n"
 
     # Plan context
+    from runner.planner import build_operator_plan_system_prompt, parse_plan
+
     plan_block = ""
     if plan_text:
         try:
