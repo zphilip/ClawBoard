@@ -519,7 +519,7 @@ def _run_reactive_fallback(
     from runner.safety_net import SafetyNet, SafetyNetConfig
     from runner.incidents import IncidentTracker
     from runner.explorer import ElementIndexer
-    from runner.context import HistoryStore, StepRecord
+    from runner.context import HistoryStore, StepRecord, ContextBudget
     from runner.planner import (
         apply_plan_updates,
         build_operator_plan_system_prompt,
@@ -539,8 +539,10 @@ def _run_reactive_fallback(
     last_coords: list[str] = []
     indexer = ElementIndexer(adb_path=adb_path, device=device)
     history = HistoryStore()
+    context_budget = ContextBudget(limit_tokens=load_skill_config().get("context", {}).get("budget_limit", 32768))
     plan_text = ""
     plan_generated = False
+    last_budget_warning_pct = 0.0  # Avoid repeated warnings for same level
 
     # ── Phase 1: Generate Plan ──────────────────────────────────────────
     _emit_progress(0, "planning", "Flash: generating task plan...")
@@ -606,7 +608,7 @@ def _run_reactive_fallback(
         action_type, action_args, action_desc, plan_updates = (
             _decide_action_plan_guided(
                 instruction, step, elements, None, last_coords,
-                str(shot_path), actions, plan_text,
+                str(shot_path), actions, plan_text, history=history,
             )
         )
 
@@ -631,6 +633,18 @@ def _run_reactive_fallback(
                 action_type=action_type,
                 action_args=action_args,
             ))
+            # Context budget monitoring
+            warning = context_budget.check(history)
+            if warning and warning.usage_pct >= last_budget_warning_pct + 0.1:
+                last_budget_warning_pct = warning.usage_pct
+                _log(f"Context budget: {warning.usage_pct:.0%} used ({warning.used_tokens}/{warning.limit_tokens} tokens)")
+                _emit({
+                    "type": "budget_warning",
+                    "usage_pct": round(warning.usage_pct, 2),
+                    "used_tokens": warning.used_tokens,
+                    "limit_tokens": warning.limit_tokens,
+                    "message": warning.message,
+                })
         except Exception:
             pass
 
@@ -721,7 +735,7 @@ def _run_plan_guided_fallback(
     from runner.safety_net import SafetyNet, SafetyNetConfig
     from runner.incidents import IncidentTracker
     from runner.explorer import ElementIndexer
-    from runner.context import HistoryStore, StepRecord
+    from runner.context import HistoryStore, StepRecord, ContextBudget
     from runner.validator import call_validator
     from runner.checker import call_checker
 
@@ -739,6 +753,8 @@ def _run_plan_guided_fallback(
     validator_stats = {"approved": 0, "warned": 0, "rejected": 0}
     incident_tracker = IncidentTracker()
     history = HistoryStore()
+    context_budget = ContextBudget(limit_tokens=load_skill_config().get("context", {}).get("budget_limit", 32768))
+    last_budget_warning_pct = 0.0
     safety_net = SafetyNet(SafetyNetConfig(
         adb_path=adb_path,
         device=device,
@@ -816,7 +832,7 @@ def _run_plan_guided_fallback(
         # ── 2. Operator Node: decide next action ─────────────────────
         action_type, action_args, action_desc, plan_updates = _decide_action_plan_guided(
             instruction, step, elements, incident_tracker, last_coords,
-            str(shot_path), actions, plan_text,
+            str(shot_path), actions, plan_text, history=history,
         )
 
         # If operator says finish, check milestone completion
@@ -914,6 +930,18 @@ def _run_plan_guided_fallback(
                 action_type=action_type, action_args=action_args,
                 safety_check=safety_check or "",
             ))
+            # Context budget monitoring
+            warning = context_budget.check(history)
+            if warning and warning.usage_pct >= last_budget_warning_pct + 0.1:
+                last_budget_warning_pct = warning.usage_pct
+                _log(f"Context budget: {warning.usage_pct:.0%} used ({warning.used_tokens}/{warning.limit_tokens} tokens)")
+                _emit({
+                    "type": "budget_warning",
+                    "usage_pct": round(warning.usage_pct, 2),
+                    "used_tokens": warning.used_tokens,
+                    "limit_tokens": warning.limit_tokens,
+                    "message": warning.message,
+                })
         except Exception:
             pass
 
@@ -1343,11 +1371,13 @@ def _decide_action_plan_guided(
     screenshot_path,
     previous_actions: list[str] = None,
     plan_text: str = "",
+    history=None,
 ) -> tuple[str, dict, str, dict | None]:
     """Call the VLM with screenshot + element index + plan context to decide the next action.
 
     Like ``_decide_action_fallback`` but includes the current plan state and
-    expects plan progress updates in the response.
+    step history rendered from the HistoryStore. Expects plan progress updates
+    in the response.
 
     Returns (action_type, action_args, human_readable_description, plan_updates_dict).
     On VLM failure, returns ("finish", {}, "VLM call failed — stopping", None).
@@ -1390,6 +1420,11 @@ def _decide_action_plan_guided(
     if incident_tracker and incident_tracker.count > 0:
         incident_text = f"PREVIOUS INCIDENTS:\n{incident_tracker.render_for_prompt()}\n"
 
+    # History context (step records from HistoryStore)
+    history_block = ""
+    if history and history.step_count > 0:
+        history_block = history.render_for_prompt() + "\n\n"
+
     # Loop warning
     loop_text = ""
     if len(last_coords) >= LOOP_THRESHOLD:
@@ -1411,7 +1446,8 @@ def _decide_action_plan_guided(
 
     user_prompt = (
         f"TASK: {instruction}\n"
-        f"\n{plan_block}"
+        + (f"{history_block}\n" if history_block else "")
+        + f"\n{plan_block}"
         f"Step: {step}\n"
         + (f"\n{prev_text}" if prev_text else "")
         + (f"\n{loop_text}" if loop_text else "")
