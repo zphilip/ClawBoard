@@ -673,6 +673,8 @@ def _run_plan_guided_fallback(
     device: str,
     max_steps: int,
     timeout: int,
+    verification: str = "final",
+    explorer_tier: str = "pro",
 ) -> dict:
     """Pro profile fallback: full multi-agent graph with separate VLM calls per node.
 
