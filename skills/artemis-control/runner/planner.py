@@ -569,12 +569,28 @@ def apply_plan_updates(
     if not plan_updates or not plan_text:
         return plan_text, False
 
+    # ── Normalize VLM output ────────────────────────────────────────────
+    # VLMs sometimes return lists like ["text"] or dicts like {"text": "..."}
+    # instead of plain strings.  Normalize everything up front.
+    def _normalize(val):
+        """Normalize a plan_update target to a plain string."""
+        if isinstance(val, str):
+            return val.strip()
+        if isinstance(val, list) and val:
+            # Take first element if it's a string, or join strings
+            first = val[0]
+            if isinstance(first, str):
+                return first.strip()
+        if isinstance(val, dict):
+            return (val.get("text") or val.get("title") or "").strip()
+        return ""
+
     changed = False
     lines = plan_text.splitlines()
     snapshot = parse_plan(plan_text)
 
     # --- set_active ---
-    target_active = plan_updates.get("set_active", "")
+    target_active = _normalize(plan_updates.get("set_active", ""))
     if target_active:
         lines, snapshot, delta = _set_status(
             lines, snapshot, target_active, STATUS_ACTIVE
@@ -582,7 +598,7 @@ def apply_plan_updates(
         changed = changed or delta
 
     # --- mark_done ---
-    target_done = plan_updates.get("mark_done", "")
+    target_done = _normalize(plan_updates.get("mark_done", ""))
     if target_done:
         lines, snapshot, delta = _set_status(
             lines, snapshot, target_done, STATUS_DONE
@@ -593,13 +609,28 @@ def apply_plan_updates(
     blocked = plan_updates.get("mark_blocked")
     if blocked:
         if isinstance(blocked, dict):
-            target_text = blocked.get("text", "")
-            # Append reason to the line text
+            target_text = _normalize(blocked.get("text", ""))
             reason = blocked.get("reason", "")
             lines, snapshot, delta = _set_status(
                 lines, snapshot, target_text, STATUS_BLOCKED, suffix=f" — {reason}" if reason else ""
             )
             changed = changed or delta
+        elif isinstance(blocked, list):
+            # VLM may return mark_blocked as a list of dicts or strings
+            for item in blocked:
+                if isinstance(item, dict):
+                    target_text = _normalize(item)
+                    reason = item.get("reason", "")
+                    lines, snapshot, delta = _set_status(
+                        lines, snapshot, target_text, STATUS_BLOCKED,
+                        suffix=f" — {reason}" if reason else "",
+                    )
+                    changed = changed or delta
+                elif isinstance(item, str):
+                    lines, snapshot, delta = _set_status(
+                        lines, snapshot, item, STATUS_BLOCKED,
+                    )
+                    changed = changed or delta
         elif isinstance(blocked, str):
             lines, snapshot, delta = _set_status(
                 lines, snapshot, blocked, STATUS_BLOCKED
