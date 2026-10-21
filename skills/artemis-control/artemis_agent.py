@@ -691,6 +691,10 @@ def _run_plan_guided_fallback(
     from runner.incidents import IncidentTracker
     from runner.explorer import ElementIndexer
     from runner.context import HistoryStore, StepRecord, ContextBudget
+    from runner.planner import (
+        apply_plan_updates, build_operator_plan_system_prompt,
+        generate_plan, is_task_complete, parse_plan,
+    )
     from runner.validator import call_validator
     from runner.checker import call_checker
 
