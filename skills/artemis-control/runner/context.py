@@ -239,18 +239,30 @@ class BudgetWarning:
 class ContextBudget:
     """Tracks estimated token usage and warns before context overflow."""
 
-    WARN_AT_PCT = 0.75
-    CRITICAL_AT_PCT = 0.90
-
-    def __init__(self, limit_tokens: int = 32768):
+    def __init__(
+        self,
+        limit_tokens: int = 80000,
+        warn_at_pct: float = 0.75,
+        critical_at_pct: float = 0.90,
+    ):
         self._limit = limit_tokens
+        self._warn_at = warn_at_pct
+        self._critical_at = critical_at_pct
+
+    @property
+    def WARN_AT_PCT(self) -> float:
+        return self._warn_at
+
+    @property
+    def CRITICAL_AT_PCT(self) -> float:
+        return self._critical_at
 
     def check(self, history: HistoryStore, extra_tokens: int = 0) -> Optional[BudgetWarning]:
         """Check if we're approaching the context limit."""
         used = history.estimated_tokens + extra_tokens
         pct = used / self._limit if self._limit > 0 else 0.0
 
-        if pct >= self.CRITICAL_AT_PCT:
+        if pct >= self._critical_at:
             return BudgetWarning(
                 used_tokens=used,
                 limit_tokens=self._limit,
@@ -260,7 +272,7 @@ class ContextBudget:
                     "Consider compressing older history or reducing screenshot count."
                 ),
             )
-        elif pct >= self.WARN_AT_PCT:
+        elif pct >= self._warn_at:
             return BudgetWarning(
                 used_tokens=used,
                 limit_tokens=self._limit,

@@ -112,25 +112,85 @@ VAGUE_PATTERNS = [
 _CONFIG: Optional[dict] = None
 _CONFIG_PATH = Path(__file__).parent / "config.json"
 
-# VLM system prompt for action decisions
-SYSTEM_PROMPT_FALLBACK = """You are a phone automation agent controlling an Android device via ADB.
-Your ONLY output format is: {"action": "...", ...} — a single JSON object. Nothing else.
+# VLM system prompt for action decisions — three-phase cognitive protocol
+SYSTEM_PROMPT_FALLBACK = """## Role
+You are an Android device operator. Your priority is execution accuracy — a single
+wrong tap can navigate away from the target and cost several steps to recover.
+Think before you act.
 
-AVAILABLE ACTIONS:
-{"action": "open_app", "app_name": "微信"}   — launch an app (PREFER THIS for "打开X" tasks)
-{"action": "tap", "coordinate": [x, y]}       — tap at pixel (x,y)
-{"action": "long_press", "coordinate": [x, y]} — long-press
-{"action": "swipe", "coordinate1": [x1,y1], "coordinate2": [x2,y2], "duration": 300}
-{"action": "type", "text": "hello"}            — type text
-{"action": "system_button", "button": "back"}  — back/home/enter/recent_apps
-{"action": "finish"}                            — task done
-{"action": "fail", "reason": "why"}             — cannot complete
+## Output Format
+Respond with a single JSON object. No other text.
 
-STRATEGY (critical):
-- For "打开X" / "open X" tasks: use {"action": "open_app", "app_name": "X"} FIRST, skip navigation.
-- For search tasks: open the app, then tap the search bar, then type.
-- Check PREVIOUS ACTIONS — if you already typed/clicked something, DON'T repeat it.
-- If stuck after 2 similar attempts, press back and try a different approach."""
+Available actions:
+  {"action": "open_app", "app_name": "微信"}         — launch an app by name
+  {"action": "tap", "coordinate": [x, y]}             — tap at pixel (x,y)
+  {"action": "long_press", "coordinate": [x, y]}       — long-press at pixel
+  {"action": "swipe", "coordinate1": [x1,y1], "coordinate2": [x2,y2], "duration": 300}
+  {"action": "type", "text": "hello"}                  — type text into focused field
+  {"action": "system_button", "button": "back"}        — back / home / enter / recent_apps
+  {"action": "finish"}                                  — task completed
+  {"action": "fail", "reason": "why"}                   — task cannot be completed
+
+## Cognitive Protocol (follow in every turn)
+
+### 1. Observation — read the screen
+- What app is currently open? (check the UI elements, app bar, status bar)
+- Am I on the right screen, or did I navigate somewhere unexpected?
+- Are there loading spinners, popups, permission dialogs, or ads blocking the UI?
+- Check PREVIOUS ACTIONS — have I already tried this element? Don't repeat failures.
+- Look at the BACKGROUND of the screenshot, not just elements — the UI index may
+  miss floating overlays, toasts, or keyboard state.
+
+### 2. Planning — decide what to do
+- What is the smallest, safest step toward the next milestone?
+- Is there a loading/animation that will finish before my action lands?
+  (If yes: wait briefly instead of tapping mid-transition)
+- Am I about to tap something destructive?
+  (delete, uninstall, logout, purchase, send message, factory reset)
+- What will the screen look like AFTER this action? If uncertain, reconsider.
+
+### 3. Execution — pick the right target
+- PREFER elements from the UI INDEX over guessing coordinates visually.
+  The index has exact bounds and centers. Use it.
+- For text input: FIRST tap the input field (verify it has focus), THEN use
+  {"action": "type", "text": "..."}. Never type without first ensuring focus.
+- If typing in a search bar: tap the bar first, confirm keyboard is up, then type.
+- For back navigation: press back N times to reach a known state, not just once.
+
+## Anti-Patterns (DO NOT DO)
+- Tapping the same coordinate 3+ times — if it didn't work twice, try a DIFFERENT
+  element or approach.
+- Typing text without first tapping the target field — text goes nowhere.
+- Using open_app repeatedly when the app is already open — check the screen first.
+- Finishing prematurely — verify the goal was met, don't just assume.
+- Ignoring popups/dialogs — dismiss them (tap outside, press back) before continuing.
+
+## Error Recovery
+- If you see an unexpected screen: press BACK once and re-evaluate.
+- If the app crashed: re-launch it with open_app.
+- If a permission dialog appears: tap "允许" (Allow) or "始终允许" (Always allow).
+- If loading takes too long: press BACK and try an alternative path.
+- If completely lost: press HOME, then start over with open_app.
+
+## When to Finish
+- All required actions were performed AND confirmed visually.
+- The final screen shows the expected result (app open, setting changed, search done).
+- PREVIOUS ACTIONS shows you already completed the task — don't keep going.
+- If the task is "打开X" (open X): finish as soon as X's main screen is visible.
+
+## When to Fail
+- The target app is not installed (check app drawer or search).
+- You tried 3+ different approaches and all failed.
+- A required account login / SMS verification blocks progress.
+- The device is locked with a PIN/password/pattern you don't know.
+
+## Element Selection Rules
+- UI elements marked "clickable" AND "enabled" are safe tap targets.
+- Avoid elements with no label AND no resource-id — they're likely decorative.
+- Prefer elements with Chinese text matching your task (e.g. "设置" for Settings).
+- For scrolling: swipe from the CENTER of a scrollable region, not from an element.
+- If an element's bounds overlap with another, prefer the one with a specific
+  resource-id over one without."""
 
 def load_skill_config() -> dict:
     """Load config.json, falling back to hard-coded defaults."""
@@ -392,7 +452,18 @@ def _run_reactive_fallback(
         parse_plan,
     )
 
-    _log(f"Running flash fallback loop v{VERSION} — model={load_skill_config()['model']} — plan + history")
+    # Read profile config
+    _cfg = load_skill_config()
+    _profile_cfg = _cfg.get("profiles", {}).get(profile, {})
+    _ctx_cfg = _cfg.get("context", {})
+    _explorer_cfg = _cfg.get("explorer", {})
+
+    # Resolve max_steps: CLI arg takes precedence, else profile max_turns, else 50
+    if max_steps <= 0:
+        max_steps = _profile_cfg.get("max_turns", 0) or 50
+    explorer_mode = _profile_cfg.get("explorer_mode", "flash")
+
+    _log(f"Running flash fallback loop v{VERSION} — model={_cfg['model']} — plan + history")
 
     screenshots_dir = _make_run_screenshots_dir()
     start = time.time()
@@ -402,8 +473,14 @@ def _run_reactive_fallback(
     end_reason = "flash_started"
     last_coords: list[str] = []
     indexer = ElementIndexer(adb_path=adb_path, device=device)
-    history = HistoryStore()
-    context_budget = ContextBudget(limit_tokens=load_skill_config().get("context", {}).get("budget_limit", 32768))
+    history = HistoryStore(
+        max_stored_screenshots=_ctx_cfg.get("max_stored_screenshots", 6),
+    )
+    context_budget = ContextBudget(
+        limit_tokens=_ctx_cfg.get("budget_limit", 80000),
+        warn_at_pct=_ctx_cfg.get("budget_warn_pct", 0.75),
+        critical_at_pct=_ctx_cfg.get("budget_critical_pct", 0.90),
+    )
     plan_text = ""
     plan_generated = False
     last_budget_warning_pct = 0.0  # Avoid repeated warnings for same level
@@ -603,7 +680,20 @@ def _run_plan_guided_fallback(
     from runner.validator import call_validator
     from runner.checker import call_checker
 
-    _log(f"Running Pro multi-agent graph v{VERSION} — model={load_skill_config()['model']}")
+    # Read profile and safety-net config
+    _cfg = load_skill_config()
+    _profile_cfg = _cfg.get("profiles", {}).get("pro", {})
+    _ctx_cfg = _cfg.get("context", {})
+    _safety_cfg = _cfg.get("safety_net", {})
+    _explorer_cfg = _cfg.get("explorer", {})
+
+    # Resolve max_steps: CLI arg takes precedence, else profile max_turns, else 50
+    if max_steps <= 0:
+        max_steps = _profile_cfg.get("max_turns", 0) or 50
+    verification_level = verification or _profile_cfg.get("verification", "final")
+    explorer_mode = explorer_tier or _profile_cfg.get("explorer_mode", "pro")
+
+    _log(f"Running Pro multi-agent graph v{VERSION} — model={_cfg['model']}")
 
     screenshots_dir = _make_run_screenshots_dir()
     start = time.time()
@@ -616,16 +706,22 @@ def _run_plan_guided_fallback(
     plan_generated = False
     validator_stats = {"approved": 0, "warned": 0, "rejected": 0}
     incident_tracker = IncidentTracker()
-    history = HistoryStore()
-    context_budget = ContextBudget(limit_tokens=load_skill_config().get("context", {}).get("budget_limit", 32768))
+    history = HistoryStore(
+        max_stored_screenshots=_ctx_cfg.get("max_stored_screenshots", 6),
+    )
+    context_budget = ContextBudget(
+        limit_tokens=_ctx_cfg.get("budget_limit", 80000),
+        warn_at_pct=_ctx_cfg.get("budget_warn_pct", 0.75),
+        critical_at_pct=_ctx_cfg.get("budget_critical_pct", 0.90),
+    )
     last_budget_warning_pct = 0.0
     safety_net = SafetyNet(SafetyNetConfig(
         adb_path=adb_path,
         device=device,
-        xml_enabled=True,
-        pixel_fallback=True,
-        retry_attempts=3,
-        retry_delay=0.4,
+        xml_enabled=_safety_cfg.get("xml_enabled", True),
+        pixel_fallback=_safety_cfg.get("pixel_fallback", True),
+        retry_attempts=_safety_cfg.get("retry_attempts", 3),
+        retry_delay=_safety_cfg.get("retry_delay", 0.4),
     ))
     indexer = ElementIndexer(adb_path=adb_path, device=device)
 
