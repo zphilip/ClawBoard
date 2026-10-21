@@ -215,6 +215,16 @@ def _emit_incident(step: int, category: str, reason: str, action: str,
         "consecutive_failures": consecutive_failures,
     })
 
+def _emit_plan(plan_text: str, milestones: list[str], total: int) -> None:
+    """Emit the generated task plan as a JSON event."""
+    _emit({
+        "type": "plan",
+        "plan_text": plan_text,
+        "milestones": milestones,
+        "total_milestones": total,
+    })
+
+
 def _log(msg: str) -> None:
     _now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     line = f"[{_now}] [artemis-control] {msg}"
@@ -363,7 +373,7 @@ def run_artemis_agent(
     """
     if not check_artemis_available():
         _log("Artemis SDK not importable — falling back to reactive ADB loop")
-        return _run_reactive_fallback(instruction, adb_path, device, max_steps, timeout)
+        return _run_reactive_fallback(instruction, adb_path, device, max_steps, timeout, profile=profile)
 
     _log(f"Launching Artemis engine: profile={profile}, explorer={explorer_tier}, verification={verification}")
 
@@ -444,7 +454,7 @@ def run_artemis_agent(
 
     except ImportError as e:
         _log(f"Artemis SDK missing: {e} — using fallback loop")
-        return _run_reactive_fallback(instruction, adb_path, device, max_steps, timeout)
+        return _run_reactive_fallback(instruction, adb_path, device, max_steps, timeout, profile=profile)
 
     except Exception as e:
         _log(f"Artemis execution error: {e}")
@@ -489,40 +499,93 @@ def _run_reactive_fallback(
     device: str,
     max_steps: int,
     timeout: int,
+    profile: str = "flash",
 ) -> dict:
     """
     Fallback reactive observe→think→act loop when Artemis SDK is not available.
     Uses the safety net and explorer modules from this skill directly.
+
+    When profile is "pro", delegates to ``_run_plan_guided_fallback`` which adds
+    milestone-based planning and plan-guided execution.
     """
+    if profile == "pro":
+        return _run_plan_guided_fallback(
+            instruction=instruction,
+            adb_path=adb_path,
+            device=device,
+            max_steps=max_steps,
+            timeout=timeout,
+        )
     from runner.safety_net import SafetyNet, SafetyNetConfig
     from runner.incidents import IncidentTracker
     from runner.explorer import ElementIndexer
+    from runner.context import HistoryStore, StepRecord
+    from runner.planner import (
+        apply_plan_updates,
+        build_operator_plan_system_prompt,
+        generate_plan,
+        is_task_complete,
+        parse_plan,
+    )
 
-    _log(f"Running reactive fallback loop v{VERSION} — model={load_skill_config()['model']} — safety net + explorer")
+    _log(f"Running flash fallback loop v{VERSION} — model={load_skill_config()['model']} — plan + history")
 
     screenshots_dir = _make_run_screenshots_dir()
     start = time.time()
     actions: list[str] = []
     step = 0
     status = "timeout"
-    end_reason = "fallback_started"
+    end_reason = "flash_started"
     last_coords: list[str] = []
-    incident_tracker = IncidentTracker()
-    safety_net = SafetyNet(SafetyNetConfig(
-        adb_path=adb_path,
-        device=device,
-        xml_enabled=True,
-        pixel_fallback=True,
-        retry_attempts=3,
-        retry_delay=0.4,
-    ))
     indexer = ElementIndexer(adb_path=adb_path, device=device)
+    history = HistoryStore()
+    plan_text = ""
+    plan_generated = False
 
-    _emit_progress(0, "init", f"Starting reactive loop for: {instruction[:60]}...")
+    # ── Phase 1: Generate Plan ──────────────────────────────────────────
+    _emit_progress(0, "planning", "Flash: generating task plan...")
+    _log("Flash: generating plan...")
+
+    plan_shot = screenshots_dir / "flash_plan_initial.png"
+    if _take_screenshot(adb_path, device, plan_shot):
+        plan_result = generate_plan(
+            instruction=instruction,
+            screenshot_path=str(plan_shot),
+            vlm_caller=_call_vlm,
+        )
+    else:
+        plan_result = {"success": False, "error": "Screenshot failed", "plan_text": "", "plan_snapshot": parse_plan("")}
+
+    if plan_result.get("success"):
+        plan_text = plan_result["plan_text"]
+        snapshot = plan_result["plan_snapshot"]
+        plan_generated = True
+        _log(f"Flash plan generated: {snapshot.total_count} milestones")
+        _trace(f"[flash-plan] milestones={snapshot.total_count}")
+        _emit_plan(
+            plan_text=plan_text,
+            milestones=list(snapshot.milestone_texts()),
+            total=snapshot.total_count,
+        )
+        _emit_progress(0, "plan_ready",
+                       f"Task plan: {snapshot.total_count} milestones")
+    else:
+        _log(f"Flash plan generation failed: {plan_result.get('error')} — continuing reactive")
+
+    # ── Phase 2: Plan-Guided Reactive Loop ───────────────────────────────
+    _emit_progress(1 if step == 0 else step, "init",
+                   f"Starting plan-guided loop for: {instruction[:60]}...")
 
     while step < max_steps and (time.time() - start) < timeout:
         step += 1
         _debug(f"Step {step}/{max_steps}")
+
+        # Check if all milestones done
+        if plan_text and is_task_complete(plan_text):
+            _log("All milestones complete — task finished")
+            status = "success"
+            end_reason = "all_milestones_done"
+            break
 
         # 1. Take screenshot
         ts = datetime.now().strftime('%Y%m%d_%H%M%S_%f')[:19]
@@ -539,23 +602,295 @@ def _run_reactive_fallback(
             _debug(f"Element indexing skipped: {e}")
             elements = []
 
-        # 3. Determine action via VLM
-        action_type, action_args, action_desc = _decide_action_fallback(
-            instruction, step, elements, incident_tracker, last_coords, shot_path, actions
+        # 3. Determine action via VLM (plan-guided)
+        action_type, action_args, action_desc, plan_updates = (
+            _decide_action_plan_guided(
+                instruction, step, elements, None, last_coords,
+                str(shot_path), actions, plan_text,
+            )
         )
 
-        # 4. Safety net check
-        if action_type in ("tap", "long_press", "input_text"):
+        # 4. Apply plan updates from VLM
+        if plan_updates and plan_text:
+            new_plan_text, changed = apply_plan_updates(plan_text, plan_updates)
+            if changed:
+                plan_text = new_plan_text
+                snap = parse_plan(plan_text)
+                _trace(f"[flash-plan] step {step}: progress {snap.done_count}/{snap.total_count}")
+
+        # 5. Execute action (no safety net in flash mode)
+        _execute_action_adb(adb_path, device, action_type, action_args)
+        actions.append(action_desc)
+        time.sleep(1.2)
+
+        # 6. Record in history
+        try:
+            history.add(StepRecord(
+                step=step,
+                action=action_desc,
+                action_type=action_type,
+                action_args=action_args,
+            ))
+        except Exception:
+            pass
+
+        # 7. Verification screenshot
+        vshot_path = screenshots_dir / f"step_{step:03d}_{ts}_post.png"
+        _take_screenshot(adb_path, device, vshot_path)
+
+        _emit_progress(
+            step, action_desc,
+            f"Step {step}: {action_desc}",
+            screenshot=str(vshot_path) if vshot_path.exists() else None,
+        )
+
+        # 8. Loop detection
+        if action_type == "tap" and "coordinate" in action_args:
+            coord_str = f"{action_args['coordinate'][0]},{action_args['coordinate'][1]}"
+            last_coords.append(coord_str)
+            if len(last_coords) > LOOP_THRESHOLD:
+                last_coords = last_coords[-LOOP_THRESHOLD:]
+            if len(last_coords) == LOOP_THRESHOLD and len(set(last_coords)) == 1:
+                _log(f"Loop detected at {coord_str}")
+        else:
+            last_coords = []
+
+        # 9. Check task completion
+        if action_type == "finish":
+            if plan_text and not is_task_complete(plan_text):
+                remaining = parse_plan(plan_text).pending_count
+                _log(f"VLM says finish but {remaining} milestones still pending — continuing")
+                continue
+            status = "success"
+            end_reason = "flash_completed"
+            break
+
+    # Cleanup
+    try:
+        if screenshots_dir.exists():
+            shutil.rmtree(screenshots_dir, ignore_errors=True)
+    except Exception:
+        pass
+
+    final_snapshot = parse_plan(plan_text) if plan_text else None
+    plan_done = final_snapshot.done_count if final_snapshot else 0
+    plan_total = final_snapshot.total_count if final_snapshot else 0
+
+    message = f"Flash loop: {status} after {step} steps. Plan: {plan_done}/{plan_total} milestones. [reason: {end_reason}]"
+    return {
+        "type": "result",
+        "status": status,
+        "steps": step,
+        "last_action": actions[-1] if actions else "",
+        "message": message,
+        "actions": actions,
+        "verification": {"passed": 0, "failed": 0, "inconclusive": 0},
+        "debug": {
+            "end_reason": end_reason,
+            "profile": "flash",
+            "plan_milestones_total": plan_total,
+            "plan_milestones_done": plan_done,
+            "history_steps": history.step_count,
+        },
+        "plan": {
+            "text": plan_text,
+            "milestones_done": plan_done,
+            "milestones_total": plan_total,
+        } if plan_text else None,
+    }
+
+
+def _run_plan_guided_fallback(
+    instruction: str,
+    adb_path: str,
+    device: str,
+    max_steps: int,
+    timeout: int,
+) -> dict:
+    """Pro profile fallback: full multi-agent graph with separate VLM calls per node.
+
+    Graph: Planner (once) → [Operator → Validator → SafetyNet → Execute] → Checker (final)
+
+    Each node is an independent VLM/LLM call with its own system prompt:
+    - Planner VLM: generates milestone plan from screenshot + goal
+    - Operator VLM: proposes next action given current state + plan
+    - Validator VLM: independently judges the proposed action (safety, progress, correctness)
+    - SafetyNet (deterministic): XML + pixel pre-execution validation
+    - Checker VLM/LLM: final audit of goal achievement vs execution history
+    """
+    from runner.safety_net import SafetyNet, SafetyNetConfig
+    from runner.incidents import IncidentTracker
+    from runner.explorer import ElementIndexer
+    from runner.context import HistoryStore, StepRecord
+    from runner.validator import call_validator
+    from runner.checker import call_checker
+
+    _log(f"Running Pro multi-agent graph v{VERSION} — model={load_skill_config()['model']}")
+
+    screenshots_dir = _make_run_screenshots_dir()
+    start = time.time()
+    actions: list[str] = []
+    step = 0
+    status = "timeout"
+    end_reason = "pro_started"
+    last_coords: list[str] = []
+    plan_text = ""
+    plan_generated = False
+    validator_stats = {"approved": 0, "warned": 0, "rejected": 0}
+    incident_tracker = IncidentTracker()
+    history = HistoryStore()
+    safety_net = SafetyNet(SafetyNetConfig(
+        adb_path=adb_path,
+        device=device,
+        xml_enabled=True,
+        pixel_fallback=True,
+        retry_attempts=3,
+        retry_delay=0.4,
+    ))
+    indexer = ElementIndexer(adb_path=adb_path, device=device)
+
+    # ── Phase 1: Planner Node ──────────────────────────────────────────
+    _emit_progress(0, "planning", "Pro: Planner node — generating task plan...")
+    _log("Pro Phase 1: Planner node")
+
+    plan_shot = screenshots_dir / "pro_plan_initial.png"
+    if _take_screenshot(adb_path, device, plan_shot):
+        plan_result = generate_plan(
+            instruction=instruction,
+            screenshot_path=str(plan_shot),
+            vlm_caller=_call_vlm,
+        )
+    else:
+        _log("Screenshot failed for planning — falling back to flash loop")
+        plan_result = {"success": False, "error": "Screenshot failed", "plan_text": "", "plan_snapshot": parse_plan("")}
+
+    if plan_result.get("success"):
+        plan_text = plan_result["plan_text"]
+        snapshot = plan_result["plan_snapshot"]
+        plan_generated = True
+        _log(f"Pro plan generated: {snapshot.total_count} milestones")
+        _trace(f"[pro-plan] milestones={snapshot.total_count} text={plan_text[:200]!r}")
+        _emit_plan(
+            plan_text=plan_text,
+            milestones=list(snapshot.milestone_texts()),
+            total=snapshot.total_count,
+        )
+        _emit_progress(0, "plan_ready",
+                       f"Pro task plan: {snapshot.total_count} milestones")
+    else:
+        error_msg = plan_result.get("error", "unknown")
+        _log(f"Pro plan generation failed: {error_msg} — falling back to flash loop")
+        return _run_reactive_fallback(
+            instruction=instruction, adb_path=adb_path, device=device,
+            max_steps=max_steps, timeout=timeout, profile="flash",
+        )
+
+    # ── Phase 2: Operator → Validator → SafetyNet → Execute ─────────────
+    _log("Pro Phase 2: Operator → Validator → SafetyNet → Execute loop")
+
+    while step < max_steps and (time.time() - start) < timeout:
+        step += 1
+        _debug(f"Pro Step {step}/{max_steps}")
+
+        # Milestone completion check
+        if plan_text and is_task_complete(plan_text):
+            _log("All milestones complete — proceeding to Checker")
+            status = "success"
+            end_reason = "all_milestones_done"
+            break
+
+        # 1. Screenshot + element index
+        ts = datetime.now().strftime('%Y%m%d_%H%M%S_%f')[:19]
+        shot_path = screenshots_dir / f"step_{step:03d}_{ts}_pre.png"
+        if not _take_screenshot(adb_path, device, shot_path):
+            _log("Screenshot capture failed")
+            continue
+
+        try:
+            elements = indexer.build_index(shot_path)
+            _debug(f"Indexed {len(elements)} UI elements")
+        except Exception as e:
+            _debug(f"Element indexing skipped: {e}")
+            elements = []
+
+        # ── 2. Operator Node: decide next action ─────────────────────
+        action_type, action_args, action_desc, plan_updates = _decide_action_plan_guided(
+            instruction, step, elements, incident_tracker, last_coords,
+            str(shot_path), actions, plan_text,
+        )
+
+        # If operator says finish, check milestone completion
+        if action_type == "finish":
+            if plan_text and not is_task_complete(plan_text):
+                pending = parse_plan(plan_text).pending_count
+                _log(f"Operator says finish but {pending} milestones pending — continuing")
+                continue
+            status = "success"
+            end_reason = "operator_finished"
+            break
+
+        # ── 3. Validator Node: independent judgment ─────────────────
+        incident_context = ""
+        if incident_tracker.has_active_incident:
+            incident_context = incident_tracker.render_for_prompt()
+
+        validation = call_validator(
+            instruction=instruction,
+            plan_text=plan_text,
+            proposed_action=action_desc,
+            action_type=action_type,
+            action_args=action_args,
+            screenshot_path=str(shot_path),
+            vlm_caller=_call_vlm,
+            previous_incidents=incident_context,
+        )
+
+        verdict = validation.get("verdict", "approve")
+        _trace(f"[pro-validator] step {step}: verdict={verdict} reason={validation.get('reason', '')[:100]}")
+
+        if verdict == "reject":
+            _log(f"Validator REJECTED: {validation.get('reason', '')[:120]}")
+            validator_stats["rejected"] += 1
+            incident_tracker.add_incident(
+                category="validator_rejected",
+                reason=validation.get("reason", "Validator rejected the action"),
+                action=action_type,
+                step=step,
+                action_args=action_args,
+                action_description=action_desc,
+                kind="safety_net",
+            )
+            _emit_incident(
+                step, "validator_rejected",
+                validation.get("reason", "Validator rejected"),
+                action_type,
+                incident_tracker.consecutive_failures,
+            )
+            # Feed suggestion back to next Operator call via incident
+            suggestion = validation.get("suggestion", "")
+            if suggestion:
+                incident_tracker.add_recovery_hint(suggestion)
+            continue
+
+        elif verdict == "warn":
+            validator_stats["warned"] += 1
+            _log(f"Validator warned: {validation.get('concern', '')[:120]}")
+            # Execute anyway but log the concern
+            concern = validation.get("concern", "")
+            if concern:
+                incident_tracker.add_recovery_hint(f"Validator concern: {concern}")
+        else:
+            validator_stats["approved"] += 1
+
+        # ── 4. Safety Net: deterministic XML + pixel check ───────────
+        if action_type in ("tap", "long_press", "type"):
             passed, category, reason = safety_net.validate(
                 action_type, action_args, shot_path
             )
             if not passed:
                 incident_tracker.add_incident(
-                    category=category,
-                    reason=reason,
-                    action=action_type,
-                    step=step,
-                    action_args=action_args,
+                    category=category, reason=reason,
+                    action=action_type, step=step, action_args=action_args,
                 )
                 _emit_incident(step, category, reason, action_type,
                                incident_tracker.consecutive_failures)
@@ -567,24 +902,42 @@ def _run_reactive_fallback(
         else:
             safety_check = None
 
-        # 5. Execute action
+        # ── 5. Execute ──────────────────────────────────────────────
         _execute_action_adb(adb_path, device, action_type, action_args)
         actions.append(action_desc)
         time.sleep(1.2)
 
-        # 6. Verification screenshot
+        # Record in history
+        try:
+            history.add(StepRecord(
+                step=step, action=action_desc,
+                action_type=action_type, action_args=action_args,
+                safety_check=safety_check or "",
+            ))
+        except Exception:
+            pass
+
+        # Apply plan updates
+        if plan_updates and plan_text:
+            new_plan_text, changed = apply_plan_updates(plan_text, plan_updates)
+            if changed:
+                plan_text = new_plan_text
+                snap = parse_plan(plan_text)
+                _trace(f"[pro-plan] step {step}: {snap.done_count}/{snap.total_count} done")
+
+        # Verification screenshot
         vshot_path = screenshots_dir / f"step_{step:03d}_{ts}_post.png"
         _take_screenshot(adb_path, device, vshot_path)
 
         _emit_progress(
             step, action_desc,
-            f"Step {step}: {action_desc}",
+            f"Step {step}: {action_desc} [validator: {verdict}]",
             screenshot=str(vshot_path) if vshot_path.exists() else None,
             verified=(safety_check is not None),
             safety_check=safety_check,
         )
 
-        # 7. Loop detection
+        # Loop detection
         if action_type == "tap" and "coordinate" in action_args:
             coord_str = f"{action_args['coordinate'][0]},{action_args['coordinate'][1]}"
             last_coords.append(coord_str)
@@ -598,11 +951,54 @@ def _run_reactive_fallback(
         else:
             last_coords = []
 
-        # 8. Check task completion
-        if action_type == "finish":
-            status = "success"
-            end_reason = "fallback_completed"
-            break
+    # ── Phase 3: Checker Node — final audit ──────────────────────────────
+    _log("Pro Phase 3: Checker node — auditing goal achievement...")
+    _emit_progress(step, "checking", "Checker node: auditing task completion...")
+
+    # Take final screenshot for checker
+    final_shot = screenshots_dir / "pro_checker_final.png"
+    _take_screenshot(adb_path, device, final_shot)
+
+    final_snapshot = parse_plan(plan_text) if plan_text else None
+    plan_done = final_snapshot.done_count if final_snapshot else 0
+    plan_total = final_snapshot.total_count if final_snapshot else 0
+
+    # Build verification summary
+    verification_summary = (
+        f"Milestones: {plan_done}/{plan_total} complete\n"
+        f"Validator stats: {validator_stats['approved']} approved, "
+        f"{validator_stats['warned']} warned, "
+        f"{validator_stats['rejected']} rejected\n"
+        f"Safety incidents: {incident_tracker.count}"
+    )
+
+    checker_result = call_checker(
+        instruction=instruction,
+        plan_text=plan_text,
+        actions=actions,
+        steps=step,
+        screenshot_path=str(final_shot) if final_shot.exists() else "",
+        vlm_caller=_call_vlm,
+        text_llm_caller=_get_text_llm_caller(),
+        verification_summary=verification_summary,
+    )
+
+    _emit({
+        "type": "checker_result",
+        "goal_achieved": checker_result.get("goal_achieved", True),
+        "confidence": checker_result.get("confidence", 0.5),
+        "summary": checker_result.get("summary", ""),
+        "evidence": checker_result.get("evidence", []),
+        "concerns": checker_result.get("concerns", []),
+        "recommendation": checker_result.get("recommendation", ""),
+    })
+
+    checker_verdict = checker_result.get("goal_achieved", True)
+    if not checker_verdict:
+        _log(f"Checker verdict: GOAL NOT ACHIEVED — {checker_result.get('summary', '')[:120]}")
+        # Task completed execution but goal was not met
+        if status == "success":
+            status = "checker_failed"
 
     # Cleanup
     try:
@@ -611,19 +1007,47 @@ def _run_reactive_fallback(
     except Exception:
         pass
 
-    message = f"Fallback loop: {status} after {step} steps. [reason: {end_reason}]"
+    message = (
+        f"Pro graph: {status} after {step} steps. "
+        f"Plan: {plan_done}/{plan_total} milestones. "
+        f"Checker: {'✓ passed' if checker_verdict else '✗ failed'} "
+        f"(confidence: {checker_result.get('confidence', 0):.0%}). "
+        f"[reason: {end_reason}]"
+    )
     return {
         "type": "result",
-        "status": status,
+        "status": "success" if checker_verdict else "checker_failed",
         "steps": step,
         "last_action": actions[-1] if actions else "",
         "message": message,
         "actions": actions,
-        "verification": {"passed": 0, "failed": 0, "inconclusive": 0},
+        "verification": {
+            "passed": plan_done,
+            "failed": 0,
+            "inconclusive": max(0, plan_total - plan_done),
+        },
         "debug": {
             "end_reason": end_reason,
-            "profile": "fallback",
+            "profile": "pro",
+            "plan_milestones_total": plan_total,
+            "plan_milestones_done": plan_done,
             "incidents": incident_tracker.count,
+            "validator_approved": validator_stats["approved"],
+            "validator_warned": validator_stats["warned"],
+            "validator_rejected": validator_stats["rejected"],
+            "checker_confidence": checker_result.get("confidence", 0),
+            "checker_goal_achieved": checker_verdict,
+        },
+        "plan": {
+            "text": plan_text,
+            "milestones_done": plan_done,
+            "milestones_total": plan_total,
+        } if plan_text else None,
+        "checker": {
+            "goal_achieved": checker_verdict,
+            "confidence": checker_result.get("confidence", 0),
+            "summary": checker_result.get("summary", ""),
+            "recommendation": checker_result.get("recommendation", ""),
         },
     }
 
@@ -677,6 +1101,80 @@ def _call_vlm(system_prompt: str, user_prompt: str, image_path: str,
         _log(f"VLM call failed ({url}): {e}")
         _trace(f"[vlm] call failed: {e}")
         return None, "error"
+
+
+def _call_text_llm(system_prompt: str, user_prompt: str,
+                   max_tokens: int = 1024) -> tuple[Optional[str], str]:
+    """Send a text-only prompt to the configured supervisor LLM.
+
+    Uses ``supervisor_provider`` from config.json when configured. Falls back
+    to the primary VLM provider with a text-only message (no image).
+
+    Returns (response_text, finish_reason). On failure returns (None, "error").
+    """
+    cfg = load_skill_config()
+
+    # Check if supervisor_provider is explicitly configured
+    sup = cfg.get("supervisor_provider", {})
+    sup_model = sup.get("model", "")
+    sup_url = sup.get("base_url", "")
+    sup_key = sup.get("api_key", "")
+
+    if sup_model and sup_url:
+        # Use dedicated supervisor provider
+        base_url = sup_url.rstrip("/")
+        api_key = sup_key or cfg.get("api_key", "")
+        model = sup_model
+    else:
+        # Fall back to primary VLM provider (text-only, no image)
+        base_url = cfg["base_url"].rstrip("/")
+        api_key = cfg["api_key"]
+        model = cfg["model"]
+
+    body = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        "max_tokens": max_tokens,
+        "temperature": 0.1,
+    }
+
+    url = f"{base_url}/chat/completions"
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(body).encode("utf-8"),
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}",
+        },
+        method="POST",
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            result = json.loads(resp.read().decode("utf-8"))
+            choice = result["choices"][0]
+            return choice["message"]["content"], choice.get("finish_reason", "unknown")
+    except Exception as e:
+        _log(f"Text LLM call failed ({url}): {e}")
+        _trace(f"[text_llm] call failed: {e}")
+        return None, "error"
+
+
+def _get_text_llm_caller():
+    """Return a text-LLM caller if the supervisor_provider is configured.
+
+    Returns None if no supervisor provider is configured (caller should
+    fall back to the VLM caller with screenshot).
+    """
+    cfg = load_skill_config()
+    sup = cfg.get("supervisor_provider", {})
+    sup_model = sup.get("model", "")
+    if sup_model:
+        return _call_text_llm
+    return None
 
 
 def _decide_action_fallback(
@@ -834,6 +1332,172 @@ def _decide_action_fallback(
 
     else:  # finish or unknown
         return ("finish", {}, "task complete")
+
+
+def _decide_action_plan_guided(
+    instruction: str,
+    step: int,
+    elements: list,
+    incident_tracker,
+    last_coords: list[str],
+    screenshot_path,
+    previous_actions: list[str] = None,
+    plan_text: str = "",
+) -> tuple[str, dict, str, dict | None]:
+    """Call the VLM with screenshot + element index + plan context to decide the next action.
+
+    Like ``_decide_action_fallback`` but includes the current plan state and
+    expects plan progress updates in the response.
+
+    Returns (action_type, action_args, human_readable_description, plan_updates_dict).
+    On VLM failure, returns ("finish", {}, "VLM call failed — stopping", None).
+    """
+    if previous_actions is None:
+        previous_actions = []
+
+    # Build element index text (same as _decide_action_fallback)
+    if elements:
+        MAX_ELEMENTS = 80
+        shown = elements[:MAX_ELEMENTS]
+        lines = [f"UI ELEMENTS ({len(shown)} shown of {len(elements)} indexed):"]
+        for el in shown:
+            label = el.display_text
+            rid = el.resource_id or ""
+            rid_short = rid.split("/")[-1] if "/" in rid else rid
+            cx, cy = el.center
+            bounds_str = f"bounds=({el.bounds[0]},{el.bounds[1]},{el.bounds[2]},{el.bounds[3]})"
+            cls_short = (el.class_name or "").split(".")[-1]
+            lines.append(
+                f'[{el.index}] "{label}" class={cls_short} {bounds_str} center=({cx},{cy})'
+                + (f" rid={rid_short}" if rid_short else "")
+                + (" clickable" if el.clickable and el.enabled else "")
+                + (" disabled" if not el.enabled else "")
+            )
+        index_text = "\n".join(lines)
+    else:
+        index_text = "UI ELEMENTS: (unavailable — use visual analysis)"
+
+    # Previous actions
+    prev_text = ""
+    if previous_actions:
+        recent = previous_actions[-6:]
+        prev_text = "PREVIOUS ACTIONS (do NOT repeat these):\n" + "\n".join(
+            f"  - {a}" for a in recent
+        ) + "\n"
+
+    # Incident context
+    incident_text = ""
+    if incident_tracker and incident_tracker.count > 0:
+        incident_text = f"PREVIOUS INCIDENTS:\n{incident_tracker.render_for_prompt()}\n"
+
+    # Loop warning
+    loop_text = ""
+    if len(last_coords) >= LOOP_THRESHOLD:
+        unique = len(set(last_coords))
+        if unique == 1:
+            loop_text = "⚠️  LOOP DETECTED: same coordinate tapped 3+ times. Try a DIFFERENT approach.\n"
+
+    # Plan context
+    plan_block = ""
+    if plan_text:
+        try:
+            snapshot = parse_plan(plan_text)
+            plan_block = snapshot.render_for_prompt() + "\n\n"
+        except Exception:
+            plan_block = f"CURRENT PLAN:\n{plan_text}\n\n"
+
+    # Assemble system prompt: base + plan tracking
+    system_prompt = SYSTEM_PROMPT_FALLBACK + "\n\n" + build_operator_plan_system_prompt()
+
+    user_prompt = (
+        f"TASK: {instruction}\n"
+        f"\n{plan_block}"
+        f"Step: {step}\n"
+        + (f"\n{prev_text}" if prev_text else "")
+        + (f"\n{loop_text}" if loop_text else "")
+        + (f"\n{incident_text}" if incident_text else "")
+        + f"\n{index_text}"
+    )
+
+    raw, finish_reason = _call_vlm(system_prompt, user_prompt, screenshot_path, max_tokens=2624)
+    if not raw:
+        _log("VLM returned no response — assuming task is stuck, returning finish")
+        return ("finish", {}, "VLM call failed — stopping", None)
+
+    if finish_reason == "length" and "{" not in raw:
+        _log("VLM output truncated (length) — injecting back action to retry")
+        return ("system_button", {"button": "back"}, "truncated: back", None)
+
+    # Robust JSON extraction
+    json_str = raw
+    think_end = json_str.rfind("</")
+    if think_end >= 0:
+        json_str = json_str[think_end:]
+    json_str = re.sub(r"<[^>]+/?>", "", json_str)
+    json_str = re.sub(r"```\w*\n?", "", json_str)
+
+    brace_start = json_str.find("{")
+    brace_end = json_str.rfind("}")
+    if brace_start >= 0 and brace_end > brace_start:
+        json_str = json_str[brace_start : brace_end + 1]
+    else:
+        _debug(f"VLM output has no JSON: {raw[:300]}")
+        return ("finish", {}, f"no JSON in response: {raw[:80]}", None)
+
+    try:
+        parsed = json.loads(json_str)
+    except json.JSONDecodeError:
+        _debug(f"VLM JSON parse failed: {json_str[:300]}")
+        return ("finish", {}, f"VLM parse error: {json_str[:80]}", None)
+
+    # Extract plan_updates before normalizing action
+    plan_updates = parsed.get("plan_updates")
+
+    action = parsed.get("action", "finish")
+
+    # Normalize action_type and args (same logic as _decide_action_fallback)
+    if action == "tap":
+        coord = parsed.get("coordinate", [0, 0])
+        x, y = int(coord[0]), int(coord[1])
+        desc = f"tap({x},{y})"
+        return ("tap", {"coordinate": [x, y]}, desc, plan_updates)
+
+    elif action == "long_press":
+        coord = parsed.get("coordinate", [0, 0])
+        x, y = int(coord[0]), int(coord[1])
+        desc = f"long_press({x},{y})"
+        return ("long_press", {"coordinate": [x, y]}, desc, plan_updates)
+
+    elif action == "swipe":
+        c1 = parsed.get("coordinate1", [0, 0])
+        c2 = parsed.get("coordinate2", [0, 0])
+        dur = parsed.get("duration", 300)
+        desc = f"swipe({c1}→{c2})"
+        return ("swipe", {"coordinate1": c1, "coordinate2": c2, "duration": dur}, desc, plan_updates)
+
+    elif action == "type":
+        text = parsed.get("text", "")
+        desc = f"type({text[:30]})"
+        return ("type", {"text": text}, desc, plan_updates)
+
+    elif action == "system_button":
+        btn = parsed.get("button", "back")
+        desc = f"press({btn})"
+        return ("system_button", {"button": btn}, desc, plan_updates)
+
+    elif action == "open_app":
+        app = parsed.get("app_name", "")
+        pkg = APP_PACKAGE_MAP.get(app, app)
+        desc = f"open_app({app})"
+        return ("open", {"text": pkg}, desc, plan_updates)
+
+    elif action == "fail":
+        reason = parsed.get("reason", "unknown")
+        _log(f"VLM reports task cannot be completed: {reason}")
+        return ("finish", {}, f"Task failed: {reason}", plan_updates)
+
+    else:  # finish or unknown
+        return ("finish", {}, "task complete", plan_updates)
 
 
 def _execute_action_adb(
