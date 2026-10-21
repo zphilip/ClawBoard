@@ -1,20 +1,21 @@
 #!/usr/bin/env python3
 """
-artemis_agent.py — OpenClaw skill wrapper for Artemis (Google Research)
+artemis_agent.py — Self-contained Android automation agent (Artemis port)
 
-Wraps the Artemis multi-agent engine with:
-  - ADB pre-checks (device connectivity, screen state)
-  - Profile selection (flash / pro)
-  - Safety net integration (XML + pixel precondition validation)
-  - Execution incident tracking with self-healing
-  - Explorer element indexing
-  - Structured JSONL output for OpenClaw to consume
+Multi-agent graph for mobile device automation with two profiles:
+  - Flash: Plan-guided reactive loop with history + context budget (fast, ~5-8s/step)
+  - Pro:   Full graph — Planner → Operator → Validator → SafetyNet → Execute → Checker
 
-Key architectural imports from Artemis core:
-  - artemis.sdk.agent.Agent          — main execution engine
-  - artemis.agents.validator.*       — precondition_xml, precondition_pixel
-  - artemis.agents.explorer.*        — screen_index, tiers, exploration
-  - artemis.agents.validator.incidents — ExecutionIncident tracking
+No external SDK dependency — pure Python + ADB + VLM/LLM.
+
+Components (in runner/):
+  - planner     — Task plan grammar, plan generation, plan-guided execution
+  - validator   — Action validator: independent VLM judges Operator's proposal
+  - checker     — Final task completion audit (VLM or text LLM)
+  - safety_net  — Pre-execution XML + pixel precondition validation
+  - incidents   — Structured failure tracking with self-healing
+  - explorer    — UI element indexer (accessibility tree)
+  - context     — History store with keyword search and context budget tracking
 
 Usage:
     python3 artemis_agent.py --instruction "打开百度地图,导航回家"
@@ -323,39 +324,8 @@ def _take_screenshot(adb_path: str, device: Optional[str], dest: Path,
 # ---------------------------------------------------------------------------
 # Artemis availability check
 # ---------------------------------------------------------------------------
-
-def check_artemis_available() -> bool:
-    """Check if the Artemis Python package is importable."""
-    try:
-        import artemis  # noqa: F401
-        return True
-    except ImportError:
-        return False
-
-def _find_artemis_python() -> Optional[str]:
-    """Find the Python interpreter with Artemis installed."""
-    candidates = [
-        "/workspace/artemis/.venv/bin/python",
-        "/workspace/artemis/.venv/bin/python3",
-    ]
-    for p in candidates:
-        if Path(p).exists():
-            return p
-    # Fall back to system python
-    try:
-        subprocess.run(
-            [sys.executable, "-c", "import artemis"],
-            capture_output=True, timeout=5
-        )
-        return sys.executable
-    except Exception:
-        return None
-
+# Core runner: self-contained multi-agent graph (no Artemis SDK dependency)
 # ---------------------------------------------------------------------------
-# Core runner: wraps Artemis SDK Agent
-# ---------------------------------------------------------------------------
-
-SCREENSHOTS_ROOT_ARTEMIS: Optional[Path] = None
 
 def run_artemis_agent(
     instruction: str,
@@ -367,130 +337,24 @@ def run_artemis_agent(
     verification: str,
     explorer_tier: str,
 ) -> dict:
+    """Run the Artemis mobile agent and emit progress events.
+
+    This is a self-contained port of the Artemis multi-agent graph.
+    No external SDK dependency — pure Python + ADB + VLM.
+
+    Routes to the appropriate fallback loop based on profile:
+      - ``flash``: Plan-guided reactive loop (planner + memory, no safety net)
+      - ``pro``:   Full multi-agent graph (planner → operator → validator →
+                   safety net → execute → checker)
     """
-    Run the Artemis multi-agent engine and emit progress events.
-    Falls back to a pure-ADB reactive loop if Artemis is not importable.
-    """
-    if not check_artemis_available():
-        _log("Artemis SDK not importable — falling back to reactive ADB loop")
-        return _run_reactive_fallback(instruction, adb_path, device, max_steps, timeout, profile=profile)
+    _log(f"Running {profile} fallback loop v1.1.0 — model={load_skill_config().get('model', '?')}")
 
-    _log(f"Launching Artemis engine: profile={profile}, explorer={explorer_tier}, verification={verification}")
-
-    screenshots_dir = _make_run_screenshots_dir()
-    start = time.time()
-    actions: list[str] = []
-    step = 0
-    status = "timeout"
-    last_action = ""
-    end_reason = "runner_started"
-    verification_result = {"passed": 0, "failed": 0, "inconclusive": 0}
-
-    _trace(f"[run] profile={profile} instruction={instruction!r} device={device}")
-
-    try:
-        # Attempt to use Artemis SDK
-        import asyncio as _asyncio
-
-        from artemis.sdk.agent import Agent
-        from artemis.sdk.types.agent import AgentConfig
-        from artemis.sdk.builders import Builders
-
-        # Build config
-        builder = Builders.AgentConfig
-        builder.for_device("android", device)
-
-        if profile == "flash":
-            builder.with_profile("flash")
-        else:
-            builder.with_profile("pro")
-
-        if verification == "off":
-            builder.disable_checker()
-        elif verification == "strict":
-            builder.with_verification_level("strict")
-        elif verification == "checkpoints":
-            builder.with_verification_level("checkpoints")
-        else:
-            builder.with_verification_level("final")
-
-        if explorer_tier:
-            builder.with_explorer(explorer_tier)
-
-        config = builder.build()
-        agent = Agent(config=config, device_serial=device)
-
-        # Run the task
-        async def _run():
-            result = await agent.run(instruction)
-            return result
-
-        loop = _asyncio.new_event_loop()
-        _asyncio.set_event_loop(loop)
-        try:
-            result = loop.run_until_complete(_run())
-        finally:
-            loop.close()
-
-        if result and result.succeeded:
-            status = "success"
-            end_reason = "artemis_completed"
-            # Extract steps from result
-            if hasattr(result, 'steps'):
-                step = result.steps
-            if hasattr(result, 'actions'):
-                actions = result.actions
-            if hasattr(result, 'verification'):
-                verification_result = result.verification
-
-            _emit_progress(step, "finish",
-                           f"Step {step}: Task finished ✓ (Artemis {profile})",
-                           screenshot=None)
-        else:
-            error_msg = getattr(result, 'error', 'Unknown error') if result else "No result"
-            status = "error"
-            end_reason = f"artemis_failed: {error_msg}"
-            _log(f"Artemis task failed: {error_msg}")
-
-    except ImportError as e:
-        _log(f"Artemis SDK missing: {e} — using fallback loop")
-        return _run_reactive_fallback(instruction, adb_path, device, max_steps, timeout, profile=profile)
-
-    except Exception as e:
-        _log(f"Artemis execution error: {e}")
-        _trace(f"[error] {e}")
-        status = "error"
-        end_reason = f"artemis_exception: {e}"
-
-    # Clean up screenshots
-    try:
-        if screenshots_dir.exists():
-            shutil.rmtree(screenshots_dir, ignore_errors=True)
-    except Exception:
-        pass
-
-    message_map = {
-        "success": f"Task completed in {step} steps. Verification: {verification_result['passed']}/{verification_result['passed'] + verification_result['failed'] + verification_result['inconclusive']} checkpoints passed.",
-        "timeout": f"Timed out after {int(time.time()-start)}s / {step} steps.",
-        "error": f"Execution error after {step} steps.",
-    }
-    message = message_map.get(status, f"Status: {status} after {step} steps.")
-    message += f" [reason: {end_reason}]"
-
-    return {
-        "type": "result",
-        "status": status,
-        "steps": step,
-        "last_action": last_action,
-        "message": message,
-        "actions": actions,
-        "verification": verification_result,
-        "debug": {
-            "end_reason": end_reason,
-            "profile": profile,
-            "explorer_tier": explorer_tier,
-        },
-    }
+    if profile == "pro":
+        return _run_plan_guided_fallback(
+            instruction, adb_path, device, max_steps, timeout,
+            verification=verification, explorer_tier=explorer_tier,
+        )
+    return _run_reactive_fallback(instruction, adb_path, device, max_steps, timeout, profile=profile)
 
 
 def _run_reactive_fallback(
@@ -1670,14 +1534,8 @@ def main() -> int:
     # 3. Screen setup
     ensure_screen_on("adb", device)
 
-    # 4. Check Artemis availability
-    if check_artemis_available():
-        _log("Artemis SDK is available — using full engine")
-        _trace(f"[config] artemis SDK importable, profile={args.profile}")
-    else:
-        _log("Artemis SDK not found — using fallback reactive loop with safety net")
-        _log("Tip: cd /workspace/artemis && uv sync to enable full Artemis engine")
-        _trace("[config] artemis SDK NOT importable — fallback mode")
+    # 4. Profile routing
+    _log(f"Profile: {args.profile} — {'full multi-agent graph' if args.profile == 'pro' else 'plan + reactive loop'}")
 
     if args.dry_run:
         _emit({
