@@ -1070,12 +1070,25 @@ def _encode_image(image_path: str) -> str:
 
 
 def _call_vlm(system_prompt: str, user_prompt: str, image_path: str,
-              max_tokens: int = 2048) -> tuple[Optional[str], str]:
-    """Send a prompt + screenshot to the configured VLM. Returns (response_text, finish_reason)."""
+              max_tokens: int = 2048,
+              timeout: int | None = None,
+              retries: int | None = None) -> tuple[Optional[str], str]:
+    """Send a prompt + screenshot to the configured VLM.
+
+    Returns (response_text, finish_reason). On failure returns (None, "error").
+
+    Retries on transient failures (timeout, connection reset) with exponential backoff.
+    Timeout and retries are read from config.json (keys: ``vlm_timeout``, ``vlm_retries``)
+    and can be overridden per-call.
+    """
     cfg = load_skill_config()
     base_url = cfg["base_url"].rstrip("/")
     api_key = cfg["api_key"]
     model = cfg["model"]
+
+    # Read timeout/retries from config, allowing per-call overrides
+    actual_timeout = timeout if timeout is not None else cfg.get("vlm_timeout", 120)
+    actual_retries = retries if retries is not None else cfg.get("vlm_retries", 2)
 
     data_uri = f"data:image/png;base64,{_encode_image(image_path)}"
 
@@ -1093,37 +1106,57 @@ def _call_vlm(system_prompt: str, user_prompt: str, image_path: str,
     }
 
     url = f"{base_url}/chat/completions"
-    req = urllib.request.Request(
-        url,
-        data=json.dumps(body).encode("utf-8"),
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {api_key}",
-        },
-        method="POST",
-    )
+    last_error = ""
+    for attempt in range(actual_retries + 1):
+        try:
+            req = urllib.request.Request(
+                url,
+                data=json.dumps(body).encode("utf-8"),
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {api_key}",
+                },
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=actual_timeout) as resp:
+                result = json.loads(resp.read().decode("utf-8"))
+                choice = result["choices"][0]
+                return choice["message"]["content"], choice.get("finish_reason", "unknown")
+        except (urllib.error.URLError, TimeoutError, ConnectionResetError,
+                OSError) as e:
+            last_error = str(e)
+            if attempt < retries:
+                delay = (attempt + 1) * 1.5  # 1.5s, 3.0s backoff
+                _log(f"VLM call failed (attempt {attempt+1}/{retries+1}, retry in {delay:.1f}s): {last_error[:80]}")
+                time.sleep(delay)
+            else:
+                _log(f"VLM call failed after {retries+1} attempts ({url}): {last_error}")
+                _trace(f"[vlm] call failed after {retries+1} attempts: {last_error}")
+        except Exception as e:
+            _log(f"VLM call failed ({url}): {e}")
+            _trace(f"[vlm] call failed: {e}")
+            return None, "error"
 
-    try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            result = json.loads(resp.read().decode("utf-8"))
-            choice = result["choices"][0]
-            return choice["message"]["content"], choice.get("finish_reason", "unknown")
-    except Exception as e:
-        _log(f"VLM call failed ({url}): {e}")
-        _trace(f"[vlm] call failed: {e}")
-        return None, "error"
+    return None, "error"
 
 
 def _call_text_llm(system_prompt: str, user_prompt: str,
-                   max_tokens: int = 1024) -> tuple[Optional[str], str]:
+                   max_tokens: int = 1024,
+                   timeout: int | None = None,
+                   retries: int | None = None) -> tuple[Optional[str], str]:
     """Send a text-only prompt to the configured supervisor LLM.
 
     Uses ``supervisor_provider`` from config.json when configured. Falls back
     to the primary VLM provider with a text-only message (no image).
 
     Returns (response_text, finish_reason). On failure returns (None, "error").
+    Retries on transient failures with exponential backoff.
+    Timeout and retries are read from config.json (keys: ``vlm_timeout``, ``vlm_retries``).
     """
     cfg = load_skill_config()
+
+    actual_timeout = timeout if timeout is not None else cfg.get("vlm_timeout", 120)
+    actual_retries = retries if retries is not None else cfg.get("vlm_retries", 2)
 
     # Check if supervisor_provider is explicitly configured
     sup = cfg.get("supervisor_provider", {})
@@ -1153,25 +1186,38 @@ def _call_text_llm(system_prompt: str, user_prompt: str,
     }
 
     url = f"{base_url}/chat/completions"
-    req = urllib.request.Request(
-        url,
-        data=json.dumps(body).encode("utf-8"),
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {api_key}",
-        },
-        method="POST",
-    )
+    last_error = ""
+    for attempt in range(actual_retries + 1):
+        try:
+            req = urllib.request.Request(
+                url,
+                data=json.dumps(body).encode("utf-8"),
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {api_key}",
+                },
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=actual_timeout) as resp:
+                result = json.loads(resp.read().decode("utf-8"))
+                choice = result["choices"][0]
+                return choice["message"]["content"], choice.get("finish_reason", "unknown")
+        except (urllib.error.URLError, TimeoutError, ConnectionResetError,
+                OSError) as e:
+            last_error = str(e)
+            if attempt < retries:
+                delay = (attempt + 1) * 1.5
+                _log(f"Text LLM call failed (attempt {attempt+1}/{retries+1}, retry in {delay:.1f}s): {last_error[:80]}")
+                time.sleep(delay)
+            else:
+                _log(f"Text LLM call failed after {retries+1} attempts ({url}): {last_error}")
+                _trace(f"[text_llm] call failed after {retries+1} attempts: {last_error}")
+        except Exception as e:
+            _log(f"Text LLM call failed ({url}): {e}")
+            _trace(f"[text_llm] call failed: {e}")
+            return None, "error"
 
-    try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            result = json.loads(resp.read().decode("utf-8"))
-            choice = result["choices"][0]
-            return choice["message"]["content"], choice.get("finish_reason", "unknown")
-    except Exception as e:
-        _log(f"Text LLM call failed ({url}): {e}")
-        _trace(f"[text_llm] call failed: {e}")
-        return None, "error"
+    return None, "error"
 
 
 def _get_text_llm_caller():
@@ -1201,7 +1247,7 @@ def _decide_action_fallback(
     Call the VLM with screenshot + element index + instruction to decide the next action.
 
     Returns (action_type, action_args, human_readable_description).
-    On VLM failure, returns ("finish", {}, "finish") to stop gracefully.
+    On VLM failure, returns ("system_button", {"button": "back"}, "VLM failure: back").
     """
     if previous_actions is None:
         previous_actions = []
@@ -1259,8 +1305,12 @@ def _decide_action_fallback(
 
     raw, finish_reason = _call_vlm(SYSTEM_PROMPT_FALLBACK, user_prompt, screenshot_path)
     if not raw:
-        _log("VLM returned no response — assuming task is stuck, returning finish")
-        return ("finish", {}, "VLM call failed — stopping")
+        _log("Operator VLM returned no response — retrying once after pause")
+        time.sleep(2)
+        raw, finish_reason = _call_vlm(SYSTEM_PROMPT_FALLBACK, user_prompt, screenshot_path)
+        if not raw:
+            _log("Operator VLM failed after retry — returning system_button: back")
+            return ("system_button", {"button": "back"}, "VLM failure: back")
 
     # If truncated by token limit, the JSON likely didn't fit — retry with back
     if finish_reason == "length" and "{" not in raw:
@@ -1289,13 +1339,13 @@ def _decide_action_fallback(
         json_str = json_str[brace_start:brace_end + 1]
     else:
         _debug(f"VLM output has no JSON: {raw[:300]}")
-        return ("finish", {}, f"no JSON in response: {raw[:80]}")
+        return ("system_button", {"button": "back"}, f"no JSON in response: {raw[:80]}")
 
     try:
         parsed = json.loads(json_str)
     except json.JSONDecodeError:
         _debug(f"VLM JSON parse failed: {json_str[:300]}")
-        return ("finish", {}, f"VLM parse error: {json_str[:80]}")
+        return ("system_button", {"button": "back"}, f"VLM parse error: {json_str[:80]}")
 
     action = parsed.get("action", "finish")
 
@@ -1364,7 +1414,7 @@ def _decide_action_plan_guided(
     Expects plan progress updates in the response.
 
     Returns (action_type, action_args, human_readable_description, plan_updates_dict, notes_updates).
-    On VLM failure, returns ("finish", {}, "VLM call failed — stopping", None, None).
+    On VLM failure, returns ("system_button", {"button": "back"}, "VLM failure: back", None, None).
     """
     if previous_actions is None:
         previous_actions = []
@@ -1452,8 +1502,12 @@ def _decide_action_plan_guided(
 
     raw, finish_reason = _call_vlm(system_prompt, user_prompt, screenshot_path, max_tokens=2624)
     if not raw:
-        _log("VLM returned no response — assuming task is stuck, returning finish")
-        return ("finish", {}, "VLM call failed — stopping", None, None)
+        _log("Operator VLM returned no response — retrying once after pause")
+        time.sleep(2)
+        raw, finish_reason = _call_vlm(system_prompt, user_prompt, screenshot_path, max_tokens=2624)
+        if not raw:
+            _log("Operator VLM failed after retry — returning system_button: back")
+            return ("system_button", {"button": "back"}, "VLM failure: back", None, None)
 
     if finish_reason == "length" and "{" not in raw:
         _log("VLM output truncated (length) — injecting back action to retry")
@@ -1473,13 +1527,13 @@ def _decide_action_plan_guided(
         json_str = json_str[brace_start : brace_end + 1]
     else:
         _debug(f"VLM output has no JSON: {raw[:300]}")
-        return ("finish", {}, f"no JSON in response: {raw[:80]}", None, None)
+        return ("system_button", {"button": "back"}, f"no JSON in response: {raw[:80]}", None, None)
 
     try:
         parsed = json.loads(json_str)
     except json.JSONDecodeError:
         _debug(f"VLM JSON parse failed: {json_str[:300]}")
-        return ("finish", {}, f"VLM parse error: {json_str[:80]}", None, None)
+        return ("system_button", {"button": "back"}, f"VLM parse error: {json_str[:80]}", None, None)
 
     # Extract plan_updates and notes before normalizing action
     plan_updates = parsed.get("plan_updates")
