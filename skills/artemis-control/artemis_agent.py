@@ -149,10 +149,9 @@ Available actions:
   {"action": "finish"}                                  — task completed
   {"action": "fail", "reason": "why"}                   — task cannot be completed
 
-**COORDINATE SPACE**: The user message tells you the normalized resolution
-(e.g. "Screenshot normalized to 450x1000").  All tap/swipe/long_press
-coordinates MUST be relative to that normalized space — they will be
-auto-scaled to the actual device pixel grid.
+**COORDINATE SPACE**: ALL x,y values are in 0-1000 canonical space
+(both X and Y axes, regardless of aspect ratio).  Every coordinate you
+output will be auto-scaled to the actual device pixel grid.
 
 Optional fields:
   "plan_updates" — see Plan Tracking section above (plan-guided only)
@@ -237,9 +236,8 @@ Android device operator. Output ONLY a JSON object per turn.
 {"action":"finish"}
 {"action":"fail","reason":"why"}
 
-**COORDINATES**: ALL x,y values must be relative to the normalized resolution
-shown in the user message (e.g. "normalized to 450x1000"). Coordinates will
-be auto-scaled to device pixels. DO NOT output raw device coordinates.
+**COORDINATES**: ALL x,y values must be 0-1000 (both axes). Coords
+are auto-scaled to device pixels. DO NOT use raw device coordinates.
 
 ## Rules (MUST follow)
 1. **Look at the screenshot first.** Match what you see to the UI elements listed.
@@ -1190,11 +1188,12 @@ NORM_MAX_DIM = 1000
 
 
 def _encode_image(image_path: str) -> tuple[str, int, int]:
-    """Read screenshot, resize to normalized coordinate space, return (base64, w, h).
+    """Read screenshot, optionally resize, return (base64_b64, NORM_MAX_DIM, NORM_MAX_DIM).
 
-    The VLM works in the normalized coordinate space.  All coordinates it outputs
-    are relative to these normalized dimensions.  We scale them back to device
-    pixels after parsing the VLM response.
+    The VLM is always told the coordinate space is 1000×1000 (canonical, like
+    Artemis and mobile-control).  The image may be resized for bandwidth, but
+    the norm dimensions are FIXED at 1000×1000 — never aspect-ratio dependent.
+    All coordinate scaling uses 1000 as the denominator.
     """
     try:
         from PIL import Image
@@ -1202,25 +1201,22 @@ def _encode_image(image_path: str) -> tuple[str, int, int]:
         img = Image.open(image_path)
         orig_w, orig_h = img.size
 
-        # Scale to fit within NORM_MAX_DIM × NORM_MAX_DIM, preserving aspect ratio
+        # Resize to fit within NORM_MAX_DIM × NORM_MAX_DIM (bandwidth optimization)
         scale = NORM_MAX_DIM / max(orig_w, orig_h)
-        norm_w = max(1, round(orig_w * scale))
-        norm_h = max(1, round(orig_h * scale))
-
-        if scale < 1.0:  # Only resize if image is larger than norm space
-            img = img.resize((norm_w, norm_h), Image.LANCZOS)
+        if scale < 1.0:
+            new_w = max(1, round(orig_w * scale))
+            new_h = max(1, round(orig_h * scale))
+            img = img.resize((new_w, new_h), Image.LANCZOS)
 
         buf = BytesIO()
         img.save(buf, format="PNG")
         b64 = base64.b64encode(buf.getvalue()).decode("ascii")
-        return b64, norm_w, norm_h
+        return b64, NORM_MAX_DIM, NORM_MAX_DIM
     except ImportError:
         # PIL not available — fall back to raw encode
         with open(image_path, "rb") as f:
             b64 = base64.b64encode(f.read()).decode("ascii")
-        if _DEVICE_RESOLUTION:
-            return b64, _DEVICE_RESOLUTION[0], _DEVICE_RESOLUTION[1]
-        return b64, 1080, 2400  # conservative default
+        return b64, NORM_MAX_DIM, NORM_MAX_DIM
 
 
 def _call_vlm(system_prompt: str, user_prompt: str, image_path: str,
@@ -1306,39 +1302,124 @@ def _call_vlm_simple(system_prompt: str, user_prompt: str, image_path: str,
 
 def _scale_coordinate(vlm_x: int, vlm_y: int,
                       norm_w: int, norm_h: int) -> tuple[int, int]:
-    """Scale a VLM coordinate (in normalized image space) to device pixels.
+    """Scale a VLM coordinate (0-1000 canonical space) to device pixels.
 
-    The VLM outputs coordinates relative to the normalized image dimensions
-    (norm_w × norm_h).  We map these back to actual device pixels using the
-    cached device resolution.
+    The VLM always outputs coordinates in the canonical 0-1000 range
+    regardless of actual image dimensions.  We divide by 1000 to get a
+    fraction and multiply by device resolution.
     """
     if _DEVICE_RESOLUTION is None:
         return vlm_x, vlm_y
 
     dev_w, dev_h = _DEVICE_RESOLUTION
-    scaled_x = round(vlm_x / norm_w * dev_w)
-    scaled_y = round(vlm_y / norm_h * dev_h)
+    scaled_x = round(vlm_x * dev_w / NORM_MAX_DIM)
+    scaled_y = round(vlm_y * dev_h / NORM_MAX_DIM)
     scaled_x = max(0, min(scaled_x, dev_w - 1))
     scaled_y = max(0, min(scaled_y, dev_h - 1))
 
-    _trace(f"[coord] VLM({vlm_x},{vlm_y}) in ({norm_w}x{norm_h}) → DEV({scaled_x},{scaled_y}) in ({dev_w}x{dev_h})")
+    _trace(f"[coord] VLM({vlm_x},{vlm_y}) 0-1000 → DEV({scaled_x},{scaled_y}) in ({dev_w}x{dev_h})")
     return scaled_x, scaled_y
 
 
 def _get_norm_dimensions(image_path: str) -> tuple[int, int]:
-    """Compute the normalization dimensions for a screenshot without encoding.
+    """Return the canonical normalized coordinate dimensions (always 1000×1000).
 
-    Same logic as ``_encode_image``'s resize step — returns (norm_w, norm_h)
-    so callers can inject the normalized resolution into the prompt before the
-    VLM call, guaranteeing the VLM and ``_scale_coordinate`` agree on the grid.
+    Like Artemis, the VLM always works in a fixed 0-1000 coordinate space
+    regardless of actual image dimensions.
     """
-    from PIL import Image
-    img = Image.open(image_path)
-    orig_w, orig_h = img.size
-    scale = NORM_MAX_DIM / max(orig_w, orig_h)
-    norm_w = max(1, round(orig_w * scale))
-    norm_h = max(1, round(orig_h * scale))
-    return norm_w, norm_h
+    return NORM_MAX_DIM, NORM_MAX_DIM
+
+
+def _repair_json(raw: str, finish_reason: str) -> str | None:
+    """Attempt to repair truncated or malformed JSON from the VLM.
+
+    Handles:
+    - Truncated JSON (missing closing braces/quotes) — adds closing braces
+    - Multiple JSON objects — tries each ``{...}`` block and returns first valid
+    - Mid-string truncation — strips incomplete field, re-closes braces
+    - Unescaped quotes in Chinese text — escapes internal quote marks
+
+    Returns the repaired JSON string, or None if repair fails.
+    """
+    # Stage 1: find complete { ... } blocks (depth returns to 0)
+    candidates = []
+    depth = 0
+    start = -1
+    for i, ch in enumerate(raw):
+        if ch == "{":
+            if depth == 0:
+                start = i
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0 and start >= 0:
+                candidates.append(raw[start:i + 1])
+                start = -1
+
+    for cand in candidates:
+        try:
+            json.loads(cand)
+            return cand
+        except json.JSONDecodeError:
+            continue
+
+    # Stage 2: no valid complete block — repair the text
+    idx = raw.find("{")
+    if idx < 0:
+        return None
+
+    partial = raw[idx:]
+
+    for repair_attempt in _gen_repairs(partial):
+        try:
+            json.loads(repair_attempt)
+            return repair_attempt
+        except json.JSONDecodeError:
+            continue
+
+    return None
+
+
+def _gen_repairs(partial: str):
+    """Generate candidate repairs for truncated JSON, best-first."""
+    open_count = partial.count("{")
+    close_count = partial.count("}")
+
+    # ---------- attempt 1: close unterminated string value ----------
+    yield partial + '"' + "}" * max(0, open_count - close_count)
+
+    # ---------- attempt 2: strip last incomplete field, recount braces ----------
+    # Find last field separator that suggests a complete preceding value
+    for sep in ('}",', '"],', '",', '],'):
+        pos = partial.rfind(sep)
+        if pos < 0:
+            continue
+        cut_pos = pos + len(sep) - 1  # include the comma
+        stripped = partial[:cut_pos].rstrip(",")
+        # Recount braces on stripped text
+        s_open = stripped.count("{")
+        s_close = stripped.count("}")
+        if s_open > s_close:
+            yield stripped + "}" * (s_open - s_close)
+
+    # ---------- attempt 3: escape unescaped quotes in last string ----------
+    # Model sometimes outputs Chinese quotes like "搜索"南岸花城" — try escaping
+    idx_last_open = partial.rfind('"')
+    idx_second_last = partial.rfind('"', 0, idx_last_open)
+    if idx_second_last > 0 and idx_last_open > idx_second_last:
+        # Content between second-last " and last " has internal quotes
+        suffix = partial[idx_second_last + 1:]
+        # Replace internal " with escaped \"
+        fixed_suffix = suffix[:-1].replace('"', '\\"') + '"'
+        escaped = partial[:idx_second_last + 1] + fixed_suffix
+        e_open = escaped.count("{")
+        e_close = escaped.count("}")
+        if e_open > e_close:
+            yield escaped + "}" * (e_open - e_close)
+
+    # ---------- attempt 4: just close braces ----------
+    if open_count > close_count:
+        yield partial + "}" * (open_count - close_count)
 
 
 def _call_text_llm(system_prompt: str, user_prompt: str,
@@ -1456,18 +1537,18 @@ def _decide_action_fallback(
     # Compute normalized coordinate space early — we need it for element centers
     norm_w, norm_h = _get_norm_dimensions(screenshot_path)
 
-    # Build element index text — centers are shown in NORMALIZED space
+    # Build element index text — centers are shown in NORMALIZED 0-1000 space
     if elements:
         MAX_ELEMENTS = 80
         shown = elements[:MAX_ELEMENTS]
-        lines = [f"UI ELEMENTS ({len(shown)} shown of {len(elements)} indexed, norm={norm_w}x{norm_h}):"]
+        lines = [f"UI ELEMENTS ({len(shown)} shown of {len(elements)} indexed, coords 0-1000):"]
         for el in shown:
             label = el.display_text
             rid = el.resource_id or ""
             rid_short = rid.split("/")[-1] if "/" in rid else rid
-            # Convert device-pixel center to normalized space
-            cx = round(el.center[0] * norm_w / max(1, _DEVICE_RESOLUTION[0])) if _DEVICE_RESOLUTION else el.center[0]
-            cy = round(el.center[1] * norm_h / max(1, _DEVICE_RESOLUTION[1])) if _DEVICE_RESOLUTION else el.center[1]
+            # Convert device-pixel center to 0-1000 normalized space
+            cx = round(el.center[0] * NORM_MAX_DIM / max(1, _DEVICE_RESOLUTION[0])) if _DEVICE_RESOLUTION else el.center[0]
+            cy = round(el.center[1] * NORM_MAX_DIM / max(1, _DEVICE_RESOLUTION[1])) if _DEVICE_RESOLUTION else el.center[1]
             cls_short = (el.class_name or "").split(".")[-1]
             # Compact format: index, label, center, clickable state
             tags = []
@@ -1515,9 +1596,11 @@ def _decide_action_fallback(
         + f"\n{index_text}"
     )
 
-    user_prompt += f"\n\nNOTE: Screenshot normalized to {norm_w}x{norm_h}. "
-    user_prompt += f"Output ALL coordinates relative to this {norm_w}x{norm_h} space. "
-    user_prompt += f"They will be auto-scaled to device pixels."
+    user_prompt += (
+        "\n\nCOORDINATE SPACE: All coordinates MUST be in 0-1000 range "
+        "(both X and Y). The screenshot and element centers are shown in this "
+        "canonical space. Coordinates will be auto-scaled to device pixels."
+    )
 
     system_prompt = _get_operator_system_prompt()
     raw, finish_reason, norm_w, norm_h = _call_vlm(system_prompt, user_prompt, screenshot_path)
@@ -1549,19 +1632,16 @@ def _decide_action_fallback(
     json_str = re.sub(r'<[^>]+/?>', '', json_str)
     json_str = re.sub(r'```\w*\n?', '', json_str)
 
-    # Find outermost { ... }
-    brace_start = json_str.find("{")
-    brace_end = json_str.rfind("}")
-    if brace_start >= 0 and brace_end > brace_start:
-        json_str = json_str[brace_start:brace_end + 1]
-    else:
-        _debug(f"VLM output has no JSON: {raw[:300]}")
+    # Repair truncated/malformed JSON (handles multi-JSON, missing braces)
+    repaired = _repair_json(json_str, finish_reason)
+    if not repaired:
+        _debug(f"VLM output has no valid JSON: {raw[:300]}")
         return ("system_button", {"button": "back"}, f"no JSON in response: {raw[:80]}")
 
     try:
-        parsed = json.loads(json_str)
+        parsed = json.loads(repaired)
     except json.JSONDecodeError:
-        _debug(f"VLM JSON parse failed: {json_str[:300]}")
+        _debug(f"VLM JSON parse failed after repair: {json_str[:300]}")
         return ("system_button", {"button": "back"}, f"VLM parse error: {json_str[:80]}")
 
     action = parsed.get("action", "finish")
@@ -1571,14 +1651,14 @@ def _decide_action_fallback(
         coord = parsed.get("coordinate", [0, 0])
         x, y = int(coord[0]), int(coord[1])
         x, y = _scale_coordinate(x, y, norm_w, norm_h)
-        desc = f"tap({x},{y}) [norm: {norm_w}x{norm_h}]"
+        desc = f"tap({x},{y}) [0-1000→px]"
         return ("tap", {"coordinate": [x, y]}, desc)
 
     elif action == "long_press":
         coord = parsed.get("coordinate", [0, 0])
         x, y = int(coord[0]), int(coord[1])
         x, y = _scale_coordinate(x, y, norm_w, norm_h)
-        desc = f"long_press({x},{y}) [norm: {norm_w}x{norm_h}]"
+        desc = f"long_press({x},{y}) [0-1000→px]"
         return ("long_press", {"coordinate": [x, y]}, desc)
 
     elif action == "swipe":
@@ -1587,7 +1667,7 @@ def _decide_action_fallback(
         dur = parsed.get("duration", 300)
         x1, y1 = _scale_coordinate(int(c1[0]), int(c1[1]), norm_w, norm_h)
         x2, y2 = _scale_coordinate(int(c2[0]), int(c2[1]), norm_w, norm_h)
-        desc = f"swipe(({x1},{y1})→({x2},{y2})) [norm: {norm_w}x{norm_h}]"
+        desc = f"swipe(({x1},{y1})→({x2},{y2})) [0-1000→px]"
         return ("swipe", {"coordinate1": [x1, y1], "coordinate2": [x2, y2], "duration": dur}, desc)
 
     elif action == "type":
@@ -1647,13 +1727,13 @@ def _decide_action_plan_guided(
     if elements:
         MAX_ELEMENTS = 80
         shown = elements[:MAX_ELEMENTS]
-        lines = [f"UI ELEMENTS ({len(shown)} shown of {len(elements)} indexed, norm={norm_w}x{norm_h}):"]
+        lines = [f"UI ELEMENTS ({len(shown)} shown of {len(elements)} indexed, coords 0-1000):"]
         for el in shown:
             label = el.display_text
             rid = el.resource_id or ""
             rid_short = rid.split("/")[-1] if "/" in rid else rid
-            cx = round(el.center[0] * norm_w / max(1, _DEVICE_RESOLUTION[0])) if _DEVICE_RESOLUTION else el.center[0]
-            cy = round(el.center[1] * norm_h / max(1, _DEVICE_RESOLUTION[1])) if _DEVICE_RESOLUTION else el.center[1]
+            cx = round(el.center[0] * NORM_MAX_DIM / max(1, _DEVICE_RESOLUTION[0])) if _DEVICE_RESOLUTION else el.center[0]
+            cy = round(el.center[1] * NORM_MAX_DIM / max(1, _DEVICE_RESOLUTION[1])) if _DEVICE_RESOLUTION else el.center[1]
             cls_short = (el.class_name or "").split(".")[-1]
             tags = []
             if el.clickable and el.enabled:
@@ -1730,16 +1810,18 @@ def _decide_action_plan_guided(
         + f"\n{index_text}"
     )
 
-    user_prompt += f"\n\nNOTE: Screenshot normalized to {norm_w}x{norm_h}. "
-    user_prompt += f"Output ALL coordinates relative to this {norm_w}x{norm_h} space. "
-    user_prompt += f"They will be auto-scaled to device pixels."
+    user_prompt += (
+        "\n\nCOORDINATE SPACE: All coordinates MUST be in 0-1000 range "
+        "(both X and Y). The screenshot and element centers are shown in this "
+        "canonical space. Coordinates will be auto-scaled to device pixels."
+    )
 
-    # Use lower max_tokens to encourage concise JSON output
-    raw, finish_reason, norm_w, norm_h = _call_vlm(system_prompt, user_prompt, screenshot_path, max_tokens=1024)
+    # Plan-guided operator needs more tokens for plan_updates + notes fields
+    raw, finish_reason, norm_w, norm_h = _call_vlm(system_prompt, user_prompt, screenshot_path, max_tokens=2048)
     if not raw:
         _log("Operator VLM returned no response — retrying once after pause")
         time.sleep(2)
-        raw, finish_reason, norm_w, norm_h = _call_vlm(system_prompt, user_prompt, screenshot_path, max_tokens=1024)
+        raw, finish_reason, norm_w, norm_h = _call_vlm(system_prompt, user_prompt, screenshot_path, max_tokens=2048)
         if not raw:
             _log("Operator VLM failed after retry — returning system_button: back")
             return ("system_button", {"button": "back"}, "VLM failure: back", None, None)
@@ -1748,7 +1830,7 @@ def _decide_action_plan_guided(
         _log("VLM output truncated (length) — injecting back action to retry")
         return ("system_button", {"button": "back"}, "truncated: back", None, None)
 
-    # Robust JSON extraction
+    # Robust JSON extraction with truncation repair
     json_str = raw
     think_end = json_str.rfind("</")
     if think_end >= 0:
@@ -1756,18 +1838,15 @@ def _decide_action_plan_guided(
     json_str = re.sub(r"<[^>]+/?>", "", json_str)
     json_str = re.sub(r"```\w*\n?", "", json_str)
 
-    brace_start = json_str.find("{")
-    brace_end = json_str.rfind("}")
-    if brace_start >= 0 and brace_end > brace_start:
-        json_str = json_str[brace_start : brace_end + 1]
-    else:
-        _debug(f"VLM output has no JSON: {raw[:300]}")
+    repaired = _repair_json(json_str, finish_reason)
+    if not repaired:
+        _debug(f"VLM output has no valid JSON: {raw[:300]}")
         return ("system_button", {"button": "back"}, f"no JSON in response: {raw[:80]}", None, None)
 
     try:
-        parsed = json.loads(json_str)
+        parsed = json.loads(repaired)
     except json.JSONDecodeError:
-        _debug(f"VLM JSON parse failed: {json_str[:300]}")
+        _debug(f"VLM JSON parse failed after repair: {json_str[:300]}")
         return ("system_button", {"button": "back"}, f"VLM parse error: {json_str[:80]}", None, None)
 
     # Extract plan_updates and notes before normalizing action
