@@ -1694,22 +1694,29 @@ def _decide_action_fallback(
         return ("system_button", {"button": "back"}, "truncated: back")
 
     # ── Robust JSON extraction ───────────────────────────────────────────────
-    # Strategy: search for the LAST { ... } pair in the raw output.
     # Models may wrap output in <thinking>, ``` fences, or other text.
-    # We prefer content after </thinking> if present, else find any JSON.
-    json_str = raw
+    # Try XML <tool_calls> format FIRST on the original raw text, before any
+    # stripping (the tag-stripping regex would destroy <tool_calls> / <invoke>).
+    repaired = _repair_json(raw, finish_reason)
+    if repaired:
+        # XML format was successfully parsed — use it directly
+        pass
+    else:
+        # Fall back to JSON extraction with XML tag stripping
+        json_str = raw
 
-    # If there's a closing </thinking> tag, take everything after it
-    think_end = json_str.rfind("</")
-    if think_end >= 0:
-        json_str = json_str[think_end:]
+        # If there's a closing </thinking> tag, take everything after it
+        think_end = json_str.rfind("</")
+        if think_end >= 0:
+            json_str = json_str[think_end:]
 
-    # Strip any remaining XML tags
-    json_str = re.sub(r'<[^>]+/?>', '', json_str)
-    json_str = re.sub(r'```\w*\n?', '', json_str)
+        # Strip any remaining XML tags (now safe — XML was tried first above)
+        json_str = re.sub(r'<[^>]+/?>', '', json_str)
+        json_str = re.sub(r'```\w*\n?', '', json_str)
 
-    # Repair truncated/malformed JSON (handles multi-JSON, missing braces)
-    repaired = _repair_json(json_str, finish_reason)
+        # Repair truncated/malformed JSON (handles multi-JSON, missing braces)
+        repaired = _repair_json(json_str, finish_reason)
+
     if not repaired:
         _debug(f"VLM output has no valid JSON: {raw[:300]}")
         return ("system_button", {"button": "back"}, f"no JSON in response: {raw[:80]}")
@@ -1906,14 +1913,19 @@ def _decide_action_plan_guided(
         return ("system_button", {"button": "back"}, "truncated: back", None, None)
 
     # Robust JSON extraction with truncation repair
-    json_str = raw
-    think_end = json_str.rfind("</")
-    if think_end >= 0:
-        json_str = json_str[think_end:]
-    json_str = re.sub(r"<[^>]+/?>", "", json_str)
-    json_str = re.sub(r"```\w*\n?", "", json_str)
-
-    repaired = _repair_json(json_str, finish_reason)
+    # Try XML <tool_calls> format FIRST on the original raw text, before any
+    # stripping (the tag-stripping regex would destroy <tool_calls> / <invoke>).
+    repaired = _repair_json(raw, finish_reason)
+    if repaired:
+        pass
+    else:
+        json_str = raw
+        think_end = json_str.rfind("</")
+        if think_end >= 0:
+            json_str = json_str[think_end:]
+        json_str = re.sub(r"<[^>]+/?>", "", json_str)
+        json_str = re.sub(r"```\w*\n?", "", json_str)
+        repaired = _repair_json(json_str, finish_reason)
     if not repaired:
         _debug(f"VLM output has no valid JSON: {raw[:300]}")
         return ("system_button", {"button": "back"}, f"no JSON in response: {raw[:80]}", None, None)
