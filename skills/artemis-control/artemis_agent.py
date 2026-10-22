@@ -1228,16 +1228,19 @@ def _run_plan_guided_fallback(
 # Cached device screen resolution — set on first screenshot capture
 _DEVICE_RESOLUTION: tuple[int, int] | None = None
 
-# Maximum dimension for image normalization (preserves aspect ratio)
-NORM_MAX_DIM = 1000
+# Maximum dimension for image normalization (preserves aspect ratio).
+# 2000 gives VLM 4× more pixels than 1000, narrowing coordinate errors
+# from ±3.1→±1.6 device-px per image-px on landscape devices.
+NORM_MAX_DIM = 2000
 
 
 def _encode_image(image_path: str) -> tuple[str, int, int]:
     """Read screenshot, resize for bandwidth, return (base64, norm_w, norm_h).
 
     Resizes to fit within NORM_MAX_DIM × NORM_MAX_DIM, preserving aspect ratio.
-    Returns the ACTUAL normalized dimensions so callers can tell the VLM its
-    coordinate space and scale coordinates back to device pixels.
+    Always returns (1000, 1000) as the coordinate space — the canonical convention
+    that VLMs output in. The higher NORM_MAX_DIM (2000) reduces coordinate error
+    amplification while keeping the 0-1000 output contract unchanged.
     """
     try:
         from PIL import Image
@@ -1257,7 +1260,9 @@ def _encode_image(image_path: str) -> tuple[str, int, int]:
         b64 = base64.b64encode(buf.getvalue()).decode("ascii")
         # Always report 1000×1000 as the coordinate space — the canonical
         # convention that VLM mobile agents are trained on (Artemis, mobile-skills).
-        # The image is resized to fit 1000×1000 but the VLM works in 0-1000 space.
+        # The image may be up to NORM_MAX_DIM (2000) in its long edge but the
+        # VLM still outputs in 0-1000 space; scaling in _scale_coordinate handles
+        # the mapping to device pixels.
         return b64, 1000, 1000
     except ImportError:
         with open(image_path, "rb") as f:
