@@ -459,6 +459,17 @@ def _take_screenshot(adb_path: str, device: Optional[str], dest: Path,
         result = _sp.run(cmd, capture_output=True, timeout=15)
         if result.returncode == 0 and result.stdout:
             dest.write_bytes(result.stdout)
+
+            # Cache device resolution from the screenshot (first capture only)
+            global _DEVICE_RESOLUTION
+            if _DEVICE_RESOLUTION is None:
+                try:
+                    from PIL import Image
+                    with Image.open(dest) as img:
+                        _DEVICE_RESOLUTION = img.size
+                    _trace(f"[screen] device resolution = {_DEVICE_RESOLUTION[0]}x{_DEVICE_RESOLUTION[1]}")
+                except Exception:
+                    pass
             age = time.time() - dest.stat().st_mtime
             if age > max_age_seconds:
                 _log(f"Screenshot {dest.name} is {age:.1f}s old; discarding")
@@ -574,7 +585,7 @@ def _run_reactive_fallback(
         plan_result = generate_plan(
             instruction=instruction,
             screenshot_path=str(plan_shot),
-            vlm_caller=_call_vlm,
+            vlm_caller=_call_vlm_simple,
         )
     else:
         plan_result = {"success": False, "error": "Screenshot failed", "plan_text": "", "plan_snapshot": parse_plan("")}
@@ -830,7 +841,7 @@ def _run_plan_guided_fallback(
         plan_result = generate_plan(
             instruction=instruction,
             screenshot_path=str(plan_shot),
-            vlm_caller=_call_vlm,
+            vlm_caller=_call_vlm_simple,
         )
     else:
         _log("Screenshot failed for planning — falling back to flash loop")
@@ -918,7 +929,7 @@ def _run_plan_guided_fallback(
             action_type=action_type,
             action_args=action_args,
             screenshot_path=str(shot_path),
-            vlm_caller=_call_vlm,
+            vlm_caller=_call_vlm_simple,
             previous_incidents=incident_context,
         )
 
@@ -1083,7 +1094,7 @@ def _run_plan_guided_fallback(
         actions=actions,
         steps=step,
         screenshot_path=str(final_shot) if final_shot.exists() else "",
-        vlm_caller=_call_vlm,
+        vlm_caller=_call_vlm_simple,
         text_llm_caller=_get_text_llm_caller(),
         verification_summary=verification_summary,
     )
@@ -1157,53 +1168,67 @@ def _run_plan_guided_fallback(
     }
 
 
-def _encode_image(image_path: str) -> str:
-    """Read screenshot, optionally resize for bandwidth, return base64 string.
+# Cached device screen resolution — set on first screenshot capture
+_DEVICE_RESOLUTION: tuple[int, int] | None = None
 
-    Resizes to fit within 1000×1000 (preserving aspect ratio) to reduce
-    upload payload.  No coordinate normalization — the VLM works with
-    whatever pixel grid it sees.
+# Maximum dimension for image normalization (preserves aspect ratio)
+NORM_MAX_DIM = 1000
+
+
+def _encode_image(image_path: str) -> tuple[str, int, int]:
+    """Read screenshot, resize for bandwidth, return (base64, norm_w, norm_h).
+
+    Resizes to fit within NORM_MAX_DIM × NORM_MAX_DIM, preserving aspect ratio.
+    Returns the ACTUAL normalized dimensions so callers can tell the VLM its
+    coordinate space and scale coordinates back to device pixels.
     """
     try:
         from PIL import Image
         from io import BytesIO
         img = Image.open(image_path)
         orig_w, orig_h = img.size
-        scale = 1000 / max(orig_w, orig_h)
+
+        scale = NORM_MAX_DIM / max(orig_w, orig_h)
+        norm_w = max(1, round(orig_w * scale))
+        norm_h = max(1, round(orig_h * scale))
+
         if scale < 1.0:
-            new_w = max(1, round(orig_w * scale))
-            new_h = max(1, round(orig_h * scale))
-            img = img.resize((new_w, new_h), Image.LANCZOS)
+            img = img.resize((norm_w, norm_h), Image.LANCZOS)
+
         buf = BytesIO()
         img.save(buf, format="PNG")
-        return base64.b64encode(buf.getvalue()).decode("ascii")
+        b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+        return b64, norm_w, norm_h
     except ImportError:
         with open(image_path, "rb") as f:
-            return base64.b64encode(f.read()).decode("ascii")
+            b64 = base64.b64encode(f.read()).decode("ascii")
+        if _DEVICE_RESOLUTION:
+            return b64, _DEVICE_RESOLUTION[0], _DEVICE_RESOLUTION[1]
+        return b64, 1080, 2400
 
 
 def _call_vlm(system_prompt: str, user_prompt: str, image_path: str,
               max_tokens: int = 2048,
               timeout: int | None = None,
-              retries: int | None = None) -> tuple[Optional[str], str]:
+              retries: int | None = None) -> tuple[Optional[str], str, int, int]:
     """Send a prompt + screenshot to the configured VLM.
 
-    Returns (response_text, finish_reason). On failure returns (None, "error").
+    Returns (response_text, finish_reason, norm_w, norm_h) where norm_w/norm_h
+    are the dimensions of the normalized image sent to the VLM.  VLM coordinates
+    are relative to this space — scale them to device pixels via _scale_coordinate.
 
-    Retries on transient failures (timeout, connection reset) with exponential backoff.
-    Timeout and retries are read from config.json (keys: ``vlm_timeout``, ``vlm_retries``)
-    and can be overridden per-call.
+    On failure returns (None, "error", 0, 0).
     """
     cfg = load_skill_config()
     base_url = cfg["base_url"].rstrip("/")
     api_key = cfg["api_key"]
     model = cfg["model"]
 
-    # Read timeout/retries from config, allowing per-call overrides
     actual_timeout = timeout if timeout is not None else cfg.get("vlm_timeout", 120)
     actual_retries = retries if retries is not None else cfg.get("vlm_retries", 2)
 
-    data_uri = f"data:image/png;base64,{_encode_image(image_path)}"
+    b64, norm_w, norm_h = _encode_image(image_path)
+    data_uri = f"data:image/png;base64,{b64}"
 
     body = {
         "model": model,
@@ -1234,12 +1259,12 @@ def _call_vlm(system_prompt: str, user_prompt: str, image_path: str,
             with urllib.request.urlopen(req, timeout=actual_timeout) as resp:
                 result = json.loads(resp.read().decode("utf-8"))
                 choice = result["choices"][0]
-                return choice["message"]["content"], choice.get("finish_reason", "unknown")
+                return choice["message"]["content"], choice.get("finish_reason", "unknown"), norm_w, norm_h
         except (urllib.error.URLError, TimeoutError, ConnectionResetError,
                 OSError) as e:
             last_error = str(e)
             if attempt < actual_retries:
-                delay = (attempt + 1) * 1.5  # 1.5s, 3.0s backoff
+                delay = (attempt + 1) * 1.5
                 _log(f"VLM call failed (attempt {attempt+1}/{actual_retries+1}, retry in {delay:.1f}s): {last_error[:80]}")
                 time.sleep(delay)
             else:
@@ -1248,22 +1273,151 @@ def _call_vlm(system_prompt: str, user_prompt: str, image_path: str,
         except Exception as e:
             _log(f"VLM call failed ({url}): {e}")
             _trace(f"[vlm] call failed: {e}")
-            return None, "error"
+            return None, "error", 0, 0
 
-    return None, "error"
+    return None, "error", 0, 0
+
+
+def _call_vlm_simple(system_prompt: str, user_prompt: str, image_path: str,
+                     max_tokens: int = 2048) -> tuple[Optional[str], str]:
+    """Adapter for callers that don't need coordinate normalization
+    (planner, validator, checker)."""
+    raw, reason, _w, _h = _call_vlm(system_prompt, user_prompt, image_path, max_tokens)
+    return raw, reason
+
+
+def _scale_coordinate(vlm_x: int, vlm_y: int,
+                      norm_w: int, norm_h: int) -> tuple[int, int]:
+    """Scale a VLM coordinate (normalized image space) to device pixels.
+
+    The VLM outputs coordinates relative to the normalized image dimensions
+    (norm_w × norm_h).  We map them back to actual device pixels.
+    """
+    if _DEVICE_RESOLUTION is None:
+        return vlm_x, vlm_y
+
+    dev_w, dev_h = _DEVICE_RESOLUTION
+    scaled_x = round(vlm_x / norm_w * dev_w)
+    scaled_y = round(vlm_y / norm_h * dev_h)
+    scaled_x = max(0, min(scaled_x, dev_w - 1))
+    scaled_y = max(0, min(scaled_y, dev_h - 1))
+
+    _trace(f"[coord] VLM({vlm_x},{vlm_y}) norm({norm_w}x{norm_h}) → DEV({scaled_x},{scaled_y}) dev({dev_w}x{dev_h})")
+    return scaled_x, scaled_y
+
+
+def _get_norm_dimensions(image_path: str) -> tuple[int, int]:
+    """Compute normalized dimensions for a screenshot without full encoding.
+
+    Same resize logic as _encode_image — returns (norm_w, norm_h) so callers
+    can inject resolution info into the prompt before the VLM call.
+    """
+    try:
+        from PIL import Image
+        img = Image.open(image_path)
+        orig_w, orig_h = img.size
+        scale = NORM_MAX_DIM / max(orig_w, orig_h)
+        return max(1, round(orig_w * scale)), max(1, round(orig_h * scale))
+    except ImportError:
+        if _DEVICE_RESOLUTION:
+            return _DEVICE_RESOLUTION
+        return 1080, 2400
+
+
+def _parse_xml_tool_calls(raw: str) -> str | None:
+    """Parse XML <tool_calls> format (deepseek/qwen function-calling) into JSON.
+
+    Example input:
+        <tool_calls>
+        <invoke name="tap">
+        <parameter name="coordinate" string="true">[720, 2400]</parameter>
+        </invoke>
+        </tool_calls>
+
+    Returns a JSON action string like: {"action":"tap","coordinate":[720,2400]}
+    """
+    if "<tool_calls>" not in raw and "<invoke " not in raw:
+        return None
+
+    # Extract action name from <invoke name="...">
+    m_action = re.search(r'<invoke\s+name="(\w+)"', raw)
+    if not m_action:
+        return None
+    action = m_action.group(1)
+
+    # Extract parameters: <parameter name="X">value</parameter>
+    params = {}
+    for m in re.finditer(
+        r'<parameter\s+name="(\w+)"[^>]*>(.+?)</parameter>',
+        raw, re.DOTALL,
+    ):
+        name = m.group(1)
+        value = m.group(2).strip()
+        # Parse value: could be [x,y] array or quoted string
+        if value.startswith("[") and value.endswith("]"):
+            try:
+                params[name] = json.loads(value)
+            except json.JSONDecodeError:
+                params[name] = value
+        elif value.startswith('"') and value.endswith('"'):
+            params[name] = value[1:-1]
+        else:
+            params[name] = value
+
+    # Map XML action names to our action names
+    action_map = {
+        "tap": "tap",
+        "click": "tap",
+        "long_press": "long_press",
+        "swipe": "swipe",
+        "type": "type",
+        "input_text": "type",
+        "system_button": "system_button",
+        "press": "system_button",
+        "open_app": "open_app",
+        "launch": "open_app",
+        "finish": "finish",
+        "fail": "fail",
+    }
+    mapped_action = action_map.get(action, action)
+
+    result = {"action": mapped_action}
+
+    # Map parameters to our JSON format
+    if mapped_action in ("tap", "click"):
+        coord = params.get("coordinate", [0, 0])
+        result["coordinate"] = coord
+    elif mapped_action == "long_press":
+        coord = params.get("coordinate", [0, 0])
+        result["coordinate"] = coord
+    elif mapped_action == "swipe":
+        result["coordinate1"] = params.get("coordinate1", params.get("coordinate", [0, 0]))
+        result["coordinate2"] = params.get("coordinate2", [0, 0])
+        result["duration"] = int(params.get("duration", 300))
+    elif mapped_action == "type":
+        result["text"] = params.get("text", "")
+    elif mapped_action == "system_button":
+        result["button"] = params.get("button", "back")
+    elif mapped_action == "open_app":
+        result["app_name"] = params.get("app_name", "")
+
+    return json.dumps(result)
 
 
 def _repair_json(raw: str, finish_reason: str) -> str | None:
-    """Attempt to repair truncated or malformed JSON from the VLM.
+    """Attempt to repair truncated or malformed output from the VLM.
 
     Handles:
-    - Truncated JSON (missing closing braces/quotes) — adds closing braces
-    - Multiple JSON objects — tries each ``{...}`` block and returns first valid
-    - Mid-string truncation — strips incomplete field, re-closes braces
-    - Unescaped quotes in Chinese text — escapes internal quote marks
+    - JSON: truncated, multi-block, unescaped Chinese quotes
+    - XML: ``<tool_calls>`` function-calling format (deepseek, qwen, etc.)
 
-    Returns the repaired JSON string, or None if repair fails.
+    Returns a valid JSON action string, or None if repair fails.
     """
+    # Stage 0: XML <tool_calls> format
+    xml_result = _parse_xml_tool_calls(raw)
+    if xml_result:
+        return xml_result
+
     # Stage 1: find complete { ... } blocks (depth returns to 0)
     candidates = []
     depth = 0
@@ -1457,7 +1611,9 @@ def _decide_action_fallback(
     if previous_actions is None:
         previous_actions = []
 
-    # Build element index text
+    # Compute normalized coordinate space — needed for element centers and prompt
+    norm_w, norm_h = _get_norm_dimensions(screenshot_path)
+
     if elements:
         MAX_ELEMENTS = 80
         shown = elements[:MAX_ELEMENTS]
@@ -1466,7 +1622,9 @@ def _decide_action_fallback(
             label = el.display_text
             rid = el.resource_id or ""
             rid_short = rid.split("/")[-1] if "/" in rid else rid
-            cx, cy = el.center
+            # Convert device-pixel center to normalized space
+            cx = round(el.center[0] * norm_w / max(1, _DEVICE_RESOLUTION[0])) if _DEVICE_RESOLUTION else el.center[0]
+            cy = round(el.center[1] * norm_h / max(1, _DEVICE_RESOLUTION[1])) if _DEVICE_RESOLUTION else el.center[1]
             cls_short = (el.class_name or "").split(".")[-1]
             # Compact format: index, label, center, clickable state
             tags = []
@@ -1514,12 +1672,18 @@ def _decide_action_fallback(
         + f"\n{index_text}"
     )
 
+    user_prompt += (
+        f"\n\nCOORDINATE SPACE: Screenshot is {norm_w}x{norm_h} pixels. "
+        f"Output ALL coordinates relative to this {norm_w}x{norm_h} space. "
+        f"They will be auto-scaled to device pixels."
+    )
+
     system_prompt = _get_operator_system_prompt()
-    raw, finish_reason = _call_vlm(system_prompt, user_prompt, screenshot_path)
+    raw, finish_reason, norm_w, norm_h = _call_vlm(system_prompt, user_prompt, screenshot_path)
     if not raw:
         _log("Operator VLM returned no response — retrying once after pause")
         time.sleep(2)
-        raw, finish_reason = _call_vlm(system_prompt, user_prompt, screenshot_path)
+        raw, finish_reason, norm_w, norm_h = _call_vlm(system_prompt, user_prompt, screenshot_path)
         if not raw:
             _log("Operator VLM failed after retry — returning system_button: back")
             return ("system_button", {"button": "back"}, "VLM failure: back")
@@ -1562,12 +1726,14 @@ def _decide_action_fallback(
     if action == "tap":
         coord = parsed.get("coordinate", [0, 0])
         x, y = int(coord[0]), int(coord[1])
+        x, y = _scale_coordinate(x, y, norm_w, norm_h)
         desc = f"tap({x},{y})"
         return ("tap", {"coordinate": [x, y]}, desc)
 
     elif action == "long_press":
         coord = parsed.get("coordinate", [0, 0])
         x, y = int(coord[0]), int(coord[1])
+        x, y = _scale_coordinate(x, y, norm_w, norm_h)
         desc = f"long_press({x},{y})"
         return ("long_press", {"coordinate": [x, y]}, desc)
 
@@ -1575,8 +1741,10 @@ def _decide_action_fallback(
         c1 = parsed.get("coordinate1", [0, 0])
         c2 = parsed.get("coordinate2", [0, 0])
         dur = parsed.get("duration", 300)
-        desc = f"swipe({c1}→{c2})"
-        return ("swipe", {"coordinate1": c1, "coordinate2": c2, "duration": dur}, desc)
+        x1, y1 = _scale_coordinate(int(c1[0]), int(c1[1]), norm_w, norm_h)
+        x2, y2 = _scale_coordinate(int(c2[0]), int(c2[1]), norm_w, norm_h)
+        desc = f"swipe(({x1},{y1})→({x2},{y2}))"
+        return ("swipe", {"coordinate1": [x1, y1], "coordinate2": [x2, y2], "duration": dur}, desc)
 
     elif action == "type":
         text = parsed.get("text", "")
@@ -1628,7 +1796,9 @@ def _decide_action_plan_guided(
     if previous_actions is None:
         previous_actions = []
 
-    # Build element index text — compact format
+    # Compute normalized coordinate space early — needed for element centers
+    norm_w, norm_h = _get_norm_dimensions(screenshot_path)
+
     if elements:
         MAX_ELEMENTS = 80
         shown = elements[:MAX_ELEMENTS]
@@ -1637,7 +1807,8 @@ def _decide_action_plan_guided(
             label = el.display_text
             rid = el.resource_id or ""
             rid_short = rid.split("/")[-1] if "/" in rid else rid
-            cx, cy = el.center
+            cx = round(el.center[0] * norm_w / max(1, _DEVICE_RESOLUTION[0])) if _DEVICE_RESOLUTION else el.center[0]
+            cy = round(el.center[1] * norm_h / max(1, _DEVICE_RESOLUTION[1])) if _DEVICE_RESOLUTION else el.center[1]
             cls_short = (el.class_name or "").split(".")[-1]
             tags = []
             if el.clickable and el.enabled:
@@ -1714,12 +1885,18 @@ def _decide_action_plan_guided(
         + f"\n{index_text}"
     )
 
+    user_prompt += (
+        f"\n\nCOORDINATE SPACE: Screenshot is {norm_w}x{norm_h} pixels. "
+        f"Output ALL coordinates relative to this {norm_w}x{norm_h} space. "
+        f"They will be auto-scaled to device pixels."
+    )
+
     # Plan-guided operator needs more tokens for plan_updates + notes fields
-    raw, finish_reason = _call_vlm(system_prompt, user_prompt, screenshot_path, max_tokens=2048)
+    raw, finish_reason, norm_w, norm_h = _call_vlm(system_prompt, user_prompt, screenshot_path, max_tokens=2048)
     if not raw:
         _log("Operator VLM returned no response — retrying once after pause")
         time.sleep(2)
-        raw, finish_reason = _call_vlm(system_prompt, user_prompt, screenshot_path, max_tokens=2048)
+        raw, finish_reason, norm_w, norm_h = _call_vlm(system_prompt, user_prompt, screenshot_path, max_tokens=2048)
         if not raw:
             _log("Operator VLM failed after retry — returning system_button: back")
             return ("system_button", {"button": "back"}, "VLM failure: back", None, None)
@@ -1757,12 +1934,14 @@ def _decide_action_plan_guided(
     if action == "tap":
         coord = parsed.get("coordinate", [0, 0])
         x, y = int(coord[0]), int(coord[1])
+        x, y = _scale_coordinate(x, y, norm_w, norm_h)
         desc = f"tap({x},{y})"
         return ("tap", {"coordinate": [x, y]}, desc, plan_updates, notes_updates)
 
     elif action == "long_press":
         coord = parsed.get("coordinate", [0, 0])
         x, y = int(coord[0]), int(coord[1])
+        x, y = _scale_coordinate(x, y, norm_w, norm_h)
         desc = f"long_press({x},{y})"
         return ("long_press", {"coordinate": [x, y]}, desc, plan_updates, notes_updates)
 
@@ -1770,8 +1949,10 @@ def _decide_action_plan_guided(
         c1 = parsed.get("coordinate1", [0, 0])
         c2 = parsed.get("coordinate2", [0, 0])
         dur = parsed.get("duration", 300)
-        desc = f"swipe({c1}→{c2})"
-        return ("swipe", {"coordinate1": c1, "coordinate2": c2, "duration": dur}, desc, plan_updates, notes_updates)
+        x1, y1 = _scale_coordinate(int(c1[0]), int(c1[1]), norm_w, norm_h)
+        x2, y2 = _scale_coordinate(int(c2[0]), int(c2[1]), norm_w, norm_h)
+        desc = f"swipe(({x1},{y1})→({x2},{y2}))"
+        return ("swipe", {"coordinate1": [x1, y1], "coordinate2": [x2, y2], "duration": dur}, desc, plan_updates, notes_updates)
 
     elif action == "type":
         text = parsed.get("text", "")
