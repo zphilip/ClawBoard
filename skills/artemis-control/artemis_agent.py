@@ -149,10 +149,6 @@ Available actions:
   {"action": "finish"}                                  — task completed
   {"action": "fail", "reason": "why"}                   — task cannot be completed
 
-**COORDINATE SPACE**: ALL x,y values are in 0-1000 canonical space
-(both X and Y axes, regardless of aspect ratio).  Every coordinate you
-output will be auto-scaled to the actual device pixel grid.
-
 Optional fields:
   "plan_updates" — see Plan Tracking section above (plan-guided only)
   "notes"        — dict of key→content for persistent scratchpad memory.
@@ -235,9 +231,6 @@ Android device operator. Output ONLY a JSON object per turn.
 {"action":"open_app","app_name":"app name"}
 {"action":"finish"}
 {"action":"fail","reason":"why"}
-
-**COORDINATES**: ALL x,y values must be 0-1000 (both axes). Coords
-are auto-scaled to device pixels. DO NOT use raw device coordinates.
 
 ## Rules (MUST follow)
 1. **Look at the screenshot first.** Match what you see to the UI elements listed.
@@ -453,11 +446,7 @@ def _make_run_screenshots_dir() -> Path:
 
 def _take_screenshot(adb_path: str, device: Optional[str], dest: Path,
                      max_age_seconds: int = 30) -> bool:
-    """Capture a screenshot from the device via ADB and save to dest.
-
-    Returns True on success, and also stores the screenshot dimensions in
-    ``_DEVICE_RESOLUTION`` for coordinate normalization.
-    """
+    """Capture a screenshot from the device via ADB and save to dest."""
     dest.parent.mkdir(parents=True, exist_ok=True)
     if dest.exists():
         dest.unlink()
@@ -470,17 +459,6 @@ def _take_screenshot(adb_path: str, device: Optional[str], dest: Path,
         result = _sp.run(cmd, capture_output=True, timeout=15)
         if result.returncode == 0 and result.stdout:
             dest.write_bytes(result.stdout)
-
-            # Cache device resolution from the screenshot (first capture only)
-            global _DEVICE_RESOLUTION
-            if _DEVICE_RESOLUTION is None:
-                try:
-                    from PIL import Image
-                    with Image.open(dest) as img:
-                        _DEVICE_RESOLUTION = img.size  # (width, height)
-                    _trace(f"[screen] device resolution = {_DEVICE_RESOLUTION[0]}x{_DEVICE_RESOLUTION[1]}")
-                except Exception:
-                    pass
             age = time.time() - dest.stat().st_mtime
             if age > max_age_seconds:
                 _log(f"Screenshot {dest.name} is {age:.1f}s old; discarding")
@@ -596,7 +574,7 @@ def _run_reactive_fallback(
         plan_result = generate_plan(
             instruction=instruction,
             screenshot_path=str(plan_shot),
-            vlm_caller=_call_vlm_simple,
+            vlm_caller=_call_vlm,
         )
     else:
         plan_result = {"success": False, "error": "Screenshot failed", "plan_text": "", "plan_snapshot": parse_plan("")}
@@ -852,7 +830,7 @@ def _run_plan_guided_fallback(
         plan_result = generate_plan(
             instruction=instruction,
             screenshot_path=str(plan_shot),
-            vlm_caller=_call_vlm_simple,
+            vlm_caller=_call_vlm,
         )
     else:
         _log("Screenshot failed for planning — falling back to flash loop")
@@ -940,7 +918,7 @@ def _run_plan_guided_fallback(
             action_type=action_type,
             action_args=action_args,
             screenshot_path=str(shot_path),
-            vlm_caller=_call_vlm_simple,
+            vlm_caller=_call_vlm,
             previous_incidents=incident_context,
         )
 
@@ -1105,7 +1083,7 @@ def _run_plan_guided_fallback(
         actions=actions,
         steps=step,
         screenshot_path=str(final_shot) if final_shot.exists() else "",
-        vlm_caller=_call_vlm_simple,
+        vlm_caller=_call_vlm,
         text_llm_caller=_get_text_llm_caller(),
         verification_summary=verification_summary,
     )
@@ -1179,58 +1157,42 @@ def _run_plan_guided_fallback(
     }
 
 
-# Cached device screen resolution — set on first screenshot capture
-_DEVICE_RESOLUTION: tuple[int, int] | None = None
+def _encode_image(image_path: str) -> str:
+    """Read screenshot, optionally resize for bandwidth, return base64 string.
 
-# Normalized coordinate space — VLMs work in this space regardless of device
-# Mobile-control uses 1000×1000; we follow the same convention.
-NORM_MAX_DIM = 1000
-
-
-def _encode_image(image_path: str) -> tuple[str, int, int]:
-    """Read screenshot, optionally resize, return (base64_b64, NORM_MAX_DIM, NORM_MAX_DIM).
-
-    The VLM is always told the coordinate space is 1000×1000 (canonical, like
-    Artemis and mobile-control).  The image may be resized for bandwidth, but
-    the norm dimensions are FIXED at 1000×1000 — never aspect-ratio dependent.
-    All coordinate scaling uses 1000 as the denominator.
+    Resizes to fit within 1000×1000 (preserving aspect ratio) to reduce
+    upload payload.  No coordinate normalization — the VLM works with
+    whatever pixel grid it sees.
     """
     try:
         from PIL import Image
         from io import BytesIO
         img = Image.open(image_path)
         orig_w, orig_h = img.size
-
-        # Resize to fit within NORM_MAX_DIM × NORM_MAX_DIM (bandwidth optimization)
-        scale = NORM_MAX_DIM / max(orig_w, orig_h)
+        scale = 1000 / max(orig_w, orig_h)
         if scale < 1.0:
             new_w = max(1, round(orig_w * scale))
             new_h = max(1, round(orig_h * scale))
             img = img.resize((new_w, new_h), Image.LANCZOS)
-
         buf = BytesIO()
         img.save(buf, format="PNG")
-        b64 = base64.b64encode(buf.getvalue()).decode("ascii")
-        return b64, NORM_MAX_DIM, NORM_MAX_DIM
+        return base64.b64encode(buf.getvalue()).decode("ascii")
     except ImportError:
-        # PIL not available — fall back to raw encode
         with open(image_path, "rb") as f:
-            b64 = base64.b64encode(f.read()).decode("ascii")
-        return b64, NORM_MAX_DIM, NORM_MAX_DIM
+            return base64.b64encode(f.read()).decode("ascii")
 
 
 def _call_vlm(system_prompt: str, user_prompt: str, image_path: str,
               max_tokens: int = 2048,
               timeout: int | None = None,
-              retries: int | None = None) -> tuple[Optional[str], str, int, int]:
+              retries: int | None = None) -> tuple[Optional[str], str]:
     """Send a prompt + screenshot to the configured VLM.
 
-    Returns (response_text, finish_reason, norm_w, norm_h) where norm_w/norm_h
-    are the dimensions of the normalized image sent to the VLM.  VLM coordinates
-    are relative to this normalized space — the caller must scale them to device
-    pixels.
+    Returns (response_text, finish_reason). On failure returns (None, "error").
 
-    On failure returns (None, "error", 0, 0).
+    Retries on transient failures (timeout, connection reset) with exponential backoff.
+    Timeout and retries are read from config.json (keys: ``vlm_timeout``, ``vlm_retries``)
+    and can be overridden per-call.
     """
     cfg = load_skill_config()
     base_url = cfg["base_url"].rstrip("/")
@@ -1241,8 +1203,7 @@ def _call_vlm(system_prompt: str, user_prompt: str, image_path: str,
     actual_timeout = timeout if timeout is not None else cfg.get("vlm_timeout", 120)
     actual_retries = retries if retries is not None else cfg.get("vlm_retries", 2)
 
-    b64, norm_w, norm_h = _encode_image(image_path)
-    data_uri = f"data:image/png;base64,{b64}"
+    data_uri = f"data:image/png;base64,{_encode_image(image_path)}"
 
     body = {
         "model": model,
@@ -1273,7 +1234,7 @@ def _call_vlm(system_prompt: str, user_prompt: str, image_path: str,
             with urllib.request.urlopen(req, timeout=actual_timeout) as resp:
                 result = json.loads(resp.read().decode("utf-8"))
                 choice = result["choices"][0]
-                return choice["message"]["content"], choice.get("finish_reason", "unknown"), norm_w, norm_h
+                return choice["message"]["content"], choice.get("finish_reason", "unknown")
         except (urllib.error.URLError, TimeoutError, ConnectionResetError,
                 OSError) as e:
             last_error = str(e)
@@ -1287,47 +1248,9 @@ def _call_vlm(system_prompt: str, user_prompt: str, image_path: str,
         except Exception as e:
             _log(f"VLM call failed ({url}): {e}")
             _trace(f"[vlm] call failed: {e}")
-            return None, "error", 0, 0
+            return None, "error"
 
-    return None, "error", 0, 0
-
-
-def _call_vlm_simple(system_prompt: str, user_prompt: str, image_path: str,
-                     max_tokens: int = 2048) -> tuple[Optional[str], str]:
-    """Adapter: same signature as the old _call_vlm for callers that don't need
-    coordinate normalization (planner, validator, checker)."""
-    raw, reason, _w, _h = _call_vlm(system_prompt, user_prompt, image_path, max_tokens)
-    return raw, reason
-
-
-def _scale_coordinate(vlm_x: int, vlm_y: int,
-                      norm_w: int, norm_h: int) -> tuple[int, int]:
-    """Scale a VLM coordinate (0-1000 canonical space) to device pixels.
-
-    The VLM always outputs coordinates in the canonical 0-1000 range
-    regardless of actual image dimensions.  We divide by 1000 to get a
-    fraction and multiply by device resolution.
-    """
-    if _DEVICE_RESOLUTION is None:
-        return vlm_x, vlm_y
-
-    dev_w, dev_h = _DEVICE_RESOLUTION
-    scaled_x = round(vlm_x * dev_w / NORM_MAX_DIM)
-    scaled_y = round(vlm_y * dev_h / NORM_MAX_DIM)
-    scaled_x = max(0, min(scaled_x, dev_w - 1))
-    scaled_y = max(0, min(scaled_y, dev_h - 1))
-
-    _trace(f"[coord] VLM({vlm_x},{vlm_y}) 0-1000 → DEV({scaled_x},{scaled_y}) in ({dev_w}x{dev_h})")
-    return scaled_x, scaled_y
-
-
-def _get_norm_dimensions(image_path: str) -> tuple[int, int]:
-    """Return the canonical normalized coordinate dimensions (always 1000×1000).
-
-    Like Artemis, the VLM always works in a fixed 0-1000 coordinate space
-    regardless of actual image dimensions.
-    """
-    return NORM_MAX_DIM, NORM_MAX_DIM
+    return None, "error"
 
 
 def _repair_json(raw: str, finish_reason: str) -> str | None:
@@ -1534,21 +1457,16 @@ def _decide_action_fallback(
     if previous_actions is None:
         previous_actions = []
 
-    # Compute normalized coordinate space early — we need it for element centers
-    norm_w, norm_h = _get_norm_dimensions(screenshot_path)
-
-    # Build element index text — centers are shown in NORMALIZED 0-1000 space
+    # Build element index text
     if elements:
         MAX_ELEMENTS = 80
         shown = elements[:MAX_ELEMENTS]
-        lines = [f"UI ELEMENTS ({len(shown)} shown of {len(elements)} indexed, coords 0-1000):"]
+        lines = [f"UI ELEMENTS ({len(shown)} shown of {len(elements)} indexed):"]
         for el in shown:
             label = el.display_text
             rid = el.resource_id or ""
             rid_short = rid.split("/")[-1] if "/" in rid else rid
-            # Convert device-pixel center to 0-1000 normalized space
-            cx = round(el.center[0] * NORM_MAX_DIM / max(1, _DEVICE_RESOLUTION[0])) if _DEVICE_RESOLUTION else el.center[0]
-            cy = round(el.center[1] * NORM_MAX_DIM / max(1, _DEVICE_RESOLUTION[1])) if _DEVICE_RESOLUTION else el.center[1]
+            cx, cy = el.center
             cls_short = (el.class_name or "").split(".")[-1]
             # Compact format: index, label, center, clickable state
             tags = []
@@ -1596,18 +1514,12 @@ def _decide_action_fallback(
         + f"\n{index_text}"
     )
 
-    user_prompt += (
-        "\n\nCOORDINATE SPACE: All coordinates MUST be in 0-1000 range "
-        "(both X and Y). The screenshot and element centers are shown in this "
-        "canonical space. Coordinates will be auto-scaled to device pixels."
-    )
-
     system_prompt = _get_operator_system_prompt()
-    raw, finish_reason, norm_w, norm_h = _call_vlm(system_prompt, user_prompt, screenshot_path)
+    raw, finish_reason = _call_vlm(system_prompt, user_prompt, screenshot_path)
     if not raw:
         _log("Operator VLM returned no response — retrying once after pause")
         time.sleep(2)
-        raw, finish_reason, norm_w, norm_h = _call_vlm(system_prompt, user_prompt, screenshot_path)
+        raw, finish_reason = _call_vlm(system_prompt, user_prompt, screenshot_path)
         if not raw:
             _log("Operator VLM failed after retry — returning system_button: back")
             return ("system_button", {"button": "back"}, "VLM failure: back")
@@ -1650,25 +1562,21 @@ def _decide_action_fallback(
     if action == "tap":
         coord = parsed.get("coordinate", [0, 0])
         x, y = int(coord[0]), int(coord[1])
-        x, y = _scale_coordinate(x, y, norm_w, norm_h)
-        desc = f"tap({x},{y}) [0-1000→px]"
+        desc = f"tap({x},{y})"
         return ("tap", {"coordinate": [x, y]}, desc)
 
     elif action == "long_press":
         coord = parsed.get("coordinate", [0, 0])
         x, y = int(coord[0]), int(coord[1])
-        x, y = _scale_coordinate(x, y, norm_w, norm_h)
-        desc = f"long_press({x},{y}) [0-1000→px]"
+        desc = f"long_press({x},{y})"
         return ("long_press", {"coordinate": [x, y]}, desc)
 
     elif action == "swipe":
         c1 = parsed.get("coordinate1", [0, 0])
         c2 = parsed.get("coordinate2", [0, 0])
         dur = parsed.get("duration", 300)
-        x1, y1 = _scale_coordinate(int(c1[0]), int(c1[1]), norm_w, norm_h)
-        x2, y2 = _scale_coordinate(int(c2[0]), int(c2[1]), norm_w, norm_h)
-        desc = f"swipe(({x1},{y1})→({x2},{y2})) [0-1000→px]"
-        return ("swipe", {"coordinate1": [x1, y1], "coordinate2": [x2, y2], "duration": dur}, desc)
+        desc = f"swipe({c1}→{c2})"
+        return ("swipe", {"coordinate1": c1, "coordinate2": c2, "duration": dur}, desc)
 
     elif action == "type":
         text = parsed.get("text", "")
@@ -1720,20 +1628,16 @@ def _decide_action_plan_guided(
     if previous_actions is None:
         previous_actions = []
 
-    # Compute normalized coordinate space early — needed for element centers
-    norm_w, norm_h = _get_norm_dimensions(screenshot_path)
-
-    # Build element index text — centers in NORMALIZED space
+    # Build element index text — compact format
     if elements:
         MAX_ELEMENTS = 80
         shown = elements[:MAX_ELEMENTS]
-        lines = [f"UI ELEMENTS ({len(shown)} shown of {len(elements)} indexed, coords 0-1000):"]
+        lines = [f"UI ELEMENTS ({len(shown)} shown of {len(elements)} indexed):"]
         for el in shown:
             label = el.display_text
             rid = el.resource_id or ""
             rid_short = rid.split("/")[-1] if "/" in rid else rid
-            cx = round(el.center[0] * NORM_MAX_DIM / max(1, _DEVICE_RESOLUTION[0])) if _DEVICE_RESOLUTION else el.center[0]
-            cy = round(el.center[1] * NORM_MAX_DIM / max(1, _DEVICE_RESOLUTION[1])) if _DEVICE_RESOLUTION else el.center[1]
+            cx, cy = el.center
             cls_short = (el.class_name or "").split(".")[-1]
             tags = []
             if el.clickable and el.enabled:
@@ -1810,18 +1714,12 @@ def _decide_action_plan_guided(
         + f"\n{index_text}"
     )
 
-    user_prompt += (
-        "\n\nCOORDINATE SPACE: All coordinates MUST be in 0-1000 range "
-        "(both X and Y). The screenshot and element centers are shown in this "
-        "canonical space. Coordinates will be auto-scaled to device pixels."
-    )
-
     # Plan-guided operator needs more tokens for plan_updates + notes fields
-    raw, finish_reason, norm_w, norm_h = _call_vlm(system_prompt, user_prompt, screenshot_path, max_tokens=2048)
+    raw, finish_reason = _call_vlm(system_prompt, user_prompt, screenshot_path, max_tokens=2048)
     if not raw:
         _log("Operator VLM returned no response — retrying once after pause")
         time.sleep(2)
-        raw, finish_reason, norm_w, norm_h = _call_vlm(system_prompt, user_prompt, screenshot_path, max_tokens=2048)
+        raw, finish_reason = _call_vlm(system_prompt, user_prompt, screenshot_path, max_tokens=2048)
         if not raw:
             _log("Operator VLM failed after retry — returning system_button: back")
             return ("system_button", {"button": "back"}, "VLM failure: back", None, None)
@@ -1859,25 +1757,21 @@ def _decide_action_plan_guided(
     if action == "tap":
         coord = parsed.get("coordinate", [0, 0])
         x, y = int(coord[0]), int(coord[1])
-        x, y = _scale_coordinate(x, y, norm_w, norm_h)
-        desc = f"tap({x},{y}) [norm: {norm_w}x{norm_h}]"
+        desc = f"tap({x},{y})"
         return ("tap", {"coordinate": [x, y]}, desc, plan_updates, notes_updates)
 
     elif action == "long_press":
         coord = parsed.get("coordinate", [0, 0])
         x, y = int(coord[0]), int(coord[1])
-        x, y = _scale_coordinate(x, y, norm_w, norm_h)
-        desc = f"long_press({x},{y}) [norm: {norm_w}x{norm_h}]"
+        desc = f"long_press({x},{y})"
         return ("long_press", {"coordinate": [x, y]}, desc, plan_updates, notes_updates)
 
     elif action == "swipe":
         c1 = parsed.get("coordinate1", [0, 0])
         c2 = parsed.get("coordinate2", [0, 0])
         dur = parsed.get("duration", 300)
-        x1, y1 = _scale_coordinate(int(c1[0]), int(c1[1]), norm_w, norm_h)
-        x2, y2 = _scale_coordinate(int(c2[0]), int(c2[1]), norm_w, norm_h)
-        desc = f"swipe(({x1},{y1})→({x2},{y2})) [norm: {norm_w}x{norm_h}]"
-        return ("swipe", {"coordinate1": [x1, y1], "coordinate2": [x2, y2], "duration": dur}, desc, plan_updates, notes_updates)
+        desc = f"swipe({c1}→{c2})"
+        return ("swipe", {"coordinate1": c1, "coordinate2": c2, "duration": dur}, desc, plan_updates, notes_updates)
 
     elif action == "type":
         text = parsed.get("text", "")
