@@ -1229,16 +1229,19 @@ def _encode_image(image_path: str) -> tuple[str, int, int]:
         orig_w, orig_h = img.size
 
         scale = NORM_MAX_DIM / max(orig_w, orig_h)
-        norm_w = max(1, round(orig_w * scale))
-        norm_h = max(1, round(orig_h * scale))
+        new_w = max(1, round(orig_w * scale))
+        new_h = max(1, round(orig_h * scale))
 
         if scale < 1.0:
-            img = img.resize((norm_w, norm_h), Image.LANCZOS)
+            img = img.resize((new_w, new_h), Image.LANCZOS)
 
         buf = BytesIO()
         img.save(buf, format="PNG")
         b64 = base64.b64encode(buf.getvalue()).decode("ascii")
-        return b64, norm_w, norm_h
+        # Always report 1000×1000 as the coordinate space — the canonical
+        # convention that VLM mobile agents are trained on (Artemis, mobile-skills).
+        # The image is resized to fit 1000×1000 but the VLM works in 0-1000 space.
+        return b64, 1000, 1000
     except ImportError:
         with open(image_path, "rb") as f:
             b64 = base64.b64encode(f.read()).decode("ascii")
@@ -1331,41 +1334,37 @@ def _call_vlm_simple(system_prompt: str, user_prompt: str, image_path: str,
 
 
 def _scale_coordinate(vlm_x: int, vlm_y: int,
-                      norm_w: int, norm_h: int) -> tuple[int, int]:
-    """Scale a VLM coordinate (normalized image space) to device pixels.
+                      norm_w: int = 1000, norm_h: int = 1000) -> tuple[int, int]:
+    """Scale a VLM coordinate (0-1000 canonical space) to device pixels.
 
-    The VLM outputs coordinates relative to the normalized image dimensions
-    (norm_w × norm_h).  We map them back to actual device pixels.
+    The VLM always works in a uniform 0-1000 range regardless of aspect ratio.
+    We map 0-1000 to actual device pixels.  This is the same convention used by
+    the original Artemis (``_to_px``) and mobile-skills.
+
+    ``norm_w`` / ``norm_h`` are kept for backward compatibility but always 1000.
     """
     if _DEVICE_RESOLUTION is None:
         return vlm_x, vlm_y
 
     dev_w, dev_h = _DEVICE_RESOLUTION
-    scaled_x = round(vlm_x / norm_w * dev_w)
-    scaled_y = round(vlm_y / norm_h * dev_h)
+    scaled_x = round(vlm_x / 1000 * dev_w)
+    scaled_y = round(vlm_y / 1000 * dev_h)
     scaled_x = max(0, min(scaled_x, dev_w - 1))
     scaled_y = max(0, min(scaled_y, dev_h - 1))
 
-    _trace(f"[coord] VLM({vlm_x},{vlm_y}) norm({norm_w}x{norm_h}) → DEV({scaled_x},{scaled_y}) dev({dev_w}x{dev_h})")
+    _log(f"[coord] VLM({vlm_x},{vlm_y}) ÷1000 → DEV({scaled_x},{scaled_y}) dev({dev_w}x{dev_h})")
     return scaled_x, scaled_y
 
 
 def _get_norm_dimensions(image_path: str) -> tuple[int, int]:
-    """Compute normalized dimensions for a screenshot without full encoding.
+    """Return the canonical coordinate space dimensions: always 1000×1000.
 
-    Same resize logic as _encode_image — returns (norm_w, norm_h) so callers
-    can inject resolution info into the prompt before the VLM call.
+    The image is resized to fit within 1000×1000 and the VLM always works in
+    a uniform 0-1000 range — same convention as the original Artemis and
+    mobile-skills.  Aspect-ratio-aware scaling would stretch X on portrait
+    screens, causing systematic coordinate errors.
     """
-    try:
-        from PIL import Image
-        img = Image.open(image_path)
-        orig_w, orig_h = img.size
-        scale = NORM_MAX_DIM / max(orig_w, orig_h)
-        return max(1, round(orig_w * scale)), max(1, round(orig_h * scale))
-    except ImportError:
-        if _DEVICE_RESOLUTION:
-            return _DEVICE_RESOLUTION
-        return 1080, 2400
+    return 1000, 1000
 
 
 def _parse_xml_tool_calls(raw: str) -> str | None:
@@ -1666,9 +1665,10 @@ def _decide_action_fallback(
             label = el.display_text
             rid = el.resource_id or ""
             rid_short = rid.split("/")[-1] if "/" in rid else rid
-            # Convert device-pixel center to normalized space
-            cx = round(el.center[0] * norm_w / max(1, _DEVICE_RESOLUTION[0])) if _DEVICE_RESOLUTION else el.center[0]
-            cy = round(el.center[1] * norm_h / max(1, _DEVICE_RESOLUTION[1])) if _DEVICE_RESOLUTION else el.center[1]
+            # Convert device-pixel center to canonical 0-1000 space
+            dev_w, dev_h = _DEVICE_RESOLUTION if _DEVICE_RESOLUTION else (1080, 2400)
+            cx = round(el.center[0] * 1000 / max(1, dev_w))
+            cy = round(el.center[1] * 1000 / max(1, dev_h))
             cls_short = (el.class_name or "").split(".")[-1]
             # Compact format: index, label, center, clickable state
             tags = []
@@ -1717,9 +1717,8 @@ def _decide_action_fallback(
     )
 
     user_prompt += (
-        f"\n\nCOORDINATE SPACE: Screenshot is {norm_w}x{norm_h} pixels. "
-        f"Output ALL coordinates relative to this {norm_w}x{norm_h} space. "
-        f"They will be auto-scaled to device pixels."
+        "\n\nCOORDINATE SPACE: 1000×1000. Output ALL coordinates in 0-1000 range. "
+        "They will be auto-scaled to device pixels."
     )
 
     system_prompt = _get_operator_system_prompt()
@@ -1858,8 +1857,8 @@ def _decide_action_plan_guided(
             label = el.display_text
             rid = el.resource_id or ""
             rid_short = rid.split("/")[-1] if "/" in rid else rid
-            cx = round(el.center[0] * norm_w / max(1, _DEVICE_RESOLUTION[0])) if _DEVICE_RESOLUTION else el.center[0]
-            cy = round(el.center[1] * norm_h / max(1, _DEVICE_RESOLUTION[1])) if _DEVICE_RESOLUTION else el.center[1]
+            cx = round(el.center[0] * 1000 / max(1, _DEVICE_RESOLUTION[0])) if _DEVICE_RESOLUTION else el.center[0]
+            cy = round(el.center[1] * 1000 / max(1, _DEVICE_RESOLUTION[1])) if _DEVICE_RESOLUTION else el.center[1]
             cls_short = (el.class_name or "").split(".")[-1]
             tags = []
             if el.clickable and el.enabled:
@@ -1937,9 +1936,8 @@ def _decide_action_plan_guided(
     )
 
     user_prompt += (
-        f"\n\nCOORDINATE SPACE: Screenshot is {norm_w}x{norm_h} pixels. "
-        f"Output ALL coordinates relative to this {norm_w}x{norm_h} space. "
-        f"They will be auto-scaled to device pixels."
+        "\n\nCOORDINATE SPACE: 1000×1000. Output ALL coordinates in 0-1000 range. "
+        "They will be auto-scaled to device pixels."
     )
 
     # Plan-guided operator needs more tokens for plan_updates + notes fields
