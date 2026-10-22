@@ -36,6 +36,7 @@ from memory.signature import (
     build_canonical_intent_key,
     build_intent_signature,
     build_state_key,
+    build_ui_components,
     build_ui_fingerprint,
 )
 from memory.store import JsonlMemoryStore
@@ -680,6 +681,8 @@ def main():
         _step_summary_emitted = False
         _step_state_key = ""
         _step_ui_fp = ""
+        _step_resource_ids: list[str] = []
+        _step_texts: list[str] = []
         _provider_used = ""
         _step_action_type = ""
         _step_action_args: dict = {}
@@ -809,6 +812,9 @@ def main():
                                 action_description=_step_action_description,
                                 target_element_signature=target_element_sig,
                                 original_screen_resolution=original_screen_res,
+                                foreground_pkg=_fg_pkg or "",
+                                resource_ids=_step_resource_ids,
+                                texts=_step_texts,
                             )
                         )
                 except Exception:
@@ -903,6 +909,9 @@ def main():
         _log_t(f"[TIMING] ui_dump={_step_metrics['ui_dump']:.2f}s")
         _step_ui_fp = build_ui_fingerprint(_fg_pkg, _ui_summary)
         _step_state_key = build_state_key(_intent_sig, _step_ui_fp, "default")
+        _step_components = build_ui_components(_fg_pkg or "", _ui_summary)
+        _step_resource_ids = sorted(_step_components.resource_ids)
+        _step_texts = sorted(_step_components.labels)
         _log_t(f"[MEMORY KEY] state_key={_step_state_key} ui_fp={_step_ui_fp} intent={_intent_sig}")
         _ui_text_lc = ((_ui_summary or "") + "\n" + (_fg_label or "")).lower()
         _has_transient_confirm_dialog = any(k.lower() in _ui_text_lc for k in _TRANSIENT_DIALOG_KEYWORDS)
@@ -1194,6 +1203,8 @@ def main():
                         ui_fingerprint=_step_ui_fp,
                         intent_signature=_intent_sig,
                         device_bucket="default",
+                        resource_ids=_step_resource_ids,
+                        texts=_step_texts,
                     ),
                     proposed_action=None,
                 )
@@ -1689,6 +1700,8 @@ def main():
                         ui_fingerprint=_step_ui_fp,
                         intent_signature=_intent_sig,
                         device_bucket="default",
+                        resource_ids=_step_resource_ids,
+                        texts=_step_texts,
                     ),
                     proposed_action=ActionCandidate(
                         action_type=_step_action_type,

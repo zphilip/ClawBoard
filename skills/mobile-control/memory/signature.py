@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+from dataclasses import dataclass
 from typing import Iterable
 
 
@@ -95,6 +96,10 @@ def build_ui_fingerprint(foreground_pkg: str, ui_summary: str) -> str:
         # changes every run and produces a different fingerprint.
         if any(kw in line for kw in _AD_EXCLUSION_KEYWORDS):
             continue
+        # NEW: drop ad-container resource ids even when the ad is textless
+        # (image banner) and therefore missed the keyword list above.
+        if _is_ad_resource_id_line(line):
+            continue
 
         # Include both interactive elements AND key state-defining elements.
         is_interactive = "clickable" in line or "long-clickable" in line
@@ -137,6 +142,134 @@ def build_ui_fingerprint(foreground_pkg: str, ui_summary: str) -> str:
 
 def build_state_key(intent_signature: str, ui_fingerprint: str, device_bucket: str) -> str:
     return f"{intent_signature}:{ui_fingerprint}:{device_bucket}"
+
+
+# ---------------------------------------------------------------------------
+# Ad-container detection + fuzzy state components
+# ---------------------------------------------------------------------------
+
+_ID_TOKEN_RE = re.compile(r"id=([\w._-]+)")
+_LABEL_TOKEN_RE = re.compile(r'"([^"]+)"')
+
+_AD_RESOURCE_ID_TOKENS = frozenset({
+    "ad", "ads", "adview", "advert", "banner", "banner_ad", "ad_banner",
+    "interstitial", "splash", "splash_ad", "promo", "promotion",
+    "ttad", "ksad", "pangle", "admob", "gromore", "gdt",
+})
+
+
+def _is_ad_resource_id_line(line: str) -> bool:
+    """Return True when *line* carries a known ad-container resource id.
+
+    ``summarise_ui_dump`` keeps only the short id (package prefix stripped),
+    so these patterns match short tokens like ``ttad_banner`` / ``ad_view``.
+    Ad containers appear / disappear between runs, so dropping them makes the
+    state key stable without losing real screen structure.
+    """
+    m = _ID_TOKEN_RE.search(line)
+    if not m:
+        return False
+    rid = m.group(1).lower()
+    if rid in _AD_RESOURCE_ID_TOKENS:
+        return True
+    return (
+        rid.startswith("ad_")
+        or rid.endswith("_ad")
+        or rid.endswith("_banner")
+        or rid.startswith("banner_")
+    )
+
+
+@dataclass(frozen=True)
+class UiComponents:
+    """Structured screen signature for fuzzy cross-run matching.
+
+    Unlike the opaque :func:`build_ui_fingerprint` hash, components can be
+    compared with overlap metrics so a small ad / feed / badge change no
+    longer forces a cache miss.
+    """
+    foreground_pkg: str
+    resource_ids: frozenset[str]
+    labels: frozenset[str]
+
+
+def build_ui_components(foreground_pkg: str, ui_summary: str,
+                        max_elements: int = 40) -> UiComponents:
+    """Extract ``(pkg, resource_ids, labels)`` from a UI summary.
+
+    Mirrors the filtering in :func:`build_ui_fingerprint` (ad keywords + ad
+    resource ids + volatile text) so both keys see the same screen view.
+    """
+    rids: set[str] = set()
+    labels: set[str] = set()
+    for raw_line in (ui_summary or "").splitlines():
+        line = normalize_text(raw_line)
+        if not line or line.startswith("ui elements on screen"):
+            continue
+        if any(kw in line for kw in _AD_EXCLUSION_KEYWORDS):
+            continue
+        if _is_ad_resource_id_line(line):
+            continue
+
+        is_interactive = "clickable" in line or "long-clickable" in line
+        is_state_element = (
+            "text=" in line
+            or "content-desc=" in line
+            or "search" in line.lower()
+            or "route" in line.lower()
+            or "navigation" in line.lower()
+            or "destination" in line.lower()
+        )
+        if not (is_interactive or is_state_element):
+            continue
+
+        if any(kw in line for kw in _SUGGESTION_KEYWORDS):
+            line = re.sub(r'"text=[^"]*"', '"text=<suggestion>"', line)
+            line = re.sub(r'"content-desc=[^"]*"', '"content-desc=<suggestion>"', line)
+        for pattern in _VOLATILE_TEXT_PATTERNS:
+            line = re.sub(pattern, "<volatile>", line)
+        line = re.sub(r"bounds=\[[\d,]+\]\[[\d,]+\]", "", line)
+        line = re.sub(r"(<volatile>\s*){2,}", "<volatile>", line)
+        line = re.sub(r"\s+", " ", line).strip()
+        if not line:
+            continue
+
+        m = _ID_TOKEN_RE.search(line)
+        if m:
+            rids.add(m.group(1))
+        lm = _LABEL_TOKEN_RE.search(line)
+        if lm:
+            labels.add(lm.group(1))
+        if len(rids) >= max_elements and len(labels) >= max_elements:
+            break
+
+    return UiComponents(
+        foreground_pkg=normalize_text(foreground_pkg or ""),
+        resource_ids=frozenset(rids),
+        labels=frozenset(labels),
+    )
+
+
+def ui_similarity(stored: UiComponents, current: UiComponents) -> float:
+    """Score 0..1 how alike two screens are.
+
+    Foreground package is a hard gate (different app → 0).  Resource ids
+    weigh more than labels because ids are far less volatile than text.
+    """
+    if stored.foreground_pkg and current.foreground_pkg:
+        if stored.foreground_pkg != current.foreground_pkg:
+            return 0.0
+
+    def _jaccard(a: frozenset[str], b: frozenset[str]) -> float:
+        if not a and not b:
+            return 0.0
+        union = len(a | b)
+        return len(a & b) / union if union else 0.0
+
+    return (
+        0.65 * _jaccard(stored.resource_ids, current.resource_ids)
+        + 0.35 * _jaccard(stored.labels, current.labels)
+    )
 
 
 # ---------------------------------------------------------------------------

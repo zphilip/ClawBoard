@@ -10,6 +10,8 @@ class StateSignature:
     ui_fingerprint: str
     intent_signature: str
     device_bucket: str = "default"
+    resource_ids: list[str] | None = None   # fuzzy-match components
+    texts: list[str] | None = None          # fuzzy-match components
 
 
 @dataclass
@@ -38,6 +40,9 @@ class MemoryRecord:
     action_description: str = ""
     target_element_signature: dict[str, Any] | None = None  # For drift validation
     original_screen_resolution: tuple[int, int] | None = None  # For drift validation
+    foreground_pkg: str = ""                    # fuzzy-match components
+    resource_ids: list[str] | None = None       # fuzzy-match components
+    texts: list[str] | None = None              # fuzzy-match components
 
     _TUPLE_FIELDS: tuple[str, ...] = ("original_screen_resolution",)
 

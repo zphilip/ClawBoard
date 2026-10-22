@@ -4,6 +4,7 @@ import json
 
 from .models import ActionCandidate, DecisionInput, DecisionOutput
 from .retriever import top_matches
+from .signature import UiComponents
 from .store import JsonlMemoryStore
 
 # Actions that are passive, terminal, or user-dependent.  These must never be
@@ -45,7 +46,20 @@ class MemoryPolicy:
         current_run_id: str = "",
     ) -> DecisionOutput:
         records = self.store.load()
-        ranked = top_matches(records, state_key=state_key, intent_key=intent_key, limit=5)
+        current_ui = None
+        if (
+            getattr(dinput.state, "resource_ids", None) is not None
+            and getattr(dinput.state, "texts", None) is not None
+        ):
+            current_ui = UiComponents(
+                foreground_pkg=dinput.state.foreground_pkg,
+                resource_ids=frozenset(dinput.state.resource_ids),
+                labels=frozenset(dinput.state.texts),
+            )
+        ranked = top_matches(
+            records, state_key=state_key, intent_key=intent_key, limit=5,
+            current_ui=current_ui,
+        )
 
         # Filter out non-cacheable action types at read time.  Forbidden
         # records are kept so they can still block known-bad actions.
