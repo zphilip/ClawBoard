@@ -334,16 +334,28 @@ def _adb(args: list[str], adb_path: str = "adb", device: Optional[str] = None,
     cmd += args
     return _run(cmd, timeout=timeout)
 
+def _ts_now() -> str:
+    """ISO-8601 timestamp with milliseconds, used for timing diagnostics."""
+    return datetime.now().strftime("%Y-%m-%dT%H:%M:%S.") + f"{int(time.time() * 1000) % 1000:03d}"
+
+
 def _emit(obj: dict) -> None:
     """Print a JSON object to stdout — consumed by OpenClaw."""
     print(json.dumps(obj, ensure_ascii=False), flush=True)
 
+
 def _emit_progress(step: int, action: str, message: str,
                    screenshot: Optional[str] = None,
                    verified: Optional[bool] = None,
-                   safety_check: Optional[str] = None) -> None:
+                   safety_check: Optional[str] = None,
+                   step_start_s: float | None = None) -> None:
     """Emit a JSONL progress line."""
-    obj: dict = {"type": "progress", "step": step, "action": action, "message": message}
+    obj: dict = {
+        "type": "progress", "step": step, "action": action, "message": message,
+        "timestamp": _ts_now(),
+    }
+    if step_start_s is not None:
+        obj["elapsed_s"] = round(time.time() - step_start_s, 2)
     if screenshot:
         obj["screenshot"] = screenshot
     if verified is not None:
@@ -612,6 +624,7 @@ def _run_reactive_fallback(
 
     while step < max_steps and (time.time() - start) < timeout:
         step += 1
+        t_step = time.time()
         _debug(f"Step {step}/{max_steps}")
 
         # Check if all milestones done
@@ -624,19 +637,24 @@ def _run_reactive_fallback(
         # 1. Take screenshot
         ts = datetime.now().strftime('%Y%m%d_%H%M%S_%f')[:19]
         shot_path = screenshots_dir / f"step_{step:03d}_{ts}_pre.png"
+        t_shot = time.time()
         if not _take_screenshot(adb_path, device, shot_path):
             _log("Screenshot capture failed")
             continue
+        _log(f"[timing] step {step} screenshot  → {time.time() - t_shot:.2f}s  (total {time.time() - t_step:.2f}s)")
 
         # 2. Index UI elements
+        t_index = time.time()
         try:
             elements = indexer.build_index(shot_path)
             _debug(f"Indexed {len(elements)} UI elements")
         except Exception as e:
             _debug(f"Element indexing skipped: {e}")
             elements = []
+        _log(f"[timing] step {step} index       → {time.time() - t_index:.2f}s  (total {time.time() - t_step:.2f}s)")
 
         # 3. Determine action via VLM (plan-guided)
+        t_vlm = time.time()
         action_type, action_args, action_desc, plan_updates, notes_updates = (
             _decide_action_plan_guided(
                 instruction, step, elements, None, last_coords,
@@ -644,6 +662,7 @@ def _run_reactive_fallback(
                 scratchpad=scratchpad,
             )
         )
+        _log(f"[timing] step {step} VLM decide  → {time.time() - t_vlm:.2f}s  (total {time.time() - t_step:.2f}s)")
 
         # Merge any notes written by the VLM into the scratchpad
         if notes_updates and isinstance(notes_updates, dict):
@@ -658,9 +677,11 @@ def _run_reactive_fallback(
                 _trace(f"[flash-plan] step {step}: progress {snap.done_count}/{snap.total_count}")
 
         # 5. Execute action (no safety net in flash mode)
+        t_exec = time.time()
         _execute_action_adb(adb_path, device, action_type, action_args, elements=elements)
         actions.append(action_desc)
         time.sleep(1.2)
+        _log(f"[timing] step {step} execute     → {time.time() - t_exec:.2f}s  (total {time.time() - t_step:.2f}s)")
 
         # 6. Record in history
         try:
@@ -686,14 +707,18 @@ def _run_reactive_fallback(
             pass
 
         # 7. Verification screenshot
+        t_post = time.time()
         vshot_path = screenshots_dir / f"step_{step:03d}_{ts}_post.png"
         _take_screenshot(adb_path, device, vshot_path)
+        _log(f"[timing] step {step} post-shot   → {time.time() - t_post:.2f}s  (total {time.time() - t_step:.2f}s)")
 
         _emit_progress(
             step, action_desc,
             f"Step {step}: {action_desc}",
             screenshot=str(vshot_path) if vshot_path.exists() else None,
+            step_start_s=t_step,
         )
+        _log(f"[timing] step {step} TOTAL       → {time.time() - t_step:.2f}s")
 
         # 8. Loop detection — tap coordinates
         if action_type == "tap" and "coordinate" in action_args:
@@ -873,6 +898,7 @@ def _run_plan_guided_fallback(
 
     while step < max_steps and (time.time() - start) < timeout:
         step += 1
+        t_step = time.time()
         _debug(f"Pro Step {step}/{max_steps}")
 
         # Milestone completion check
@@ -885,23 +911,29 @@ def _run_plan_guided_fallback(
         # 1. Screenshot + element index
         ts = datetime.now().strftime('%Y%m%d_%H%M%S_%f')[:19]
         shot_path = screenshots_dir / f"step_{step:03d}_{ts}_pre.png"
+        t_shot = time.time()
         if not _take_screenshot(adb_path, device, shot_path):
             _log("Screenshot capture failed")
             continue
+        _log(f"[timing] step {step} screenshot  → {time.time() - t_shot:.2f}s  (total {time.time() - t_step:.2f}s)")
 
+        t_index = time.time()
         try:
             elements = indexer.build_index(shot_path)
             _debug(f"Indexed {len(elements)} UI elements")
         except Exception as e:
             _debug(f"Element indexing skipped: {e}")
             elements = []
+        _log(f"[timing] step {step} index       → {time.time() - t_index:.2f}s  (total {time.time() - t_step:.2f}s)")
 
         # ── 2. Operator Node: decide next action ─────────────────────
+        t_oper = time.time()
         action_type, action_args, action_desc, plan_updates, notes_updates = _decide_action_plan_guided(
             instruction, step, elements, incident_tracker, last_coords,
             str(shot_path), actions, plan_text, history=history,
             scratchpad=scratchpad,
         )
+        _log(f"[timing] step {step} operator    → {time.time() - t_oper:.2f}s  (total {time.time() - t_step:.2f}s)")
 
         # Merge any notes written by the VLM into the scratchpad
         if notes_updates and isinstance(notes_updates, dict):
@@ -918,6 +950,7 @@ def _run_plan_guided_fallback(
             break
 
         # ── 3. Validator Node: independent judgment ─────────────────
+        t_vali = time.time()
         incident_context = ""
         if incident_tracker.has_active_incident:
             incident_context = incident_tracker.render_for_prompt()
@@ -932,6 +965,7 @@ def _run_plan_guided_fallback(
             vlm_caller=_call_vlm_simple,
             previous_incidents=incident_context,
         )
+        _log(f"[timing] step {step} validator   → {time.time() - t_vali:.2f}s  (total {time.time() - t_step:.2f}s)")
 
         verdict = validation.get("verdict", "approve")
         _trace(f"[pro-validator] step {step}: verdict={verdict} reason={validation.get('reason', '')[:100]}")
@@ -991,9 +1025,11 @@ def _run_plan_guided_fallback(
             safety_check = None
 
         # ── 5. Execute ──────────────────────────────────────────────
+        t_exec = time.time()
         _execute_action_adb(adb_path, device, action_type, action_args, elements=elements)
         actions.append(action_desc)
         time.sleep(1.2)
+        _log(f"[timing] step {step} execute     → {time.time() - t_exec:.2f}s  (total {time.time() - t_step:.2f}s)")
 
         # Record in history
         try:
@@ -1026,8 +1062,10 @@ def _run_plan_guided_fallback(
                 _trace(f"[pro-plan] step {step}: {snap.done_count}/{snap.total_count} done")
 
         # Verification screenshot
+        t_post = time.time()
         vshot_path = screenshots_dir / f"step_{step:03d}_{ts}_post.png"
         _take_screenshot(adb_path, device, vshot_path)
+        _log(f"[timing] step {step} post-shot   → {time.time() - t_post:.2f}s  (total {time.time() - t_step:.2f}s)")
 
         _emit_progress(
             step, action_desc,
@@ -1035,7 +1073,9 @@ def _run_plan_guided_fallback(
             screenshot=str(vshot_path) if vshot_path.exists() else None,
             verified=(safety_check is not None),
             safety_check=safety_check,
+            step_start_s=t_step,
         )
+        _log(f"[timing] step {step} TOTAL       → {time.time() - t_step:.2f}s")
 
         # Loop detection
         if action_type == "tap" and "coordinate" in action_args:
@@ -1228,7 +1268,9 @@ def _call_vlm(system_prompt: str, user_prompt: str, image_path: str,
     actual_retries = retries if retries is not None else cfg.get("vlm_retries", 2)
 
     b64, norm_w, norm_h = _encode_image(image_path)
+    t_encode = time.time()
     data_uri = f"data:image/png;base64,{b64}"
+    _trace(f"[vlm] image encode: {time.time() - t_encode:.2f}s  ({len(b64)} chars base64)")
 
     body = {
         "model": model,
@@ -1256,9 +1298,11 @@ def _call_vlm(system_prompt: str, user_prompt: str, image_path: str,
                 },
                 method="POST",
             )
+            t_call = time.time()
             with urllib.request.urlopen(req, timeout=actual_timeout) as resp:
                 result = json.loads(resp.read().decode("utf-8"))
                 choice = result["choices"][0]
+                _trace(f"[vlm] API round-trip: {time.time() - t_call:.2f}s  model={model}  tokens={len(choice['message']['content'])}")
                 return choice["message"]["content"], choice.get("finish_reason", "unknown"), norm_w, norm_h
         except (urllib.error.URLError, TimeoutError, ConnectionResetError,
                 OSError) as e:
