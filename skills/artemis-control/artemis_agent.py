@@ -149,6 +149,12 @@ Available actions:
   {"action": "finish"}                                  — task completed
   {"action": "fail", "reason": "why"}                   — task cannot be completed
 
+Required field:
+  "target_description" — a short description of WHAT element/area you are
+                          targeting and WHY.  Example: "搜索框" for a search box,
+                          "导航按钮 at top-right" for a nav button.
+                          This field is REQUIRED for tap, long_press, and swipe.
+
 Optional fields:
   "plan_updates" — see Plan Tracking section above (plan-guided only)
   "notes"        — dict of key→content for persistent scratchpad memory.
@@ -188,6 +194,10 @@ Optional fields:
 - Using open_app repeatedly when the app is already open — check the screen first.
 - Finishing prematurely — verify the goal was met, don't just assume.
 - Ignoring popups/dialogs — dismiss them (tap outside, press back) before continuing.
+- Repeating the same tap after PREVIOUS ACTIONS shows it already failed 2+ times.
+  If a tap at the same element/area didn't work twice, the element may not be
+  tappable, the app may be in a different state, or you may be targeting the
+  wrong thing.  SWITCH to a DIFFERENT approach (different element, swipe, back).
 
 ## Error Recovery
 - If you see an unexpected screen: press BACK once and re-evaluate.
@@ -223,9 +233,9 @@ SYSTEM_PROMPT_COMPACT = """## Role
 Android device operator. Output ONLY a JSON object per turn.
 
 ## Actions
-{"action":"tap","coordinate":[x,y]}
-{"action":"long_press","coordinate":[x,y]}
-{"action":"swipe","coordinate1":[x1,y1],"coordinate2":[x2,y2],"duration":300}
+{"action":"tap","coordinate":[x,y],"target_description":"what you are tapping"}
+{"action":"long_press","coordinate":[x,y],"target_description":"what you are pressing"}
+{"action":"swipe","coordinate1":[x1,y1],"coordinate2":[x2,y2],"duration":300,"target_description":"what you are swiping"}
 {"action":"type","text":"text to type"}
 {"action":"system_button","button":"back|home|enter|recent_apps"}
 {"action":"open_app","app_name":"app name"}
@@ -240,6 +250,7 @@ Android device operator. Output ONLY a JSON object per turn.
 5. **Check if app is already open.** Don't use open_app if you're already in the right app.
 6. **Dismiss popups immediately.** Permission dialogs, ads, update prompts — tap outside or press back.
 7. **Only finish when the goal is VISUALLY confirmed.** Don't guess.
+8. **Always include target_description** for tap/long_press/swipe to explain WHAT you are targeting.
 
 ## Element Format
 Each UI element: `[N] "label" center=(x,y) (clickable|enabled)`
@@ -720,14 +731,18 @@ def _run_reactive_fallback(
         )
         _log(f"[timing] step {step} TOTAL       → {time.time() - t_step:.2f}s")
 
-        # 8. Loop detection — tap coordinates
+        # 8. Loop detection — bucketed coordinates (collapses small-variance taps)
         if action_type == "tap" and "coordinate" in action_args:
-            coord_str = f"{action_args['coordinate'][0]},{action_args['coordinate'][1]}"
-            last_coords.append(coord_str)
+            # Bucket to nearest 100 — taps on the same button (within ±50 px)
+            # all collapse to one bucket while different regions stay separate.
+            bx = round(action_args["coordinate"][0] / 100) * 100
+            by = round(action_args["coordinate"][1] / 100) * 100
+            coord_bucket = f"{bx},{by}"
+            last_coords.append(coord_bucket)
             if len(last_coords) > LOOP_THRESHOLD:
                 last_coords = last_coords[-LOOP_THRESHOLD:]
             if len(last_coords) == LOOP_THRESHOLD and len(set(last_coords)) == 1:
-                _log(f"Loop detected at {coord_str}")
+                _log(f"[LOOP] Same coordinate bucket {coord_bucket} tapped {LOOP_THRESHOLD}+ times — STUCK, need different approach!")
         else:
             last_coords = []
 
@@ -1077,14 +1092,16 @@ def _run_plan_guided_fallback(
         )
         _log(f"[timing] step {step} TOTAL       → {time.time() - t_step:.2f}s")
 
-        # Loop detection
+        # Loop detection — bucketed coordinates
         if action_type == "tap" and "coordinate" in action_args:
-            coord_str = f"{action_args['coordinate'][0]},{action_args['coordinate'][1]}"
-            last_coords.append(coord_str)
+            bx = round(action_args["coordinate"][0] / 100) * 100
+            by = round(action_args["coordinate"][1] / 100) * 100
+            coord_bucket = f"{bx},{by}"
+            last_coords.append(coord_bucket)
             if len(last_coords) > LOOP_THRESHOLD:
                 last_coords = last_coords[-LOOP_THRESHOLD:]
             if len(last_coords) == LOOP_THRESHOLD and len(set(last_coords)) == 1:
-                _log(f"Loop detected at {coord_str} — injecting recovery hint")
+                _log(f"[LOOP] Same coordinate bucket {coord_bucket} tapped {LOOP_THRESHOLD}+ times — STUCK, need different approach!")
                 incident_tracker.add_recovery_hint(
                     "Same coordinate tapped repeatedly. Try a different approach."
                 )
@@ -1771,20 +1788,22 @@ def _decide_action_fallback(
         return ("system_button", {"button": "back"}, f"VLM parse error: {json_str[:80]}")
 
     action = parsed.get("action", "finish")
+    target_desc = parsed.get("target_description", "")
+    _log(f"[vlm-decision] action={action} target={target_desc} coords={parsed.get('coordinate', parsed.get('coordinate1', ''))}")
 
     # Normalize action_type and args
     if action == "tap":
         coord = parsed.get("coordinate", [0, 0])
         x, y = int(coord[0]), int(coord[1])
         x, y = _scale_coordinate(x, y, norm_w, norm_h)
-        desc = f"tap({x},{y})"
+        desc = target_desc if target_desc else f"tap({x},{y})"
         return ("tap", {"coordinate": [x, y]}, desc)
 
     elif action == "long_press":
         coord = parsed.get("coordinate", [0, 0])
         x, y = int(coord[0]), int(coord[1])
         x, y = _scale_coordinate(x, y, norm_w, norm_h)
-        desc = f"long_press({x},{y})"
+        desc = target_desc if target_desc else f"long_press({x},{y})"
         return ("long_press", {"coordinate": [x, y]}, desc)
 
     elif action == "swipe":
@@ -1793,7 +1812,7 @@ def _decide_action_fallback(
         dur = parsed.get("duration", 300)
         x1, y1 = _scale_coordinate(int(c1[0]), int(c1[1]), norm_w, norm_h)
         x2, y2 = _scale_coordinate(int(c2[0]), int(c2[1]), norm_w, norm_h)
-        desc = f"swipe(({x1},{y1})→({x2},{y2}))"
+        desc = target_desc if target_desc else f"swipe(({x1},{y1})→({x2},{y2}))"
         return ("swipe", {"coordinate1": [x1, y1], "coordinate2": [x2, y2], "duration": dur}, desc)
 
     elif action == "type":
@@ -1983,20 +2002,22 @@ def _decide_action_plan_guided(
     notes_updates = parsed.get("notes")
 
     action = parsed.get("action", "finish")
+    target_desc = parsed.get("target_description", "")
+    _log(f"[vlm-decision] action={action} target={target_desc} coords={parsed.get('coordinate', parsed.get('coordinate1', ''))}")
 
     # Normalize action_type and args (same logic as _decide_action_fallback)
     if action == "tap":
         coord = parsed.get("coordinate", [0, 0])
         x, y = int(coord[0]), int(coord[1])
         x, y = _scale_coordinate(x, y, norm_w, norm_h)
-        desc = f"tap({x},{y})"
+        desc = target_desc if target_desc else f"tap({x},{y})"
         return ("tap", {"coordinate": [x, y]}, desc, plan_updates, notes_updates)
 
     elif action == "long_press":
         coord = parsed.get("coordinate", [0, 0])
         x, y = int(coord[0]), int(coord[1])
         x, y = _scale_coordinate(x, y, norm_w, norm_h)
-        desc = f"long_press({x},{y})"
+        desc = target_desc if target_desc else f"long_press({x},{y})"
         return ("long_press", {"coordinate": [x, y]}, desc, plan_updates, notes_updates)
 
     elif action == "swipe":
@@ -2005,7 +2026,7 @@ def _decide_action_plan_guided(
         dur = parsed.get("duration", 300)
         x1, y1 = _scale_coordinate(int(c1[0]), int(c1[1]), norm_w, norm_h)
         x2, y2 = _scale_coordinate(int(c2[0]), int(c2[1]), norm_w, norm_h)
-        desc = f"swipe(({x1},{y1})→({x2},{y2}))"
+        desc = target_desc if target_desc else f"swipe(({x1},{y1})→({x2},{y2}))"
         return ("swipe", {"coordinate1": [x1, y1], "coordinate2": [x2, y2], "duration": dur}, desc, plan_updates, notes_updates)
 
     elif action == "type":
