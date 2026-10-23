@@ -282,6 +282,31 @@ def generate_test_image(path: Path, elements: list[UIElement],
         _tc(draw, (el.dev_x, el.dev_y + round(el.dev_h * 0.28)),
             label, f_small, fill=GRAY)
 
+    # ── Fiducial corner markers ──────────────────────────────────────────
+    # 4 colored squares at known screen-fraction positions.  After device
+    # roundtrip, we find these in the screenshot to compute the exact
+    # offset+scale of the displayed image — no hard-coded assumptions.
+    marker_size = max(6, round(sf * 0.007))  # ~10px on 1440-wide
+    # Safe positions (avoid extreme edges that get cropped by viewer chrome)
+    markers = [
+        (round(w * 0.05), round(h * 0.05),   "#ff00ff"),  # TL magenta
+        (round(w * 0.95), round(h * 0.05),   "#00ffff"),  # TR cyan
+        (round(w * 0.05), round(h * 0.90),   "#ffff00"),  # BL yellow
+        (round(w * 0.95), round(h * 0.90),   "#00ff00"),  # BR green
+        (round(w * 0.50), round(h * 0.05),   "#ff8800"),  # TC orange (spare)
+    ]
+    for mx, my, color in markers:
+        draw.rectangle(
+            [mx - marker_size, my - marker_size,
+             mx + marker_size, my + marker_size],
+            fill=color, outline="#000000", width=1,
+        )
+    # Store marker positions for later detection
+    img.info["fiducial_markers"] = json.dumps([
+        {"x": mx, "y": my, "x_frac": mx/w, "y_frac": my/h}
+        for mx, my, _ in markers
+    ])
+
     img.save(path, format="PNG")
     print(f"  Test UI: {path} ({w}x{h})")
 
@@ -351,59 +376,98 @@ def display_on_device(device: str, local: Path) -> bool:
 
 
 def detect_image_offset(screenshot_path: Path, original_path: Path
-                        ) -> tuple[int, int, float]:
-    """Detect where the original test image appears in the device screenshot.
+                        ) -> tuple[float, float, float, float, float, float]:
+    """Detect where the test image appears in the device screenshot using
+    fiducial corner markers (colored squares at known positions).
 
-    Returns (offset_x, offset_y, scale) — the pixel offset and scale factor.
-    Uses a simple strip-matching approach on the top-left corner.
+    Returns (scale_x, scale_y, offset_x, offset_y, ss_w, ss_h) — the
+    affine transform that maps original-image coordinates to screenshot
+    coordinates:  ss_x = ox * scale_x + offset_x
+
+    If detection fails, returns (1, 1, 0, 0, ss_w, ss_h) — identity.
     """
     from PIL import Image
     orig = Image.open(original_path)
     ss = Image.open(screenshot_path)
-
-    # If screenshots match exactly (same size, same content), no offset
-    if ss.size == orig.size:
-        # Quick check: compare first row
-        if list(ss.getdata())[:10] == list(orig.getdata())[:10]:
-            return 0, 0, 1.0
-
-    # The test image has a distinctive status bar (dark fill #0d0d1a)
-    # and header bar (#16213e). Scan for these in the screenshot.
-    # Strategy: find the status bar strip in the screenshot.
-    status_color = (0x0d, 0x0d, 0x1a)
-
     sw, sh = ss.size
     ow, oh = orig.size
 
-    # If screenshot is larger, search for the original image within it
-    if sw >= ow and sh >= oh:
-        # Scan for matching top-left corner pattern
-        best_offset = (0, 0)
-        best_scale = 1.0
+    # First fast path: if same size and top-left pixel matches exactly
+    if (sw, sh) == (ow, oh):
+        opx = orig.getpixel((5, 5))
+        spx = ss.getpixel((5, 5))
+        if opx == spx:
+            return 1.0, 1.0, 0.0, 0.0, sw, sh
 
-        # Try scale detection: the status bar in original is ~4% of height
-        orig_sb_h = round(oh * 0.04)
+    # Fiducial marker colors to search for (known positions in original)
+    markers_orig = [
+        (round(ow * 0.05), round(oh * 0.05), (255, 0, 255)),    # TL magenta
+        (round(ow * 0.95), round(oh * 0.05), (0, 255, 255)),    # TR cyan
+        (round(ow * 0.05), round(oh * 0.90), (255, 255, 0)),    # BL yellow
+        (round(ow * 0.95), round(oh * 0.90), (0, 255, 0)),      # BR green
+        (round(ow * 0.50), round(oh * 0.05), (255, 136, 0)),    # TC orange (spare)
+    ]
 
-        # Scan Y for the dark status bar region
-        for y_off in range(0, max(1, sh - oh + 1), 2):
-            # Check if row at y_off matches original's status bar row
-            match_count = 0
-            for x in range(0, min(ow, sw), 5):
-                opx = orig.getpixel((x, min(2, oh - 1)))
-                spx = ss.getpixel((x, y_off + min(2, sh - y_off - 1)))
-                # Check if both are dark (status bar region)
-                if (opx[0] < 30 and opx[1] < 30 and opx[2] < 40 and
-                    spx[0] < 30 and spx[1] < 30 and spx[2] < 40):
-                    match_count += 1
-            if match_count >= 50:  # enough dark pixels found
-                best_offset = (0, y_off)
-                break
+    # Search for markers in screenshot (subsample for speed)
+    step = max(1, min(sw, sh) // 400)  # ~3-4 px step
+    found = []  # (ss_x, ss_y, orig_x, orig_y)
 
-        print(f"  Auto-detected image offset: X={best_offset[0]} Y={best_offset[1]}")
-        return best_offset[0], best_offset[1], 1.0
+    for ox, oy, target_color in markers_orig:
+        best_x, best_y, best_dist = None, None, 999
+        # Search in a reasonable region
+        expected_ss_x = int(ox * sw / ow)
+        expected_ss_y = int(oy * sh / oh)
+        search_r = max(80, min(sw, sh) // 10)
 
-    # Fallback: no offset detectable
-    return 0, 0, 1.0
+        for sy in range(max(0, expected_ss_y - search_r),
+                        min(sh, expected_ss_y + search_r), step):
+            for sx in range(max(0, expected_ss_x - search_r),
+                            min(sw, expected_ss_x + search_r), step):
+                px = ss.getpixel((sx, sy))
+                # Color distance
+                dist = sum(abs(int(px[i]) - target_color[i]) for i in range(3))
+                if dist < best_dist:
+                    best_dist = dist
+                    best_x, best_y = sx, sy
+
+        if best_dist < 180:  # reasonable color match
+            found.append((best_x, best_y, ox, oy))
+            print(f"  Marker at orig({ox},{oy}) → ss({best_x},{best_y}) dist={best_dist}")
+        else:
+            print(f"  !! Marker at orig({ox},{oy}) NOT FOUND (best dist={best_dist})")
+
+    if len(found) < 2:
+        print(f"  !! Fiducial detection failed ({len(found)}/4 markers found)")
+        return 1.0, 1.0, 0.0, 0.0, sw, sh
+
+    # Compute affine transform from original → screenshot
+    # We solve for: ss_x = orig_x * scale_x + offset_x
+    # Using least squares across found markers
+    n = len(found)
+    sum_ox, sum_oy = sum(f[2] for f in found), sum(f[3] for f in found)
+    sum_sx, sum_sy = sum(f[0] for f in found), sum(f[1] for f in found)
+    sum_ox2, sum_oy2 = sum(f[2]*f[2] for f in found), sum(f[3]*f[3] for f in found)
+    sum_ox_sx = sum(f[2]*f[0] for f in found)
+    sum_oy_sy = sum(f[3]*f[1] for f in found)
+
+    denom_x = n * sum_ox2 - sum_ox * sum_ox
+    denom_y = n * sum_oy2 - sum_oy * sum_oy
+
+    if abs(denom_x) < 0.001 or abs(denom_y) < 0.001:
+        # Degenerate — use simple average ratio
+        scale_x = sum_sx / sum_ox if sum_ox != 0 else 1.0
+        scale_y = sum_sy / sum_oy if sum_oy != 0 else 1.0
+        offset_x = (sum_sx - scale_x * sum_ox) / n
+        offset_y = (sum_sy - scale_y * sum_oy) / n
+    else:
+        scale_x = (n * sum_ox_sx - sum_ox * sum_sx) / denom_x
+        offset_x = (sum_sx - scale_x * sum_ox) / n
+        scale_y = (n * sum_oy_sy - sum_oy * sum_sy) / denom_y
+        offset_y = (sum_sy - scale_y * sum_oy) / n
+
+    print(f"  Detected transform: scale=({scale_x:.4f},{scale_y:.4f}) "
+          f"offset=({offset_x:.1f},{offset_y:.1f})")
+    return scale_x, scale_y, offset_x, offset_y, sw, sh
 
 
 def restore_immersive(device: str) -> None:
@@ -832,19 +896,22 @@ def main():
                 print(f"  Device screenshot: {dev_ss} ({sw}x{sh})")
 
                 # Detect offset: where does test image appear in screenshot?
-                off_x, off_y, scale = detect_image_offset(dev_ss, src_path)
-                if off_x != 0 or off_y != 0 or scale != 1.0:
-                    print(f"  Image offset: dx={off_x} dy={off_y} scale={scale:.2f}")
-                    # Adjust element ground truth for the offset
+                off = detect_image_offset(dev_ss, src_path)
+                scale_x, scale_y, off_x, off_y, sw, sh = off
+                DEV_W, DEV_H = sw, sh
+
+                if abs(scale_x - 1.0) > 0.005 or abs(scale_y - 1.0) > 0.005 \
+                   or abs(off_x) > 2 or abs(off_y) > 2:
+                    print(f"\n  Adjusting ground truth for transform: "
+                          f"scale=({scale_x:.4f},{scale_y:.4f}) offset=({off_x:.1f},{off_y:.1f})")
                     for el in elements:
-                        el.dev_x = round(el.dev_x * scale + off_x)
-                        el.dev_y = round(el.dev_y * scale + off_y)
-                        el.dev_w = round(el.dev_w * scale)
-                        el.dev_h = round(el.dev_h * scale)
+                        # Map original coords to screenshot coords
+                        el.dev_x = round(el.dev_x * scale_x + off_x)
+                        el.dev_y = round(el.dev_y * scale_y + off_y)
+                        el.dev_w = round(el.dev_w * scale_x)
+                        el.dev_h = round(el.dev_h * scale_y)
                         el.norm_x = round(el.dev_x / sw * 1000, 1)
                         el.norm_y = round(el.dev_y / sh * 1000, 1)
-                    DEV_W, DEV_H = sw, sh
-                    print(f"\n  Adjusted ground truth (+{off_y}px Y offset):")
                     print(f"  {'Element':<16s} {'dev(x,y)':>18s} {'norm(x,y)':>18s}")
                     for el in elements:
                         print(f"  {el.name:<16s} ({el.dev_x:>5d},{el.dev_y:>5d})     "
