@@ -239,49 +239,67 @@ def take_screenshot(device: str, dest: Path) -> bool:
 
 
 def display_image_on_device(device: str, remote_path: str) -> bool:
-    """Push PNG to device and open it fullscreen in the gallery."""
+    """Push PNG to device and open it fullscreen in the gallery/image viewer."""
     adb_path = _find_adb()
+    local = OUT_DIR / "test_ui_source.png"
+
+    import shutil
+    shutil.copy(OUT_DIR / SCREENSHOT_NAME, local)
 
     # Push to device
-    local = OUT_DIR / "test_ui_source.png"
-    rc, _, err = adb_run([adb_path, "-s", device, "push", str(local), remote_path])
-    if rc != 0:
-        print(f"  Push failed: {err.decode()}")
+    r = subprocess.run(
+        [adb_path, "-s", device, "push", str(local), remote_path],
+        capture_output=True, timeout=15,
+    )
+    if r.returncode != 0:
+        print(f"  Push failed: {r.stderr.decode()}")
         return False
 
-    # Open the image — try gallery app, fall back to intent
-    for intent in [
-        # Try Directly open file (lets Android pick viewer)
-        f'am start -a android.intent.action.VIEW -d "file://{remote_path}" -t image/png',
-        # Alternate: force fullscreen via immersive mode
-        f'am start -a android.intent.action.VIEW -d "file://{remote_path}" -t image/png --ez android.intent.extra.FULLSCREEN true',
-    ]:
-        rc, _, err = adb_run([adb_path, "-s", device, "shell"] + intent.split())
-        if rc == 0:
-            break
-    else:
-        print(f"  Failed to open image on device")
-        return False
+    # Open the image on device via intent
+    url = f"file://{remote_path}"
+    r = subprocess.run(
+        [adb_path, "-s", device, "shell",
+         "am", "start", "-a", "android.intent.action.VIEW",
+         "-d", url, "-t", "image/png"],
+        capture_output=True, timeout=15,
+    )
+    if r.returncode != 0:
+        # Try alternate approach: use the content scheme
+        r = subprocess.run(
+            [adb_path, "-s", device, "shell",
+             "am", "start", "-a", "android.intent.action.VIEW",
+             "-d", f"content://media/external/images/media", "-t", "image/png"],
+            capture_output=True, timeout=15,
+        )
+        if r.returncode != 0:
+            print(f"  Failed to open image: {r.stderr.decode()}")
+            return False
 
-    # Wait for render
-    time.sleep(2)
+    # Wait for viewer to render
+    time.sleep(2.5)
 
-    # Try to dismiss any UI chrome by tapping center then waiting
-    adb_run([adb_path, "-s", device, "shell", "input", "tap", str(DEV_W // 2), str(DEV_H // 2)])
-    time.sleep(1)
+    # Tap center to dismiss any viewer UI chrome
+    subprocess.run(
+        [adb_path, "-s", device, "shell", "input", "tap",
+         str(DEV_W // 2), str(DEV_H // 2)],
+        capture_output=True, timeout=10,
+    )
+    time.sleep(1.5)
 
     return True
 
 
 def _find_adb() -> str:
-    """Find the ADB binary path."""
-    # Check common locations
-    for p in ["adb", "/usr/bin/adb", "/usr/local/bin/adb",
+    """Find the ADB binary path — same fallback as the agent CLI."""
+    # The agent takes --adb-path as a CLI arg, defaulting to "adb".
+    # Check if "adb" is on PATH; if not, try well-known Android SDK locations.
+    r = subprocess.run(["which", "adb"], capture_output=True, text=True)
+    if r.returncode == 0:
+        return r.stdout.strip()
+    for p in ["/usr/bin/adb", "/usr/local/bin/adb",
               os.path.expanduser("~/Android/Sdk/platform-tools/adb")]:
-        rc, _, _ = subprocess.run(["which", p] if "/" not in p else ["test", "-x", p],
-                                  capture_output=True)
-        if rc == 0:
-            return p if "/" in p else subprocess.run(["which", p], capture_output=True, text=True).stdout.strip()
+        if os.path.isfile(p) and os.access(p, os.X_OK):
+            return p
     return "adb"
 
 
