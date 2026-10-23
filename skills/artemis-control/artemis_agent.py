@@ -141,8 +141,8 @@ Respond with a single JSON object. No other text.
 
 Available actions:
   {"action": "open_app", "app_name": "微信"}              — launch an app by name
-  {"action": "tap", "target": 3}                          — tap element N by INDEX (PREFERRED)
-  {"action": "tap", "coordinate": [x, y]}                 — tap at pixel (fallback)
+  {"action": "tap", "target": 3}                          — tap element N by INDEX (REQUIRED if element is indexed)
+  {"action": "tap", "coordinate": [x, y]}                 — tap at pixel (only when element NOT in list)
   {"action": "long_press", "target": 3}                   — long-press element N
   {"action": "swipe", "coordinate1": [x1,y1], "coordinate2": [x2,y2], "duration": 300}
   {"action": "type", "text": "hello"}                     — type text into focused field
@@ -189,11 +189,13 @@ the target on the screenshot.
 
 ### 3. Execution — pick the right target
 - **Vision-First**: Find the element VISUALLY on the screenshot, THEN look it up
-  in the element list to get its index. Use {"action": "tap", "target": N} —
-  this is more reliable than guessing coordinates.
-- The element list has class prefixes like [EditText], [Button], [ImageView] —
-  use them to tell an INPUT FIELD from an ICON. [EditText] is a text input;
-  [ImageView] is an icon/image.
+  in the element list to get its index. Output {"action": "tap", "target": N}.
+  This is MANDATORY when the element IS in the list — it's more reliable than
+  guessing coordinates.
+- **Coordinate fallback**: ONLY use {"action": "tap", "coordinate": [x, y]} if
+  the target is NOT in the element list (custom-drawn UI, Canvas, WebView, Flutter,
+  or splash-screen ads). When you do use coordinates, you MUST also provide an
+  accurate target_description.
 - For text input: FIRST tap the input field (verify it has focus), THEN use
   {"action": "type", "text": "..."}. Never type without first ensuring focus.
 - If typing in a search bar: tap the bar first, confirm keyboard is up, then type.
@@ -251,8 +253,8 @@ SYSTEM_PROMPT_COMPACT = """## Role
 Android device operator. Output ONLY a JSON object per turn.
 
 ## Actions
-{"action":"tap","target":3}                          — tap element N by INDEX (PREFERRED)
-{"action":"tap","coordinate":[x,y]}                    — tap at pixel (fallback)
+{"action":"tap","target":3}                          — tap element N by INDEX (REQUIRED if element is indexed)
+{"action":"tap","coordinate":[x,y]}                    — tap at pixel (only when element NOT in list)
 {"action":"long_press","target":3}                     — long-press element N
 {"action":"swipe","coordinate1":[x1,y1],"coordinate2":[x2,y2],"duration":300}
 {"action":"type","text":"text to type"}
@@ -1781,16 +1783,19 @@ def _decide_action_fallback(
         + (f"\n{incident_text}" if incident_text else "")
         + f"\n{index_text}"
         + (
-            "\n\nTARGETING: When tapping, use {\"action\":\"tap\",\"target\":N} with the element's"
-            " INDEX number from the list above. The system resolves the index to exact pixel"
-            " coordinates. Use {\"action\": \"tap\", \"coordinate\": [x, y]} only as a fallback"
-            " when no element matches (e.g. custom-drawn UI, Canvas, Flutter)."
+            "\n\n## TARGETING RULES (MANDATORY)"
+            "\n1. If the target IS in the element list → output {\"action\":\"tap\",\"target\":N}"
+            "\n   using the INDEX number. The system resolves to exact pixel. Do NOT guess coordinates."
+            "\n2. ONLY use {\"action\":\"tap\",\"coordinate\":[x,y]} if NO element matches your target"
+            "\n   (custom-drawn UI, Canvas, WebView, Flutter, or splash ads not in the list)."
+            "\n3. Using coordinate when the element IS indexed WILL cause a miss — the system"
+            "\n   requires target=N for precise pixel lookup from the accessibility tree."
         )
     )
 
     user_prompt += (
-        "\n\nCOORDINATE SPACE: 1000×1000. Output ALL coordinates in 0-1000 range. "
-        "They will be auto-scaled to device pixels."
+        "\n\nCOORDINATE SPACE: When using coordinate (fallback only), output in 0-1000 range."
+        " They will be auto-scaled to device pixels."
     )
 
     system_prompt = _get_operator_system_prompt()
@@ -2018,15 +2023,19 @@ def _decide_action_plan_guided(
         + (f"\n{similarity_note}" if similarity_note else "")
         + f"\n{index_text}"
         + (
-            "\n\nTARGETING: When tapping, prefer {\"action\":\"tap\",\"target\":N} with the"
-            " element's INDEX number from the list. The system resolves it to exact pixel"
-            " coordinates. Use {\"action\":\"tap\",\"coordinate\":[x,y]} only as fallback."
+            "\n\n## TARGETING RULES (MANDATORY)"
+            "\n1. If the target IS in the element list → output {\"action\":\"tap\",\"target\":N}"
+            "\n   using the INDEX number. The system resolves to exact pixel. Do NOT guess coordinates."
+            "\n2. ONLY use {\"action\":\"tap\",\"coordinate\":[x,y]} if NO element matches your target"
+            "\n   (custom-drawn UI, Canvas, WebView, Flutter, or splash ads not in the list)."
+            "\n3. Using coordinate when the element IS indexed WILL cause a miss — the system"
+            "\n   requires target=N for precise pixel lookup from the accessibility tree."
         )
     )
 
     user_prompt += (
-        "\n\nCOORDINATE SPACE: 1000×1000. Output ALL coordinates in 0-1000 range. "
-        "They will be auto-scaled to device pixels."
+        "\n\nCOORDINATE SPACE: When using coordinate (fallback only), output in 0-1000 range."
+        " They will be auto-scaled to device pixels."
     )
 
     # Plan-guided operator needs more tokens for plan_updates + notes fields
