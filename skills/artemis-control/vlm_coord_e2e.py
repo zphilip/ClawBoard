@@ -1,58 +1,55 @@
 #!/usr/bin/env python3
-"""End-to-end VLM coordinate accuracy test — full agent pipeline.
+"""End-to-end VLM coordinate accuracy test — real screenshot + known markers.
 
 Pipeline (mirrors artemis_agent.py exactly):
-  1. Generate test PNG at device resolution (3120×1440)
-  2. Push to device → display fullscreen via image viewer
-  3. ADB screenshot (adb exec-out screencap -p)
-  4. _encode_image() resize (2000×923)
-  5. _call_vlm() with same system prompt format
-  6. Parse VLM coordinates → compare with ground truth
+  1. Take a real screenshot from the device (ADB screencap -p)
+  2. Overlay numbered colored markers at known pixel positions
+  3. _encode_image() → resize to 2000×923
+  4. _call_vlm() → ask VLM to locate each marker
+  5. Compare VLM coordinates with ground truth
+
+This tests VLM accuracy on a REAL screenshot with all its visual complexity.
+No fake fonts, no synthetic layouts.
 
 Usage:
-    python3 vlm_coord_e2e.py [--runs N] [--device SERIAL] [--synthetic-only]
+    python3 vlm_coord_e2e.py [--runs N] [--device SERIAL]
+    python3 vlm_coord_e2e.py --screenshot /path/to/screenshot.png --runs 2
 """
 
 from __future__ import annotations
 
-import json
-import math
-import os
-import re
-import subprocess
-import sys
-import textwrap
-import time
+import json, math, os, re, subprocess, sys, textwrap, time
 from dataclasses import dataclass, field
-from io import BytesIO
 from pathlib import Path
 from typing import Optional
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from artemis_agent import _encode_image, _call_vlm, _scale_coordinate, load_skill_config
+from artemis_agent import _encode_image, _call_vlm, load_skill_config
 
 try:
     from PIL import Image, ImageDraw, ImageFont
 except ImportError:
-    print("ERROR: Pillow not installed.")
+    print("ERROR: pip install Pillow")
     sys.exit(1)
 
-# ── Configuration ───────────────────────────────────────────────────────────
-DEV_W = 3120
-DEV_H = 1440
 OUT_DIR = Path("/tmp/vlm_coord_e2e")
-SCREENSHOT_NAME = "step_test.png"
 
-# ── Element definitions (device-pixel centers) ──────────────────────────────
+
+# ── Marker definitions (device-pixel centers) ───────────────────────────────
+#
+# Markers are placed at diverse positions across the screen to test:
+#   - Top edge, bottom edge, corners, center
+#   - Both dense (small targets) and sparse (easy targets)
+#   - Horizontal strips (thin bars like search boxes)
+#
+# Adjust positions to avoid overlapping status bar on your device.
 
 @dataclass
-class Element:
+class Marker:
     name: str
-    description: str
     dev_x: int
     dev_y: int
-    width: int
-    height: int
+    size: int = 40             # visual marker radius in device px
     norm_x: float = field(init=False)
     norm_y: float = field(init=False)
 
@@ -60,297 +57,177 @@ class Element:
         self.norm_x = round(self.dev_x / DEV_W * 1000, 1)
         self.norm_y = round(self.dev_y / DEV_H * 1000, 1)
 
+    @property
+    def tolerance_dev_px(self) -> int:
+        """Max tap deviation that still 'hits' — size plus some margin."""
+        return self.size + 10
 
-ELEMENTS = [
-    Element("back_button", "the back arrow '←' button in top-left corner",
-            100, 110, width=80, height=80),
-    Element("search_icon", "the magnifier '🔍' icon in top-right corner",
-            3020, 110, width=80, height=80),
-    Element("text_input", "the wide text input/search bar below the header with placeholder text '请输入目的地'",
-            1560, 230, width=2400, height=100),
-    Element("left_card", "the left card/button labeled '驾车路线' showing '最快 35 分钟'",
-            520, 550, width=600, height=300),
-    Element("center_card", "the center card/button labeled '公交路线' showing '约 1 小时 20 分'",
-            1560, 550, width=600, height=300),
-    Element("right_card", "the right card/button labeled '步行路线' showing '约 2 小时 45 分'",
-            2600, 550, width=600, height=300),
-    Element("cta_button", "the large red '开始导航' call-to-action button in the lower center area",
-            1560, 850, width=1800, height=200),
-    Element("nav_home", "the bottom nav '首页' button (leftmost nav item with house icon)",
-            520, 1380, width=500, height=100),
-    Element("nav_route", "the bottom nav '路线' button (center nav item with pin icon)",
-            1310, 1380, width=500, height=100),
-    Element("nav_profile", "the bottom nav '我的' button (rightmost nav item with person icon)",
-            2600, 1380, width=500, height=100),
+
+DEV_W = 3120
+DEV_H = 1440
+
+# Marker positions — spread across entire screen
+# Format: (name, x, y, size)
+_MARKER_SPECS = [
+    # Top row: left, center, right
+    ("P1_top_left",       160,   80, 35),
+    ("P2_top_center",    1560,   80, 35),
+    ("P3_top_right",     2960,   80, 35),
+    # Upper-middle: thin horizontal strip area (like search bars)
+    ("P4_bar_left",       400,  220, 30),
+    ("P5_bar_center",    1560,  220, 30),
+    ("P6_bar_right",     2720,  220, 30),
+    # Content center: large isolation
+    ("P7_deep_left",      300,  720, 35),
+    ("P8_deep_center",   1560,  720, 45),
+    ("P9_deep_right",    2820,  720, 35),
+    # Lower area: above bottom nav
+    ("P10_low_left",      400, 1200, 30),
+    ("P11_low_center",   1560, 1200, 30),
+    ("P12_low_right",    2720, 1200, 30),
+    # Bottom: near nav bar edge
+    ("P13_nav_left",      520, 1380, 25),
+    ("P14_nav_center",   1310, 1380, 25),
+    ("P15_nav_right",    2600, 1380, 25),
+]
+
+MARKERS = [Marker(*spec) for spec in _MARKER_SPECS]
+
+# Bright distinct colors for markers (one per marker)
+MARKER_COLORS = [
+    "#FF4444", "#44FF44", "#4488FF", "#FFAA00", "#FF44FF",
+    "#00CCCC", "#FF8888", "#88FF88", "#8888FF", "#FFCC44",
+    "#CC44CC", "#44CCCC", "#FF6688", "#66FF88", "#6688FF",
 ]
 
 
-# ── Font helpers ────────────────────────────────────────────────────────────
-
-_FONT_CACHE: dict[int, ImageFont.FreeTypeFont | ImageFont.ImageFont] = {}
-
-def _get_font(size: int):
-    if size in _FONT_CACHE:
-        return _FONT_CACHE[size]
-    candidates = [
-        "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
-        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
-        "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf",
-        "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
-        "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
-        "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-    ]
-    for p in candidates:
-        if os.path.exists(p):
-            _FONT_CACHE[size] = ImageFont.truetype(p, size)
-            return _FONT_CACHE[size]
-    _FONT_CACHE[size] = ImageFont.load_default()
-    return _FONT_CACHE[size]
-
-
-def _text_center(draw, xy, text, font, fill="#e0e0e0"):
-    bbox = draw.textbbox((0, 0), text, font=font)
-    tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
-    draw.text((xy[0] - tw // 2, xy[1] - th // 2), text, font=font, fill=fill)
-
-
-def _rounded_box(draw, x1, y1, x2, y2, radius, fill):
-    draw.rounded_rectangle([x1, y1, x2, y2], radius=radius, fill=fill)
-
-
-# ── Generate test image (realistic UI at device resolution) ─────────────────
-
-def build_test_image(path: Path) -> None:
-    """Generate a realistic 3120×1440 mobile app screenshot with known elements."""
-    img = Image.new("RGB", (DEV_W, DEV_H), "#1a1a2e")
-    draw = ImageDraw.Draw(img)
-    f24, f28, f34, f40, f44 = (_get_font(s) for s in (24, 28, 34, 40, 44))
-
-    # Status bar
-    draw.rectangle([0, 0, DEV_W, 60], fill="#0d0d1a")
-    draw.text((40, 16), "10:30", font=f24, fill="#888")
-    draw.text((DEV_W - 500, 16), "WiFi  ████  🔋 92%", font=f24, fill="#888")
-
-    # Header bar
-    draw.rectangle([0, 60, DEV_W, 160], fill="#16213e")
-    _text_center(draw, (DEV_W // 2, 110), "地图导航", f40, fill="#e0e0e0")
-
-    # Back button (center: 100, 110)
-    e = ELEMENTS[0]
-    _rounded_box(draw, e.dev_x - 40, e.dev_y - 40, e.dev_x + 40, e.dev_y + 40,
-                 12, fill="#222244")
-    _text_center(draw, (e.dev_x, e.dev_y), "←", f44, fill="#e0e0e0")
-
-    # Search icon (center: 3020, 110)
-    e = ELEMENTS[1]
-    _text_center(draw, (e.dev_x, e.dev_y), "🔍", f40, fill="#e0e0e0")
-
-    # Search input bar (center: 1560, 230)
-    e = ELEMENTS[2]
-    _rounded_box(draw, e.dev_x - 1190, e.dev_y - 49, e.dev_x + 1190, e.dev_y + 49,
-                 25, fill="#2a2a4a")
-    # border
-    draw.rounded_rectangle(
-        [e.dev_x - 1190, e.dev_y - 49, e.dev_x + 1190, e.dev_y + 49],
-        radius=25, outline="#3a3a5a", width=2)
-    _text_center(draw, (e.dev_x - 900, e.dev_y), "🔍", f34, fill="#888")
-    draw.text((e.dev_x - 840, e.dev_y - 18), "请输入目的地", font=f34, fill="#666")
-
-    # Map content area with visual texture
-    draw.rectangle([0, 310, DEV_W, 1320], fill="#0d1525")
-    # Grid lines
-    for x in range(0, DEV_W, 180):
-        draw.line([x, 310, x, 1320], fill="#111a2a", width=1)
-    for y in range(310, 1320, 180):
-        draw.line([0, y, DEV_W, y], fill="#111a2a", width=1)
-    # Winding route line
-    route_pts = [(300, 900), (800, 700), (1400, 800), (2000, 500), (2600, 600), (3000, 450)]
-    for i in range(len(route_pts) - 1):
-        draw.line([route_pts[i], route_pts[i + 1]], fill="#4a90d9", width=12)
-
-    # Cards (y: 400-700)
-    card_data = [
-        (ELEMENTS[3], "#e94560", "驾车路线", "最快 35 分钟"),
-        (ELEMENTS[4], "#533483", "公交路线", "约 1 小时 20 分"),
-        (ELEMENTS[5], "#00c853", "步行路线", "约 2 小时 45 分"),
-    ]
-    for el, accent, title, sub in card_data:
-        rx1, ry1 = el.dev_x - 298, el.dev_y - 148
-        rx2, ry2 = el.dev_x + 298, el.dev_y + 148
-        _rounded_box(draw, rx1, ry1, rx2, ry2, 22, fill="#0f3460")
-        draw.rounded_rectangle([rx1, ry1, rx2, ry2], radius=22,
-                               outline="#1a3a60", width=1)
-        draw.rectangle([rx1, ry1, rx2, ry1 + 8], fill=accent)
-        _text_center(draw, (el.dev_x, el.dev_y - 28), title, f34, fill="#e0e0e0")
-        _text_center(draw, (el.dev_x, el.dev_y + 30), sub, f28, fill="#888")
-
-    # CTA button (center: 1560, 850)
-    e = ELEMENTS[6]
-    _rounded_box(draw, e.dev_x - 898, e.dev_y - 98, e.dev_x + 898, e.dev_y + 98,
-                 35, fill="#e94560")
-    _text_center(draw, (e.dev_x, e.dev_y - 14), "开始导航", f44, fill="#fff")
-    _text_center(draw, (e.dev_x, e.dev_y + 38), "全程约 35 公里 · 预计 42 分钟",
-                 f28, fill="#ffcccc")
-
-    # Bottom nav (y: 1320-1440)
-    draw.rectangle([0, 1320, DEV_W, DEV_H], fill="#16213e")
-    draw.line([0, 1320, DEV_W, 1320], fill="#1e2d50", width=2)
-
-    nav_data = [
-        (ELEMENTS[7], "🏠", "首页"),
-        (ELEMENTS[8], "📍", "路线"),
-        (ELEMENTS[9], "👤", "我的"),
-    ]
-    for el, icon, label in nav_data:
-        _text_center(draw, (el.dev_x, el.dev_y - 16), icon, f40, fill="#888")
-        _text_center(draw, (el.dev_x, el.dev_y + 26), label, f28, fill="#888")
-
-    img.save(path, format="PNG")
-    print(f"  Test image: {path} ({DEV_W}×{DEV_H})")
-
-    # Print ground truth
-    print("\n  Ground truth (device px → 0-1000 norm):")
-    for el in ELEMENTS:
-        print(f"    {el.name:<18s} dev({el.dev_x:>4d},{el.dev_y:>4d}) → "
-              f"norm({el.norm_x:>3.0f},{el.norm_y:>3.0f}) {el.width}×{el.height}px")
-
-
-# ── Screenshot pipeline ─────────────────────────────────────────────────────
-
-def adb_run(args: list[str], timeout: int = 15) -> tuple[int, bytes, bytes]:
-    """Run an ADB command."""
-    r = subprocess.run(args, capture_output=True, timeout=timeout)
-    return r.returncode, r.stdout, r.stderr
-
-
-def take_screenshot(device: str, dest: Path) -> bool:
-    """Capture screenshot via ADB — same as agent's _take_screenshot."""
-    adb_path = _find_adb()
-    cmd = [adb_path, "-s", device, "exec-out", "screencap", "-p"]
-    try:
-        r = subprocess.run(cmd, capture_output=True, timeout=15)
-        if r.returncode == 0 and r.stdout:
-            dest.write_bytes(r.stdout)
-            return True
-    except Exception as e:
-        print(f"  Screenshot failed: {e}")
-    return False
-
-
-def display_image_on_device(device: str, remote_path: str) -> bool:
-    """Push PNG to device and open it fullscreen in the gallery/image viewer."""
-    adb_path = _find_adb()
-    local = OUT_DIR / "test_ui_source.png"
-
-    import shutil
-    shutil.copy(OUT_DIR / SCREENSHOT_NAME, local)
-
-    # Push to device
-    r = subprocess.run(
-        [adb_path, "-s", device, "push", str(local), remote_path],
-        capture_output=True, timeout=15,
-    )
-    if r.returncode != 0:
-        print(f"  Push failed: {r.stderr.decode()}")
-        return False
-
-    # Open the image on device via intent
-    url = f"file://{remote_path}"
-    r = subprocess.run(
-        [adb_path, "-s", device, "shell",
-         "am", "start", "-a", "android.intent.action.VIEW",
-         "-d", url, "-t", "image/png"],
-        capture_output=True, timeout=15,
-    )
-    if r.returncode != 0:
-        # Try alternate approach: use the content scheme
-        r = subprocess.run(
-            [adb_path, "-s", device, "shell",
-             "am", "start", "-a", "android.intent.action.VIEW",
-             "-d", f"content://media/external/images/media", "-t", "image/png"],
-            capture_output=True, timeout=15,
-        )
-        if r.returncode != 0:
-            print(f"  Failed to open image: {r.stderr.decode()}")
-            return False
-
-    # Wait for viewer to render
-    time.sleep(2.5)
-
-    # Tap center to dismiss any viewer UI chrome
-    subprocess.run(
-        [adb_path, "-s", device, "shell", "input", "tap",
-         str(DEV_W // 2), str(DEV_H // 2)],
-        capture_output=True, timeout=10,
-    )
-    time.sleep(1.5)
-
-    return True
-
+# ── Screenshot helpers ──────────────────────────────────────────────────────
 
 def _find_adb() -> str:
-    """Find the ADB binary path — same fallback as the agent CLI."""
-    # The agent takes --adb-path as a CLI arg, defaulting to "adb".
-    # Check if "adb" is on PATH; if not, try well-known Android SDK locations.
     r = subprocess.run(["which", "adb"], capture_output=True, text=True)
     if r.returncode == 0:
         return r.stdout.strip()
-    for p in ["/usr/bin/adb", "/usr/local/bin/adb",
-              os.path.expanduser("~/Android/Sdk/platform-tools/adb")]:
-        if os.path.isfile(p) and os.access(p, os.X_OK):
-            return p
     return "adb"
+
+
+def take_screenshot(device: str, dest: Path) -> bool:
+    """Same pipeline as agent's _take_screenshot."""
+    adb = _find_adb()
+    r = subprocess.run(
+        [adb, "-s", device, "exec-out", "screencap", "-p"],
+        capture_output=True, timeout=15,
+    )
+    if r.returncode == 0 and r.stdout:
+        dest.write_bytes(r.stdout)
+        return True
+    return False
+
+
+# ── Marker overlay ──────────────────────────────────────────────────────────
+
+def _try_load_font(size: int):
+    """Try to find a font that works for ASCII digits."""
+    candidates = [
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+        "/usr/share/fonts/truetype/ubuntu/Ubuntu-R.ttf",
+        "/usr/share/fonts/truetype/freefont/FreeSans.ttf",
+    ]
+    for p in candidates:
+        if os.path.exists(p):
+            return ImageFont.truetype(p, size)
+    return ImageFont.load_default()
+
+
+def overlay_markers(src: Path, dst: Path) -> None:
+    """Overlay numbered colored circles at known positions on the screenshot."""
+    img = Image.open(src).convert("RGBA")
+    overlay = Image.new("RGBA", img.size, (0, 0, 0, 0))
+    draw = ImageDraw.Draw(overlay)
+    font = _try_load_font(24)
+    font_sm = _try_load_font(18)
+
+    for i, (m, color) in enumerate(zip(MARKERS, MARKER_COLORS)):
+        r = m.size
+        x, y = m.dev_x, m.dev_y
+
+        # Filled circle with slight transparency
+        draw.ellipse(
+            [x - r, y - r, x + r, y + r],
+            fill=color + "CC",   # ~80% opacity
+            outline=color,
+            width=3,
+        )
+        # Crosshair
+        draw.line([x - r//2, y, x + r//2, y], fill="#FFFFFF", width=2)
+        draw.line([x, y - r//2, x, y + r//2], fill="#FFFFFF", width=2)
+        # Number label
+        draw.text((x + r + 6, y - 10), str(i + 1), font=font, fill="#FFFFFF")
+
+    # Composite onto original
+    result = Image.alpha_composite(img, overlay)
+    result = result.convert("RGB")
+    result.save(dst, format="PNG")
+    print(f"  Markers overlaid: {dst} ({result.size[0]}×{result.size[1]})")
 
 
 # ── VLM calling ─────────────────────────────────────────────────────────────
 
 SYSTEM_PROMPT = textwrap.dedent("""\
-    You are a precision mobile UI element coordinate locator.
+    You are a precision coordinate locator for mobile UI screenshots.
+
+    A screenshot has been taken from a real mobile device. Numbered markers
+    (colored circles with crosshairs and white number labels) have been
+    overlaid at specific positions.
 
     COORDINATE SPACE: 1000×1000. Output ALL coordinates in 0-1000 range.
-    They will be auto-scaled to device pixels.
-    (0,0) is top-left corner, (1000,1000) is bottom-right corner.
+    (0,0) is the top-left corner of the ENTIRE image.
+    (1000,1000) is the bottom-right corner.
 
-    Output ONLY valid JSON — no markdown, no explanation, no code fences.
-    Format:
-    {"elements": [{"name": "<name>", "x": <int>, "y": <int>}, ...]}
+    Your task: find the exact CENTER (crosshair intersection) of each
+    numbered marker and report its (x, y) in 0-1000 normalized space.
 
-    Each (x, y) must be the CENTER of the named element, as an integer 0-1000.
+    Output ONLY valid JSON — no markdown, no explanation:
+    {"markers": [{"id": <int>, "x": <int>, "y": <int>}, ...]}
     """)
 
 
 def build_user_prompt() -> str:
     lines = [
-        "Locate the exact CENTER coordinates (in 0-1000 space) of each element:",
+        "Locate the center (crosshair) of each numbered marker.",
+        "Output their coordinates in 0-1000 normalized space.",
         "",
+        "Markers to locate:",
     ]
-    for i, el in enumerate(ELEMENTS, 1):
-        lines.append(f"  {i}. \"{el.name}\" — {el.description}")
+    for i, m in enumerate(MARKERS, 1):
+        lines.append(f"  Marker {i}: near top-left" if i <= 3 else
+                     f"  Marker {i}: upper-middle" if i <= 6 else
+                     f"  Marker {i}: center area" if i <= 9 else
+                     f"  Marker {i}: lower area" if i <= 12 else
+                     f"  Marker {i}: bottom edge")
     lines.append("")
-    lines.append('Output: {"elements": [{"name": "...", "x": <int>, "y": <int>}, ...]}')
+    lines.append('Output: {"markers": [{"id": 1, "x": <int>, "y": <int>}, ...]}')
     return "\n".join(lines)
 
 
-def parse_response(raw: str, names: set[str]) -> dict[str, tuple[float, float]] | None:
+def parse_response(raw: str, count: int) -> dict[int, tuple[float, float]] | None:
     if not raw:
         return None
     text = raw.strip()
 
-    # Strip markdown fences if present
+    # Strip markdown fences
     m = re.search(r'```(?:json)?\s*\n?(.*?)\n?```', text, re.DOTALL)
     if m:
         text = m.group(1).strip()
 
-    # Find JSON object
-    m = re.search(r'\{.*"elements"\s*:\s*\[.*\]\s*\}', text, re.DOTALL)
+    # Find JSON object with "markers" key
+    m = re.search(r'\{.*"markers"\s*:\s*\[.*\]\s*\}', text, re.DOTALL)
     if m:
         text = m.group(0)
 
     try:
         data = json.loads(text)
     except json.JSONDecodeError:
-        # Try truncating from the right until valid
         for i in range(len(text), 0, -1):
             try:
                 data = json.loads(text[:i])
@@ -358,97 +235,125 @@ def parse_response(raw: str, names: set[str]) -> dict[str, tuple[float, float]] 
             except json.JSONDecodeError:
                 continue
         else:
-            print(f"  ⚠ JSON parse FAILED. Raw: {raw[:400]}")
+            print(f"  ⚠ JSON parse FAILED. Raw: {raw[:300]}")
             return None
 
     result = {}
-    for item in data.get("elements", []):
-        name = item.get("name", "")
-        if name in names:
-            try:
-                result[name] = (float(item["x"]), float(item["y"]))
-            except (KeyError, TypeError, ValueError):
-                pass
+    for item in data.get("markers", []):
+        try:
+            mid = int(item["id"])
+            x, y = float(item["x"]), float(item["y"])
+            if 1 <= mid <= count:
+                result[mid] = (x, y)
+        except (KeyError, TypeError, ValueError):
+            pass
 
-    missing = names - set(result.keys())
+    missing = set(range(1, count + 1)) - set(result.keys())
     if missing:
-        print(f"  ⚠ VLM missed: {sorted(missing)}")
+        print(f"  ⚠ VLM missed markers: {sorted(missing)}")
     return result
 
 
 # ── Results ─────────────────────────────────────────────────────────────────
 
 @dataclass
-class EResult:
-    name: str
+class TResult:
+    marker_id: int
     pred_x: float; pred_y: float
     gt_x: float; gt_y: float
     delta_norm: float = 0.0
+    delta_dev_x: float = 0.0
+    delta_dev_y: float = 0.0
     delta_dev: float = 0.0
-    hit: bool = False
+
+    @property
+    def hit(self) -> bool:
+        m = MARKERS[self.marker_id - 1]
+        return (abs(self.delta_dev_x) <= m.tolerance_dev_px and
+                abs(self.delta_dev_y) <= m.tolerance_dev_px)
 
 
-def compute(predictions: dict[str, tuple[float, float]]) -> list[EResult]:
+def compute(predictions: dict[int, tuple[float, float]]) -> list[TResult]:
     results = []
-    for el in ELEMENTS:
-        p = predictions.get(el.name)
+    for i, m in enumerate(MARKERS, 1):
+        p = predictions.get(i)
         if p is None:
-            results.append(EResult(el.name, 0, 0, el.norm_x, el.norm_y, 999, 99999, False))
+            results.append(TResult(i, 0, 0, m.norm_x, m.norm_y, 999, 9999, 9999, 9999))
             continue
         px, py = p
-        dx, dy = px - el.norm_x, py - el.norm_y
+        dx, dy = px - m.norm_x, py - m.norm_y
         dn = math.sqrt(dx * dx + dy * dy)
         ddx = dx / 1000 * DEV_W
         ddy = dy / 1000 * DEV_H
         dd = math.sqrt(ddx * ddx + ddy * ddy)
-        hit = abs(ddx) <= el.width / 2 and abs(ddy) <= el.height / 2
-        results.append(EResult(el.name, px, py, el.norm_x, el.norm_y, dn, dd, hit))
+        results.append(TResult(i, px, py, m.norm_x, m.norm_y, dn, ddx, ddy, dd))
     return results
 
 
-def print_report(results: list[EResult], label: str, run_idx: int = 1):
-    print(f"\n{'='*95}")
-    print(f"  VLM Coordinate Accuracy: {label} (Run {run_idx})")
-    print(f"{'='*95}")
-    header = (f"  {'Element':<18s} {'Δxy':>6s} {'Δx':>7s} {'Δy':>7s} "
-              f"{'Δdev':>7s} {'Hit':>5s}  {'Pred':>18s}  {'GT':>18s}")
-    print(header)
-    print("  " + "─" * 91)
+def print_report(results: list[TResult], label: str, run_idx: int = 1):
+    print(f"\n{'='*100}")
+    print(f"  {label} — Run {run_idx} — {len(MARKERS)} markers")
+    print(f"{'='*100}")
+    hdr = (f"  {'ID':>3s} {'Name':<18s} {'Δxy':>6s} {'Δx':>8s} {'Δy':>8s} "
+           f"{'Δdev':>8s}  {'Pred':>20s}  {'GT':>20s}  {'Hit':>4s}")
+    print(hdr)
+    print("  " + "─" * 98)
 
-    hit_count, total_delta = 0, 0.0
-    valid = [r for r in results if r.delta_norm < 999]
     for r in results:
-        hit_str = "✅" if r.hit else "❌"
-        if r.hit: hit_count += 1
-        if r.delta_norm < 999: total_delta += r.delta_norm
-        print(f"  {r.name:<18s} {r.delta_norm:>5.1f}  {r.pred_x - r.gt_x:>+6.1f}  "
-              f"{r.pred_y - r.gt_y:>+6.1f}  {r.delta_dev:>6.0f}px  {hit_str:>4s}  "
-              f"({r.pred_x:>5.0f},{r.pred_y:>5.0f})        ({r.gt_x:>5.0f},{r.gt_y:>5.0f})")
+        m = MARKERS[r.marker_id - 1]
+        hit = "✅" if r.hit else "❌"
+        pred_s = f"({r.pred_x:>6.1f}, {r.pred_y:>6.1f})"
+        gt_s = f"({r.gt_x:>6.1f}, {r.gt_y:>6.1f})"
+        print(f"  {r.marker_id:>3d} {m.name:<18s} {r.delta_norm:>5.1f}  "
+              f"{r.pred_x - r.gt_x:>+7.1f}  {r.pred_y - r.gt_y:>+7.1f}  "
+              f"{r.delta_dev:>7.0f}px  {pred_s:>20s}  {gt_s:>20s}  {hit:>4s}")
 
+    valid = [r for r in results if r.delta_norm < 999]
     n = len(valid)
-    avg = total_delta / n if n > 0 else 999
-    rate = hit_count / len(results) * 100 if results else 0
-    print("  " + "─" * 91)
-    print(f"  {'SUMMARY':18s} {avg:>5.1f}  {'':>6s}  {'':>6s}  "
-          f"{'':>6s}  {hit_count}/{len(results)}  "
-          f"Hit={rate:.0f}%  AvgΔ={avg:.1f}")
+    total = sum(r.delta_norm for r in valid)
+    avg = total / n if n > 0 else 999
+    hits = sum(1 for r in results if r.hit)
+    rate = hits / 15 * 100
 
-    # By category
-    cats = [
-        ("Small edge (back,search)", ["back_button", "search_icon"]),
-        ("Thin bar (text_input)",    ["text_input"]),
-        ("Medium cards",             ["left_card", "center_card", "right_card"]),
-        ("Large CTA",                ["cta_button"]),
-        ("Bottom nav",               ["nav_home", "nav_route", "nav_profile"]),
-    ]
-    print("\n  By category:")
-    for cat_name, names in cats:
-        items = [r for r in valid if r.name in names]
-        if items:
-            a = sum(r.delta_norm for r in items) / len(items)
-            ad = sum(r.delta_dev for r in items) / len(items)
-            h = sum(1 for r in items if r.hit)
-            print(f"    {cat_name:<26s} Δ={a:4.1f}  Δdev={ad:5.0f}px  hit={h}/{len(items)}")
+    avg_dx = sum(abs(r.pred_x - r.gt_x) for r in valid) / n if n > 0 else 0
+    avg_dy = sum(abs(r.pred_y - r.gt_y) for r in valid) / n if n > 0 else 0
+    avg_ddx = avg_dx / 1000 * DEV_W
+    avg_ddy = avg_dy / 1000 * DEV_H
+    avg_dd = sum(r.delta_dev for r in valid) / n if n > 0 else 0
+
+    print("  " + "─" * 98)
+    print(f"  SUMMARY: Δxy={avg:.1f}  |Δx|={avg_dx:.1f}({avg_ddx:.0f}px)  "
+          f"|Δy|={avg_dy:.1f}({avg_ddy:.0f}px)  "
+          f"Δdev={avg_dd:.0f}px  Hit={hits}/{n} ({rate:.0f}%)")
+
+    # By region
+    top = [r for r in valid if r.marker_id in (1, 2, 3)]
+    thin = [r for r in valid if r.marker_id in (4, 5, 6)]
+    mid = [r for r in valid if r.marker_id in (7, 8, 9)]
+    low = [r for r in valid if r.marker_id in (10, 11, 12)]
+    bot = [r for r in valid if r.marker_id in (13, 14, 15)]
+
+    def _avg(items, attr="delta_norm"):
+        return sum(getattr(x, attr) for x in items) / len(items) if items else 0
+
+    def _hits(items):
+        return sum(1 for x in items if x.hit)
+
+    print(f"\n  By screen region:")
+    print(f"    {'Top edge (y≈80)':<24s} Δ={_avg(top):4.1f} Δdev={_avg(top,'delta_dev'):5.0f}px {_hits(top)}/{len(top)}")
+    print(f"    {'Thin bar (y≈220)':<24s} Δ={_avg(thin):4.1f} Δdev={_avg(thin,'delta_dev'):5.0f}px {_hits(thin)}/{len(thin)}")
+    print(f"    {'Content center (y≈720)':<24s} Δ={_avg(mid):4.1f} Δdev={_avg(mid,'delta_dev'):5.0f}px {_hits(mid)}/{len(mid)}")
+    print(f"    {'Lower area (y≈1200)':<24s} Δ={_avg(low):4.1f} Δdev={_avg(low,'delta_dev'):5.0f}px {_hits(low)}/{len(low)}")
+    print(f"    {'Bottom nav (y≈1380)':<24s} Δ={_avg(bot):4.1f} Δdev={_avg(bot,'delta_dev'):5.0f}px {_hits(bot)}/{len(bot)}")
+
+    # Per-axis bias check: is Y systematically off?
+    y_errors = [r.pred_y - r.gt_y for r in valid]
+    avg_y_bias = sum(y_errors) / len(y_errors) if y_errors else 0
+    x_errors = [r.pred_x - r.gt_x for r in valid]
+    avg_x_bias = sum(x_errors) / len(x_errors) if x_errors else 0
+    print(f"\n  Axis bias:  X mean error = {avg_x_bias:+.1f}  Y mean error = {avg_y_bias:+.1f}")
+    if abs(avg_y_bias) > 5:
+        print(f"  ⚠ SIGNIFICANT Y-axis bias detected! VLM may be consistently off in Y.")
     print()
 
 
@@ -456,65 +361,59 @@ def print_report(results: list[EResult], label: str, run_idx: int = 1):
 
 def main():
     import argparse
-    ap = argparse.ArgumentParser(description="E2E VLM coordinate test")
+    ap = argparse.ArgumentParser(description="E2E VLM coordinate test (real screenshot + markers)")
     ap.add_argument("--runs", type=int, default=1)
-    ap.add_argument("--device", type=str, default="a60f6655",
-                    help="ADB device serial")
-    ap.add_argument("--synthetic-only", action="store_true",
-                    help="Skip device display — test via direct PIL image only")
-    ap.add_argument("--remote-path", type=str,
-                    default="/sdcard/test_ui_coord.png")
+    ap.add_argument("--device", type=str, default="a60f6655")
+    ap.add_argument("--screenshot", type=str, default=None,
+                    help="Use existing screenshot instead of capturing from device")
     args = ap.parse_args()
 
     OUT_DIR.mkdir(parents=True, exist_ok=True)
 
-    # ── Step 1: Generate test image ──
-    pil_path = OUT_DIR / SCREENSHOT_NAME
-    build_test_image(pil_path)
-
-    # ── Step 2: Display on device + screenshot (unless synthetic-only) ──
-    screenshot_path = pil_path  # default: use PIL image directly
-
-    if not args.synthetic_only:
-        src_path = OUT_DIR / "test_ui_source.png"
+    # ── Step 1: Get screenshot ──
+    raw_path = OUT_DIR / "raw_screenshot.png"
+    if args.screenshot:
         import shutil
-        shutil.copy(pil_path, src_path)
+        shutil.copy(args.screenshot, raw_path)
+        print(f"  Using provided screenshot: {raw_path}")
+    else:
+        print(f"  Capturing screenshot from device {args.device}...")
+        if not take_screenshot(args.device, raw_path):
+            print("  ❌ Screenshot failed")
+            sys.exit(1)
+        print(f"  Captured: {raw_path}")
 
-        print(f"\n  Displaying on device {args.device}...")
-        if not display_image_on_device(args.device, args.remote_path):
-            print("  ⚠ Device display failed — falling back to synthetic")
-        else:
-            ss_path = OUT_DIR / "device_screenshot.png"
-            print(f"  Taking screenshot...")
-            if take_screenshot(args.device, ss_path):
-                print(f"  Device screenshot: {ss_path}")
-                screenshot_path = ss_path
-            else:
-                print("  ⚠ Screenshot failed — falling back to synthetic")
+    # Detect resolution from screenshot
+    with Image.open(raw_path) as img:
+        w, h = img.size
+        global DEV_W, DEV_H, MARKERS
+        DEV_W, DEV_H = w, h
+        # Recalculate markers for this resolution
+        MARKERS = [Marker(*spec) for spec in _MARKER_SPECS]
+        print(f"  Resolution: {w}×{h}")
 
-    # ── Step 3: Print what the VLM will see ──
-    print(f"\n  Test pipeline:")
-    from artemis_agent import NORM_MAX_DIM
-    print(f"    Input:  {screenshot_path}")
-    print(f"    Device: {DEV_W}×{DEV_H}  NORM_MAX_DIM={NORM_MAX_DIM}")
+    # ── Step 2: Overlay markers ──
+    marked_path = OUT_DIR / "marked_screenshot.png"
+    overlay_markers(raw_path, marked_path)
 
-    # Show what encode does
-    b64, nw, nh = _encode_image(str(screenshot_path))
-    print(f"    Encoded: base64 {len(b64)} chars, norm=({nw},{nh})")
+    # Print ground truth
+    print(f"\n  Ground truth (device px → 0-1000 norm, tolerance):")
+    for m in MARKERS:
+        print(f"    {m.name:<18s} dev({m.dev_x:>4d},{m.dev_y:>4d}) → "
+              f"norm({m.norm_x:>5.1f},{m.norm_y:>5.1f})  ±{m.tolerance_dev_px}px")
 
-    # ── Step 4: Run VLM tests ──
+    # ── Step 3: Run VLM ──
     cfg = load_skill_config()
-    print(f"    VLM:    {cfg['model']} @ {cfg['base_url']}\n")
+    print(f"\n  VLM: {cfg['model']} @ {cfg['base_url']}\n")
 
-    all_results: list[list[EResult]] = []
+    all_results: list[list[TResult]] = []
     for run_i in range(1, args.runs + 1):
-        tag = "DEVICE SCREENSHOT" if screenshot_path != pil_path else "DIRECT PIL"
-        print(f"  Run {run_i}/{args.runs}: {tag} → VLM...")
+        print(f"  Run {run_i}/{args.runs}: sending marked screenshot to VLM...")
 
         t0 = time.time()
         raw, reason, nw, nh = _call_vlm(
             SYSTEM_PROMPT, build_user_prompt(),
-            str(screenshot_path), max_tokens=2048,
+            str(marked_path), max_tokens=2048,
         )
         elapsed = time.time() - t0
         print(f"  Response: {elapsed:.1f}s  finish={reason}  chars={len(raw or '')}")
@@ -523,31 +422,33 @@ def main():
             print("  ❌ No response\n")
             continue
 
-        preds = parse_response(raw, {e.name for e in ELEMENTS})
+        preds = parse_response(raw, len(MARKERS))
         if preds is None:
             continue
 
         results = compute(preds)
         all_results.append(results)
-        print_report(results, tag, run_i)
+        print_report(results, "MARKER COORDINATE TEST", run_i)
 
-    # ── Aggregate ──
+    # ── Step 4: Aggregate ──
     if args.runs > 1 and all_results:
-        print(f"\n{'='*95}")
+        print(f"\n{'='*100}")
         print(f"  AGGREGATE ({len(all_results)} runs)")
-        print(f"{'='*95}")
-        for el in ELEMENTS:
+        print(f"{'='*100}")
+        for i, m in enumerate(MARKERS, 1):
             xs, ys = [], []
             for rr in all_results:
                 for r in rr:
-                    if r.name == el.name and r.delta_norm < 999:
+                    if r.marker_id == i and r.delta_norm < 999:
                         xs.append(abs(r.pred_x - r.gt_x))
                         ys.append(abs(r.pred_y - r.gt_y))
             if xs:
-                ax, ay = sum(xs) / len(xs), sum(ys) / len(ys)
-                axy = math.sqrt(ax**2 + ay**2)
-                print(f"  {el.name:<18s} avg|Δx|={ax:.1f} |Δy|={ay:.1f} Δxy={axy:.1f} "
-                      f"~{axy/1000*DEV_W:.0f}×{axy/1000*DEV_H:.0f} dev-px ({len(xs)} runs)")
+                ax, ay = sum(xs)/len(xs), sum(ys)/len(ys)
+                print(f"  {m.name:<18s} |Δx|={ax:.1f} |Δy|={ay:.1f} "
+                      f"→ ~{ax/1000*DEV_W:.0f}×{ay/1000*DEV_H:.0f} dev-px ({len(xs)} runs)")
+
+    # Cleanup: keep marked version for inspection
+    print(f"\n  Output: {marked_path}")
 
 
 if __name__ == "__main__":
