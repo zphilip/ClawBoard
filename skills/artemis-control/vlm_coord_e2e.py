@@ -117,6 +117,8 @@ class UIElement:
 # Element definitions as screen fractions
 ELEMENT_SPECS = [
     # (name, description, x_frac, y_frac, w_frac, h_frac)
+    # All positions kept within top 88% of image — bottom ~12% is padding
+    # that gets cropped by Gallery viewer chrome during device roundtrip.
     ("back_btn",     "the back arrow '<' button in the top-left corner",
      0.05, 0.07, 0.06, 0.06),
     ("search_icon",  "the magnifier icon in the top-right corner of the header",
@@ -124,19 +126,19 @@ ELEMENT_SPECS = [
     ("text_input",   "the wide text input/search bar below the header with placeholder text",
      0.50, 0.15, 0.75, 0.07),
     ("left_card",    "the card on the left side titled 'Driving' with a red accent bar",
-     0.17, 0.40, 0.20, 0.20),
+     0.17, 0.38, 0.20, 0.18),
     ("center_card",  "the card in the center titled 'Transit' with a purple accent bar",
-     0.50, 0.40, 0.20, 0.20),
+     0.50, 0.38, 0.20, 0.18),
     ("right_card",   "the card on the right side titled 'Walking' with a green accent bar",
-     0.83, 0.40, 0.20, 0.20),
+     0.83, 0.38, 0.20, 0.18),
     ("cta_button",   "the large red 'Start Navigation' button in the lower-center area",
-     0.50, 0.65, 0.60, 0.14),
+     0.50, 0.58, 0.60, 0.12),
     ("nav_home",     "the bottom navigation 'Home' button (leftmost, house icon)",
-     0.12, 0.95, 0.14, 0.07),
+     0.12, 0.87, 0.14, 0.06),
     ("nav_route",    "the bottom navigation 'Route' button (second from left, pin icon)",
-     0.38, 0.95, 0.14, 0.07),
+     0.38, 0.87, 0.14, 0.06),
     ("nav_profile",  "the bottom navigation 'Profile' button (third from left, person icon)",
-     0.64, 0.95, 0.14, 0.07),
+     0.64, 0.87, 0.14, 0.06),
 ]
 
 
@@ -218,7 +220,7 @@ def generate_test_image(path: Path, elements: list[UIElement],
               "Enter destination", font=f_body, fill="#666")
 
     # Map-like content area with texture
-    content_y1, content_y2 = round(h * 0.22), round(h * 0.88)
+    content_y1, content_y2 = round(h * 0.22), round(h * 0.84)
     draw.rectangle([0, content_y1, w, content_y2], fill="#0d1525")
 
     # Grid lines for map texture
@@ -267,7 +269,7 @@ def generate_test_image(path: Path, elements: list[UIElement],
         "35 km . Est. 42 min", f_small, fill="#ffcccc")
 
     # Bottom navigation
-    nav_y1, nav_y2 = round(h * 0.89), h
+    nav_y1, nav_y2 = round(h * 0.84), h
     draw.rectangle([0, nav_y1, w, nav_y2], fill=NAV_BG)
     draw.line([0, nav_y1, w, nav_y1], fill=NAV_LINE, width=2)
 
@@ -904,6 +906,7 @@ def main():
                    or abs(off_x) > 2 or abs(off_y) > 2:
                     print(f"\n  Adjusting ground truth for transform: "
                           f"scale=({scale_x:.4f},{scale_y:.4f}) offset=({off_x:.1f},{off_y:.1f})")
+                    visible = []
                     for el in elements:
                         # Map original coords to screenshot coords
                         el.dev_x = round(el.dev_x * scale_x + off_x)
@@ -912,6 +915,18 @@ def main():
                         el.dev_h = round(el.dev_h * scale_y)
                         el.norm_x = round(el.dev_x / sw * 1000, 1)
                         el.norm_y = round(el.dev_y / sh * 1000, 1)
+                        # Check if element is visible in the screenshot
+                        margin = min(el.dev_w, el.dev_h) // 2
+                        if (0 - margin <= el.dev_x <= sw + margin and
+                            0 - margin <= el.dev_y <= sh + margin):
+                            visible.append(el)
+                        else:
+                            print(f"  !! {el.name} OFF-SCREEN ({el.dev_x},{el.dev_y}) — excluding")
+                    print(f"  {len(visible)}/{len(elements)} elements visible after transform")
+                    excluded = [e for e in elements if e not in visible]
+                    # Update elements and names for the test
+                    elements[:] = visible
+                    names = {e.name for e in elements}
                     print(f"  {'Element':<16s} {'dev(x,y)':>18s} {'norm(x,y)':>18s}")
                     for el in elements:
                         print(f"  {el.name:<16s} ({el.dev_x:>5d},{el.dev_y:>5d})     "
