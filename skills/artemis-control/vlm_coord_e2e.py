@@ -306,9 +306,20 @@ def take_screenshot(device: str, dest: Path) -> bool:
 
 
 def display_on_device(device: str, local: Path) -> bool:
-    """Push image to device and open in viewer."""
+    """Push image to device and open fullscreen with no viewer chrome.
+
+    Uses immersive mode to hide status/nav bars so the image fills the
+    entire screen — matching the agent's pipeline where screenshot = screen.
+    """
     adb = _find_adb()
     remote = "/sdcard/vlm_test_ui.png"
+
+    # Enable immersive mode to hide status + nav bars
+    subprocess.run(
+        [adb, "-s", device, "shell", "settings", "put", "global",
+         "policy_control", "immersive.full=*"],
+        capture_output=True, timeout=10,
+    )
 
     r = subprocess.run(
         [adb, "-s", device, "push", str(local), remote],
@@ -318,21 +329,34 @@ def display_on_device(device: str, local: Path) -> bool:
         print(f"  Push failed: {r.stderr.decode()}")
         return False
 
-    r = subprocess.run(
+    # Open image — tap center to dismiss viewer chrome after load
+    subprocess.run(
         [adb, "-s", device, "shell", "am", "start",
          "-a", "android.intent.action.VIEW",
          "-d", f"file://{remote}", "-t", "image/png"],
         capture_output=True, timeout=15,
     )
     time.sleep(2.5)
-    # Tap center to dismiss viewer chrome
+
+    # Multiple taps to dismiss any viewer UI
+    for _ in range(3):
+        subprocess.run(
+            [adb, "-s", device, "shell", "input", "tap",
+             str(DEV_W // 2), str(DEV_H // 2)],
+            capture_output=True, timeout=5,
+        )
+        time.sleep(0.8)
+
+    return True
+
+
+def restore_immersive(device: str) -> None:
+    """Restore normal display mode."""
     subprocess.run(
-        [adb, "-s", device, "shell", "input", "tap",
-         str(DEV_W // 2), str(DEV_H // 2)],
+        [_find_adb(), "-s", device, "shell", "settings", "put", "global",
+         "policy_control", "null"],
         capture_output=True, timeout=10,
     )
-    time.sleep(1.5)
-    return True
 
 
 # ── VLM calling ─────────────────────────────────────────────────────────────
@@ -546,11 +570,13 @@ def main():
         import shutil
         shutil.copy(pil_path, src_path)
 
-        print(f"\n  Displaying on device {args.device}...")
+        print(f"\n  Displaying on device {args.device} (immersive mode)...")
         if display_on_device(args.device, src_path):
             dev_ss = OUT_DIR / "device_screenshot.png"
             print(f"  Taking device screenshot...")
             if take_screenshot(args.device, dev_ss):
+                # Restore normal display
+                restore_immersive(args.device)
                 # Detect actual screenshot resolution
                 with Image.open(dev_ss) as img:
                     sw, sh = img.size
