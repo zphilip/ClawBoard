@@ -832,6 +832,391 @@ def print_report(results: list[TResult], label: str, run_i: int = 1):
     print()
 
 
+# ── Disambiguation Test ──────────────────────────────────────────────────
+# Tests whether the VLM can correctly distinguish between visually similar
+# elements that are close together — the real failure mode in production
+# (agent taps search icon instead of text input field).
+
+DISAMBIG_ELEMENT_SPECS = [
+    # (name, description, x_frac, y_frac, w_frac, h_frac)
+    ("search_icon_hdr",   "the magnifier search icon in the top header bar (near the right side)",
+     0.90, 0.07, 0.05, 0.05),
+    ("text_input",        "the wide text input/search bar below the header with placeholder text 'Search'",
+     0.50, 0.14, 0.75, 0.06),
+    ("search_icon_card",  "the magnifier search icon inside a card lower on the screen, next to 'Explore' text",
+     0.50, 0.42, 0.05, 0.05),
+    ("submit_btn",        "the blue 'Submit' button on the right side of the button row",
+     0.68, 0.62, 0.28, 0.08),
+    ("cancel_btn",        "the gray 'Cancel' button on the left side of the button row",
+     0.32, 0.62, 0.28, 0.08),
+    ("nav_item_1",        "the first navigation tab 'Overview' at the bottom",
+     0.25, 0.87, 0.20, 0.06),
+    ("nav_item_2",        "the second navigation tab 'Details' at the bottom",
+     0.50, 0.87, 0.20, 0.06),
+    ("nav_item_3",        "the third navigation tab 'Settings' at the bottom",
+     0.75, 0.87, 0.20, 0.06),
+]
+
+# Each task: (task_prompt, expected_element_name, confusing_alt_name, alt_description)
+DISAMBIG_TASKS = [
+    (
+        "Tap the search text input field where you type your destination",
+        "text_input",
+        "search_icon_hdr",
+        "search icon in header (confusable nearby magnifier)",
+    ),
+    (
+        "Tap the magnifier search icon in the top header bar",
+        "search_icon_hdr",
+        "search_icon_card",
+        "search icon in card lower down (second magnifier on screen)",
+    ),
+    (
+        "Tap the magnifier search icon inside the Explore card",
+        "search_icon_card",
+        "search_icon_hdr",
+        "search icon in header (first magnifier on screen)",
+    ),
+    (
+        "Tap the Submit button to confirm",
+        "submit_btn",
+        "cancel_btn",
+        "Cancel button (adjacent similar button)",
+    ),
+    (
+        "Tap the Cancel button to go back",
+        "cancel_btn",
+        "submit_btn",
+        "Submit button (adjacent similar button)",
+    ),
+    (
+        "Tap the first navigation tab Overview at the bottom",
+        "nav_item_1",
+        "nav_item_2",
+        "Details tab (adjacent nav tab)",
+    ),
+    (
+        "Tap the Settings navigation tab at the bottom",
+        "nav_item_3",
+        "nav_item_2",
+        "Details tab (adjacent nav tab)",
+    ),
+]
+
+
+def generate_disambiguation_ui(path: Path, elements: list[UIElement],
+                                w: int, h: int) -> None:
+    """Draw a UI with deliberately confusable elements for disambiguation testing."""
+    img = Image.new("RGB", (w, h), "#1a1a2e")
+    draw = ImageDraw.Draw(img)
+    sf = min(w, h)
+
+    def fs(ratio): return max(12, round(sf * ratio))
+    f_status = _get_font(fs(0.022))
+    f_title  = _get_font(fs(0.026))
+    f_body   = _get_font(fs(0.023))
+    f_small  = _get_font(fs(0.018))
+    f_btn    = _get_font(fs(0.028))
+    f_large  = _get_font(fs(0.030))
+
+    STAT_BG, HEAD_BG = "#0d0d1a", "#16213e"
+    INPUT_BG = "#2a2a4a"
+    CARD_BG = "#0f3460"
+    ACCENT = "#e94560"
+    WHITE, GRAY = "#e0e0e0", "#888888"
+    NAV_BG = "#16213e"
+
+    # Status bar
+    sb_h = round(h * 0.04)
+    draw.rectangle([0, 0, w, sb_h], fill=STAT_BG)
+    _tc(draw, (round(w * 0.06), sb_h // 2), "10:30", f_small, fill=GRAY)
+    _tc(draw, (round(w * 0.85), sb_h // 2), "WiFi  ----  [] 92%", f_small, fill=GRAY)
+
+    # Header
+    hb_y1, hb_y2 = sb_h, round(h * 0.11)
+    draw.rectangle([0, hb_y1, w, hb_y2], fill=HEAD_BG)
+    _tc(draw, (w // 2, (hb_y1 + hb_y2) // 2), "Search App", f_title, fill=WHITE)
+
+    # Search icon in header (element 0)
+    e = elements[0]
+    _tc(draw, (e.dev_x, e.dev_y), "Q", f_large, fill=WHITE)
+
+    # Text input bar (element 1)
+    e = elements[1]
+    ix1, iy1, ix2, iy2 = e.bbox()
+    _rbox(draw, ix1, iy1, ix2, iy2, round(sf * 0.018), fill=INPUT_BG, outline="#3a3a5a")
+    draw.text((e.dev_x - round(e.dev_w * 0.42), e.dev_y - round(e.dev_h * 0.22)),
+              "Search destinations...", font=f_body, fill="#666")
+
+    # Content area
+    cy1, cy2 = round(h * 0.20), round(h * 0.84)
+    draw.rectangle([0, cy1, w, cy2], fill="#0d1525")
+
+    # Card with second search icon (element 2)
+    e = elements[2]
+    cx1, cy1_card, cx2, cy2_card = e.dev_x - round(w * 0.35), e.dev_y - round(h * 0.08), \
+                                     e.dev_x + round(w * 0.35), e.dev_y + round(h * 0.08)
+    _rbox(draw, cx1, cy1_card, cx2, cy2_card, round(sf * 0.015), fill=CARD_BG, outline="#1a3a60")
+    # Card title
+    _tc(draw, (e.dev_x - round(e.dev_w * 1.5), e.dev_y - round(e.dev_h * 0.3)),
+        "Explore", f_body, fill=WHITE)
+    # Second search icon inside card
+    _tc(draw, (e.dev_x, e.dev_y), "Q", f_body, fill=WHITE)
+
+    # Grid lines for background texture
+    gs = round(sf * 0.12)
+    for gx in range(0, w, gs):
+        draw.line([gx, cy1, gx, cy2], fill="#111a2a", width=1)
+    for gy in range(cy1, cy2, gs):
+        draw.line([0, gy, w, gy], fill="#111a2a", width=1)
+
+    # Button row: Cancel (element 4) + Submit (element 3)
+    for el, label, color in [
+        (elements[4], "Cancel", "#555577"),
+        (elements[3], "Submit", "#3366cc"),
+    ]:
+        bx1, by1, bx2, by2 = el.bbox()
+        _rbox(draw, bx1, by1, bx2, by2, round(sf * 0.015), fill=color)
+        _tc(draw, (el.dev_x, el.dev_y), label, f_btn, fill=WHITE)
+
+    # Bottom navigation
+    nav_y1, nav_y2 = round(h * 0.84), h
+    draw.rectangle([0, nav_y1, w, nav_y2], fill=NAV_BG)
+    draw.line([0, nav_y1, w, nav_y1], fill="#1e2d50", width=2)
+
+    nav_labels = ["Overview", "Details", "Settings"]
+    for i, el in enumerate([elements[5], elements[6], elements[7]]):
+        _tc(draw, (el.dev_x, el.dev_y - round(el.dev_h * 0.15)),
+            chr(ord("A") + i), f_body, fill=GRAY)
+        _tc(draw, (el.dev_x, el.dev_y + round(el.dev_h * 0.22)),
+            nav_labels[i], f_small, fill=GRAY)
+
+    # Fiducial markers
+    marker_size = max(6, round(sf * 0.007))
+    markers = [
+        (round(w * 0.05), round(h * 0.05), "#ff00ff"),
+        (round(w * 0.95), round(h * 0.05), "#00ffff"),
+        (round(w * 0.05), round(h * 0.90), "#ffff00"),
+        (round(w * 0.95), round(h * 0.90), "#00ff00"),
+        (round(w * 0.50), round(h * 0.05), "#ff8800"),
+    ]
+    for mx, my, color in markers:
+        draw.rectangle(
+            [mx - marker_size, my - marker_size,
+             mx + marker_size, my + marker_size],
+            fill=color, outline="#000000", width=1,
+        )
+
+    img.save(path, format="PNG")
+    print(f"  Disambiguation UI: {path} ({w}x{h})")
+
+
+def run_disambiguation_test(test_path: Path, sys_prompt: str,
+                             agent_mode: bool, cfg: dict) -> None:
+    """Run targeted disambiguation tasks and report confusion rates."""
+    from artemis_agent import _encode_image, _call_vlm, NORM_MAX_DIM
+
+    print(f"\n{'='*95}")
+    print(f"  DISAMBIGUATION TEST — Can VLM distinguish similar nearby elements?")
+    print(f"{'='*95}")
+    print(f"  Model: {cfg.get('model','?')}  Prompt: {'AGENT' if agent_mode else 'CLEAN'}")
+
+    # Build elements for the disambiguation UI
+    w, h = DEV_W, DEV_H
+    elements = []
+    for spec in DISAMBIG_ELEMENT_SPECS:
+        e = UIElement(*spec)
+        e.compute(w, h)
+        elements.append(e)
+    el_map = {e.name: e for e in elements}
+
+    # Print ground truth
+    print(f"\n  Elements ({w}x{h}):")
+    print(f"  {'Name':<20s} {'dev(x,y)':>16s} {'norm(x,y)':>16s} {'size':>10s}")
+    for el in elements:
+        print(f"  {el.name:<20s} ({el.dev_x:>5d},{el.dev_y:>5d})    "
+              f"({el.norm_x:>5.0f},{el.norm_y:>5.0f})    "
+              f"{el.dev_w}x{el.dev_h}")
+
+    # Build single-locate user prompt — in disambiguation mode we ask for ONE element
+    # at a time, so the VLM must pick the right one from visually similar options
+    def build_disambig_user_prompt(task_desc: str) -> str:
+        coords_hint = (
+            "Output your answer as a JSON object with a single coordinate. "
+            'Format: {"x": <int 0-1000>, "y": <int 0-1000>}'
+        )
+        if agent_mode:
+            return (
+                f"TASK: {task_desc}\n"
+                f"Step: 1\n\n"
+                f"PREVIOUS ACTIONS (do NOT repeat these):\n"
+                f"  - (none — first step)\n\n"
+                f"COORDINATE SPACE: 1000x1000. Output the center coordinate of "
+                f"the target element you choose.\n\n"
+                f'Output as JSON: {{"action":"tap","coordinate":[x,y],"target_description":"<which element you chose>"}}\n'
+            )
+        else:
+            return (
+                f"{task_desc}\n\n"
+                f"Output ONLY the normalized coordinate (0-1000 range) of the "
+                f"element you choose.\n\n"
+                f'Format: {{"x": <int>, "y": <int>}}'
+            )
+
+    # Results tracking
+    @dataclass
+    class DisambigResult:
+        task: str
+        expected: str
+        expected_desc: str
+        alt_name: str
+        alt_desc: str
+        pred_x: float = 0
+        pred_y: float = 0
+        closest_match: str = ""
+        confusion: str = ""  # "correct", "confused_alt", "missed_both"
+        delta_norm: float = 0
+        delta_alt_norm: float = 0
+
+    results: list[DisambigResult] = []
+
+    for task_desc, expected_name, alt_name, alt_desc in DISAMBIG_TASKS:
+        expected = el_map[expected_name]
+        alt = el_map[alt_name]
+
+        user_prompt = build_disambig_user_prompt(task_desc)
+
+        print(f"\n  ── Task: \"{task_desc[:72]}...\" ──")
+        print(f"     Expected: {expected_name} ({expected.norm_x:.0f},{expected.norm_y:.0f})")
+        print(f"     Alt confuse: {alt_name} ({alt.norm_x:.0f},{alt.norm_y:.0f})")
+        print(f"     Distance between: {math.sqrt((expected.norm_x-alt.norm_x)**2 + (expected.norm_y-alt.norm_y)**2):.0f} norm units")
+
+        t0 = time.time()
+        raw, reason, _, _ = _call_vlm(
+            sys_prompt, user_prompt, str(test_path), max_tokens=2048,
+        )
+        elapsed = time.time() - t0
+        print(f"     {elapsed:.1f}s  finish={reason}  chars={len(raw or '')}")
+
+        r = DisambigResult(
+            task=task_desc, expected=expected_name,
+            expected_desc=expected.description,
+            alt_name=alt_name, alt_desc=alt_desc,
+        )
+
+        if not raw:
+            r.closest_match = "NO_RESPONSE"
+            r.confusion = "missed_both"
+            results.append(r)
+            print(f"     !! NO RESPONSE")
+            continue
+
+        # Parse coordinate from response
+        text = raw.strip()
+        # Find JSON object with x,y
+        m = re.search(r'[{]\s*"x"\s*:\s*(\d+)\s*,\s*"y"\s*:\s*(\d+)\s*[}]', text)
+        if not m:
+            # Try agent format: "coordinate":[x,y]
+            m2 = re.search(r'"coordinate"\s*:\s*\[(\d+)\s*,\s*(\d+)\]', text)
+            if m2:
+                r.pred_x, r.pred_y = float(m2.group(1)), float(m2.group(2))
+            else:
+                r.closest_match = "PARSE_FAIL"
+                r.confusion = "missed_both"
+                results.append(r)
+                print(f"     !! PARSE FAIL: ...{text[-200:]}")
+                continue
+        else:
+            r.pred_x, r.pred_y = float(m.group(1)), float(m.group(2))
+
+        # Compute deltas to expected and alt
+        d_expected = math.sqrt(
+            (r.pred_x - expected.norm_x)**2 + (r.pred_y - expected.norm_y)**2
+        )
+        d_alt = math.sqrt(
+            (r.pred_x - alt.norm_x)**2 + (r.pred_y - alt.norm_y)**2
+        )
+        r.delta_norm = d_expected
+        r.delta_alt_norm = d_alt
+
+        # Determine which element was chosen
+        half_dist = math.sqrt(
+            (expected.norm_x - alt.norm_x)**2 + (expected.norm_y - alt.norm_y)**2
+        ) / 2
+
+        if d_expected <= d_alt:
+            r.closest_match = expected_name
+            if d_expected <= half_dist:
+                r.confusion = "correct"
+            else:
+                r.confusion = "between"  # roughly equidistant
+        else:
+            r.closest_match = alt_name
+            if d_alt <= half_dist:
+                r.confusion = "confused_alt"
+            else:
+                r.confusion = "between"
+
+        # Determine visual confusion status
+        status = {
+            "correct": "CORRECT",
+            "confused_alt": f"CONFUSED with {alt_name}",
+            "between": "BETWEEN (ambiguous)",
+            "missed_both": "MISSED",
+        }.get(r.confusion, r.confusion)
+
+        print(f"     Pred: ({r.pred_x:.0f},{r.pred_y:.0f})  "
+              f"Δexpected={d_expected:.1f}  Δalt={d_alt:.1f}  → {status}")
+        results.append(r)
+
+    # ── Summary ──
+    print(f"\n{'='*95}")
+    print(f"  DISAMBIGUATION RESULTS")
+    print(f"{'='*95}")
+    print(f"  {'Task':<50s} {'Expected':<14s} {'Result':<24s} {'Δexp':>5s} {'Δalt':>5s}")
+    print(f"  {'-'*50} {'-'*14} {'-'*24} {'-'*5} {'-'*5}")
+
+    correct = confused = missed = between = 0
+    for r in results:
+        exp_short = r.expected[:13]
+        status_s = {
+            "correct": "✓ CORRECT",
+            "confused_alt": f"✗ CONFUSED→{r.alt_name}",
+            "between": "? BETWEEN (ambig)",
+            "missed_both": "✗ MISSED/NO RESP",
+        }.get(r.confusion, r.confusion)
+        print(f"  {r.task[:50]:<50s} {exp_short:<14s} {status_s:<24s} {r.delta_norm:>5.1f} {r.delta_alt_norm:>5.1f}")
+
+        if r.confusion == "correct":
+            correct += 1
+        elif r.confusion == "confused_alt":
+            confused += 1
+        elif r.confusion == "between":
+            between += 1
+        else:
+            missed += 1
+
+    total = len(results)
+    print(f"\n  {'─'*95}")
+    print(f"  CORRECT:  {correct}/{total} ({correct/total*100:.0f}%)")
+    print(f"  CONFUSED: {confused}/{total} ({confused/total*100:.0f}%)  ← picks wrong similar element")
+    print(f"  BETWEEN:  {between}/{total} ({between/total*100:.0f}%)  ← ambiguous, between both")
+    print(f"  MISSED:   {missed}/{total} ({missed/total*100:.0f}%)  ← parse fail or no response")
+    print(f"  {'─'*95}")
+
+    if confused > 0:
+        print(f"\n  ** VLM CONFUSES similar nearby elements {confused}/{total} times **")
+        print(f"  ** This matches the production failure: agent taps search icon")
+        print(f"     instead of text input field. Root cause confirmed. **")
+
+    if confused == 0 and correct == total:
+        print(f"\n  ** VLM perfectly disambiguates all {total} similar elements. **")
+        print(f"  ** The production coordinate problem is NOT a visual confusion issue. **")
+        print(f"  ** Look elsewhere: a11y-tree coords, element indexer, or multi-step planning. **")
+
+    print()
+
+
 # ── Main ────────────────────────────────────────────────────────────────────
 
 def main():
@@ -851,6 +1236,8 @@ def main():
                     help="Override VLM base URL (e.g. https://api.avian.io/v1)")
     ap.add_argument("--api-key", type=str, default=None,
                     help="Override API key")
+    ap.add_argument("--disambiguation", action="store_true",
+                    help="Run disambiguation test: can VLM distinguish similar nearby elements?")
     args = ap.parse_args()
 
     OUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -955,6 +1342,20 @@ def main():
     agent_mode = args.agent_prompt
     sys_prompt = _get_operator_system_prompt() if agent_mode else SYSTEM_PROMPT
     model_hint = cfg.get("model", "?")
+
+    # ── Disambiguation mode: route to dedicated test ──
+    if args.disambiguation:
+        # Generate the disambiguation UI
+        disambig_path = OUT_DIR / "test_ui_disambig.png"
+        disambig_els = []
+        for spec in DISAMBIG_ELEMENT_SPECS:
+            e = UIElement(*spec)
+            e.compute(DEV_W, DEV_H)
+            disambig_els.append(e)
+        generate_disambiguation_ui(disambig_path, disambig_els, DEV_W, DEV_H)
+        # Use synthetic path for disambiguation test
+        run_disambiguation_test(disambig_path, sys_prompt, agent_mode, cfg)
+        return
 
     print(f"\n  Pipeline: {test_path}")
     print(f"    → _encode_image (NORM_MAX_DIM={NORM_MAX_DIM})")
