@@ -52,7 +52,7 @@ from runner.packages import NAME_PACKAGE_DICT, normalize_package_name
 # Self-contained runner modules (no external SDK dependency)
 from runner.safety_net import SafetyNet, SafetyNetConfig
 from runner.incidents import IncidentTracker
-from runner.explorer import ElementIndexer
+from runner.explorer import ElementIndexer, draw_indexed_dots, screenshot_diff_count
 from runner.context import ContextBudget, HistoryStore, StepRecord
 from runner.planner import (
     apply_plan_updates,
@@ -140,20 +140,21 @@ Think before you act.
 Respond with a single JSON object. No other text.
 
 Available actions:
-  {"action": "open_app", "app_name": "微信"}         — launch an app by name
-  {"action": "tap", "coordinate": [x, y]}             — tap at pixel (x,y)
-  {"action": "long_press", "coordinate": [x, y]}       — long-press at pixel
+  {"action": "open_app", "app_name": "微信"}              — launch an app by name
+  {"action": "tap", "target": 3}                          — tap element N by INDEX (PREFERRED)
+  {"action": "tap", "coordinate": [x, y]}                 — tap at pixel (fallback)
+  {"action": "long_press", "target": 3}                   — long-press element N
   {"action": "swipe", "coordinate1": [x1,y1], "coordinate2": [x2,y2], "duration": 300}
-  {"action": "type", "text": "hello"}                  — type text into focused field
-  {"action": "system_button", "button": "back"}        — back / home / enter / recent_apps
-  {"action": "finish"}                                  — task completed
-  {"action": "fail", "reason": "why"}                   — task cannot be completed
+  {"action": "type", "text": "hello"}                     — type text into focused field
+  {"action": "system_button", "button": "back"}           — back / home / enter / recent_apps
+  {"action": "finish"}                                    — task completed
+  {"action": "fail", "reason": "why"}                     — task cannot be completed
 
 Required field:
-  "target_description" — a short description of WHAT element/area you are
-                          targeting and WHY.  Example: "搜索框" for a search box,
-                          "导航按钮 at top-right" for a nav button.
-                          This field is REQUIRED for tap, long_press, and swipe.
+  "target_description" — WHERE you are tapping and WHY. NOT "tap element 3" —
+                          describe what the element IS. Examples: "搜索框 Search bar",
+                          "百度地图 app icon", "允许 button in permission dialog".
+                          REQUIRED for tap, long_press, and swipe.
 
 Optional fields:
   "plan_updates" — see Plan Tracking section above (plan-guided only)
@@ -161,10 +162,17 @@ Optional fields:
                     Use this to record findings between steps, e.g.:
                     {"notes": {"login_page": "Found login page — use 手机登录 tab next"}}
 
+## Vision-First Priority
+**The screenshot is the primary source of truth** for the real device state.
+Always visually inspect the screen layout on the screenshot BEFORE consulting the
+element list. The 'Visible UI Elements' list is an auxiliary lookup table — use
+it to retrieve an element's index and center AFTER you have visually identified
+the target on the screenshot.
+
 ## Cognitive Protocol (follow in every turn)
 
 ### 1. Observation — read the screen
-- What app is currently open? (check the UI elements, app bar, status bar)
+- What app is currently open? (check the status bar, app title, UI elements)
 - Am I on the right screen, or did I navigate somewhere unexpected?
 - Are there loading spinners, popups, permission dialogs, or ads blocking the UI?
 - Check PREVIOUS ACTIONS — have I already tried this element? Don't repeat failures.
@@ -180,8 +188,12 @@ Optional fields:
 - What will the screen look like AFTER this action? If uncertain, reconsider.
 
 ### 3. Execution — pick the right target
-- PREFER elements from the UI INDEX over guessing coordinates visually.
-  The index has exact bounds and centers. Use it.
+- **Vision-First**: Find the element VISUALLY on the screenshot, THEN look it up
+  in the element list to get its index. Use {"action": "tap", "target": N} —
+  this is more reliable than guessing coordinates.
+- The element list has class prefixes like [EditText], [Button], [ImageView] —
+  use them to tell an INPUT FIELD from an ICON. [EditText] is a text input;
+  [ImageView] is an icon/image.
 - For text input: FIRST tap the input field (verify it has focus), THEN use
   {"action": "type", "text": "..."}. Never type without first ensuring focus.
 - If typing in a search bar: tap the bar first, confirm keyboard is up, then type.
@@ -190,6 +202,9 @@ Optional fields:
 ## Anti-Patterns (DO NOT DO)
 - Tapping the same coordinate 3+ times — if it didn't work twice, try a DIFFERENT
   element or approach.
+- Tapping a different element from what target_description says.
+- Using {"action": "tap", "target": N} with the WRONG index — always visually
+  verify which element matches which index before using it.
 - Typing text without first tapping the target field — text goes nowhere.
 - Using open_app repeatedly when the app is already open — check the screen first.
 - Finishing prematurely — verify the goal was met, don't just assume.
@@ -220,6 +235,9 @@ Optional fields:
 
 ## Element Selection Rules
 - UI elements marked "clickable" AND "enabled" are safe tap targets.
+- Class prefixes: [EditText]=text input, [Button]=button, [ImageView]=icon/image,
+  [TextView]=text label, [CheckBox]=checkbox, [Switch]=toggle switch.
+  Use them to tell an input field from an icon at a glance.
 - Avoid elements with no label AND no resource-id — they're likely decorative.
 - Prefer elements with Chinese text matching your task (e.g. "设置" for Settings).
 - For scrolling: swipe from the CENTER of a scrollable region, not from an element.
@@ -233,9 +251,10 @@ SYSTEM_PROMPT_COMPACT = """## Role
 Android device operator. Output ONLY a JSON object per turn.
 
 ## Actions
-{"action":"tap","coordinate":[x,y],"target_description":"what you are tapping"}
-{"action":"long_press","coordinate":[x,y],"target_description":"what you are pressing"}
-{"action":"swipe","coordinate1":[x1,y1],"coordinate2":[x2,y2],"duration":300,"target_description":"what you are swiping"}
+{"action":"tap","target":3}                          — tap element N by INDEX (PREFERRED)
+{"action":"tap","coordinate":[x,y]}                    — tap at pixel (fallback)
+{"action":"long_press","target":3}                     — long-press element N
+{"action":"swipe","coordinate1":[x1,y1],"coordinate2":[x2,y2],"duration":300}
 {"action":"type","text":"text to type"}
 {"action":"system_button","button":"back|home|enter|recent_apps"}
 {"action":"open_app","app_name":"app name"}
@@ -243,18 +262,23 @@ Android device operator. Output ONLY a JSON object per turn.
 {"action":"fail","reason":"why"}
 
 ## Rules (MUST follow)
-1. **Look at the screenshot first.** Match what you see to the UI elements listed.
-2. **Use element INDEX when available.** Prefer elements with correct labels.
-3. **Tap BEFORE typing.** Always tap a text field before using type action.
-4. **Never repeat the same tap 3 times.** If a tap doesn't work, try a different element.
-5. **Check if app is already open.** Don't use open_app if you're already in the right app.
-6. **Dismiss popups immediately.** Permission dialogs, ads, update prompts — tap outside or press back.
-7. **Only finish when the goal is VISUALLY confirmed.** Don't guess.
-8. **Always include target_description** for tap/long_press/swipe to explain WHAT you are targeting.
+1. **Vision-First Priority**: Look at the screenshot FIRST. Visually find the target,
+   THEN look it up in the element list to get its index.
+2. **Use {"action":"tap","target":N}** — this is more reliable than raw coordinates.
+   The system resolves the index to the exact pixel center automatically.
+3. **Class prefixes tell you element type**: [EditText]=text input, [Button]=button,
+   [ImageView]=icon/image, [TextView]=label. Use them to tell INPUT from ICON.
+4. **Tap BEFORE typing.** Always tap a text field before using type action.
+5. **Never repeat the same tap 3 times.** If a tap doesn't work, try a different element.
+6. **Check if app is already open.** Don't use open_app if you're already in the right app.
+7. **Dismiss popups immediately.** Permission dialogs, ads, update prompts — tap outside or press back.
+8. **Only finish when the goal is VISUALLY confirmed.** Don't guess.
+9. **Always include target_description** — describe WHAT the element IS, not just its index.
 
 ## Element Format
-Each UI element: `[N] "label" center=(x,y) (clickable|enabled)`
-Use the INDEX number to identify elements. Match labels against the screenshot.
+Each UI element: [N] [ClassName] "label" center=(cx,cy) flags
+Example: [3] [EditText] "Search" center=(500,80) rid=search_box clickable
+Use the INDEX number with target=N. ClassName tells you if it's an input or icon.
 Trust elements with Chinese labels matching your task (e.g. "搜索" for search).
 
 ## Recovery
@@ -585,6 +609,7 @@ def _run_reactive_fallback(
     end_reason = "flash_started"
     last_coords: list[str] = []
     last_action_types: list[str] = []  # Track recent action types for loop detection
+    previous_post_shot: Optional[Path] = None  # For screenshot similarity detection
     indexer = ElementIndexer(adb_path=adb_path, device=device)
     history = HistoryStore(
         max_stored_screenshots=_ctx_cfg.get("max_stored_screenshots", 6),
@@ -664,13 +689,32 @@ def _run_reactive_fallback(
             elements = []
         _log(f"[timing] step {step} index       → {time.time() - t_index:.2f}s  (total {time.time() - t_step:.2f}s)")
 
+        # 2.5 Draw indexed dots on screenshot for Vision-First targeting
+        vlm_shot_path = shot_path  # default: raw screenshot
+        if elements:
+            t_dots = time.time()
+            annotated = screenshots_dir / f"step_{step:03d}_{ts}_annotated.jpg"
+            if draw_indexed_dots(str(shot_path), elements, str(annotated)):
+                vlm_shot_path = annotated
+                _debug(f"Annotated screenshot with {len(elements)} dots")
+                _log(f"[timing] step {step} dots        → {time.time() - t_dots:.2f}s  (total {time.time() - t_step:.2f}s)")
+
+        # Screenshot similarity check against previous post-action screenshot
+        # If screen unchanged, inject a note for the VLM
+        similarity_note = ""
+        if previous_post_shot and previous_post_shot.exists():
+            diff = screenshot_diff_count(str(previous_post_shot), str(shot_path))
+            if diff <= 3:
+                similarity_note = f"\n⚠️  NOTE: The screen is pixel-identical to the previous step. Your last action had NO visible effect. Try a DIFFERENT approach.\n"
+                _log(f"[loop] Screen unchanged detected (diff={diff}px)")
+
         # 3. Determine action via VLM (plan-guided)
         t_vlm = time.time()
         action_type, action_args, action_desc, plan_updates, notes_updates = (
             _decide_action_plan_guided(
                 instruction, step, elements, None, last_coords,
-                str(shot_path), actions, plan_text, history=history,
-                scratchpad=scratchpad,
+                str(vlm_shot_path), actions, plan_text, history=history,
+                scratchpad=scratchpad, similarity_note=similarity_note,
             )
         )
         _log(f"[timing] step {step} VLM decide  → {time.time() - t_vlm:.2f}s  (total {time.time() - t_step:.2f}s)")
@@ -721,6 +765,7 @@ def _run_reactive_fallback(
         t_post = time.time()
         vshot_path = screenshots_dir / f"step_{step:03d}_{ts}_post.png"
         _take_screenshot(adb_path, device, vshot_path)
+        previous_post_shot = vshot_path  # save for next step's similarity check
         _log(f"[timing] step {step} post-shot   → {time.time() - t_post:.2f}s  (total {time.time() - t_step:.2f}s)")
 
         _emit_progress(
@@ -862,6 +907,7 @@ def _run_plan_guided_fallback(
     )
     last_budget_warning_pct = 0.0
     scratchpad: dict[str, str] = {}  # Persistent cross-turn notes
+    previous_post_shot: Optional[Path] = None  # For screenshot similarity detection
     safety_net = SafetyNet(SafetyNetConfig(
         adb_path=adb_path,
         device=device,
@@ -941,12 +987,29 @@ def _run_plan_guided_fallback(
             elements = []
         _log(f"[timing] step {step} index       → {time.time() - t_index:.2f}s  (total {time.time() - t_step:.2f}s)")
 
+        # 1.5 Draw indexed dots and check screenshot similarity
+        vlm_shot_path = shot_path
+        if elements:
+            t_dots = time.time()
+            annotated = screenshots_dir / f"step_{step:03d}_{ts}_annotated.jpg"
+            if draw_indexed_dots(str(shot_path), elements, str(annotated)):
+                vlm_shot_path = annotated
+                _debug(f"Annotated screenshot with {len(elements)} dots")
+                _log(f"[timing] step {step} dots        → {time.time() - t_dots:.2f}s  (total {time.time() - t_step:.2f}s)")
+
+        similarity_note = ""
+        if previous_post_shot and previous_post_shot.exists():
+            diff = screenshot_diff_count(str(previous_post_shot), str(shot_path))
+            if diff <= 3:
+                similarity_note = f"\n⚠️  NOTE: The screen is pixel-identical to the previous step. Your last action had NO visible effect. Try a DIFFERENT approach.\n"
+                _log(f"[loop] Screen unchanged detected (diff={diff}px)")
+
         # ── 2. Operator Node: decide next action ─────────────────────
         t_oper = time.time()
         action_type, action_args, action_desc, plan_updates, notes_updates = _decide_action_plan_guided(
             instruction, step, elements, incident_tracker, last_coords,
-            str(shot_path), actions, plan_text, history=history,
-            scratchpad=scratchpad,
+            str(vlm_shot_path), actions, plan_text, history=history,
+            scratchpad=scratchpad, similarity_note=similarity_note,
         )
         _log(f"[timing] step {step} operator    → {time.time() - t_oper:.2f}s  (total {time.time() - t_step:.2f}s)")
 
@@ -1080,6 +1143,7 @@ def _run_plan_guided_fallback(
         t_post = time.time()
         vshot_path = screenshots_dir / f"step_{step:03d}_{ts}_post.png"
         _take_screenshot(adb_path, device, vshot_path)
+        previous_post_shot = vshot_path  # save for next step's similarity check
         _log(f"[timing] step {step} post-shot   → {time.time() - t_post:.2f}s  (total {time.time() - t_step:.2f}s)")
 
         _emit_progress(
@@ -1684,27 +1748,7 @@ def _decide_action_fallback(
         shown = elements[:MAX_ELEMENTS]
         lines = [f"UI ELEMENTS ({len(shown)} shown of {len(elements)} indexed):"]
         for el in shown:
-            label = el.display_text
-            rid = el.resource_id or ""
-            rid_short = rid.split("/")[-1] if "/" in rid else rid
-            # Convert device-pixel center to canonical 0-1000 space
-            dev_w, dev_h = _DEVICE_RESOLUTION if _DEVICE_RESOLUTION else (1080, 2400)
-            cx = round(el.center[0] * 1000 / max(1, dev_w))
-            cy = round(el.center[1] * 1000 / max(1, dev_h))
-            cls_short = (el.class_name or "").split(".")[-1]
-            # Compact format: index, label, center, clickable state
-            tags = []
-            if el.clickable and el.enabled:
-                tags.append("clickable")
-            if not el.enabled:
-                tags.append("disabled")
-            tag_str = "|".join(tags) if tags else ""
-            lines.append(
-                f'[{el.index}] "{label}" center=({cx},{cy})'
-                + (f" cls={cls_short}" if cls_short else "")
-                + (f" rid={rid_short}" if rid_short else "")
-                + (f" [{tag_str}]" if tag_str else "")
-            )
+            lines.append(el.render_index_line())
         index_text = "\n".join(lines)
     else:
         index_text = "UI ELEMENTS: (unavailable — use visual analysis)"
@@ -1736,6 +1780,12 @@ def _decide_action_fallback(
         + (f"\n{loop_text}" if loop_text else "")
         + (f"\n{incident_text}" if incident_text else "")
         + f"\n{index_text}"
+        + (
+            "\n\nTARGETING: When tapping, use {\"action\":\"tap\",\"target\":N} with the element's"
+            " INDEX number from the list above. The system resolves the index to exact pixel"
+            " coordinates. Use {\"action\": \"tap\", \"coordinate\": [x, y]} only as a fallback"
+            " when no element matches (e.g. custom-drawn UI, Canvas, Flutter)."
+        )
     )
 
     user_prompt += (
@@ -1794,10 +1844,30 @@ def _decide_action_fallback(
 
     action = parsed.get("action", "finish")
     target_desc = parsed.get("target_description", "")
-    _log(f"[vlm-decision] action={action} target={target_desc} coords={parsed.get('coordinate', parsed.get('coordinate1', ''))}")
+    target_idx = parsed.get("target")  # element index (preferred over raw coordinates)
+    _log(f"[vlm-decision] action={action} target={target_idx} desc={target_desc} coords={parsed.get('coordinate', parsed.get('coordinate1', ''))}")
+
+    # Resolve element index if the VLM used target=N
+    def _resolve_target(idx, elements_ref):
+        """Resolve a target index to pixel center, or return None."""
+        if idx is None:
+            return None
+        try:
+            idx = int(idx)
+        except (TypeError, ValueError):
+            return None
+        if elements_ref and 0 <= idx < len(elements_ref):
+            return elements_ref[idx].center  # [cx, cy] in device pixels
+        return None
 
     # Normalize action_type and args
     if action == "tap":
+        el_center = _resolve_target(target_idx, elements)
+        if el_center is not None:
+            x, y = el_center[0], el_center[1]
+            desc = target_desc if target_desc else f"tap element [{target_idx}]"
+            return ("tap", {"coordinate": [x, y], "target": target_idx}, desc)
+        # Fallback to raw coordinate
         coord = parsed.get("coordinate", [0, 0])
         x, y = int(coord[0]), int(coord[1])
         x, y = _scale_coordinate(x, y, norm_w, norm_h)
@@ -1805,6 +1875,11 @@ def _decide_action_fallback(
         return ("tap", {"coordinate": [x, y]}, desc)
 
     elif action == "long_press":
+        el_center = _resolve_target(target_idx, elements)
+        if el_center is not None:
+            x, y = el_center[0], el_center[1]
+            desc = target_desc if target_desc else f"long_press element [{target_idx}]"
+            return ("long_press", {"coordinate": [x, y], "target": target_idx}, desc)
         coord = parsed.get("coordinate", [0, 0])
         x, y = int(coord[0]), int(coord[1])
         x, y = _scale_coordinate(x, y, norm_w, norm_h)
@@ -1857,6 +1932,7 @@ def _decide_action_plan_guided(
     plan_text: str = "",
     history=None,
     scratchpad: dict[str, str] | None = None,
+    similarity_note: str = "",
 ) -> tuple[str, dict, str, dict | None, dict | None]:
     """Call the VLM with screenshot + element index + plan context to decide the next action.
 
@@ -1878,24 +1954,7 @@ def _decide_action_plan_guided(
         shown = elements[:MAX_ELEMENTS]
         lines = [f"UI ELEMENTS ({len(shown)} shown of {len(elements)} indexed):"]
         for el in shown:
-            label = el.display_text
-            rid = el.resource_id or ""
-            rid_short = rid.split("/")[-1] if "/" in rid else rid
-            cx = round(el.center[0] * 1000 / max(1, _DEVICE_RESOLUTION[0])) if _DEVICE_RESOLUTION else el.center[0]
-            cy = round(el.center[1] * 1000 / max(1, _DEVICE_RESOLUTION[1])) if _DEVICE_RESOLUTION else el.center[1]
-            cls_short = (el.class_name or "").split(".")[-1]
-            tags = []
-            if el.clickable and el.enabled:
-                tags.append("clickable")
-            if not el.enabled:
-                tags.append("disabled")
-            tag_str = "|".join(tags) if tags else ""
-            lines.append(
-                f'[{el.index}] "{label}" center=({cx},{cy})'
-                + (f" cls={cls_short}" if cls_short else "")
-                + (f" rid={rid_short}" if rid_short else "")
-                + (f" [{tag_str}]" if tag_str else "")
-            )
+            lines.append(el.render_index_line())
         index_text = "\n".join(lines)
     else:
         index_text = "UI ELEMENTS: (unavailable — use visual analysis)"
@@ -1956,7 +2015,13 @@ def _decide_action_plan_guided(
         + (f"\n{prev_text}" if prev_text else "")
         + (f"\n{loop_text}" if loop_text else "")
         + (f"\n{incident_text}" if incident_text else "")
+        + (f"\n{similarity_note}" if similarity_note else "")
         + f"\n{index_text}"
+        + (
+            "\n\nTARGETING: When tapping, prefer {\"action\":\"tap\",\"target\":N} with the"
+            " element's INDEX number from the list. The system resolves it to exact pixel"
+            " coordinates. Use {\"action\":\"tap\",\"coordinate\":[x,y]} only as fallback."
+        )
     )
 
     user_prompt += (
@@ -2008,10 +2073,28 @@ def _decide_action_plan_guided(
 
     action = parsed.get("action", "finish")
     target_desc = parsed.get("target_description", "")
-    _log(f"[vlm-decision] action={action} target={target_desc} coords={parsed.get('coordinate', parsed.get('coordinate1', ''))}")
+    target_idx = parsed.get("target")  # element index (preferred over raw coordinates)
+    _log(f"[vlm-decision] action={action} target={target_idx} desc={target_desc} coords={parsed.get('coordinate', parsed.get('coordinate1', ''))}")
+
+    # Resolve element index if the VLM used target=N
+    def _resolve_target_plan(idx, elements_ref):
+        if idx is None:
+            return None
+        try:
+            idx = int(idx)
+        except (TypeError, ValueError):
+            return None
+        if elements_ref and 0 <= idx < len(elements_ref):
+            return elements_ref[idx].center
+        return None
 
     # Normalize action_type and args (same logic as _decide_action_fallback)
     if action == "tap":
+        el_center = _resolve_target_plan(target_idx, elements)
+        if el_center is not None:
+            x, y = el_center[0], el_center[1]
+            desc = target_desc if target_desc else f"tap element [{target_idx}]"
+            return ("tap", {"coordinate": [x, y], "target": target_idx}, desc, plan_updates, notes_updates)
         coord = parsed.get("coordinate", [0, 0])
         x, y = int(coord[0]), int(coord[1])
         x, y = _scale_coordinate(x, y, norm_w, norm_h)
@@ -2019,6 +2102,11 @@ def _decide_action_plan_guided(
         return ("tap", {"coordinate": [x, y]}, desc, plan_updates, notes_updates)
 
     elif action == "long_press":
+        el_center = _resolve_target_plan(target_idx, elements)
+        if el_center is not None:
+            x, y = el_center[0], el_center[1]
+            desc = target_desc if target_desc else f"long_press element [{target_idx}]"
+            return ("long_press", {"coordinate": [x, y], "target": target_idx}, desc, plan_updates, notes_updates)
         coord = parsed.get("coordinate", [0, 0])
         x, y = int(coord[0]), int(coord[1])
         x, y = _scale_coordinate(x, y, norm_w, norm_h)
