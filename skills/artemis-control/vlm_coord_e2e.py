@@ -361,6 +361,28 @@ def restore_immersive(device: str) -> None:
 
 # ── VLM calling ─────────────────────────────────────────────────────────────
 
+def _resolve_model(requested: str | None) -> str:
+    """Resolve which model to use.  If requested, patch config cache."""
+    if requested:
+        import artemis_agent as _agent
+        cfg = _agent.load_skill_config()
+        cfg["model"] = requested
+        # Also clear the cached prompt selection so _get_operator_system_prompt picks
+        # the right prompt for the new model
+        return requested
+    cfg = load_skill_config()
+    return cfg.get("model", "?")
+
+
+# Direct import of the agent's system prompt selection + the prompts themselves,
+# so --agent-prompt mode uses the EXACT same prompts the real agent sends.
+
+from artemis_agent import (
+    _get_operator_system_prompt,
+    SYSTEM_PROMPT_FALLBACK,
+    SYSTEM_PROMPT_COMPACT,
+)
+
 SYSTEM_PROMPT = textwrap.dedent("""\
     You are a precision coordinate locator for mobile UI screenshots.
 
@@ -377,37 +399,129 @@ SYSTEM_PROMPT = textwrap.dedent("""\
     """)
 
 
-def build_user_prompt(elements: list[UIElement]) -> str:
+def build_user_prompt(elements: list[UIElement], agent_mode: bool = False) -> str:
+    """Build user prompt — clean test mode vs. agent-identical mode."""
+    if not agent_mode:
+        lines = [
+            "This is a screenshot of a mobile navigation app.",
+            "Locate the exact CENTER coordinate of each UI element below.",
+            "Output in 0-1000 normalized space.",
+            "",
+            "Elements:",
+        ]
+        for el in elements:
+            lines.append(f'  "{el.name}" — {el.description}')
+        lines.append("")
+        lines.append(
+            'Output: {"elements": [{"name": "...", "x": <int>, "y": <int>}, ...]}'
+        )
+        return "\n".join(lines)
+
+    # ── Agent-identical mode ───────────────────────────────────────────────
+    # Matches the exact prompt structure of _decide_action_fallback():
+    #   TASK + Step + PREVIOUS ACTIONS + UI ELEMENTS + COORDINATE SPACE
+    #
+    # CRITICAL: Element coordinates in the UI INDEX are DELIBERATELY NOISY
+    # (±15-25 norm units off), simulating real accessibility-tree inaccuracies.
+    # The VLM must use VISUAL understanding to correct them — if it just echoes
+    # the prompt coordinates, accuracy will be poor and the test will catch it.
+    import random as _random
+    _noise_rng = _random.Random(42)  # fixed seed for reproducibility
+    NOISE_RANGE = 20  # max norm-unit deviation per axis
+
     lines = [
-        "This is a screenshot of a mobile navigation app.",
-        "Locate the exact CENTER coordinate of each UI element below.",
-        "Output in 0-1000 normalized space.",
+        "TASK: Locate the center coordinate of each UI element listed below.",
+        "Step: 1",
         "",
-        "Elements:",
+        "PREVIOUS ACTIONS (do NOT repeat these):",
+        "  - (none — first step)",
     ]
-    for el in elements:
-        lines.append(f"  \"{el.name}\" — {el.description}")
+
+    # Build a fake UI element index — same format the agent sends:
+    #   [N] "label" center=(cx,cy) cls=ClassName rid=resource_id [clickable|enabled]
     lines.append("")
-    lines.append('Output: {"elements": [{"name": "...", "x": <int>, "y": <int>}, ...]}')
+    lines.append(f"UI ELEMENTS ({len(elements)} shown of {len(elements)} indexed):")
+    noisy_coords = {}  # record noisy coords for debugging
+    for i, el in enumerate(elements):
+        true_cx = round(el.dev_x * 1000 / max(1, DEV_W))
+        true_cy = round(el.dev_y * 1000 / max(1, DEV_H))
+        # Add deliberate noise (±NOISE_RANGE) to simulate real a11y tree errors
+        nx = true_cx + _noise_rng.randint(-NOISE_RANGE, NOISE_RANGE)
+        ny = true_cy + _noise_rng.randint(-NOISE_RANGE, NOISE_RANGE)
+        nx = max(0, min(nx, 1000))
+        ny = max(0, min(ny, 1000))
+        noisy_coords[el.name] = (nx, ny, true_cx, true_cy)
+        # Pick a plausible class name based on element type
+        if "btn" in el.name or "icon" in el.name:
+            cls = "ImageView" if "icon" in el.name else "Button"
+        elif "input" in el.name:
+            cls = "EditText"
+        elif "card" in el.name:
+            cls = "LinearLayout"
+        elif "cta" in el.name:
+            cls = "Button"
+        else:
+            cls = "TextView"
+        lines.append(
+            f'  [{i}] "{el.description.split(chr(34))[0] if chr(34) in el.description else el.name}"'
+            f" center=({nx},{ny}) cls={cls} clickable enabled"
+        )
+
+    # Show noisy vs true for debugging
+    print(f"\n  Agent-mode noisy element coordinates (±{NOISE_RANGE} norm units):")
+    print(f"  {'Element':<16s} {'noisy':>12s} {'true':>12s} {'Δ':>6s}")
+    for name, (nx, ny, tx, ty) in noisy_coords.items():
+        d = math.sqrt((nx-tx)**2 + (ny-ty)**2)
+        print(f"  {name:<16s} ({nx:>4d},{ny:>4d})   ({tx:>4d},{ty:>4d})   {d:>5.1f}")
+
+    lines.append("")
+    lines.append(
+        "COORDINATE SPACE: 1000×1000. Output ALL coordinates in 0-1000 range. "
+        "They will be auto-scaled to device pixels."
+    )
+    lines.append("")
+    lines.append(
+        "The UI element positions above may be approximate — use the SCREENSHOT "
+        "to determine the TRUE visual center of each element. "
+        "For each element, report its exact center coordinate. "
+        'Output as a JSON list of tap actions, one per element. '
+        'Format: [{"action":"tap","coordinate":[x,y],"target_description":"..."}, ...]'
+    )
     return "\n".join(lines)
 
 
-def parse_response(raw: str, names: set[str]) -> dict[str, tuple[float, float]] | None:
+def parse_response(raw: str, names: set[str],
+                   agent_mode: bool = False) -> dict[str, tuple[float, float]] | None:
+    """Parse VLM response — clean test format or agent action format."""
     if not raw:
         return None
     text = raw.strip()
 
-    # If the VLM generated thinking/explanation before the JSON, find the
-    # JSON object by locating the outermost { ... } that contains "elements"
-    # Try last { first (VLMs often put JSON after thinking)
-    brace_starts = [i for i, c in enumerate(text) if c == '{']
-    for start in reversed(brace_starts):
-        # Find matching }
+    # Find outermost JSON object or array by brace/bracket matching
+    brace_starts = []
+    depth = 0
+    for i, c in enumerate(text):
+        if c in ('{', '['):
+            if depth == 0:
+                brace_starts.append((i, c))
+            depth += 1
+        elif c in ('}', ']'):
+            depth -= 1
+
+    if not brace_starts:
+        print(f"  !! JSON parse FAILED — no JSON found")
+        print(f"  Raw (first 400): {raw[:400]}")
+        return None
+
+    # Try from last { or [ backward
+    for start, opener in reversed(brace_starts):
+        closer = '}' if opener == '{' else ']'
         depth = 0
         end = -1
         for j in range(start, len(text)):
-            if text[j] == '{': depth += 1
-            elif text[j] == '}':
+            if text[j] in ('{', '['):
+                depth += 1
+            elif text[j] in ('}', ']'):
                 depth -= 1
                 if depth == 0:
                     end = j + 1
@@ -415,15 +529,26 @@ def parse_response(raw: str, names: set[str]) -> dict[str, tuple[float, float]] 
         if end > start:
             try:
                 data = json.loads(text[start:end])
-                if "elements" in data:
-                    break
+                if agent_mode:
+                    # Agent mode: parse [{"action":"tap","coordinate":[...]}, ...]
+                    return _parse_agent_response(data, names)
+                else:
+                    # Clean mode: {"elements": [{"name":..., "x":..., "y":...}, ...]}
+                    if isinstance(data, dict) and "elements" in data:
+                        return _parse_clean_response(data, names)
+                    if isinstance(data, list) and data and "action" in data[0]:
+                        # VLM sometimes outputs list even in clean mode
+                        return _parse_agent_response(data, names)
             except json.JSONDecodeError:
                 continue
-    else:
-        print(f"  !! JSON parse FAILED — no valid {{elements}} object found")
-        print(f"  Raw (first 500): {raw[:500]}")
-        return None
 
+    print(f"  !! JSON parse FAILED — no valid object found")
+    print(f"  Raw (first 400): {raw[:400]}")
+    return None
+
+
+def _parse_clean_response(data: dict, names: set[str]
+                          ) -> dict[str, tuple[float, float]] | None:
     result = {}
     for item in data.get("elements", []):
         name = item.get("name", "")
@@ -435,6 +560,57 @@ def parse_response(raw: str, names: set[str]) -> dict[str, tuple[float, float]] 
     missing = names - set(result.keys())
     if missing:
         print(f"  !! VLM missed: {sorted(missing)}")
+    return result
+
+
+def _parse_agent_response(data, names: set[str]
+                           ) -> dict[str, tuple[float, float]] | None:
+    """Parse agent-format JSON: list of {"action":"tap","coordinate":[x,y],
+    "target_description":"..."} objects.  Match target_description keywords
+    to our known element names."""
+    items = data if isinstance(data, list) else [data]
+
+    # Build keyword → element name mapping
+    keyword_map: dict[str, str] = {}
+    for name in names:
+        kw = name  # e.g. "back_btn", "text_input", "left_card"
+        keyword_map[kw] = name
+
+    result: dict[str, tuple[float, float]] = {}
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        action = item.get("action", "")
+        if action != "tap":
+            continue
+        coord = item.get("coordinate")
+        if not isinstance(coord, (list, tuple)) or len(coord) < 2:
+            continue
+        desc = (item.get("target_description", "") or "").lower()
+
+        # Match target_description against element names
+        matched = None
+        for name in sorted(names, key=len, reverse=True):
+            # Name is like "back_btn" → check if desc mentions "back" or "button"
+            parts = name.split("_")
+            # All parts must appear in the description
+            if all(p in desc for p in parts):
+                matched = name
+                break
+            # Or the full name appears
+            if name in desc:
+                matched = name
+                break
+
+        if matched:
+            try:
+                result[matched] = (float(coord[0]), float(coord[1]))
+            except (TypeError, ValueError):
+                pass
+
+    missing = names - set(result.keys())
+    if missing:
+        print(f"  !! VLM missed (agent mode): {sorted(missing)}")
     return result
 
 
@@ -536,6 +712,14 @@ def main():
                     help="Skip device — test with direct PIL image only")
     ap.add_argument("--resolution", type=str, default=None,
                     help="Force resolution WxH (e.g. 1440x3120)")
+    ap.add_argument("--agent-prompt", action="store_true",
+                    help="Use the EXACT agent operator prompt instead of clean test prompt")
+    ap.add_argument("--model", type=str, default=None,
+                    help="Override VLM model (e.g. GLM-5.3-Flash, MiniMax-M3)")
+    ap.add_argument("--base-url", type=str, default=None,
+                    help="Override VLM base URL (e.g. https://api.avian.io/v1)")
+    ap.add_argument("--api-key", type=str, default=None,
+                    help="Override API key")
     args = ap.parse_args()
 
     OUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -596,10 +780,26 @@ def main():
 
     # ── Run VLM tests ──
     cfg = load_skill_config()
+    if args.model:
+        cfg["model"] = args.model
+    if args.base_url:
+        cfg["base_url"] = args.base_url
+    if args.api_key:
+        cfg["api_key"] = args.api_key
     from artemis_agent import NORM_MAX_DIM
+    agent_mode = args.agent_prompt
+    sys_prompt = _get_operator_system_prompt() if agent_mode else SYSTEM_PROMPT
+    model_hint = cfg.get("model", "?")
+
     print(f"\n  Pipeline: {test_path}")
     print(f"    → _encode_image (NORM_MAX_DIM={NORM_MAX_DIM})")
-    print(f"    → _call_vlm  (model={cfg['model']}, max_tokens=4096)")
+    print(f"    → _call_vlm  (model={model_hint}, max_tokens=4096)")
+    print(f"    → PROMPT MODE: {'AGENT-IDENTICAL' if agent_mode else 'CLEAN TEST'}")
+
+    if agent_mode:
+        # Show which system prompt the agent would select
+        prompt_type = "COMPACT" if "flash" in model_hint.lower() else "FALLBACK"
+        print(f"    → System prompt: {prompt_type} (based on model='{model_hint}')")
 
     # Show encoded size
     b64, nw, nh = _encode_image(str(test_path))
@@ -613,7 +813,7 @@ def main():
 
         t0 = time.time()
         raw, reason, _, _ = _call_vlm(
-            SYSTEM_PROMPT, build_user_prompt(elements),
+            sys_prompt, build_user_prompt(elements, agent_mode),
             str(test_path), max_tokens=4096,
         )
         elapsed = time.time() - t0
@@ -624,7 +824,7 @@ def main():
             print(f"    -> SKIP (no content)\n")
             continue
 
-        preds = parse_response(raw, names)
+        preds = parse_response(raw, names, agent_mode)
         if preds is None:
             continue
 
