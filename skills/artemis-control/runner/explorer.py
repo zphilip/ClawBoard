@@ -640,12 +640,84 @@ class ElementIndexer:
 # Screenshot annotation — draw indexed dots on the image
 # ---------------------------------------------------------------------------
 
+# ── Dot quality scoring helpers ──────────────────────────────────────────
+
+def _element_dot_score(elem: ScreenElement) -> float:
+    """Return a quality score for whether an element deserves a dot and,
+    when two elements overlap, which one to keep.
+
+    Heuristic (higher = more likely the leaf-most, actionable element):
+      - clickable / long_clickable  → +3 (most actionable)
+      - has text or content_desc     → +2 (has a readable label)
+      - has resource_id              → +1 (identifiable)
+      - checkable / focusable        → +1 (interactive)
+      - scrollable                   → -1  (usually a container, not a target)
+      - area (bounds)                → smaller = leaf node bonus (up to +2)
+    """
+    score = 0.0
+    if elem.clickable or elem.long_clickable:
+        score += 3.0
+    if elem.text or elem.content_desc:
+        score += 2.0
+    if elem.resource_id:
+        score += 1.0
+    if elem.checkable or elem.focusable:
+        score += 1.0
+    if elem.scrollable:
+        score -= 1.0
+    # Smaller elements are more likely to be leaf nodes → bonus
+    area = (elem.bounds[2] - elem.bounds[0]) * (elem.bounds[3] - elem.bounds[1])
+    if area < 10_000:       # < 100×100 → tiny, likely leaf
+        score += 2.0
+    elif area < 40_000:      # < 200×200 → small
+        score += 1.0
+    elif area > 400_000:     # large container
+        score -= 1.0
+    return score
+
+
+def _deduplicate_dots(
+    elements: list[ScreenElement],
+    proximity_px: float,
+) -> list[ScreenElement]:
+    """Remove elements whose center lies within *proximity_px* of an
+    already-kept element's center, keeping the higher-quality one."""
+    kept: list[ScreenElement] = []
+    kept_scores: list[float] = []
+    for elem in elements:
+        cx, cy = elem.center[0], elem.center[1]
+        score = _element_dot_score(elem)
+        collision_idx = None
+        for i, (k, ks) in enumerate(zip(kept, kept_scores)):
+            dist = math.hypot(cx - k.center[0], cy - k.center[1])
+            if dist <= proximity_px:
+                # Collision  —  keep the higher-scoring element
+                if score > ks:
+                    collision_idx = i
+                else:
+                    collision_idx = -1  # skip this one, kept is better
+                break
+        if collision_idx is None:
+            # No collision — add
+            kept.append(elem)
+            kept_scores.append(score)
+        elif collision_idx >= 0:
+            # Replace the kept element with this better one
+            kept[collision_idx] = elem
+            kept_scores[collision_idx] = score
+        # else collision_idx == -1: skip (kept is better)
+    return kept
+
+
+# ── Dot drawing ─────────────────────────────────────────────────────────
+
 def draw_indexed_dots(
     screenshot_path: str,
     elements: list[ScreenElement],
     output_path: str,
-    dot_radius: int = 12,
-    font_size: int = 18,
+    dot_radius: Optional[int] = None,
+    font_size: Optional[int] = None,
+    max_dots: int = 80,
 ) -> bool:
     """Draw numbered labels at the center of each indexed element on a screenshot.
 
@@ -654,12 +726,30 @@ def draw_indexed_dots(
     to the element it marks.  The system resolves ``target=N`` → exact bounds
     mechanically, so the VLM never needs to output raw pixel coordinates.
 
+    Important design decisions that keep dots readable:
+
+    * **Matches the VLM's view** — elements are sorted and truncated the same
+      way ``render_index_for_prompt()`` does (interactive first, top → bottom,
+      max ``max_dots``).  The VLM never sees a dot without a corresponding
+      element line.
+    * **Deduplicates by proximity** — two elements whose centres are within
+      ``dot_radius × 3`` pixels collide.  The higher-quality leaf element
+      (clickable, labeled, small bounds) replaces the wrapper.  This prevents
+      the classic Android problem where a single button is wrapped in 3–4
+      layout containers and would otherwise get 4 overlapping dots.
+    * **Adaptive sizing** — when *dot_radius* / *font_size* are left at the
+      default ``None``, they are scaled from the image diagonal so dots look
+      the same on a phone (1080 px) and a tablet (2560 px).
+
     Args:
         screenshot_path: Path to the original screenshot.
         elements: Indexed elements (from ``ElementIndexer.build_index()``).
         output_path: Where to save the annotated image.
-        dot_radius: Radius of the numbered circles.
-        font_size: Font size for the index numbers.
+        dot_radius: Radius of the numbered circles (auto-scaled when ``None``).
+        font_size: Font size for the index numbers (auto-scaled when ``None``).
+        max_dots: Maximum number of dots to draw.  Default matches
+            ``render_index_for_prompt(max_elements)`` so the VLM sees the
+            same set of elements in text and on the image.
 
     Returns:
         True on success, False on failure.
@@ -674,32 +764,71 @@ def draw_indexed_dots(
     except Exception:
         return False
 
-    # Create an overlay for the dots so they layer cleanly
+    w_img, h_img = img.size
+    diag = math.hypot(w_img, h_img)
+
+    # Adaptive sizing: scale dot size to screen diagonal
+    if dot_radius is None:
+        dot_radius = max(8, min(22, round(diag / 150.0)))
+    if font_size is None:
+        font_size = max(10, min(24, dot_radius * 2))
+
+    # ── Step 1: filter to meaningful elements and sort like the VLM sees ──
+    # Keep elements that are interactive OR have a readable label.
+    # Drop pure-layout wrappers with no identity.
+    meaningful = [
+        e for e in elements
+        if e.clickable or e.long_clickable or e.checkable or e.focusable
+        or e.scrollable or e.text or e.content_desc or e.resource_id
+    ]
+    if not meaningful:
+        meaningful = elements  # fallback: draw everything if nothing filtered
+
+    # Sort identically to render_index_for_prompt: interactive first, then Y, then X
+    meaningful.sort(
+        key=lambda e: (
+            not e.clickable,
+            not e.enabled,
+            e.bounds[1],
+            e.bounds[0],
+        ),
+    )
+
+    # ── Step 2: deduplicate overlapping dots ──
+    proximity_px = dot_radius * 3
+    deduped = _deduplicate_dots(meaningful, proximity_px)
+
+    # ── Step 3: limit to max_dots ──
+    visible = deduped[:max_dots]
+
+    # ── Step 4: draw ──
     overlay = Image.new("RGBA", img.size, (0, 0, 0, 0))
     draw = ImageDraw.Draw(overlay)
 
-    # Try to load a font; fall back to default
     try:
-        font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", font_size)
+        font = ImageFont.truetype(
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", font_size,
+        )
     except (OSError, IOError):
         font = ImageFont.load_default()
 
-    for elem in elements:
+    for elem in visible:
         cx, cy = elem.center[0], elem.center[1]
         if cx <= 0 or cy <= 0:
             continue
 
-        # Draw a filled circle with high-contrast border
         r = dot_radius
         # Black outer ring (visible on any background)
-        draw.ellipse([cx - r - 2, cy - r - 2, cx + r + 2, cy + r + 2], fill=(0, 0, 0, 220))
+        draw.ellipse(
+            [cx - r - 2, cy - r - 2, cx + r + 2, cy + r + 2],
+            fill=(0, 0, 0, 220),
+        )
         # Colored fill: green for clickable, blue otherwise
         fill_color = (76, 175, 80, 240) if elem.clickable else (33, 150, 243, 240)
         draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=fill_color)
 
-        # Draw index number centered in the circle
+        # Draw index number centred in the circle
         label = str(elem.index)
-        # Simple text size estimation for centering
         text_w = font_size * len(label) * 0.6
         text_h = font_size * 0.8
         tx = cx - text_w // 2
