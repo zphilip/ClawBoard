@@ -340,14 +340,16 @@ def display_on_device(device: str, local: Path) -> bool:
 SYSTEM_PROMPT = textwrap.dedent("""\
     You are a precision coordinate locator for mobile UI screenshots.
 
-    COORDINATE SPACE: 1000x1000. Output ALL coordinates in 0-1000 range.
-    (0,0) is top-left, (1000,1000) is bottom-right.
-    Coordinates will be auto-scaled to device pixels.
+    COORDINATE SPACE: 1000x1000. Output ONLY coordinates in 0-1000 range.
+    (0,0) is top-left. (1000,1000) is bottom-right.
+    Each (x,y) is the CENTER of the named element.
 
-    Output ONLY valid JSON — no markdown, no explanation, no code fences:
-    {"elements": [{"name": "<name>", "x": <int>, "y": <int>}, ...]}
+    RULES:
+    - Output RAW JSON ONLY. No thinking. No explanation. No markdown.
+    - Do NOT describe the image. Do NOT estimate pixel bounds.
+    - Just output the JSON object. Nothing else — not even a newline before it.
 
-    Each (x, y) must be the CENTER pixel of the named element.
+    {"elements": [{"name": "<name>", "x": <int 0-1000>, "y": <int 0-1000>}, ...]}
     """)
 
 
@@ -371,25 +373,32 @@ def parse_response(raw: str, names: set[str]) -> dict[str, tuple[float, float]] 
         return None
     text = raw.strip()
 
-    m = re.search(r'```(?:json)?\s*\n?(.*?)\n?```', text, re.DOTALL)
-    if m:
-        text = m.group(1).strip()
-    m = re.search(r'\{.*"elements"\s*:\s*\[.*\]\s*\}', text, re.DOTALL)
-    if m:
-        text = m.group(0)
-
-    try:
-        data = json.loads(text)
-    except json.JSONDecodeError:
-        for i in range(len(text), 0, -1):
+    # If the VLM generated thinking/explanation before the JSON, find the
+    # JSON object by locating the outermost { ... } that contains "elements"
+    # Try last { first (VLMs often put JSON after thinking)
+    brace_starts = [i for i, c in enumerate(text) if c == '{']
+    for start in reversed(brace_starts):
+        # Find matching }
+        depth = 0
+        end = -1
+        for j in range(start, len(text)):
+            if text[j] == '{': depth += 1
+            elif text[j] == '}':
+                depth -= 1
+                if depth == 0:
+                    end = j + 1
+                    break
+        if end > start:
             try:
-                data = json.loads(text[:i])
-                break
+                data = json.loads(text[start:end])
+                if "elements" in data:
+                    break
             except json.JSONDecodeError:
                 continue
-        else:
-            print(f"  !! JSON parse FAILED. Raw: {raw[:400]}")
-            return None
+    else:
+        print(f"  !! JSON parse FAILED — no valid {{elements}} object found")
+        print(f"  Raw (first 500): {raw[:500]}")
+        return None
 
     result = {}
     for item in data.get("elements", []):
