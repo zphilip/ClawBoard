@@ -350,6 +350,62 @@ def display_on_device(device: str, local: Path) -> bool:
     return True
 
 
+def detect_image_offset(screenshot_path: Path, original_path: Path
+                        ) -> tuple[int, int, float]:
+    """Detect where the original test image appears in the device screenshot.
+
+    Returns (offset_x, offset_y, scale) — the pixel offset and scale factor.
+    Uses a simple strip-matching approach on the top-left corner.
+    """
+    from PIL import Image
+    orig = Image.open(original_path)
+    ss = Image.open(screenshot_path)
+
+    # If screenshots match exactly (same size, same content), no offset
+    if ss.size == orig.size:
+        # Quick check: compare first row
+        if list(ss.getdata())[:10] == list(orig.getdata())[:10]:
+            return 0, 0, 1.0
+
+    # The test image has a distinctive status bar (dark fill #0d0d1a)
+    # and header bar (#16213e). Scan for these in the screenshot.
+    # Strategy: find the status bar strip in the screenshot.
+    status_color = (0x0d, 0x0d, 0x1a)
+
+    sw, sh = ss.size
+    ow, oh = orig.size
+
+    # If screenshot is larger, search for the original image within it
+    if sw >= ow and sh >= oh:
+        # Scan for matching top-left corner pattern
+        best_offset = (0, 0)
+        best_scale = 1.0
+
+        # Try scale detection: the status bar in original is ~4% of height
+        orig_sb_h = round(oh * 0.04)
+
+        # Scan Y for the dark status bar region
+        for y_off in range(0, max(1, sh - oh + 1), 2):
+            # Check if row at y_off matches original's status bar row
+            match_count = 0
+            for x in range(0, min(ow, sw), 5):
+                opx = orig.getpixel((x, min(2, oh - 1)))
+                spx = ss.getpixel((x, y_off + min(2, sh - y_off - 1)))
+                # Check if both are dark (status bar region)
+                if (opx[0] < 30 and opx[1] < 30 and opx[2] < 40 and
+                    spx[0] < 30 and spx[1] < 30 and spx[2] < 40):
+                    match_count += 1
+            if match_count >= 50:  # enough dark pixels found
+                best_offset = (0, y_off)
+                break
+
+        print(f"  Auto-detected image offset: X={best_offset[0]} Y={best_offset[1]}")
+        return best_offset[0], best_offset[1], 1.0
+
+    # Fallback: no offset detectable
+    return 0, 0, 1.0
+
+
 def restore_immersive(device: str) -> None:
     """Restore normal display mode."""
     subprocess.run(
@@ -494,8 +550,12 @@ def parse_response(raw: str, names: set[str],
                    agent_mode: bool = False) -> dict[str, tuple[float, float]] | None:
     """Parse VLM response — clean test format or agent action format."""
     if not raw:
+        print(f"  !! EMPTY response from VLM")
         return None
     text = raw.strip()
+
+    # Debug: show response tail (VLM output often ends with JSON)
+    print(f"  VLM response tail (last 600 chars): ...{text[-600:]}")
 
     # Find outermost JSON object or array by brace/bracket matching
     brace_starts = []
@@ -567,21 +627,21 @@ def _parse_agent_response(data, names: set[str]
                            ) -> dict[str, tuple[float, float]] | None:
     """Parse agent-format JSON: list of {"action":"tap","coordinate":[x,y],
     "target_description":"..."} objects.  Match target_description keywords
-    to our known element names."""
+    to our known element names. Also handles {"action":"finish"}."""
     items = data if isinstance(data, list) else [data]
 
-    # Build keyword → element name mapping
-    keyword_map: dict[str, str] = {}
-    for name in names:
-        kw = name  # e.g. "back_btn", "text_input", "left_card"
-        keyword_map[kw] = name
+    # If data is a dict with "action" key, treat as single item
+    if isinstance(data, dict) and "action" in data:
+        items = [data]
 
     result: dict[str, tuple[float, float]] = {}
     for item in items:
         if not isinstance(item, dict):
             continue
         action = item.get("action", "")
-        if action != "tap":
+        if action == "finish":
+            continue  # VLM wants to end — skip
+        if action not in ("tap", "click"):
             continue
         coord = item.get("coordinate")
         if not isinstance(coord, (list, tuple)) or len(coord) < 2:
@@ -591,13 +651,10 @@ def _parse_agent_response(data, names: set[str]
         # Match target_description against element names
         matched = None
         for name in sorted(names, key=len, reverse=True):
-            # Name is like "back_btn" → check if desc mentions "back" or "button"
             parts = name.split("_")
-            # All parts must appear in the description
             if all(p in desc for p in parts):
                 matched = name
                 break
-            # Or the full name appears
             if name in desc:
                 matched = name
                 break
@@ -605,12 +662,17 @@ def _parse_agent_response(data, names: set[str]
         if matched:
             try:
                 result[matched] = (float(coord[0]), float(coord[1]))
+                print(f"    parsed: {matched} -> ({coord[0]}, {coord[1]})")
             except (TypeError, ValueError):
                 pass
 
     missing = names - set(result.keys())
     if missing:
         print(f"  !! VLM missed (agent mode): {sorted(missing)}")
+    if not result:
+        print(f"  !! No elements matched — debug raw items:")
+        for i, item in enumerate(items[:3]):
+            print(f"    item[{i}]: {json.dumps(item, ensure_ascii=False)[:200]}")
     return result
 
 
@@ -663,7 +725,10 @@ def print_report(results: list[TResult], label: str, run_i: int = 1):
               f"({r.gt_x:>6.0f},{r.gt_y:>6.0f})")
 
     n = len(valid)
-    avg = sum(r.delta_norm for r in valid) / n if n > 0 else 999
+    if n == 0:
+        print("  SUMMARY: all elements missed — VLM output format mismatch")
+        return
+    avg = sum(r.delta_norm for r in valid) / n
     hits = sum(1 for r in results if r.hit)
     avg_dev = sum(r.delta_dev for r in valid) / n if n > 0 else 0
 
@@ -766,12 +831,30 @@ def main():
                     sw, sh = img.size
                 print(f"  Device screenshot: {dev_ss} ({sw}x{sh})")
 
-                if (sw, sh) != (DEV_W, DEV_H):
-                    print(f"  NOTE: screenshot resolution ({sw}x{sh}) differs "
-                          f"from generated ({DEV_W}x{DEV_H})")
-                    # Rebuild for actual resolution
+                # Detect offset: where does test image appear in screenshot?
+                off_x, off_y, scale = detect_image_offset(dev_ss, src_path)
+                if off_x != 0 or off_y != 0 or scale != 1.0:
+                    print(f"  Image offset: dx={off_x} dy={off_y} scale={scale:.2f}")
+                    # Adjust element ground truth for the offset
+                    for el in elements:
+                        el.dev_x = round(el.dev_x * scale + off_x)
+                        el.dev_y = round(el.dev_y * scale + off_y)
+                        el.dev_w = round(el.dev_w * scale)
+                        el.dev_h = round(el.dev_h * scale)
+                        el.norm_x = round(el.dev_x / sw * 1000, 1)
+                        el.norm_y = round(el.dev_y / sh * 1000, 1)
                     DEV_W, DEV_H = sw, sh
-                    elements = build_elements(DEV_W, DEV_H)
+                    print(f"\n  Adjusted ground truth (+{off_y}px Y offset):")
+                    print(f"  {'Element':<16s} {'dev(x,y)':>18s} {'norm(x,y)':>18s}")
+                    for el in elements:
+                        print(f"  {el.name:<16s} ({el.dev_x:>5d},{el.dev_y:>5d})     "
+                              f"({el.norm_x:>5.0f},{el.norm_y:>5.0f})")
+                else:
+                    if (sw, sh) != (DEV_W, DEV_H):
+                        print(f"  NOTE: screenshot resolution ({sw}x{sh}) differs "
+                              f"from generated ({DEV_W}x{DEV_H})")
+                        DEV_W, DEV_H = sw, sh
+                        elements = build_elements(DEV_W, DEV_H)
                 test_path = dev_ss
             else:
                 print("  Screenshot failed — falling back to synthetic")
@@ -812,9 +895,10 @@ def main():
         print(f"  Run {run_i}/{args.runs}...")
 
         t0 = time.time()
+        max_tok = 8192 if agent_mode else 4096  # agent prompt needs more room
         raw, reason, _, _ = _call_vlm(
             sys_prompt, build_user_prompt(elements, agent_mode),
-            str(test_path), max_tokens=4096,
+            str(test_path), max_tokens=max_tok,
         )
         elapsed = time.time() - t0
         ok = "OK" if raw else "EMPTY"
