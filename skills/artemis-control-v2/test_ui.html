@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>Coordinate Test</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html, body {
+  width: 3120px; height: 1440px; overflow: hidden;
+  font-family: -apple-system,'PingFang SC','Noto Sans CJK SC',sans-serif;
+  background: #1a1a2e;
+}
+
+/* ── Status Bar ── */
+#status-bar {
+  position: absolute; top: 0; left: 0; right: 0; height: 60px;
+  background: linear-gradient(180deg, #0d0d1a 0%, #111122 100%);
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 0 40px; font-size: 28px; color: #888;
+  border-bottom: 1px solid #1a1a3a;
+}
+
+/* ── Header ── */
+#header {
+  position: absolute; top: 60px; left: 0; right: 0; height: 100px;
+  background: linear-gradient(180deg, #16213e 0%, #1a2744 100%);
+  display: flex; align-items: center; padding: 0 40px;
+  border-bottom: 1px solid #1e2d50;
+}
+
+/* back_button: center at (100, 110) device pixels, 80×80 */
+#back-btn {
+  position: absolute;
+  left: 60px; top: 70px;
+  width: 80px; height: 80px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 44px; color: #e0e0e0; cursor: pointer;
+  background: rgba(255,255,255,0.08); border-radius: 12px;
+}
+
+/* search_icon: center at (3020, 110) device pixels, 80×80 */
+#search-icon {
+  position: absolute;
+  left: 2980px; top: 70px;
+  width: 80px; height: 80px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 40px; color: #e0e0e0;
+}
+
+/* ── Search Input Bar: center at (1560, 230), 2400×80 ── */
+#search-box {
+  position: absolute;
+  left: 360px; top: 180px;
+  width: 2400px; height: 100px;
+  background: linear-gradient(180deg, #2a2a4a 0%, #252545 100%);
+  border-radius: 26px;
+  border: 2px solid #3a3a5a;
+  display: flex; align-items: center; padding: 0 40px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+}
+#search-box .placeholder {
+  font-size: 36px; color: #666;
+}
+#search-box .search-icon-inner {
+  font-size: 36px; margin-right: 24px; color: #888;
+}
+
+/* ── Title ── */
+#app-title {
+  position: absolute; left: 1560px; top: 80px; transform: translateX(-50%);
+  font-size: 40px; font-weight: 600; color: #e0e0e0;
+}
+
+/* ── Card Row (y: 400-700) ── */
+.card {
+  position: absolute; width: 600px; height: 300px;
+  background: linear-gradient(180deg, #0f3460 0%, #0b2550 100%);
+  border-radius: 24px; cursor: pointer;
+  box-shadow: 0 6px 20px rgba(0,0,0,0.4);
+  border: 1px solid #1a3a60;
+  text-align: center;
+  display: flex; flex-direction: column; align-items: center;
+  justify-content: center;
+}
+.card .accent { position: absolute; top: 0; left: 0; right: 0; height: 8px; border-radius: 24px 24px 0 0; }
+.card .title { font-size: 34px; color: #e0e0e0; margin-bottom: 10px; }
+.card .sub { font-size: 26px; color: #888; }
+
+/* left_card: center at (520, 550) */
+#left-card   { left: 220px;  top: 400px; }  /* 220+300=520 */
+#left-card .accent { background: #e94560; }
+
+/* center_card: center at (1560, 550) */
+#center-card { left: 1260px; top: 400px; }
+#center-card .accent { background: #533483; }
+
+/* right_card: center at (2600, 550) */
+#right-card  { left: 2300px; top: 400px; }
+#right-card .accent { background: #00c853; }
+
+/* ── CTA Button: center at (1560, 850), 1800×200 ── */
+#cta-btn {
+  position: absolute;
+  left: 660px; top: 750px;
+  width: 1800px; height: 200px;
+  background: linear-gradient(180deg, #e94560 0%, #c0392b 100%);
+  border-radius: 40px;
+  border: none;
+  box-shadow: 0 12px 32px rgba(233,69,96,0.4);
+  cursor: pointer;
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center;
+}
+#cta-btn .main-text { font-size: 44px; font-weight: 600; color: #fff; }
+#cta-btn .sub-text  { font-size: 28px; color: #ffcccc; margin-top: 6px; }
+
+/* ── Bottom Nav (y: 1320-1440) ── */
+#bottom-nav {
+  position: absolute; bottom: 0; left: 0; right: 0; height: 120px;
+  background: linear-gradient(180deg, #16213e 0%, #0d1a30 100%);
+  display: flex; align-items: center; justify-content: space-around;
+  border-top: 2px solid #1e2d50;
+  box-shadow: 0 -4px 16px rgba(0,0,0,0.3);
+}
+.nav-item {
+  width: 500px; height: 100px;
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center;
+  cursor: pointer; border-radius: 16px;
+  font-size: 28px; color: #888;
+}
+.nav-item .icon { font-size: 38px; margin-bottom: 4px; }
+
+/* ── Map-like content area (visual noise) ── */
+#map-area {
+  position: absolute;
+  top: 310px; left: 0; right: 0; bottom: 120px;
+  background:
+    radial-gradient(circle at 400px 200px, #1a3a20 0%, transparent 60%),
+    radial-gradient(circle at 2400px 400px, #1a2a40 0%, transparent 50%),
+    radial-gradient(circle at 1500px 300px, #2a1a30 0%, transparent 55%),
+    linear-gradient(180deg, #0d1525 0%, #0f1a2e 50%, #0d1525 100%);
+}
+/* Fake roads */
+#map-area::before {
+  content: '';
+  position: absolute; inset: 0;
+  background:
+    linear-gradient(0deg, transparent 48%, rgba(255,255,255,0.04) 48%, rgba(255,255,255,0.04) 52%, transparent 52%),
+    linear-gradient(90deg, transparent 48%, rgba(255,255,255,0.03) 48%, rgba(255,255,255,0.03) 52%, transparent 52%);
+  background-size: 180px 180px, 240px 240px;
+}
+/* Fake route line */
+#map-area::after {
+  content: '';
+  position: absolute;
+  top: 100px; left: 300px;
+  width: 2400px; height: 400px;
+  border: 14px solid #4a90d9;
+  border-radius: 120px;
+  border-color: #4a90d9 transparent transparent transparent;
+  transform: rotate(-8deg);
+  opacity: 0.4;
+}
+</style>
+</head>
+<body>
+
+<div id="status-bar">
+  <span>10:30</span>
+  <span>WiFi &nbsp; ████ &nbsp; 🔋 92%</span>
+</div>
+
+<div id="header">
+  <div id="app-title">地图导航</div>
+</div>
+
+<!-- back_button: center (100, 110) -->
+<div id="back-btn">←</div>
+
+<!-- search_icon: center (3020, 110) -->
+<div id="search-icon">🔍</div>
+
+<!-- text_input: center (1560, 230) -->
+<div id="search-box">
+  <span class="search-icon-inner">🔍</span>
+  <span class="placeholder">请输入目的地</span>
+</div>
+
+<div id="map-area"></div>
+
+<!-- left_card: center (520, 550) -->
+<div id="left-card" class="card">
+  <div class="accent"></div>
+  <div class="title">驾车路线</div>
+  <div class="sub">最快 35 分钟</div>
+</div>
+
+<!-- center_card: center (1560, 550) -->
+<div id="center-card" class="card">
+  <div class="accent"></div>
+  <div class="title">公交路线</div>
+  <div class="sub">约 1 小时 20 分</div>
+</div>
+
+<!-- right_card: center (2600, 550) -->
+<div id="right-card" class="card">
+  <div class="accent"></div>
+  <div class="title">步行路线</div>
+  <div class="sub">约 2 小时 45 分</div>
+</div>
+
+<!-- cta_button: center (1560, 850) -->
+<div id="cta-btn">
+  <span class="main-text">开始导航</span>
+  <span class="sub-text">全程约 35 公里 · 预计 42 分钟</span>
+</div>
+
+<!-- Bottom nav -->
+<div id="bottom-nav">
+  <!-- nav_home: center (520, 1380) -->
+  <div class="nav-item" style="position:absolute; left:270px; top:10px;">
+    <span class="icon">🏠</span>
+    <span>首页</span>
+  </div>
+  <!-- nav_route: center (1310, 1380) - adjusted from 1560 to avoid center overlap -->
+  <div class="nav-item" style="position:absolute; left:1060px; top:10px;">
+    <span class="icon">📍</span>
+    <span>路线</span>
+  </div>
+  <!-- nav_profile: center (2600, 1380) -->
+  <div class="nav-item" style="position:absolute; left:2350px; top:10px;">
+    <span class="icon">👤</span>
+    <span>我的</span>
+  </div>
+</div>
+
+</body>
+</html>

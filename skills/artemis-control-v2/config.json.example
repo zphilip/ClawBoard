@@ -1,0 +1,113 @@
+{
+  "_comment": "Artemis-control skill configuration. See SKILL.md for details.",
+
+  "providers": {
+    "_comment": "Named provider profiles. Add your providers here, then set 'provider' to the name you want active. Switching is a one-word edit.",
+
+    "minimax": {
+      "model": "MiniMax-M3",
+      "base_url": "https://api.minimaxi.com/v1",
+      "api_key": "your-api-key-here"
+    },
+
+    "opencodego": {
+      "_comment": "OpenCode Go gateway — requires x-opencode-* headers.",
+      "model": "deepseek-v4-pro",
+      "base_url": "https://opencode.ai/zen/go/v1",
+      "api_key_env": "OPENCODE_GO_API_KEY",
+      "opencode_headers": true,
+      "thinking": "medium"
+    },
+
+    "opencodezen": {
+      "_comment": "OpenCode Zen gateway — same header requirement, different base URL.",
+      "model": "deepseek-v4-flash-free",
+      "base_url": "https://opencode.ai/zen/v1",
+      "api_key_env": "OPENCODE_API_KEY",
+      "opencode_headers": true,
+      "thinking": "medium"
+    },
+
+    "openai": {
+      "model": "gpt-4o",
+      "base_url": "https://api.openai.com/v1",
+      "api_key_env": "OPENAI_API_KEY"
+    },
+
+    "guiowl": {
+      "model": "gui-owl",
+      "base_url": "http://apicn.aiworm.cn:8809/v1",
+      "api_key": "not-needed"
+    }
+  },
+
+  "provider": "minimax",
+
+  "fallback_provider": {
+    "_comment": "Fallback provider when primary is unavailable or returns persistent errors.",
+    "api_key": "not-needed",
+    "model": "gui-owl",
+    "base_url": "http://apicn.aiworm.cn:8809/v1"
+  },
+
+  "supervisor_provider": {
+    "_comment": "Optional text-only LLM for final task completion verification. Leave model empty to disable.",
+    "model": "",
+    "base_url": "",
+    "api_key": "",
+    "vision": false,
+    "reasoning_split": true
+  },
+
+  "profiles": {
+    "flash": {
+      "_comment": "Fast reactive loop (~3-5s/step). No plan, no safety net, no verification.",
+      "max_turns": 0,
+      "explorer_mode": "flash",
+      "video_recording": false
+    },
+    "pro": {
+      "_comment": "Full multi-agent graph (~15-40s/step). Plan + safety net + checkpoints + verification.",
+      "max_turns": 0,
+      "explorer_mode": "pro",
+      "verification": "final",
+      "video_recording": true
+    }
+  },
+
+  "safety_net": {
+    "_comment": "Pre-execution validation settings.",
+    "xml_enabled": true,
+    "pixel_fallback": true,
+    "retry_attempts": 3,
+    "retry_delay": 0.4,
+    "self_heal_threshold": 120,
+    "xml_cache_ttl": 2.0
+  },
+
+  "context": {
+    "_comment": "History and context management settings.",
+    "max_stored_screenshots": 6,
+    "budget_warn_pct": 0.75,
+    "budget_critical_pct": 0.90,
+    "visual_summaries": true,
+    "transcript_enabled": false
+  },
+
+  "memory": {
+    "_comment": "Cross-run memory (Phase 0). mode: 'off' | 'record' | 'enforce'. 'record' observes actions + builds task plans without changing behaviour; 'enforce' additionally fast-paths cached actions and replays stored plans (skips VLM).",
+    "enabled": true,
+    "mode": "record",
+    "min_score": 0.7,
+    "plan_min_successes": 1,
+    "max_replays_per_state": 2,
+    "store_dir": ""
+  },
+
+  "explorer": {
+    "_comment": "Element indexer settings.",
+    "max_indexed_elements": 80,
+    "ocr_enabled": false,
+    "ocr_provider": ""
+  }
+}
