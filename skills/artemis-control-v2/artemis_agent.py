@@ -401,6 +401,17 @@ def load_skill_config() -> dict:
                     _log(f"[config] using fallback_provider → model={defaults['model']}")
                 else:
                     _log(f"[config] no provider matched, using hardcoded defaults")
+
+            # Carry non-provider sections (profiles / context / memory /
+            # safety_net / explorer / supervisor_provider and any top-level
+            # scalars) through to _CONFIG.  Without this they are silently
+            # dropped and every run would use hard-coded defaults (e.g. the
+            # memory section would never take effect).
+            for _key, _value in raw.items():
+                if _key in ("providers", "provider", "fallback_provider"):
+                    continue
+                if _key not in defaults:
+                    defaults[_key] = _value
         else:
             _log(f"[config] config file not found at {_CONFIG_PATH}")
     except json.JSONDecodeError as e:
