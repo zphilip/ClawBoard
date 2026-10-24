@@ -805,6 +805,15 @@ def _run_reactive_fallback(
                     similarity_note = "\n⚠️  NOTE: The screen is pixel-identical to the previous step. Your last action had NO visible effect. Try a DIFFERENT approach.\n"
                 _log(f"[loop] Screen unchanged detected (diff={diff}px)")
 
+        # Action-type loop detection — warn VLM about repeated same actions
+        action_loop_note = ""
+        if len(last_action_types) >= 4 and len(set(last_action_types[-4:])) == 1:
+            repeated = last_action_types[-1]
+            count = len([a for a in last_action_types if a == repeated])
+            action_loop_note = (f"\n⚠️  ACTION LOOP: {repeated} ×{count} consecutive. "
+                               f"Screen may not be changing. Use a DIFFERENT action type.\n")
+            _log(f"[LOOP] Same action {repeated} repeated {count} consecutive times")
+
         # 3. Determine action via VLM (plan-guided)
         t_vlm = time.time()
         action_type, action_args, action_desc, plan_updates, notes_updates = (
@@ -813,6 +822,7 @@ def _run_reactive_fallback(
                 str(vlm_shot_path), actions, plan_text, history=history,
                 scratchpad=scratchpad, similarity_note=similarity_note,
                 targeted_indices=targeted_indices,
+                action_loop_note=action_loop_note,
             )
         )
         _log(f"[timing] step {step} VLM decide  → {time.time() - t_vlm:.2f}s  (total {time.time() - t_step:.2f}s)")
@@ -909,9 +919,26 @@ def _run_reactive_fallback(
         # 9. Check task completion
         if action_type == "finish":
             if plan_text and not is_task_complete(plan_text):
-                remaining = parse_plan(plan_text).pending_count
+                snapshot = parse_plan(plan_text)
+                if snapshot.pending_count == 0:
+                    # No [ ] milestones left — auto-complete remaining [/] items
+                    _log("VLM says finish with 0 pending milestones — auto-completing plan")
+                    new_lines = []
+                    for line in plan_text.splitlines():
+                        m = re.match(r'^(\s*)- \[/\]\s', line)
+                        if m:
+                            line = m.group(1) + '- [x] ' + line[m.end():]
+                        new_lines.append(line)
+                    plan_text = "\n".join(new_lines)
+                    if is_task_complete(plan_text):
+                        _log("Plan auto-completed successfully")
+                        status = "success"
+                        end_reason = "flash_completed_auto"
+                        break
+                remaining = snapshot.pending_count
                 _log(f"VLM says finish but {remaining} milestones still pending — continuing")
-                continue
+                if remaining > 0:
+                    continue
             status = "success"
             end_reason = "flash_completed"
             break
@@ -1117,6 +1144,15 @@ def _run_plan_guided_fallback(
                     similarity_note = "\n⚠️  NOTE: The screen is pixel-identical to the previous step. Your last action had NO visible effect. Try a DIFFERENT approach.\n"
                 _log(f"[loop] Screen unchanged detected (diff={diff}px)")
 
+        # Action-type loop detection — warn VLM about repeated same actions
+        action_loop_note = ""
+        if len(last_action_types) >= 4 and len(set(last_action_types[-4:])) == 1:
+            repeated = last_action_types[-1]
+            count = len([a for a in last_action_types if a == repeated])
+            action_loop_note = (f"\n⚠️  ACTION LOOP: {repeated} ×{count} consecutive. "
+                               f"Screen may not be changing. Use a DIFFERENT action type.\n")
+            _log(f"[LOOP] Same action {repeated} repeated {count} consecutive times")
+
         # ── 2. Operator Node: decide next action ─────────────────────
         t_oper = time.time()
         action_type, action_args, action_desc, plan_updates, notes_updates = _decide_action_plan_guided(
@@ -1124,6 +1160,7 @@ def _run_plan_guided_fallback(
             str(vlm_shot_path), actions, plan_text, history=history,
             scratchpad=scratchpad, similarity_note=similarity_note,
             targeted_indices=targeted_indices,
+            action_loop_note=action_loop_note,
         )
         _log(f"[timing] step {step} operator    → {time.time() - t_oper:.2f}s  (total {time.time() - t_step:.2f}s)")
 
@@ -1134,9 +1171,26 @@ def _run_plan_guided_fallback(
         # If operator says finish, check milestone completion
         if action_type == "finish":
             if plan_text and not is_task_complete(plan_text):
-                pending = parse_plan(plan_text).pending_count
+                snapshot = parse_plan(plan_text)
+                if snapshot.pending_count == 0:
+                    # No [ ] milestones left — auto-complete remaining [/] items
+                    _log("Operator says finish with 0 pending milestones — auto-completing plan")
+                    new_lines = []
+                    for line in plan_text.splitlines():
+                        m = re.match(r'^(\s*)- \[/\]\s', line)
+                        if m:
+                            line = m.group(1) + '- [x] ' + line[m.end():]
+                        new_lines.append(line)
+                    plan_text = "\n".join(new_lines)
+                    if is_task_complete(plan_text):
+                        _log("Plan auto-completed successfully")
+                        status = "success"
+                        end_reason = "operator_finished_auto"
+                        break
+                pending = snapshot.pending_count
                 _log(f"Operator says finish but {pending} milestones pending — continuing")
-                continue
+                if pending > 0:
+                    continue
             status = "success"
             end_reason = "operator_finished"
             break
@@ -2063,6 +2117,7 @@ def _decide_action_plan_guided(
     scratchpad: dict[str, str] | None = None,
     similarity_note: str = "",
     targeted_indices: dict[int, int] | None = None,
+    action_loop_note: str = "",
 ) -> tuple[str, dict, str, dict | None, dict | None]:
     """Call the VLM with screenshot + element index + plan context to decide the next action.
 
@@ -2178,6 +2233,7 @@ def _decide_action_plan_guided(
         + (f"\n{loop_text}" if loop_text else "")
         + (f"\n{incident_text}" if incident_text else "")
         + (f"\n{similarity_note}" if similarity_note else "")
+        + (f"\n{action_loop_note}" if action_loop_note else "")
         + targeting_rules
         + f"\n\n{index_text}"
     )
