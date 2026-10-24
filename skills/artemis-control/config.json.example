@@ -2,10 +2,22 @@
   "_comment": "Artemis-control skill configuration. See SKILL.md for details.",
 
   "provider": {
-    "_comment": "Primary VLM provider for Artemis. Supports Gemini, GPT-4o, Claude, Qwen-VL.",
-    "api_key": "your-api-key-here",
+    "_comment": "Primary VLM provider for Artemis. Supports any OpenAI-compatible /v1/chat/completions endpoint.",
+
     "model": "MiniMax-M3",
-    "base_url": "https://api.minimaxi.com/v1"
+    "base_url": "https://api.minimaxi.com/v1",
+    "api_key": "your-api-key-here",
+
+    "api_key_env": "",
+    "_api_key_env": "Optional: name of an env var that holds the API key. When set, the key is read from the"
+                   " environment instead of from this file — safer than storing secrets on disk.",
+    "opencode_headers": false,
+    "_opencode_headers": "Set to true for gateways that require x-opencode-session / x-opencode-request /"
+                        " x-opencode-client headers (OpenCode Zen / Go, some private proxies)."
+                        " Leave false for standard OpenAI-compatible providers.",
+
+    "_vlm_timeout": "HTTP timeout in seconds for each VLM call (default: 120)",
+    "_vlm_retries": "Number of retry attempts on transient failures (default: 2)"
   },
 
   "fallback_provider": {
@@ -13,6 +25,36 @@
     "api_key": "not-needed",
     "model": "gui-owl",
     "base_url": "http://apicn.aiworm.cn:8809/v1"
+  },
+
+  "_examples": {
+    "_comment": "Example configurations for common providers. Copy the relevant block into 'provider' above.",
+
+    "opencode_go": {
+      "model": "deepseek-v4-pro",
+      "base_url": "https://opencode.ai/zen/go/v1",
+      "api_key_env": "OPENCODE_GO_API_KEY",
+      "opencode_headers": true
+    },
+
+    "opencode_zen": {
+      "model": "deepseek-v4-flash-free",
+      "base_url": "https://opencode.ai/zen/v1",
+      "api_key_env": "OPENCODE_API_KEY",
+      "opencode_headers": true
+    },
+
+    "minimax": {
+      "model": "MiniMax-M3",
+      "base_url": "https://api.minimaxi.com/v1",
+      "api_key": "your-api-key-here"
+    },
+
+    "openai": {
+      "model": "gpt-4o",
+      "base_url": "https://api.openai.com/v1",
+      "api_key_env": "OPENAI_API_KEY"
+    }
   },
 
   "supervisor_provider": {

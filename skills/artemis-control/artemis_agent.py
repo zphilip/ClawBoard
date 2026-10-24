@@ -42,6 +42,7 @@ import threading
 import time
 import urllib.request
 import urllib.error
+import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -296,6 +297,49 @@ Trust elements with Chinese labels matching your task (e.g. "搜索" for search)
 ```
 Copy milestone text from the plan shown in the user message. Omit if no change."""
 
+
+# ── OpenCode gateway support ────────────────────────────────────────────
+
+# One session id per agent run so opencode gateways (zen, go) can do sticky
+# routing / cache affinity across calls.  Generated once at import time.
+_SESSION_ID = uuid.uuid4().hex[:12]
+
+# The x-opencode-client value the probe script confirmed works.
+_OPENCODE_CLIENT = "vscode-copilot-chat"
+_OPENCODE_UA = "everything-copilot-chat/artemis-control"
+
+
+def _resolve_api_key(cfg: dict) -> str:
+    """Return the API key: prefer env var *api_key_env* over inline *api_key*."""
+    env_var = cfg.get("api_key_env", "").strip()
+    if env_var and os.environ.get(env_var):
+        return os.environ[env_var]
+    return cfg.get("api_key", "")
+
+
+def _build_openai_headers(cfg: dict, api_key: str) -> dict[str, str]:
+    """Build the HTTP headers for an OpenAI-compatible POST request.
+
+    When ``opencode_headers`` is set in config, injects the 4 extra headers
+    (x-opencode-session, x-opencode-request, x-opencode-client, User-Agent)
+    that opencode gateways require.  Otherwise returns vanilla Bearer-auth
+    headers.
+    """
+    headers = {
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+        "Authorization": f"Bearer {api_key}",
+    }
+    if cfg.get("opencode_headers"):
+        headers.update({
+            "x-opencode-session": _SESSION_ID,
+            "x-opencode-request": uuid.uuid4().hex,
+            "x-opencode-client": _OPENCODE_CLIENT,
+            "User-Agent": _OPENCODE_UA,
+        })
+    return headers
+
+
 def load_skill_config() -> dict:
     """Load config.json, falling back to hard-coded defaults."""
     global _CONFIG
@@ -306,27 +350,41 @@ def load_skill_config() -> dict:
         "api_key": "not-needed",
         "model": "gui-owl",
         "base_url": "http://apicn.aiworm.cn:8809/v1",
+        "api_key_env": "",
+        "opencode_headers": False,
     }
 
     try:
         if _CONFIG_PATH.exists():
             raw = json.loads(_CONFIG_PATH.read_text(encoding="utf-8"))
             provider = raw.get("provider", {})
-            if provider and provider.get("api_key", "").strip():
-                defaults["api_key"] = provider["api_key"].strip()
+            # A provider is "active" when it has an api_key (inline or env var)
+            # or a non-default model set.  opencode-go uses api_key_env + an
+            # empty inline api_key, so the old api_key-alone check missed it.
+            if provider and (
+                provider.get("api_key", "").strip()
+                or provider.get("api_key_env", "").strip()
+                or provider.get("model", "").strip()
+            ):
+                defaults["api_key"] = provider.get("api_key", "").strip()
                 defaults["model"] = provider.get("model", defaults["model"])
                 defaults["base_url"] = provider.get("base_url", defaults["base_url"])
+                defaults["api_key_env"] = provider.get("api_key_env", "").strip()
+                defaults["opencode_headers"] = bool(provider.get("opencode_headers"))
             else:
                 fb = raw.get("fallback_provider", {})
                 if fb:
                     defaults["api_key"] = fb.get("api_key", defaults["api_key"])
                     defaults["model"] = fb.get("model", defaults["model"])
                     defaults["base_url"] = fb.get("base_url", defaults["base_url"])
+                    defaults["api_key_env"] = fb.get("api_key_env", "").strip()
+                    defaults["opencode_headers"] = bool(fb.get("opencode_headers"))
     except Exception as e:
         _trace(f"[config] Failed to load config.json: {e}")
 
     _CONFIG = defaults
-    _trace(f"[config] model={defaults['model']} base_url={defaults['base_url']} api_key={'<set>' if defaults['api_key'] else '<empty>'}")
+    api_key_display = "env:" + defaults["api_key_env"] if defaults["api_key_env"] else ("<set>" if defaults["api_key"] else "<empty>")
+    _trace(f"[config] model={defaults['model']} base_url={defaults['base_url']} api_key={api_key_display} opencode_headers={defaults['opencode_headers']}")
     return defaults
 
 
@@ -1352,7 +1410,7 @@ def _call_vlm(system_prompt: str, user_prompt: str, image_path: str,
     """
     cfg = load_skill_config()
     base_url = cfg["base_url"].rstrip("/")
-    api_key = cfg["api_key"]
+    api_key = _resolve_api_key(cfg)
     model = cfg["model"]
 
     actual_timeout = timeout if timeout is not None else cfg.get("vlm_timeout", 120)
@@ -1383,10 +1441,7 @@ def _call_vlm(system_prompt: str, user_prompt: str, image_path: str,
             req = urllib.request.Request(
                 url,
                 data=json.dumps(body).encode("utf-8"),
-                headers={
-                    "Content-Type": "application/json",
-                    "Authorization": f"Bearer {api_key}",
-                },
+                headers=_build_openai_headers(cfg, api_key),
                 method="POST",
             )
             t_call = time.time()
@@ -1657,12 +1712,12 @@ def _call_text_llm(system_prompt: str, user_prompt: str,
     if sup_model and sup_url:
         # Use dedicated supervisor provider
         base_url = sup_url.rstrip("/")
-        api_key = sup_key or cfg.get("api_key", "")
+        api_key = sup_key or _resolve_api_key(cfg)
         model = sup_model
     else:
         # Fall back to primary VLM provider (text-only, no image)
         base_url = cfg["base_url"].rstrip("/")
-        api_key = cfg["api_key"]
+        api_key = _resolve_api_key(cfg)
         model = cfg["model"]
 
     body = {
@@ -1682,10 +1737,7 @@ def _call_text_llm(system_prompt: str, user_prompt: str,
             req = urllib.request.Request(
                 url,
                 data=json.dumps(body).encode("utf-8"),
-                headers={
-                    "Content-Type": "application/json",
-                    "Authorization": f"Bearer {api_key}",
-                },
+                headers=_build_openai_headers(cfg, api_key),
                 method="POST",
             )
             with urllib.request.urlopen(req, timeout=actual_timeout) as resp:
