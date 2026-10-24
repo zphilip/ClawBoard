@@ -377,7 +377,7 @@ def load_skill_config() -> dict:
                 defaults["base_url"] = provider.get("base_url", defaults["base_url"])
                 defaults["api_key_env"] = provider.get("api_key_env", "").strip()
                 defaults["opencode_headers"] = bool(provider.get("opencode_headers"))
-                defaults["thinking"] = bool(provider.get("thinking"))
+                defaults["thinking"] = provider.get("thinking", False)
             else:
                 fb = raw.get("fallback_provider", {})
                 if fb:

@@ -17,7 +17,7 @@
       "base_url": "https://opencode.ai/zen/go/v1",
       "api_key_env": "OPENCODE_GO_API_KEY",
       "opencode_headers": true,
-      "thinking": true
+      "thinking": "medium"
     },
 
     "opencodezen": {
@@ -26,7 +26,7 @@
       "base_url": "https://opencode.ai/zen/v1",
       "api_key_env": "OPENCODE_API_KEY",
       "opencode_headers": true,
-      "thinking": true
+      "thinking": "medium"
     },
 
     "openai": {
