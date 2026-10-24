@@ -352,12 +352,18 @@ def load_skill_config() -> dict:
         "base_url": "http://apicn.aiworm.cn:8809/v1",
         "api_key_env": "",
         "opencode_headers": False,
+        "thinking": False,
     }
 
     try:
         if _CONFIG_PATH.exists():
             raw = json.loads(_CONFIG_PATH.read_text(encoding="utf-8"))
+            # ── Resolve provider: string → named profile, dict → inline ──
             provider = raw.get("provider", {})
+            if isinstance(provider, str):
+                registry = raw.get("providers", {})
+                provider = registry.get(provider, {})
+            # ── Apply provider to defaults ──
             # A provider is "active" when it has an api_key (inline or env var)
             # or a non-default model set.  opencode-go uses api_key_env + an
             # empty inline api_key, so the old api_key-alone check missed it.
@@ -371,6 +377,7 @@ def load_skill_config() -> dict:
                 defaults["base_url"] = provider.get("base_url", defaults["base_url"])
                 defaults["api_key_env"] = provider.get("api_key_env", "").strip()
                 defaults["opencode_headers"] = bool(provider.get("opencode_headers"))
+                defaults["thinking"] = bool(provider.get("thinking"))
             else:
                 fb = raw.get("fallback_provider", {})
                 if fb:
@@ -379,6 +386,7 @@ def load_skill_config() -> dict:
                     defaults["base_url"] = fb.get("base_url", defaults["base_url"])
                     defaults["api_key_env"] = fb.get("api_key_env", "").strip()
                     defaults["opencode_headers"] = bool(fb.get("opencode_headers"))
+                    defaults["thinking"] = bool(fb.get("thinking"))
     except Exception as e:
         _trace(f"[config] Failed to load config.json: {e}")
 
@@ -1433,6 +1441,8 @@ def _call_vlm(system_prompt: str, user_prompt: str, image_path: str,
         "max_tokens": max_tokens,
         "temperature": 0.1,
     }
+    if cfg.get("thinking"):
+        body["thinking"] = {"type": "enabled"}
 
     url = f"{base_url}/chat/completions"
     last_error = ""
@@ -1729,6 +1739,8 @@ def _call_text_llm(system_prompt: str, user_prompt: str,
         "max_tokens": max_tokens,
         "temperature": 0.1,
     }
+    if cfg.get("thinking"):
+        body["thinking"] = {"type": "enabled"}
 
     url = f"{base_url}/chat/completions"
     last_error = ""
