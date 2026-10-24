@@ -362,7 +362,16 @@ def load_skill_config() -> dict:
             provider = raw.get("provider", {})
             if isinstance(provider, str):
                 registry = raw.get("providers", {})
+                if provider not in registry:
+                    _log(f"[config] provider '{provider}' not found in providers registry (keys: {sorted(registry.keys())})")
                 provider = registry.get(provider, {})
+                # Warn about common JSON key typos (trailing spaces, etc.)
+                for key in list(provider.keys()):
+                    stripped = key.strip()
+                    if stripped != key:
+                        _log(f"[config] WARNING: provider key {key!r} has whitespace — did you mean {stripped!r}?")
+                        provider[stripped] = provider.pop(key)
+                _log(f"[config] resolved named provider '{raw.get('provider')}' → model={provider.get('model','?')} base_url={provider.get('base_url','?')}")
             # ── Apply provider to defaults ──
             # A provider is "active" when it has an api_key (inline or env var)
             # or a non-default model set.  opencode-go uses api_key_env + an
@@ -378,6 +387,7 @@ def load_skill_config() -> dict:
                 defaults["api_key_env"] = provider.get("api_key_env", "").strip()
                 defaults["opencode_headers"] = bool(provider.get("opencode_headers"))
                 defaults["thinking"] = provider.get("thinking", False)
+                _log(f"[config] using provider → model={defaults['model']} base_url={defaults['base_url']}")
             else:
                 fb = raw.get("fallback_provider", {})
                 if fb:
@@ -387,7 +397,16 @@ def load_skill_config() -> dict:
                     defaults["api_key_env"] = fb.get("api_key_env", "").strip()
                     defaults["opencode_headers"] = bool(fb.get("opencode_headers"))
                     defaults["thinking"] = bool(fb.get("thinking"))
+                    _log(f"[config] using fallback_provider → model={defaults['model']}")
+                else:
+                    _log(f"[config] no provider matched, using hardcoded defaults")
+        else:
+            _log(f"[config] config file not found at {_CONFIG_PATH}")
+    except json.JSONDecodeError as e:
+        _log(f"[config] JSON parse error in {_CONFIG_PATH}: {e}")
+        _trace(f"[config] JSON parse error: {e}")
     except Exception as e:
+        _log(f"[config] Failed to load config.json: {e}")
         _trace(f"[config] Failed to load config.json: {e}")
 
     _CONFIG = defaults
