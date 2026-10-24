@@ -119,7 +119,13 @@ class MemoryRuntime:
         self.log = log_fn
 
         self.mode = str(self.cfg.get("mode", "record")).lower()
-        self.enabled = bool(self.cfg.get("enabled", False)) and self.mode != "off"
+        # ``enabled`` is optional: when omitted, infer it from ``mode`` so a
+        # config that only sets mode=record/enforce still activates memory.
+        explicit_enabled = self.cfg.get("enabled", None)
+        if explicit_enabled is None:
+            self.enabled = self.mode != "off"
+        else:
+            self.enabled = bool(explicit_enabled) and self.mode != "off"
         self.enforce = self.mode == "enforce"
         self.min_score = float(self.cfg.get("min_score", 0.7))
         self.plan_min_successes = int(self.cfg.get("plan_min_successes", 1))
@@ -144,7 +150,8 @@ class MemoryRuntime:
         self._intent_key = build_canonical_intent_key(self.instruction)
         if not self.enabled:
             self.log(
-                f"[MEMORY] disabled — enabled={self.cfg.get('enabled')!r} "
+                f"[MEMORY] disabled — enabled={self.enabled} "
+                f"cfg.enabled={self.cfg.get('enabled')!r} "
                 f"mode={self.mode!r} (no recording, no replay)"
             )
             return
