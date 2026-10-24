@@ -697,6 +697,8 @@ def _run_reactive_fallback(
     last_coords: list[str] = []
     last_action_types: list[str] = []  # Track recent action types for loop detection
     previous_post_shot: Optional[Path] = None  # For screenshot similarity detection
+    targeted_indices: dict[int, int] = {}  # element index → tap count (anti-loop)
+    last_target_info: tuple[int, str] | None = None  # (idx, desc) of last targeted element
     indexer = ElementIndexer(adb_path=adb_path, device=device)
     history = HistoryStore(
         max_stored_screenshots=_ctx_cfg.get("max_stored_screenshots", 6),
@@ -792,7 +794,15 @@ def _run_reactive_fallback(
         if previous_post_shot and previous_post_shot.exists():
             diff = screenshot_diff_count(str(previous_post_shot), str(shot_path))
             if diff <= 3:
-                similarity_note = f"\n⚠️  NOTE: The screen is pixel-identical to the previous step. Your last action had NO visible effect. Try a DIFFERENT approach.\n"
+                if last_target_info:
+                    tidx, tdesc = last_target_info
+                    similarity_note = (
+                        f"\n⚠️  STALE SCREEN: Element [{tidx}] '{tdesc}' was tapped → "
+                        f"screen is pixel-identical. Do NOT target [{tidx}] again. "
+                        f"Use a DIFFERENT element, coordinate tap, or action (type/swipe/back).\n"
+                    )
+                else:
+                    similarity_note = "\n⚠️  NOTE: The screen is pixel-identical to the previous step. Your last action had NO visible effect. Try a DIFFERENT approach.\n"
                 _log(f"[loop] Screen unchanged detected (diff={diff}px)")
 
         # 3. Determine action via VLM (plan-guided)
@@ -802,6 +812,7 @@ def _run_reactive_fallback(
                 instruction, step, elements, None, last_coords,
                 str(vlm_shot_path), actions, plan_text, history=history,
                 scratchpad=scratchpad, similarity_note=similarity_note,
+                targeted_indices=targeted_indices,
             )
         )
         _log(f"[timing] step {step} VLM decide  → {time.time() - t_vlm:.2f}s  (total {time.time() - t_step:.2f}s)")
@@ -822,6 +833,11 @@ def _run_reactive_fallback(
         t_exec = time.time()
         _execute_action_adb(adb_path, device, action_type, action_args, elements=elements)
         actions.append(action_desc)
+        # Anti-loop: track which element indices we've targeted
+        if action_type == "tap" and isinstance(action_args.get("target"), int):
+            tidx = action_args["target"]
+            targeted_indices[tidx] = targeted_indices.get(tidx, 0) + 1
+            last_target_info = (tidx, action_desc)
         time.sleep(1.2)
         _log(f"[timing] step {step} execute     → {time.time() - t_exec:.2f}s  (total {time.time() - t_step:.2f}s)")
 
@@ -995,6 +1011,8 @@ def _run_plan_guided_fallback(
     last_budget_warning_pct = 0.0
     scratchpad: dict[str, str] = {}  # Persistent cross-turn notes
     previous_post_shot: Optional[Path] = None  # For screenshot similarity detection
+    targeted_indices: dict[int, int] = {}  # element index → tap count (anti-loop)
+    last_target_info: tuple[int, str] | None = None  # (idx, desc) of last targeted element
     safety_net = SafetyNet(SafetyNetConfig(
         adb_path=adb_path,
         device=device,
@@ -1088,7 +1106,15 @@ def _run_plan_guided_fallback(
         if previous_post_shot and previous_post_shot.exists():
             diff = screenshot_diff_count(str(previous_post_shot), str(shot_path))
             if diff <= 3:
-                similarity_note = f"\n⚠️  NOTE: The screen is pixel-identical to the previous step. Your last action had NO visible effect. Try a DIFFERENT approach.\n"
+                if last_target_info:
+                    tidx, tdesc = last_target_info
+                    similarity_note = (
+                        f"\n⚠️  STALE SCREEN: Element [{tidx}] '{tdesc}' was tapped → "
+                        f"screen is pixel-identical. Do NOT target [{tidx}] again. "
+                        f"Use a DIFFERENT element, coordinate tap, or action (type/swipe/back).\n"
+                    )
+                else:
+                    similarity_note = "\n⚠️  NOTE: The screen is pixel-identical to the previous step. Your last action had NO visible effect. Try a DIFFERENT approach.\n"
                 _log(f"[loop] Screen unchanged detected (diff={diff}px)")
 
         # ── 2. Operator Node: decide next action ─────────────────────
@@ -1097,6 +1123,7 @@ def _run_plan_guided_fallback(
             instruction, step, elements, incident_tracker, last_coords,
             str(vlm_shot_path), actions, plan_text, history=history,
             scratchpad=scratchpad, similarity_note=similarity_note,
+            targeted_indices=targeted_indices,
         )
         _log(f"[timing] step {step} operator    → {time.time() - t_oper:.2f}s  (total {time.time() - t_step:.2f}s)")
 
@@ -1193,6 +1220,11 @@ def _run_plan_guided_fallback(
         t_exec = time.time()
         _execute_action_adb(adb_path, device, action_type, action_args, elements=elements)
         actions.append(action_desc)
+        # Anti-loop: track which element indices we've targeted
+        if action_type == "tap" and isinstance(action_args.get("target"), int):
+            tidx = action_args["target"]
+            targeted_indices[tidx] = targeted_indices.get(tidx, 0) + 1
+            last_target_info = (tidx, action_desc)
         time.sleep(1.2)
         _log(f"[timing] step {step} execute     → {time.time() - t_exec:.2f}s  (total {time.time() - t_step:.2f}s)")
 
@@ -1807,6 +1839,15 @@ def _get_text_llm_caller():
     return None
 
 
+# ── Helper: build description with element index so history is traceable ──
+def _desc_with_idx(prefix: str, idx, text: str) -> str:
+    """Return ``[N] prefix text`` for element-targeted actions.
+    The index is always included so the VLM can match PREVIOUS ACTIONS
+    to the current element list."""
+    base = text if text else f"element [{idx}]"
+    return f"[{idx}] {prefix} {base}"
+
+
 def _decide_action_fallback(
     instruction: str,
     step: int,
@@ -1953,7 +1994,7 @@ def _decide_action_fallback(
         el_center = _resolve_target(target_idx, elements)
         if el_center is not None:
             x, y = el_center[0], el_center[1]
-            desc = target_desc if target_desc else f"tap element [{target_idx}]"
+            desc = _desc_with_idx("TAP", target_idx, target_desc)
             return ("tap", {"coordinate": [x, y], "target": target_idx}, desc)
         # Fallback to raw coordinate
         coord = parsed.get("coordinate", [0, 0])
@@ -1966,7 +2007,7 @@ def _decide_action_fallback(
         el_center = _resolve_target(target_idx, elements)
         if el_center is not None:
             x, y = el_center[0], el_center[1]
-            desc = target_desc if target_desc else f"long_press element [{target_idx}]"
+            desc = _desc_with_idx("LONG_PRESS", target_idx, target_desc)
             return ("long_press", {"coordinate": [x, y], "target": target_idx}, desc)
         coord = parsed.get("coordinate", [0, 0])
         x, y = int(coord[0]), int(coord[1])
@@ -2021,6 +2062,7 @@ def _decide_action_plan_guided(
     history=None,
     scratchpad: dict[str, str] | None = None,
     similarity_note: str = "",
+    targeted_indices: dict[int, int] | None = None,
 ) -> tuple[str, dict, str, dict | None, dict | None]:
     """Call the VLM with screenshot + element index + plan context to decide the next action.
 
@@ -2033,6 +2075,8 @@ def _decide_action_plan_guided(
     """
     if previous_actions is None:
         previous_actions = []
+    if targeted_indices is None:
+        targeted_indices = {}
 
     # Compute normalized coordinate space early — needed for element centers
     norm_w, norm_h = _get_norm_dimensions(screenshot_path)
@@ -2040,12 +2084,23 @@ def _decide_action_plan_guided(
     if elements:
         MAX_ELEMENTS = 80
         shown = elements[:MAX_ELEMENTS]
+        # Build the header with a per-element "already tried" marker
+        stuck_any = any(targeted_indices.get(el.index, 0) >= 2 for el in shown)
         lines = [f"UI ELEMENTS ({len(shown)} shown of {len(elements)} indexed):"]
+        if stuck_any:
+            lines.append("⚠️  Elements marked ALREADY TAPPED N× were tried and the screen did NOT change. DO NOT target them.")
         for el in shown:
-            lines.append(el.render_index_line())
+            marker = ""
+            tcnt = targeted_indices.get(el.index, 0)
+            if tcnt >= 2:
+                marker = f"  ⚠️ ALREADY TAPPED {tcnt}× — DO NOT TARGET"
+            elif tcnt == 1:
+                marker = "  (tapped once)"
+            lines.append(el.render_index_line() + marker)
         index_text = "\n".join(lines)
     else:
         index_text = "UI ELEMENTS: (unavailable — use visual analysis)"
+        stuck_any = False
 
     # Previous actions
     prev_text = ""
@@ -2094,6 +2149,25 @@ def _decide_action_plan_guided(
     # Assemble system prompt: model-aware base + plan tracking
     system_prompt = _get_operator_system_prompt() + "\n\n" + build_operator_plan_system_prompt()
 
+    # TARGETING RULES — placed BEFORE the element list so the VLM reads them first.
+    # When stuck, the rules explicitly forbid targeting already-tried elements.
+    if stuck_any:
+        targeting_rules = (
+            "\n\n## TARGETING RULES — STUCK DETECTED"
+            "\n1. Elements marked 'ALREADY TAPPED N×' have been tried and the screen DID NOT CHANGE."
+            "\n   DO NOT output target=N for these elements."
+            "\n2. Pick a DIFFERENT element, use a coordinate tap, or try type/swipe/back."
+            "\n3. If no other element makes sense, output {\"action\":\"finish\"} or {\"action\":\"fail\"}."
+        )
+    else:
+        targeting_rules = (
+            "\n\n## TARGETING RULES"
+            "\n1. If the target IS in the element list → output {\"action\":\"tap\",\"target\":N}"
+            "\n   using the INDEX number. The system resolves to exact pixel. Do NOT guess coordinates."
+            "\n2. ONLY use {\"action\":\"tap\",\"coordinate\":[x,y]} if NO element matches your target"
+            "\n   (custom-drawn UI, Canvas, WebView, Flutter, or splash ads not in the list)."
+        )
+
     user_prompt = (
         f"TASK: {instruction}\n"
         + (f"{history_block}\n" if history_block else "")
@@ -2104,16 +2178,8 @@ def _decide_action_plan_guided(
         + (f"\n{loop_text}" if loop_text else "")
         + (f"\n{incident_text}" if incident_text else "")
         + (f"\n{similarity_note}" if similarity_note else "")
-        + f"\n{index_text}"
-        + (
-            "\n\n## TARGETING RULES (MANDATORY)"
-            "\n1. If the target IS in the element list → output {\"action\":\"tap\",\"target\":N}"
-            "\n   using the INDEX number. The system resolves to exact pixel. Do NOT guess coordinates."
-            "\n2. ONLY use {\"action\":\"tap\",\"coordinate\":[x,y]} if NO element matches your target"
-            "\n   (custom-drawn UI, Canvas, WebView, Flutter, or splash ads not in the list)."
-            "\n3. Using coordinate when the element IS indexed WILL cause a miss — the system"
-            "\n   requires target=N for precise pixel lookup from the accessibility tree."
-        )
+        + targeting_rules
+        + f"\n\n{index_text}"
     )
 
     user_prompt += (
@@ -2185,7 +2251,7 @@ def _decide_action_plan_guided(
         el_center = _resolve_target_plan(target_idx, elements)
         if el_center is not None:
             x, y = el_center[0], el_center[1]
-            desc = target_desc if target_desc else f"tap element [{target_idx}]"
+            desc = _desc_with_idx("TAP", target_idx, target_desc)
             return ("tap", {"coordinate": [x, y], "target": target_idx}, desc, plan_updates, notes_updates)
         coord = parsed.get("coordinate", [0, 0])
         x, y = int(coord[0]), int(coord[1])
@@ -2197,7 +2263,7 @@ def _decide_action_plan_guided(
         el_center = _resolve_target_plan(target_idx, elements)
         if el_center is not None:
             x, y = el_center[0], el_center[1]
-            desc = target_desc if target_desc else f"long_press element [{target_idx}]"
+            desc = _desc_with_idx("LONG_PRESS", target_idx, target_desc)
             return ("long_press", {"coordinate": [x, y], "target": target_idx}, desc, plan_updates, notes_updates)
         coord = parsed.get("coordinate", [0, 0])
         x, y = int(coord[0]), int(coord[1])
