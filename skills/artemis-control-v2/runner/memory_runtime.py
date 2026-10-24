@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import time
+from collections import Counter
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -100,6 +101,19 @@ def find_element_by_rid(elements: list, rid: str):
     return None
 
 
+def derive_foreground_pkg(elements: list) -> str:
+    """Infer the foreground package from the element tree when dumpsys returns
+    nothing (artemis ScreenElements carry their own ``package`` field)."""
+    counts = Counter(
+        (getattr(e, "package", "") or "")
+        for e in elements
+        if (getattr(e, "package", "") or "")
+    )
+    if not counts:
+        return ""
+    return counts.most_common(1)[0][0]
+
+
 class MemoryRuntime:
     def __init__(
         self,
@@ -175,12 +189,16 @@ class MemoryRuntime:
     # Per-step state
     # ------------------------------------------------------------------ #
 
-    def describe_state(self, elements: list) -> dict[str, Any]:
-        fg_pkg = ""
+    def fg_pkg(self, elements: list) -> str:
+        """Foreground package: dumpsys first, element-majority fallback."""
         try:
-            fg_pkg = self.indexer.get_foreground_app() or ""
+            pkg = self.indexer.get_foreground_app() or ""
         except Exception:
-            fg_pkg = ""
+            pkg = ""
+        return pkg or derive_foreground_pkg(elements)
+
+    def describe_state(self, elements: list) -> dict[str, Any]:
+        fg_pkg = self.fg_pkg(elements)
         ui_summary = ui_summary_from_elements(elements)
         ui_fp = build_ui_fingerprint(fg_pkg, ui_summary)
         comp = build_ui_components(fg_pkg, ui_summary)
@@ -373,11 +391,9 @@ class MemoryRuntime:
             self.execute_fn(step.action_type, args, elements)
             time.sleep(1.0)
 
-            post_pkg = ""
-            try:
-                post_pkg = self.indexer.get_foreground_app() or ""
-            except Exception:
-                post_pkg = ""
+            # Post-step verification uses foreground package as the signal.
+            # dumpsys first, element-majority fallback when it returns empty.
+            post_pkg = self.fg_pkg(elements)
 
             if step.action_type not in _VERIFY_SKIP_TYPES and step.post_pkg and post_pkg:
                 if post_pkg != step.post_pkg:

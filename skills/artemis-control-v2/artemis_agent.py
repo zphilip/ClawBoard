@@ -920,14 +920,9 @@ def _run_reactive_fallback(
                     ti = action_args["target"]
                     if 0 <= ti < len(elements):
                         target_rid = getattr(elements[ti], "resource_id", "") or ""
-                post_pkg = ""
-                try:
-                    post_pkg = indexer.get_foreground_app() or ""
-                except Exception:
-                    post_pkg = ""
                 mem.record_action(
                     mem_state, action_type, action_args, action_desc,
-                    target_rid=target_rid, post_pkg=post_pkg,
+                    target_rid=target_rid, post_pkg=mem.fg_pkg(elements),
                 )
             except Exception as e:
                 _debug(f"memory record error: {e}")
@@ -1405,14 +1400,9 @@ def _run_plan_guided_fallback(
                     ti = action_args["target"]
                     if 0 <= ti < len(elements):
                         target_rid = getattr(elements[ti], "resource_id", "") or ""
-                post_pkg = ""
-                try:
-                    post_pkg = indexer.get_foreground_app() or ""
-                except Exception:
-                    post_pkg = ""
                 mem.record_action(
                     mem_state, action_type, action_args, action_desc,
-                    target_rid=target_rid, post_pkg=post_pkg,
+                    target_rid=target_rid, post_pkg=mem.fg_pkg(elements),
                 )
             except Exception as e:
                 _debug(f"memory record error: {e}")
