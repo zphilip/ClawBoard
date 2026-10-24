@@ -47,6 +47,16 @@ _FASTPATH_TYPES = {"tap", "type", "system_button", "open", "swipe"}
 #: (open launches vary by splash/ad; system buttons navigate anywhere).
 _VERIFY_SKIP_TYPES = {"open", "system_button", "swipe", "type"}
 
+#: Descriptions emitted when the Operator's VLM output was broken and the
+#: agent fell back to ``system_button: back``.  These are not real decisions
+#: and must not be learned as plan steps (a stray "back" is harmful on replay).
+_VLM_FAIL_DESC_PREFIXES = (
+    "no JSON in response",
+    "VLM parse error",
+    "truncated:",
+    "VLM failure",
+)
+
 
 def ui_summary_from_elements(elements: list, max_nodes: int = 40) -> str:
     """Render artemis ``ScreenElement`` objects into the exact line format
@@ -319,6 +329,12 @@ class MemoryRuntime:
         if not self.enabled:
             return
         if action_type in ("finish", "wait"):
+            return
+        if action_desc and action_desc.startswith(_VLM_FAIL_DESC_PREFIXES):
+            self.log(
+                f"[MEMORY] skip recording fallback step ({action_type}) — "
+                f"desc={str(action_desc)[:48]!r} (VLM failure, not a real decision)"
+            )
             return
         args = dict(action_args)
         if action_type == "tap" and target_rid and "_rid" not in args:
