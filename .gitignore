@@ -16,3 +16,6 @@ config/display_type.txt
 
 # skill configs (contain API keys — seed from .example via sync script)
 skills/*/config.json
+
+# cross-run memory runtime data (device-local, never commit)
+skills/*/memory/data/
