@@ -1700,11 +1700,24 @@ def _call_vlm(system_prompt: str, user_prompt: str, image_path: str,
             t_call = time.time()
             with urllib.request.urlopen(req, timeout=actual_timeout) as resp:
                 result = json.loads(resp.read().decode("utf-8"))
+                if not result.get("choices"):
+                    raise ValueError("no choices in VLM response")
                 choice = result["choices"][0]
-                _trace(f"[vlm] API round-trip: {time.time() - t_call:.2f}s  model={model}  tokens={len(choice['message']['content'])}")
-                return choice["message"]["content"], choice.get("finish_reason", "unknown"), norm_w, norm_h
+                message = choice.get("message") or {}
+                content = message.get("content")
+                # Thinking models (glm / qwen / deepseek-reasoner) occasionally
+                # return content=null and put the answer in reasoning_content
+                # only — crashing on len(None) otherwise.
+                if content is None:
+                    content = message.get("reasoning_content") or ""
+                content = str(content)
+                if not content.strip():
+                    raise ValueError("empty assistant content")
+                finish = choice.get("finish_reason", "unknown")
+                _trace(f"[vlm] API round-trip: {time.time() - t_call:.2f}s  model={model}  tokens={len(content)}")
+                return content, finish, norm_w, norm_h
         except (urllib.error.URLError, TimeoutError, ConnectionResetError,
-                OSError) as e:
+                OSError, ValueError) as e:
             last_error = str(e)
             if attempt < actual_retries:
                 delay = (attempt + 1) * 1.5
