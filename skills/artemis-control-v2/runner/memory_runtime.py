@@ -143,15 +143,26 @@ class MemoryRuntime:
         self._intent_sig = build_intent_signature(self.instruction)
         self._intent_key = build_canonical_intent_key(self.instruction)
         if not self.enabled:
-            self.log("[MEMORY] disabled (mode=off)")
+            self.log(
+                f"[MEMORY] disabled — enabled={self.cfg.get('enabled')!r} "
+                f"mode={self.mode!r} (no recording, no replay)"
+            )
             return
         data_dir = self.skill_dir / "memory" / "data"
         data_dir.mkdir(parents=True, exist_ok=True)
         self._record_store = JsonlMemoryStore(data_dir / "memory.jsonl")
         self._policy = MemoryPolicy(self._record_store, min_score=self.min_score)
         self._plan_store = ArtemisPlanStore(data_dir / "plans.jsonl")
-        self.log(f"[MEMORY] enabled mode={self.mode} intent_key={self._intent_key}")
-        self.log(f"[MEMORY] action_store={data_dir / 'memory.jsonl'} plan_store={data_dir / 'plans.jsonl'}")
+        self.log(
+            f"[MEMORY] enabled mode={self.mode} min_score={self.min_score} "
+            f"plan_min_successes={self.plan_min_successes} intent_key={self._intent_key}"
+        )
+        self.log(
+            "[MEMORY] ENFORCE: plan-replay + action-fastpath active"
+            if self.enforce
+            else "[MEMORY] RECORD-ONLY: observing (no replay) — set mode=enforce to reuse"
+        )
+        self.log(f"[MEMORY] stores → {data_dir / 'memory.jsonl'} | {data_dir / 'plans.jsonl'}")
 
     # ------------------------------------------------------------------ #
     # Per-step state
@@ -182,8 +193,13 @@ class MemoryRuntime:
 
     def fastpath(self, state: dict[str, Any], elements: list) -> Optional[tuple[str, dict, str]]:
         """Return (action_type, action_args, desc) on a confident cache hit,
-        or None to fall through to the VLM."""
-        if not (self.enforce and self._policy):
+        or None to fall through to the VLM.
+
+        In ``record`` mode this performs a read-only assessment and logs the
+        would-be hit/miss (handy for tuning ``min_score`` before flipping to
+        ``enforce``), but never returns an action.
+        """
+        if not self.enabled or not self._policy:
             return None
         dinput = DecisionInput(
             state=StateSignature(
@@ -204,10 +220,25 @@ class MemoryRuntime:
         except Exception as e:
             self.log(f"[MEMORY] fastpath decision error ({e!r}) — fallback to VLM")
             return None
+
+        score = (out.diagnostics or {}).get("score", None)
+        score_s = f"{score:.2f}" if isinstance(score, (int, float)) else "-"
+
         if out.action is None:
+            if self.enforce:
+                self.log(f"[MEMORY] fastpath miss ({out.reason}) — VLM will decide")
+            else:
+                self.log(f"[MEMORY] (record) assess miss ({out.reason})")
             return None
 
         action_type = out.action.action_type
+        if not self.enforce:
+            self.log(
+                f"[MEMORY] (record) assess WOULD-HIT score={score_s} "
+                f"action={action_type} (record mode never replays)"
+            )
+            return None
+
         args = dict(out.action.arguments or {})
 
         # Tap drift-safety: re-locate by stored resource-id when present;
@@ -243,6 +274,7 @@ class MemoryRuntime:
             f"{action_type}({args})"[:120]
         )
         desc = f"{desc} [memory]"
+        self.log(f"[MEMORY] fastpath HIT score={score_s} action={action_type}")
         return action_type, args, desc
 
     # ------------------------------------------------------------------ #
@@ -284,6 +316,11 @@ class MemoryRuntime:
                 ))
             except Exception as e:
                 self.log(f"[MEMORY] record action error ({e!r})")
+
+        self.log(
+            f"[MEMORY] recorded step: {action_type} "
+            f"rid={target_rid or '-'} post={post_pkg or '-'}"
+        )
 
         # Collect a clean plan step (without the internal _rid key).
         self._collected.append(ArtemisPlanStep(

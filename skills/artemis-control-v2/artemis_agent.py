@@ -869,7 +869,7 @@ def _run_reactive_fallback(
         # 3. Determine action — memory fastpath first, then VLM (plan-guided)
         t_vlm = time.time()
         mem_state = mem.describe_state(elements) if mem.enabled else None
-        fast = mem.fastpath(mem_state, elements) if mem.enforce else None
+        fast = mem.fastpath(mem_state, elements)
         if fast:
             action_type, action_args, action_desc = fast
             plan_updates = None
@@ -1262,7 +1262,7 @@ def _run_plan_guided_fallback(
         # ── 2. Operator Node: memory fastpath first, then VLM ────────────
         t_oper = time.time()
         mem_state = mem.describe_state(elements) if mem.enabled else None
-        fast = mem.fastpath(mem_state, elements) if mem.enforce else None
+        fast = mem.fastpath(mem_state, elements)
         if fast:
             action_type, action_args, action_desc = fast
             plan_updates = None
