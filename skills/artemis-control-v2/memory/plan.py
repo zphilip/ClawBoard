@@ -35,6 +35,11 @@ class ArtemisPlanStep:
     description: str = ""
     target_rid: str = ""
     post_pkg: str = ""
+    # Tier 1.5 compound-key fields — recorded so replay can relocate an
+    # element that had no resource-id at record time.
+    class_name: str = ""
+    text: str = ""
+    content_desc: str = ""
     success_count: int = 0
     fail_count: int = 0
 
@@ -57,6 +62,9 @@ def _step_from_dict(d: dict[str, Any]) -> ArtemisPlanStep:
         description=d.get("description", ""),
         target_rid=d.get("target_rid", ""),
         post_pkg=d.get("post_pkg", ""),
+        class_name=d.get("class_name", ""),
+        text=d.get("text", ""),
+        content_desc=d.get("content_desc", ""),
         success_count=int(d.get("success_count", 0)),
         fail_count=int(d.get("fail_count", 0)),
     )

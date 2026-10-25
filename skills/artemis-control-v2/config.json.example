@@ -51,7 +51,7 @@
   },
 
   "supervisor_provider": {
-    "_comment": "Optional text-only LLM for final task completion verification. Leave model empty to disable.",
+    "_comment": "Optional text-only LLM for the Checker (final verification) and Diagnoser. When model/base_url are set they are used verbatim; when empty, the primary provider is used as a text-only request (and the Checker falls back to the VLM on failure).",
     "model": "",
     "base_url": "",
     "api_key": "",
@@ -95,13 +95,22 @@
   },
 
   "memory": {
-    "_comment": "Cross-run memory (Phase 0). mode: 'off' | 'record' | 'enforce'. 'record' observes actions + builds task plans without changing behaviour; 'enforce' additionally fast-paths cached actions and replays stored plans (skips VLM).",
+    "_comment": "Cross-run memory. mode: 'off' | 'record' | 'enforce'. 'record' observes actions + builds task plans without changing behaviour; 'enforce' additionally fast-paths cached actions and replays stored plans (skips VLM). Phase 1 notes persist the VLM scratchpad + task plan across runs under memory/notes/.",
     "enabled": true,
     "mode": "record",
     "min_score": 0.7,
     "plan_min_successes": 1,
     "max_replays_per_state": 2,
-    "store_dir": ""
+    "store_dir": "",
+    "notes_dir": "",
+    "persist_scratchpad": true,
+    "scratchpad_max_keys": 50
+  },
+
+  "diagnoser": {
+    "_comment": "Lazy failure diagnoser (Phase 2, Pro profile only). Fires once per failure burst when the validator/safety-net stack 'consecutive_failures' consecutive blocks. Uses supervisor_provider as a text LLM when set, else a deterministic hint.",
+    "enabled": true,
+    "consecutive_failures": 2
   },
 
   "explorer": {

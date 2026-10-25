@@ -37,6 +37,20 @@ from memory import (
     build_ui_fingerprint,
     plan_is_healthy,
 )
+from runner.notes import (
+    append_note_content,
+    list_notes_info,
+    read_note_content,
+    save_note_content,
+    update_note_content,
+)
+
+#: Scratchpad persists as a JSON blob (not a .md note) so ``list_notes_keys``
+#: never picks it up as a user-facing note.
+_SCRATCHPAD_FILENAME = "_scratchpad.json"
+
+#: Maximum scratchpad keys kept across runs (oldest dropped when exceeded).
+_DEFAULT_SCRATCHPAD_MAX_KEYS = 50
 
 #: Action types safe to replay verbatim (tap re-locates by element; the rest
 #: are idempotent / launch / button presses).  ``finish``/``wait``/``long_press``
@@ -111,6 +125,84 @@ def find_element_by_rid(elements: list, rid: str):
     return None
 
 
+def _center_dist_sq(el, coord) -> float:
+    """Squared pixel distance from an element center to a historical coord."""
+    if not coord:
+        return 0.0
+    try:
+        cx, cy = el.center[0], el.center[1]
+        return (cx - coord[0]) ** 2 + (cy - coord[1]) ** 2
+    except (TypeError, IndexError, AttributeError):
+        return float("inf")
+
+
+def find_element_by_compound(
+    elements: list,
+    *,
+    rid: str = "",
+    class_name: str = "",
+    text: str = "",
+    content_desc: str = "",
+    coord: list | None = None,
+):
+    """Relocate a recorded element with a multi-level compound key (Tier 1.5).
+
+    Tries, in stability order:
+      1. resource-id        — exact, then short (drop package prefix)
+      2. class_name + text  — e.g. android.widget.Button + "登录"; matches
+                              ``el.text`` OR ``el.content_desc`` carrying it
+      3. content_desc       — accessibility label only
+    Ties at levels 2/3 break by nearest center to the historical coordinate,
+    so when the screen scrolled the right instance of a repeated label wins.
+
+    Returns the matched element or None.
+    """
+    if not elements:
+        return None
+
+    # Level 1 — resource id (exact, then short)
+    if rid:
+        for el in elements:
+            if el.resource_id == rid:
+                return el
+        short = rid.rsplit("/", 1)[-1] if "/" in rid else rid
+        for el in elements:
+            el_short = (
+                el.resource_id.rsplit("/", 1)[-1]
+                if "/" in (el.resource_id or "") else el.resource_id
+            )
+            if short and el_short == short:
+                return el
+
+    # Level 2 — class + text
+    if class_name and text:
+        cls_short = class_name.rsplit(".", 1)[-1] if class_name else ""
+        cands = []
+        for el in elements:
+            el_cls = (getattr(el, "class_name", "") or "").rsplit(".", 1)[-1]
+            el_label = (
+                (getattr(el, "text", "") or "").strip()
+                or (getattr(el, "content_desc", "") or "").strip()
+            )
+            if cls_short and el_cls != cls_short:
+                continue
+            if el_label and el_label == text:
+                cands.append(el)
+        if cands:
+            return min(cands, key=lambda e: _center_dist_sq(e, coord))
+
+    # Level 3 — content-desc only
+    if content_desc:
+        cands = [
+            el for el in elements
+            if (getattr(el, "content_desc", "") or "") == content_desc
+        ]
+        if cands:
+            return min(cands, key=lambda e: _center_dist_sq(e, coord))
+
+    return None
+
+
 def derive_foreground_pkg(elements: list) -> str:
     """Infer the foreground package from the element tree when dumpsys returns
     nothing (artemis ScreenElements carry their own ``package`` field)."""
@@ -158,6 +250,7 @@ class MemoryRuntime:
         self._record_store: JsonlMemoryStore | None = None
         self._policy: MemoryPolicy | None = None
         self._plan_store: ArtemisPlanStore | None = None
+        self._notes_dir: Path | None = None
         self._intent_sig = ""
         self._intent_key = ""
         self._collected: list[ArtemisPlanStep] = []
@@ -184,6 +277,17 @@ class MemoryRuntime:
         self._record_store = JsonlMemoryStore(data_dir / "memory.jsonl")
         self._policy = MemoryPolicy(self._record_store, min_score=self.min_score)
         self._plan_store = ArtemisPlanStore(data_dir / "plans.jsonl")
+
+        # Persistent notes (Phase 1) — default <skill>/memory/notes.
+        notes_override = str(self.cfg.get("notes_dir", "") or "").strip()
+        self._notes_dir = (
+            Path(notes_override).expanduser()
+            if notes_override
+            else self.skill_dir / "memory" / "notes"
+        )
+        self._notes_dir.mkdir(parents=True, exist_ok=True)
+        self.log(f"[MEMORY] notes → {self._notes_dir}")
+
         self.log(
             f"[MEMORY] enabled mode={self.mode} min_score={self.min_score} "
             f"plan_min_successes={self.plan_min_successes} intent_key={self._intent_key}"
@@ -276,17 +380,25 @@ class MemoryRuntime:
 
         args = dict(out.action.arguments or {})
 
-        # Tap drift-safety: re-locate by stored resource-id when present;
-        # otherwise skip (a stale pixel coordinate is unsafe to replay).
+        # Tap drift-safety: re-locate by compound key (Tier 1.5) — resource-id
+        # first, then class+text, then content-desc — instead of replaying a
+        # stale pixel coordinate.
         if action_type == "tap":
             rid = args.pop("_rid", "") or ""
-            if rid:
-                el = find_element_by_rid(elements, rid)
+            cls_name = args.pop("_cls", "") or ""
+            txt = args.pop("_text", "") or ""
+            cd = args.pop("_cd", "") or ""
+            if rid or cls_name or cd:
+                el = find_element_by_compound(
+                    elements, rid=rid, class_name=cls_name,
+                    text=txt, content_desc=cd, coord=args.get("coordinate"),
+                )
                 if el is not None:
                     args["coordinate"] = [el.center[0], el.center[1]]
                     args["target"] = getattr(el, "index", None)
                 else:
-                    self.log(f"[MEMORY] tap fastpath: element '{rid}' not on screen — skip")
+                    key = rid or f"{cls_name}+{txt}" or cd
+                    self.log(f"[MEMORY] tap fastpath: element '{key}' not on screen — skip")
                     return None
             elif not args.get("coordinate"):
                 self.log("[MEMORY] tap fastpath: no coordinate and no element id — skip")
@@ -324,8 +436,14 @@ class MemoryRuntime:
         action_desc: str,
         target_rid: str = "",
         post_pkg: str = "",
+        target_el=None,
     ) -> None:
-        """Record a successful action to the action store + task plan."""
+        """Record a successful action to the action store + task plan.
+
+        ``target_el`` (optional ScreenElement) supplies the Tier 1.5 compound
+        key (class_name / text / content_desc) for tap steps, so replay can
+        relocate an element that had no resource-id.
+        """
         if not self.enabled:
             return
         if action_type in ("finish", "wait"):
@@ -336,9 +454,20 @@ class MemoryRuntime:
                 f"desc={str(action_desc)[:48]!r} (VLM failure, not a real decision)"
             )
             return
+        cls_name = getattr(target_el, "class_name", "") or ""
+        txt = getattr(target_el, "text", "") or ""
+        cd = getattr(target_el, "content_desc", "") or ""
+
         args = dict(action_args)
-        if action_type == "tap" and target_rid and "_rid" not in args:
-            args["_rid"] = target_rid
+        if action_type == "tap":
+            if target_rid and "_rid" not in args:
+                args["_rid"] = target_rid
+            if cls_name and "_cls" not in args:
+                args["_cls"] = cls_name
+            if txt and "_text" not in args:
+                args["_text"] = txt
+            if cd and "_cd" not in args:
+                args["_cd"] = cd
 
         if self._record_store and action_type in _FASTPATH_TYPES:
             try:
@@ -360,16 +489,21 @@ class MemoryRuntime:
 
         self.log(
             f"[MEMORY] recorded step: {action_type} "
-            f"rid={target_rid or '-'} post={post_pkg or '-'}"
+            f"rid={target_rid or '-'} cls={cls_name or '-'} "
+            f"text={txt[:24] or '-'} post={post_pkg or '-'}"
         )
 
-        # Collect a clean plan step (without the internal _rid key).
+        # Collect a clean plan step (internal _rid/_cls/_text/_cd keys stripped;
+        # compound key lives in the dedicated ArtemisPlanStep fields instead).
         self._collected.append(ArtemisPlanStep(
             action_type=action_type,
-            action_args={k: v for k, v in args.items() if k != "_rid"},
+            action_args={k: v for k, v in args.items() if not k.startswith("_")},
             description=action_desc,
             target_rid=target_rid,
             post_pkg=post_pkg,
+            class_name=cls_name,
+            text=txt,
+            content_desc=cd,
         ))
 
     # ------------------------------------------------------------------ #
@@ -394,13 +528,26 @@ class MemoryRuntime:
         for i, step in enumerate(plan.steps):
             elements = self.indexer.build_index()
             args = dict(step.action_args)
-            if step.action_type == "tap" and step.target_rid:
-                el = find_element_by_rid(elements, step.target_rid)
+            if step.action_type == "tap":
+                el = find_element_by_compound(
+                    elements,
+                    rid=step.target_rid,
+                    class_name=step.class_name,
+                    text=step.text,
+                    content_desc=step.content_desc,
+                    coord=args.get("coordinate"),
+                )
                 if el is not None:
                     args["coordinate"] = [el.center[0], el.center[1]]
                     args["target"] = getattr(el, "index", None)
                 elif not args.get("coordinate"):
-                    self.log(f"[MEMORY] replay step {i}: target '{step.target_rid}' missing — abort")
+                    key = (
+                        step.target_rid
+                        or f"{step.class_name}+{step.text}"
+                        or step.content_desc
+                        or "-"
+                    )
+                    self.log(f"[MEMORY] replay step {i}: target '{key}' missing — abort")
                     self._plan_store.increment_plan_fail(self._intent_key)
                     return {"status": "failed", "at_step": i}
 
@@ -474,3 +621,74 @@ class MemoryRuntime:
             self.log(f"[MEMORY] plan upserted: intent={self._intent_key} steps={len(plan.steps)} successes={plan.success_count}")
         except Exception as e:
             self.log(f"[MEMORY] plan upsert error ({e!r})")
+
+    # ------------------------------------------------------------------ #
+    # Persistent notes (Phase 1)
+    # ------------------------------------------------------------------ #
+
+    def _notes_base(self) -> Path:
+        """Base dir for the notes store.  Raises if memory is disabled."""
+        if self._notes_dir is None:
+            raise RuntimeError("notes unavailable — memory is disabled")
+        return self._notes_dir
+
+    def save_note(self, key: str, content: str) -> None:
+        """Create / overwrite a persistent .md note (``task_plan`` → task_plan.md)."""
+        save_note_content(self._notes_base(), key, content)
+
+    def read_note(self, key: str, start_line: int | None = None,
+                  end_line: int | None = None) -> str:
+        """Read a note, optionally a 1-indexed inclusive line range."""
+        return read_note_content(self._notes_base(), key, start_line, end_line)
+
+    def append_note(self, key: str, content: str) -> None:
+        """Append text to a note (created if missing)."""
+        append_note_content(self._notes_base(), key, content)
+
+    def update_note(self, key: str, target: str, replacement: str) -> bool:
+        """Replace the first occurrence of *target*; False if not found."""
+        return update_note_content(self._notes_base(), key, target, replacement)
+
+    def list_notes(self) -> dict[str, int]:
+        """Return {note_key: line_count} for every stored .md note."""
+        return list_notes_info(self._notes_base())
+
+    # ── Cross-run scratchpad (JSON blob, separate from .md notes) ───────
+
+    def load_scratchpad(self) -> dict[str, str]:
+        """Reload the scratchpad persisted by a previous run."""
+        if self._notes_dir is None:
+            return {}
+        f = self._notes_dir / _SCRATCHPAD_FILENAME
+        if not f.exists():
+            return {}
+        try:
+            data = json.loads(f.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                return {}
+            return {str(k): str(v) for k, v in data.items() if v}
+        except Exception as e:
+            self.log(f"[MEMORY] scratchpad load error ({e!r})")
+            return {}
+
+    def persist_scratchpad(self, scratchpad: dict[str, str]) -> None:
+        """Merge + persist the in-run scratchpad for the next run."""
+        if self._notes_dir is None:
+            return
+        if not self.cfg.get("persist_scratchpad", True):
+            return
+        if not scratchpad:
+            return
+        try:
+            self._notes_dir.mkdir(parents=True, exist_ok=True)
+            f = self._notes_dir / _SCRATCHPAD_FILENAME
+            merged = self.load_scratchpad()
+            merged.update({str(k): str(v) for k, v in scratchpad.items() if v})
+            max_keys = int(self.cfg.get("scratchpad_max_keys", _DEFAULT_SCRATCHPAD_MAX_KEYS) or _DEFAULT_SCRATCHPAD_MAX_KEYS)
+            if max_keys > 0 and len(merged) > max_keys:
+                # Drop oldest keys (dict preserves insertion order).
+                merged = dict(list(merged.items())[-max_keys:])
+            f.write_text(json.dumps(merged, ensure_ascii=False, indent=2), encoding="utf-8")
+            self.log(f"[MEMORY] scratchpad persisted ({len(merged)} keys)")
+        except Exception as e:
+            self.log(f"[MEMORY] scratchpad persist error ({e!r})")

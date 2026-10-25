@@ -19,3 +19,9 @@ skills/*/config.json
 
 # cross-run memory runtime data (device-local, never commit)
 skills/*/memory/data/
+skills/*/memory/notes/
+skills/*/memory/reports/
+
+# per-run trace logs written by artemis_agent.py
+skills/*/skill_trace.log
+skills/*/screenshots/

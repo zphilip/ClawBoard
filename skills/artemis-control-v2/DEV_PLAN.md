@@ -383,10 +383,10 @@ and **real LangGraph runtime** (out of scope by design).
 
 ### 8.3 Further improvement items remaining (backlog, ordered)
 
-1. **Tier 1.5 — compound-key tap relocalization** (free, deterministic): when a
-   recorded tap has no `resource_id`, relocate by
+1. **Tier 1.5 — compound-key tap relocalization** ✅ **done (2026-10-25)**:
+   when a recorded tap has no `resource_id`, relocate by
    `resource_id` → `(class_name + text)` → `content_desc` with a centre-distance
-   tiebreak. Removes the last pixel-rigid path on replay. (See note in chat.)
+   tiebreak. Removes the last pixel-rigid path on replay.
 2. **Phase 3 — async thread + real visual summaries**: `StepRecord.summary` is a
    `"[pruned]"` stub today; add a stdlib `threading` task to summarize the
    post-step screenshot and flush notes off the hot path.
@@ -414,3 +414,35 @@ and **real LangGraph runtime** (out of scope by design).
 - `runner/post_run_report.py`: Markdown from `actions[]` + plan + validator/
   safety stats; emitted as a `report` result field.
 - Config: `supervisor_provider.model` set (text LLM), `profiles.pro.verification=final`.
+
+### 8.5 Implemented (2026-10-25 — Tier 1.5 + Phase 1 + Phase 2)
+
+- **Tier 1.5 compound-key relocalization** — `ArtemisPlanStep` now stores
+  `class_name` / `text` / `content_desc`; `find_element_by_compound` relocates by
+  `resource_id` → `class_name + text` → `content_desc` (centre-distance tiebreak).
+  Used by both plan-replay and action-fastpath; `record_action` captures the
+  compound key + persists `_cls/_text/_cd` into the action store. Tests:
+  `TestCompoundRelocalize`.
+- **Phase 1 persistent notes** — `runner/notes.py` ports the upstream 5 ops
+  (`save/read/append/update/list`, `task_plan` → `task_plan.md`) over
+  `memory/notes/` (cross-run, gitignored). `MemoryRuntime` exposes
+  `save_note/read_note/append_note/update_note/list_notes` and persists the
+  in-run `scratchpad` as `_scratchpad.json` (capped at `scratchpad_max_keys`);
+  both loops reload it at start and flush at end via `_finalize_run`.
+- **Phase 2a lazy Diagnoser** — `runner/diagnoser.py`: text-LLM when a caller is
+  given, deterministic fallback otherwise; fires once per failure burst when
+  `incident_tracker.consecutive_failures >= diagnoser.consecutive_failures`
+  (default 2). Wired into Pro via `_maybe_diagnose()` at validator-reject and
+  safety-net-block sites; emits a `diagnosis` event, feeds `recovery_hints` back
+  into the next Operator prompt, and saves `notes`.
+- **Phase 2b enable Checker** — `_get_text_llm_caller()` now always returns the
+  text caller (uses `supervisor_provider` when set, else primary provider
+  text-only; `call_checker` still VLM-falls-back). `config.json.example`
+  documents `supervisor_provider` for Checker + Diagnoser.
+- **Phase 2c deterministic report** — `runner/post_run_report.py` builds
+  Markdown post-mortem (goal / outcome / plan / actions / validator stats /
+  checker verdict / timing) with no LLM, written under `memory/reports/`.
+  Both loops call `_finalize_run` and attach `debug.post_run_report`.
+
+Still open (unchanged): Phase 3 async+visual summaries; checker skip-on-replay;
+plan-grammar completeness; doc/config drift; Tier 2/3 matching escalation.

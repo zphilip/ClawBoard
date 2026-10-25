@@ -65,6 +65,8 @@ from runner.planner import (
 from runner.validator import call_validator
 from runner.checker import call_checker
 from runner.memory_runtime import MemoryRuntime
+from runner.diagnoser import call_diagnoser
+from runner.post_run_report import build_post_run_report, write_report
 
 # ---------------------------------------------------------------------------
 # Global log handles
@@ -662,6 +664,76 @@ def run_artemis_agent(
     return _run_reactive_fallback(instruction, adb_path, device, max_steps, timeout, profile=profile)
 
 
+def _finalize_run(
+    *,
+    mem,
+    scratchpad: dict[str, str],
+    plan_text: str,
+    profile: str,
+    instruction: str,
+    status: str,
+    end_reason: str,
+    step: int,
+    actions: list[str],
+    start: float,
+    validator_stats: dict | None = None,
+    incident_count: int = 0,
+    checker: dict | None = None,
+    memory_replay: bool = False,
+) -> Path | None:
+    """Persist cross-run notes + write the deterministic post-run report.
+
+    The report replaces upstream's LLM post-mortem agents; the notes persist
+    the VLM-written scratchpad and the final task plan across runs.
+    """
+    try:
+        mem.persist_scratchpad(scratchpad)
+        if plan_text:
+            mem.save_note("task_plan", plan_text)
+    except Exception as e:
+        _debug(f"notes persist error: {e}")
+
+    try:
+        report_md = build_post_run_report(
+            profile=profile,
+            instruction=instruction,
+            status=status,
+            end_reason=end_reason,
+            steps=step,
+            actions=actions,
+            plan_text=plan_text,
+            validator_stats=validator_stats,
+            incident_count=incident_count,
+            checker=checker,
+            memory_replay=memory_replay,
+            elapsed_s=time.time() - start,
+        )
+        report_path = write_report(Path(__file__).parent, profile, report_md)
+        _emit({"type": "post_run_report", "profile": profile,
+               "path": str(report_path), "report": report_md})
+        _log(f"[report] post-run report → {report_path}")
+        return report_path
+    except Exception as e:
+        _debug(f"post-run report error: {e}")
+        return None
+
+
+def _render_notes_for_diagnoser(mem) -> str:
+    """Render persisted notes for the Diagnoser prompt (bounded)."""
+    try:
+        info = mem.list_notes()
+    except Exception:
+        return ""
+    parts: list[str] = []
+    for key, _lines in sorted(info.items()):
+        try:
+            content = mem.read_note(key, 1, 40)
+        except Exception:
+            continue
+        parts.append(f"### {key}\n{content}")
+    return "\n\n".join(parts)
+
+
 def _memory_replay_shortcut(screenshots_dir: Path, profile: str, replay: dict) -> dict:
     """Build the success result emitted when a stored plan was replayed."""
     try:
@@ -775,6 +847,13 @@ def _run_reactive_fallback(
     plan_generated = False
     last_budget_warning_pct = 0.0  # Avoid repeated warnings for same level
     scratchpad: dict[str, str] = {}  # Persistent cross-turn notes
+
+    # Reload the scratchpad persisted by previous runs (Phase 1 notes).
+    if mem.enabled:
+        persisted = mem.load_scratchpad()
+        if persisted:
+            scratchpad.update(persisted)
+            _log(f"[MEMORY] loaded persisted scratchpad ({len(persisted)} keys)")
 
     # ── Phase 1: Generate Plan ──────────────────────────────────────────
     _emit_progress(0, "planning", "Flash: generating task plan...")
@@ -926,14 +1005,17 @@ def _run_reactive_fallback(
         # 5.5 Memory: record the successful step (action + task plan)
         if mem.enabled:
             try:
+                target_el = None
                 target_rid = ""
                 if action_type == "tap" and isinstance(action_args.get("target"), int):
                     ti = action_args["target"]
                     if 0 <= ti < len(elements):
-                        target_rid = getattr(elements[ti], "resource_id", "") or ""
+                        target_el = elements[ti]
+                        target_rid = getattr(target_el, "resource_id", "") or ""
                 mem.record_action(
                     mem_state, action_type, action_args, action_desc,
                     target_rid=target_rid, post_pkg=mem.fg_pkg(elements),
+                    target_el=target_el,
                 )
             except Exception as e:
                 _debug(f"memory record error: {e}")
@@ -1033,6 +1115,13 @@ def _run_reactive_fallback(
     # Memory: persist task plan on success
     mem.on_run_end(status)
 
+    # Persist cross-run notes + write the deterministic post-run report.
+    report_path = _finalize_run(
+        mem=mem, scratchpad=scratchpad, plan_text=plan_text,
+        profile="flash", instruction=instruction, status=status,
+        end_reason=end_reason, step=step, actions=actions, start=start,
+    )
+
     # Cleanup
     try:
         if screenshots_dir.exists():
@@ -1059,6 +1148,7 @@ def _run_reactive_fallback(
             "plan_milestones_total": plan_total,
             "plan_milestones_done": plan_done,
             "history_steps": history.step_count,
+            "post_run_report": str(report_path) if report_path else None,
         },
         "plan": {
             "text": plan_text,
@@ -1130,6 +1220,20 @@ def _run_plan_guided_fallback(
     previous_post_shot: Optional[Path] = None  # For screenshot similarity detection
     targeted_indices: dict[int, int] = {}  # element index → tap count (anti-loop)
     last_target_info: tuple[int, str] | None = None  # (idx, desc) of last targeted element
+
+    # Reload the scratchpad persisted by previous runs (Phase 1 notes).
+    if mem.enabled:
+        persisted = mem.load_scratchpad()
+        if persisted:
+            scratchpad.update(persisted)
+            _log(f"[MEMORY] loaded persisted scratchpad ({len(persisted)} keys)")
+
+    # Lazy Diagnoser (Phase 2): fires once per failure burst when the
+    # IncidentTracker's consecutive_failures crosses ``consecutive_failures``.
+    _diag_cfg = _cfg.get("diagnoser", {})
+    diag_enabled = bool(_diag_cfg.get("enabled", True))
+    diag_threshold = max(1, int(_diag_cfg.get("consecutive_failures", 2) or 2))
+    diagnoser_fired_for = 0  # consecutive_failures value at which we last fired
     safety_net = SafetyNet(SafetyNetConfig(
         adb_path=adb_path,
         device=device,
@@ -1197,6 +1301,45 @@ def _run_plan_guided_fallback(
             instruction=instruction, adb_path=adb_path, device=device,
             max_steps=max_steps, timeout=timeout, profile="flash",
         )
+
+    def _maybe_diagnose() -> None:
+        """Run the lazy Diagnoser once per failure burst."""
+        nonlocal diagnoser_fired_for
+        if not diag_enabled:
+            return
+        cf = incident_tracker.consecutive_failures
+        if cf < diag_threshold or cf <= diagnoser_fired_for:
+            return
+        diagnoser_fired_for = cf
+        _log(f"[diagnoser] firing at {cf} consecutive failures...")
+        try:
+            diag = call_diagnoser(
+                instruction=instruction,
+                plan_text=plan_text,
+                actions=actions,
+                incidents=incident_tracker.get_recent(6),
+                notes_text=_render_notes_for_diagnoser(mem),
+                text_llm_caller=_get_text_llm_caller(),
+            )
+        except Exception as e:
+            _debug(f"diagnoser error: {e}")
+            return
+        _emit({
+            "type": "diagnosis",
+            "root_cause": diag.get("root_cause", ""),
+            "recovery_hints": diag.get("recovery_hints", []),
+            "notes": diag.get("notes", {}),
+        })
+        for hint in diag.get("recovery_hints") or []:
+            if hint:
+                incident_tracker.add_recovery_hint(hint)
+        for k, v in (diag.get("notes") or {}).items():
+            if k and v:
+                try:
+                    mem.save_note(str(k), str(v))
+                except Exception as e:
+                    _debug(f"diagnoser note save error: {e}")
+        _log(f"[diagnoser] hints delivered ({len(diag.get('recovery_hints') or [])})")
 
     # ── Phase 2: Operator → Validator → SafetyNet → Execute ─────────────
     _log("Pro Phase 2: Operator → Validator → SafetyNet → Execute loop")
@@ -1359,6 +1502,7 @@ def _run_plan_guided_fallback(
             suggestion = validation.get("suggestion", "")
             if suggestion:
                 incident_tracker.add_recovery_hint(suggestion)
+            _maybe_diagnose()
             continue
 
         elif verdict == "warn":
@@ -1384,9 +1528,11 @@ def _run_plan_guided_fallback(
                 _emit_incident(step, category, reason, action_type,
                                incident_tracker.consecutive_failures)
                 _log(f"Safety net blocked: {category} — {reason}")
+                _maybe_diagnose()
                 continue
             else:
                 incident_tracker.clear_on_success()
+                diagnoser_fired_for = 0
             safety_check = "xml_passed"
         else:
             safety_check = None
@@ -1406,14 +1552,17 @@ def _run_plan_guided_fallback(
         # Memory: record the successful step (action + task plan)
         if mem.enabled:
             try:
+                target_el = None
                 target_rid = ""
                 if action_type == "tap" and isinstance(action_args.get("target"), int):
                     ti = action_args["target"]
                     if 0 <= ti < len(elements):
-                        target_rid = getattr(elements[ti], "resource_id", "") or ""
+                        target_el = elements[ti]
+                        target_rid = getattr(target_el, "resource_id", "") or ""
                 mem.record_action(
                     mem_state, action_type, action_args, action_desc,
                     target_rid=target_rid, post_pkg=mem.fg_pkg(elements),
+                    target_el=target_el,
                 )
             except Exception as e:
                 _debug(f"memory record error: {e}")
@@ -1549,6 +1698,16 @@ def _run_plan_guided_fallback(
     # Memory: persist task plan only when the run ultimately succeeded
     mem.on_run_end("success" if checker_verdict else "failed")
 
+    # Persist cross-run notes + write the deterministic post-run report.
+    report_path = _finalize_run(
+        mem=mem, scratchpad=scratchpad, plan_text=plan_text,
+        profile="pro", instruction=instruction, status=status,
+        end_reason=end_reason, step=step, actions=actions, start=start,
+        validator_stats=validator_stats,
+        incident_count=incident_tracker.count,
+        checker=checker_result,
+    )
+
     # Cleanup
     try:
         if screenshots_dir.exists():
@@ -1586,6 +1745,7 @@ def _run_plan_guided_fallback(
             "validator_rejected": validator_stats["rejected"],
             "checker_confidence": checker_result.get("confidence", 0),
             "checker_goal_achieved": checker_verdict,
+            "post_run_report": str(report_path) if report_path else None,
         },
         "plan": {
             "text": plan_text,
@@ -2032,17 +2192,16 @@ def _call_text_llm(system_prompt: str, user_prompt: str,
 
 
 def _get_text_llm_caller():
-    """Return a text-LLM caller if the supervisor_provider is configured.
+    """Return the text-LLM caller used by the Checker / Diagnoser.
 
-    Returns None if no supervisor provider is configured (caller should
-    fall back to the VLM caller with screenshot).
+    Previously returned None unless ``supervisor_provider.model`` was set —
+    which silently disabled the Checker's preferred text path on every
+    default install.  Now always returns ``_call_text_llm``, which prefers
+    ``supervisor_provider`` when configured and otherwise falls back to the
+    primary provider as a text-only request.  (The Checker retries with the
+    VLM on failure, so a text-capable primary model is safe to try.)
     """
-    cfg = load_skill_config()
-    sup = cfg.get("supervisor_provider", {})
-    sup_model = sup.get("model", "")
-    if sup_model:
-        return _call_text_llm
-    return None
+    return _call_text_llm
 
 
 # ── Helper: build description with element index so history is traceable ──
