@@ -53,7 +53,12 @@ from runner.packages import NAME_PACKAGE_DICT, normalize_package_name
 # Self-contained runner modules (no external SDK dependency)
 from runner.safety_net import SafetyNet, SafetyNetConfig
 from runner.incidents import IncidentTracker
-from runner.explorer import ElementIndexer, draw_indexed_dots, screenshot_diff_count
+from runner.explorer import (
+    ElementIndexer,
+    draw_indexed_dots,
+    order_elements_for_vlm,
+    screenshot_diff_count,
+)
 from runner.context import ContextBudget, HistoryStore, StepRecord
 from runner.planner import (
     apply_plan_updates,
@@ -1202,6 +1207,7 @@ def _run_plan_guided_fallback(
     status = "timeout"
     end_reason = "pro_started"
     last_coords: list[str] = []
+    blocked_coords: list[str] = []  # device-px coordinate taps rejected by validator
     last_action_types: list[str] = []  # Track recent action types for loop detection
     plan_text = ""
     plan_generated = False
@@ -1432,6 +1438,7 @@ def _run_plan_guided_fallback(
                 scratchpad=scratchpad, similarity_note=similarity_note,
                 targeted_indices=targeted_indices,
                 action_loop_note=action_loop_note,
+                blocked_coords=blocked_coords,
             )
             _log(f"[timing] step {step} operator    → {time.time() - t_oper:.2f}s  (total {time.time() - t_step:.2f}s)")
 
@@ -1509,6 +1516,13 @@ def _run_plan_guided_fallback(
             suggestion = validation.get("suggestion", "")
             if suggestion:
                 incident_tracker.add_recovery_hint(suggestion)
+            # Remember rejected coordinate taps so the Operator can be told
+            # exactly which points NOT to re-propose (device-pixel space).
+            if action_type == "tap" and isinstance(action_args.get("coordinate"), (list, tuple)):
+                c = action_args["coordinate"]
+                blocked_coords.append(f"tap [{int(c[0])},{int(c[1])}]")
+                if len(blocked_coords) > 20:
+                    blocked_coords = blocked_coords[-20:]
             _maybe_diagnose()
             continue
 
@@ -2271,7 +2285,7 @@ def _decide_action_fallback(
 
     if elements:
         MAX_ELEMENTS = 80
-        shown = elements[:MAX_ELEMENTS]
+        shown = order_elements_for_vlm(elements, MAX_ELEMENTS)
         lines = [f"UI ELEMENTS ({len(shown)} shown of {len(elements)} indexed):"]
         for el in shown:
             lines.append(el.render_index_line())
@@ -2464,6 +2478,7 @@ def _decide_action_plan_guided(
     similarity_note: str = "",
     targeted_indices: dict[int, int] | None = None,
     action_loop_note: str = "",
+    blocked_coords: list[str] | None = None,
 ) -> tuple[str, dict, str, dict | None, dict | None]:
     """Call the VLM with screenshot + element index + plan context to decide the next action.
 
@@ -2484,7 +2499,7 @@ def _decide_action_plan_guided(
 
     if elements:
         MAX_ELEMENTS = 80
-        shown = elements[:MAX_ELEMENTS]
+        shown = order_elements_for_vlm(elements, MAX_ELEMENTS)
         # Build the header with a per-element "already tried" marker
         stuck_any = any(targeted_indices.get(el.index, 0) >= 2 for el in shown)
         lines = [f"UI ELEMENTS ({len(shown)} shown of {len(elements)} indexed):"]
@@ -2527,6 +2542,17 @@ def _decide_action_plan_guided(
         unique = len(set(last_coords))
         if unique == 1:
             loop_text = "⚠️  LOOP DETECTED: same coordinate tapped 3+ times. Try a DIFFERENT approach.\n"
+
+    # Validator-rejected coordinates — hard block on re-proposing them
+    blocked_text = ""
+    if blocked_coords:
+        blocked_text = (
+            "⚠️  BLOCKED COORDINATES — the validator already REJECTED taps at these"
+            " device-pixel positions. DO NOT re-propose them:\n"
+            + "\n".join(f"  - {c}" for c in blocked_coords[-10:])
+            + "\nIf your intended target is one of these, either use target=N for the"
+            " matching element, swipe to bring the target into view, or tap a DIFFERENT point.\n"
+        )
 
     # Scratchpad notes (persistent cross-turn memory)
     scratchpad_block = ""
@@ -2580,6 +2606,7 @@ def _decide_action_plan_guided(
         + (f"\n{incident_text}" if incident_text else "")
         + (f"\n{similarity_note}" if similarity_note else "")
         + (f"\n{action_loop_note}" if action_loop_note else "")
+        + (f"\n{blocked_text}" if blocked_text else "")
         + targeting_rules
         + f"\n\n{index_text}"
     )

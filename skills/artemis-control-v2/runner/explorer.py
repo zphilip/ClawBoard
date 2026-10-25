@@ -496,20 +496,12 @@ class ElementIndexer:
             return "--- Visible UI Elements ---\n(no elements indexed)"
 
         lines = ["--- Visible UI Elements ---"]
-        # Sort: interactive first, then by Y (top to bottom)
-        sorted_elems = sorted(
-            elements[:max_elements],
-            key=lambda e: (
-                not e.clickable,
-                not e.enabled,
-                e.bounds[1],  # top
-                e.bounds[0],  # left
-            ),
-        )
-        for elem in sorted_elems:
+        # Same single ordering as the annotated dots (see order_elements_for_vlm).
+        ordered = order_elements_for_vlm(elements, max_elements)
+        for elem in ordered:
             lines.append(elem.render_index_line())
-        if len(elements) > max_elements:
-            lines.append(f"... and {len(elements) - max_elements} more elements")
+        if len(ordered) < len(elements):
+            lines.append(f"... and {len(elements) - len(ordered)} more elements")
         return "\n".join(lines)
 
     # ------------------------------------------------------------------ #
@@ -711,6 +703,52 @@ def _deduplicate_dots(
 
 # ── Dot drawing ─────────────────────────────────────────────────────────
 
+def order_elements_for_vlm(
+    elements: list[ScreenElement],
+    max_elements: int = 80,
+    dot_radius: Optional[int] = None,
+) -> list[ScreenElement]:
+    """Return the elements the VLM should see, in the SAME order the annotated
+    dots are drawn: interactive/labeled first, top→bottom, deduplicated, capped.
+
+    ``draw_indexed_dots()``, ``render_index_for_prompt()`` and the agent's
+    element-index text MUST all go through this one helper, so that a ``[N]``
+    line in the text list and dot ``N`` on the screenshot refer to the exact
+    same element.  (Previously the text list was truncated in accessibility-tree
+    order while the dots were drawn in sorted order — the two sets diverged and
+    the VLM fell back to raw coordinates instead of ``target=N``.)
+
+    Returned elements keep their ORIGINAL ``index``, so ``target=N`` still
+    resolves correctly via ``elements[N]``.
+    """
+    if not elements:
+        return []
+
+    # Keep elements that are interactive OR have a readable label.
+    meaningful = [
+        e for e in elements
+        if e.clickable or e.long_clickable or e.checkable or e.focusable
+        or e.scrollable or e.text or e.content_desc or e.resource_id
+    ]
+    if not meaningful:
+        meaningful = list(elements)
+
+    # Interactive first, then top→bottom, then left→right.
+    meaningful.sort(
+        key=lambda e: (
+            not e.clickable,
+            not e.enabled,
+            e.bounds[1],
+            e.bounds[0],
+        ),
+    )
+
+    if dot_radius is None:
+        dot_radius = 18
+    deduped = _deduplicate_dots(meaningful, dot_radius * 3.0)
+    return deduped[:max_elements]
+
+
 def draw_indexed_dots(
     screenshot_path: str,
     elements: list[ScreenElement],
@@ -773,33 +811,10 @@ def draw_indexed_dots(
     if font_size is None:
         font_size = max(10, min(24, dot_radius * 2))
 
-    # ── Step 1: filter to meaningful elements and sort like the VLM sees ──
-    # Keep elements that are interactive OR have a readable label.
-    # Drop pure-layout wrappers with no identity.
-    meaningful = [
-        e for e in elements
-        if e.clickable or e.long_clickable or e.checkable or e.focusable
-        or e.scrollable or e.text or e.content_desc or e.resource_id
-    ]
-    if not meaningful:
-        meaningful = elements  # fallback: draw everything if nothing filtered
-
-    # Sort identically to render_index_for_prompt: interactive first, then Y, then X
-    meaningful.sort(
-        key=lambda e: (
-            not e.clickable,
-            not e.enabled,
-            e.bounds[1],
-            e.bounds[0],
-        ),
-    )
-
-    # ── Step 2: deduplicate overlapping dots ──
-    proximity_px = dot_radius * 3
-    deduped = _deduplicate_dots(meaningful, proximity_px)
-
-    # ── Step 3: limit to max_dots ──
-    visible = deduped[:max_dots]
+    # ── Step 1: order exactly like the text index (shared helper) ──
+    # This must stay in lockstep with render_index_for_prompt() and the
+    # agent's element-index text — all three call order_elements_for_vlm().
+    visible = order_elements_for_vlm(elements, max_dots, dot_radius)
 
     # ── Step 4: draw ──
     overlay = Image.new("RGBA", img.size, (0, 0, 0, 0))
