@@ -179,7 +179,7 @@ def call_checker(
             raw, finish_reason = text_llm_caller(
                 system_prompt,
                 user_prompt,
-                max_tokens=1024,
+                max_tokens=4096,
             )
         except Exception:
             raw = None
@@ -191,7 +191,7 @@ def call_checker(
                 system_prompt,
                 user_prompt,
                 screenshot_path,
-                max_tokens=2048,
+                max_tokens=4096,
             )
         except Exception:
             raw = None

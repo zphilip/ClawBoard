@@ -176,14 +176,23 @@ def find_element_by_compound(
             # whose label carries the recorded text/content_desc.
             want = (text or content_desc).strip()
             if want:
-                for _, el in rid_cands:
-                    el_label = (
+                labelled = [
+                    el for _, el in rid_cands
+                    if (
                         (el.text or "").strip()
                         or (el.content_desc or "").strip()
+                    ) == want
+                ]
+                if labelled:
+                    return min(
+                        labelled, key=lambda e: _center_dist_sq(e, coord)
                     )
-                    if el_label and el_label == want:
-                        return el
-            # No label match — closest to the historical coordinate wins.
+                # The recorded label is not on this screen — the row we tapped
+                # has moved (e.g. we navigated into a submenu). Falling back to
+                # "nearest coordinate" would re-target a DIFFERENT row, so treat
+                # it as a miss and let the caller skip the replay.
+                return None
+            # No label recorded — closest to the historical coordinate wins.
             return min(
                 (el for _, el in rid_cands),
                 key=lambda e: _center_dist_sq(e, coord),
@@ -394,6 +403,7 @@ class MemoryRuntime:
             return None
 
         args = dict(out.action.arguments or {})
+        relocated_label = ""  # readable label of the re-located tap target (for the Validator)
 
         # Tap drift-safety: re-locate by compound key (Tier 1.5) — resource-id
         # first, then class+text, then content-desc — instead of replaying a
@@ -416,6 +426,11 @@ class MemoryRuntime:
                 if el is not None:
                     args["coordinate"] = [el.center[0], el.center[1]]
                     args["target"] = getattr(el, "index", None)
+                    relocated_label = (
+                        (getattr(el, "text", "") or "").strip()
+                        or (getattr(el, "content_desc", "") or "").strip()
+                        or (getattr(el, "resource_id", "") or "").rsplit("/", 1)[-1]
+                    )
                 else:
                     key = rid or f"{cls_name}+{txt}" or cd
                     self.log(f"[MEMORY] tap fastpath: element '{key}' not on screen — skip")
@@ -440,9 +455,12 @@ class MemoryRuntime:
         self._replay_counts[sig] = self._replay_counts.get(sig, 0) + 1
         self._replayed_sigs.add(sig)
 
-        desc = out.action.action_description or (
-            f"{action_type}({args})"[:120]
-        )
+        if relocated_label:
+            desc = f"tap element [{args.get('target')}] \"{relocated_label}\""
+        else:
+            desc = out.action.action_description or (
+                f"{action_type}({args})"[:120]
+            )
         desc = f"{desc} [memory]"
         self.log(f"[MEMORY] fastpath HIT score={score_s} action={action_type}")
         return action_type, args, desc
@@ -578,7 +596,10 @@ class MemoryRuntime:
                 if el is not None:
                     args["coordinate"] = [el.center[0], el.center[1]]
                     args["target"] = getattr(el, "index", None)
-                elif not args.get("coordinate"):
+                else:
+                    # The relocatable key has no match on the CURRENT tree, so
+                    # the target moved (navigated away / scrolled). Abort rather
+                    # than replaying the stale pixel onto a different element.
                     key = (
                         step.target_rid
                         or f"{step.class_name}+{step.text}"
