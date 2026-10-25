@@ -1221,12 +1221,14 @@ def _run_plan_guided_fallback(
     targeted_indices: dict[int, int] = {}  # element index → tap count (anti-loop)
     last_target_info: tuple[int, str] | None = None  # (idx, desc) of last targeted element
 
-    # Lazy Diagnoser (Phase 2): fires once per failure burst when the
-    # IncidentTracker's consecutive_failures crosses ``consecutive_failures``.
+    # Lazy Diagnoser (Phase 2): fires ONCE per failure burst (when the
+    # IncidentTracker's consecutive_failures first crosses the threshold), not
+    # once per increment — otherwise a long stuck loop re-runs the text LLM on
+    # every consecutive failure and bloats the Operator prompt with stale hints.
     _diag_cfg = _cfg.get("diagnoser", {})
     diag_enabled = bool(_diag_cfg.get("enabled", True))
     diag_threshold = max(1, int(_diag_cfg.get("consecutive_failures", 2) or 2))
-    diagnoser_fired_for = 0  # consecutive_failures value at which we last fired
+    diag_fired_this_burst = False
     safety_net = SafetyNet(SafetyNetConfig(
         adb_path=adb_path,
         device=device,
@@ -1304,13 +1306,13 @@ def _run_plan_guided_fallback(
 
     def _maybe_diagnose() -> None:
         """Run the lazy Diagnoser once per failure burst."""
-        nonlocal diagnoser_fired_for
-        if not diag_enabled:
+        nonlocal diag_fired_this_burst
+        if not diag_enabled or diag_fired_this_burst:
             return
         cf = incident_tracker.consecutive_failures
-        if cf < diag_threshold or cf <= diagnoser_fired_for:
+        if cf < diag_threshold:
             return
-        diagnoser_fired_for = cf
+        diag_fired_this_burst = True
         _log(f"[diagnoser] firing at {cf} consecutive failures...")
         try:
             diag = call_diagnoser(
@@ -1334,6 +1336,11 @@ def _run_plan_guided_fallback(
             if hint:
                 incident_tracker.add_recovery_hint(hint)
         for k, v in (diag.get("notes") or {}).items():
+            # ``task_plan`` is reserved for the run's final plan (written by
+            # ``_finalize_run``); the Diagnoser sometimes hallucinates it as
+            # all-complete, which would clobber the real plan note.
+            if k == "task_plan":
+                continue
             if k and v:
                 try:
                     mem.save_note(str(k), str(v))
@@ -1532,7 +1539,6 @@ def _run_plan_guided_fallback(
                 continue
             else:
                 incident_tracker.clear_on_success()
-                diagnoser_fired_for = 0
             safety_check = "xml_passed"
         else:
             safety_check = None
@@ -1541,6 +1547,11 @@ def _run_plan_guided_fallback(
         t_exec = time.time()
         _execute_action_adb(adb_path, device, action_type, action_args, elements=elements)
         actions.append(action_desc)
+        # A successful execute ends any failure burst (validator rejections and
+        # safety-net blocks both converge here), so the Diagnoser can fire again
+        # if a fresh burst starts later.
+        incident_tracker.clear_on_success()
+        diag_fired_this_burst = False
         # Anti-loop: track which element indices we've targeted
         if action_type == "tap" and isinstance(action_args.get("target"), int):
             tidx = action_args["target"]
@@ -2752,11 +2763,19 @@ def _resolve_package(adb_path: str, device: str, app_name: str) -> str | None:
     """Resolve an app display name to a package name.
 
     Tries in order:
+      0. Already a fully-qualified package name (``com.x.y``) — return as-is.
       1. Static APP_PACKAGE_MAP
       2. NAME_PACKAGE_DICT from packages.py (153-entry bidirectional map)
-      3. Dynamic: ``pm list packages`` grep on the device
+      3. Dynamic: ``pm list packages`` grep on the device (prefer exact match)
     Returns None if unresolvable.
     """
+    # Tier 0 — already a package id.  ``open_app`` is double-resolved (the
+    # VLM decision maps 设置→com.android.settings, then execution resolves
+    # again).  Without this, the Tier-3 grep returns the first partial match
+    # (e.g. com.android.settings.intelligence) and the real app never launches.
+    if re.fullmatch(r"[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+", app_name):
+        return app_name
+
     # Tier 1: Static map
     pkg = APP_PACKAGE_MAP.get(app_name)
     if pkg:
@@ -2768,17 +2787,26 @@ def _resolve_package(adb_path: str, device: str, app_name: str) -> str | None:
     if candidates:
         return candidates[0]
 
-    # Tier 3: grep installed packages on the device
+    # Tier 3: grep installed packages on the device — prefer an EXACT match
+    # so a partial prefix (com.android.settings.intelligence) doesn't win over
+    # the exact package (com.android.settings).
     grep_term = app_name.lower().replace(" ", "")
     rc, out, _ = _adb(
         ["shell", "pm", "list", "packages", "|", "grep", "-i", grep_term],
         adb_path=adb_path, device=device, timeout=5,
     )
     if rc == 0 and out:
+        first = None
         for line in out.splitlines():
             line = line.strip()
-            if line.startswith("package:"):
-                return line[len("package:"):]
+            if not line.startswith("package:"):
+                continue
+            pkg = line[len("package:"):]
+            if first is None:
+                first = pkg
+            if pkg == grep_term:
+                return pkg
+        return first
 
     return None
 
