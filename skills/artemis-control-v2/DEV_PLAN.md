@@ -355,3 +355,62 @@ object_detector / video_analyzer / image_processor agents.
 - Cache hit rate + hit correctness (no wrong-app replay)
 - Wrong-app / incident rate
 - New runtime deps → 0 (stdlib only)
+
+---
+
+## 8. Gap report — status as of 2026-10-25 (post Phase-0, ready for Phase 1/2)
+
+### 8.1 Where v2 stands now (updated vs §6)
+
+Phase 0 is **done and verified on-device**: record + enforce + plan-replay
+(0 VLM on replay), ad-robust Tier-1 matching, foreground-package hard gate with
+element-majority fallback, VLM-failure fallback steps excluded from learning,
+`memory/memstat.py` inspector, and the config passthrough fix. The §6 gaps
+"memory/ empty" / "config dropped sections" are **closed**.
+
+Remaining committee-agent gaps are now: **persistent notes**, **lazy
+diagnoser**, **deterministic post-run report**, **async/visual summaries**,
+and **real LangGraph runtime** (out of scope by design).
+
+### 8.2 Detailed Phase-1 / Phase-2 gap (the focus now)
+
+| Upstream Artemis | artemis-control-v2 today | Gap to close |
+|---|---|---|
+| `utils/notes.py` — `save/read/append/update/list` note tools (line-range reads, `task_plan` key) | `scratchpad` dict, in-RAM only, VLM `notes_updates` merged per turn, never persisted | **Phase 1**: port notes as `runner/notes.py`, persist under `memory/notes/` (cross-run, not session-scoped) |
+| `agents/diagnoser/` — lazy agent w/ device tools (`analyze_logs`, `read_note`, `run_short_adb_command`, `wait`, `ui_hierarchy`), fires only when stuck, ends in `submit_answer` | only `IncidentTracker` hints (validator rejections / safety-net blocks); no diagnosis agent | **Phase 2a**: `runner/diagnoser.py` text-LLM, fire on ≥2 consecutive failures, write `recovery_hints` → notes |
+| `agents/checker/` — zero-side-effect final audit, read-only probes, structured `CheckVerdict` (passed/failed/inconclusive) | `runner/checker.py` exists + wired in Pro; Supervisor `model=""` so it falls back to VLM; **flash never runs checker**; verdict is a loose dict, not the upstream check-item table | **Phase 2b**: enable `supervisor_provider.model`; skip checker on fully-verified replay; keep loose dict (check-item table only if we port plan grammar) |
+| `agents/outputter/` + `history_analyzer` + `log_analyzer` — LLM post-mortem report | nothing; result JSON only | **Phase 2c**: `runner/post_run_report.py` deterministic Markdown (no LLM) — deliberately replaces the 3 LLM report agents |
+
+### 8.3 Further improvement items remaining (backlog, ordered)
+
+1. **Tier 1.5 — compound-key tap relocalization** (free, deterministic): when a
+   recorded tap has no `resource_id`, relocate by
+   `resource_id` → `(class_name + text)` → `content_desc` with a centre-distance
+   tiebreak. Removes the last pixel-rigid path on replay. (See note in chat.)
+2. **Phase 3 — async thread + real visual summaries**: `StepRecord.summary` is a
+   `"[pruned]"` stub today; add a stdlib `threading` task to summarize the
+   post-step screenshot and flush notes off the hot path.
+3. **Checker skip-on-replay**: persist a `verified` flag with the stored plan so
+   a fully-verified replay bypasses the final Checker.
+4. **Supervisor/Checker correctness**: use the text LLM for the final verdict,
+   and fail closed (→ not learned) when the checker disagrees with "finish".
+5. **Plan-grammar completeness**: CheckItem / finding lines / async validation
+   (upstream `plan_grammar.py`) — only if task complexity demands it.
+6. **Doc/config drift**: `SKILL.md` flash description; `context.budget_limit` in
+   `config.json.example`; rotate the plaintext MiniMax key (still present).
+7. **Tier 2/3 matching escalation** (only if hit-rate still insufficient after
+   1.5): CLIP/SigLIP screen embedding, then GUI-grounding relocalization
+   (OS-Atlas / UI-TARS / OmniParser). Deferred on ARM SBC cost grounds.
+
+### 8.4 Phase 1/2 build checklist (concrete)
+
+- `runner/notes.py`: `save_note(key,text)/read_note(key,start,end)/append_note/
+  update_note(target,repl)/list_notes()` over `memory/notes/*.md`; map
+  `task_plan` → `task_plan.md` (mirror upstream `get_note_file_path`).
+- Wire notes into the loop: flush `scratchpad` at run end + expose `recovery_hints`
+  back into the next run's prompt (cross-run hints are the diagnosis win).
+- `runner/diagnoser.py`: prompt + `call_text_llm`, input = last N incidents +
+  notes + step descriptions; output = hints dict → `notes["recovery_hints"]`.
+- `runner/post_run_report.py`: Markdown from `actions[]` + plan + validator/
+  safety stats; emitted as a `report` result field.
+- Config: `supervisor_provider.model` set (text LLM), `profiles.pro.verification=final`.
