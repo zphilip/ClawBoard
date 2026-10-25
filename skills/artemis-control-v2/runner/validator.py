@@ -88,6 +88,7 @@ def build_validator_user_prompt(
     action_type: str,
     action_args: dict | None = None,
     previous_incidents: str = "",
+    element_index: str = "",
 ) -> str:
     """Build the Validator's user prompt with full context.
 
@@ -132,6 +133,13 @@ def build_validator_user_prompt(
         f"Description: {proposed_action}",
     ])
 
+    if element_index:
+        parts.extend([
+            "",
+            "## Visible UI Elements (index → label + normalized center, for judging whether the target is correct)",
+            element_index,
+        ])
+
     if previous_incidents:
         parts.extend(["", "## Previous Incidents", previous_incidents])
 
@@ -155,6 +163,7 @@ def call_validator(
         [str, str, str, int], tuple[Optional[str], str]
     ],
     previous_incidents: str = "",
+    element_index: str = "",
 ) -> dict:
     """Call the Validator VLM to judge a proposed action.
 
@@ -175,13 +184,14 @@ def call_validator(
         action_type=action_type,
         action_args=action_args,
         previous_incidents=previous_incidents,
+        element_index=element_index,
     )
 
     raw, finish_reason = vlm_caller(
         system_prompt,
         user_prompt,
         screenshot_path,
-        max_tokens=2048,
+        max_tokens=4096,
     )
 
     if not raw:

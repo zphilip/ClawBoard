@@ -1588,15 +1588,27 @@ def _run_plan_guided_fallback(
         if incident_tracker.has_active_incident:
             incident_context = incident_tracker.render_for_prompt()
 
+        # Feed the Validator the RAW screenshot (annotated dots bloat the
+        # thinking model's token budget and produced empty content) plus the
+        # same bounded element index the Operator saw, so it can still judge
+        # target correctness instead of being blind.
+        validator_elements_text = ""
+        if elements:
+            validator_elements_text = "\n".join(
+                el.render_index_line()
+                for el in order_elements_for_vlm(elements, 80)
+            )
+
         validation = call_validator(
             instruction=instruction,
             plan_text=plan_text,
             proposed_action=action_desc,
             action_type=action_type,
             action_args=action_args,
-            screenshot_path=str(vlm_shot_path),
+            screenshot_path=str(shot_path),
             vlm_caller=_call_vlm_simple,
             previous_incidents=incident_context,
+            element_index=validator_elements_text,
         )
         _log(f"[timing] step {step} validator   → {time.time() - t_vali:.2f}s  (total {time.time() - t_step:.2f}s)")
 
@@ -2071,7 +2083,11 @@ def _call_vlm(system_prompt: str, user_prompt: str, image_path: str,
                 and cfg.get("thinking")
                 and body.get("thinking") == {"type": "enabled"}
             ):
-                body["thinking"] = {"type": "disabled"}
+                # Omitting the key entirely is the only universally-safe "off"
+                # signal across OpenAI-compatible gateways; some gateways do not
+                # honor {"type": "disabled"} and keep the model thinking, so the
+                # retry would burn the budget again and return empty content.
+                body.pop("thinking", None)
                 _log(
                     "[vlm] empty content on thinking model — retrying with "
                     "thinking disabled"
