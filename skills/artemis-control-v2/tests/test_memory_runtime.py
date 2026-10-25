@@ -1,13 +1,21 @@
 """Unit tests for the artemis-control-v2 Phase 0 memory runtime.
 
-Run with either:
-    python3 -m unittest tests.test_memory_runtime -v
+Run with (self-bootstrapping — no PYTHONPATH needed):
+    python3 tests/test_memory_runtime.py -v
     python3 -m pytest tests/test_memory_runtime.py -q
 
 These exercise the pure-Python memory layer only — no ADB device or VLM.
 """
+import sys
 import tempfile
 import unittest
+from pathlib import Path
+
+# Allow running directly as a script (``python3 tests/test_memory_runtime.py``)
+# from anywhere without setting PYTHONPATH — mirrors memory/memstat.py.
+_SKILL_DIR = Path(__file__).resolve().parent.parent
+if str(_SKILL_DIR) not in sys.path:
+    sys.path.insert(0, str(_SKILL_DIR))
 
 from memory import (
     NON_CACHEABLE_ACTIONS,

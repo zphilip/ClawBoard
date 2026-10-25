@@ -5,14 +5,21 @@ Covers:
   - Phase 1 persistent notes (runner.notes + MemoryRuntime scratchpad)
   - Phase 2 lazy Diagnoser (deterministic fallback) + post-run report
 
-Run with:
-    python3 -m unittest tests.test_phase12 -v
+Run with (self-bootstrapping — no PYTHONPATH needed):
+    python3 tests/test_phase12.py -v
     python3 -m pytest tests/test_phase12.py -q
 """
 import json
+import sys
 import tempfile
 import unittest
 from pathlib import Path
+
+# Allow running directly as a script (``python3 tests/test_phase12.py``) from
+# anywhere without setting PYTHONPATH — mirrors memory/memstat.py.
+_SKILL_DIR = Path(__file__).resolve().parent.parent
+if str(_SKILL_DIR) not in sys.path:
+    sys.path.insert(0, str(_SKILL_DIR))
 
 from runner.memory_runtime import (
     MemoryRuntime,
