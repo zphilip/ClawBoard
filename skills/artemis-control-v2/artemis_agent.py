@@ -89,12 +89,36 @@ def _trace(msg: str) -> None:
     except Exception:
         pass
 
+
+def _force_complete_plan(plan_text: str) -> str:
+    """Mark every non-continuous checkbox milestone done.
+
+    Used as a last resort when an independent verdict (Checker) confirms the
+    goal is achieved but the Operator kept emitting ``finish`` without updating
+    the plan's milestones — so the run can end instead of looping forever.
+
+    ``[Loop:continuous]`` milestones are left untouched: they are unbounded by
+    design and must never be auto-completed.
+    """
+    if not plan_text:
+        return plan_text
+    out: list[str] = []
+    for line in plan_text.splitlines():
+        m = re.match(r"^(\s*)- \[[ /]\]\s*(.*)$", line)
+        if m and "[Loop:continuous]" not in m.group(2):
+            line = f"{m.group(1)}- [x] {m.group(2)}"
+        out.append(line)
+    return "\n".join(out)
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 DEFAULT_MAX_STEPS = 50
 DEFAULT_TIMEOUT = 900  # 15 minutes
 LOOP_THRESHOLD = 3
+# How many consecutive Operator "finish" verdicts with pending milestones are
+# allowed before an independent check (Checker) arbitrates instead of looping.
+FINISH_ARBITRATION_ATTEMPTS = 3
 VERSION = "1.1.0"  # bump on every meaningful change
 
 # Common Chinese app → Android package name mapping
@@ -814,6 +838,7 @@ def _run_reactive_fallback(
     end_reason = "flash_started"
     last_coords: list[str] = []
     last_action_types: list[str] = []  # Track recent action types for loop detection
+    consecutive_finish = 0  # Operator "finish" verdicts with pending milestones in a row
     previous_post_shot: Optional[Path] = None  # For screenshot similarity detection
     targeted_indices: dict[int, int] = {}  # element index → tap count (anti-loop)
     last_target_info: tuple[int, str] | None = None  # (idx, desc) of last targeted element
@@ -1097,22 +1122,45 @@ def _run_reactive_fallback(
                 if snapshot.pending_count == 0:
                     # No [ ] milestones left — auto-complete remaining [/] items
                     _log("VLM says finish with 0 pending milestones — auto-completing plan")
-                    new_lines = []
-                    for line in plan_text.splitlines():
-                        m = re.match(r'^(\s*)- \[/\]\s', line)
-                        if m:
-                            line = m.group(1) + '- [x] ' + line[m.end():]
-                        new_lines.append(line)
-                    plan_text = "\n".join(new_lines)
+                    plan_text = _force_complete_plan(plan_text)
                     if is_task_complete(plan_text):
                         _log("Plan auto-completed successfully")
                         status = "success"
                         end_reason = "flash_completed_auto"
                         break
                 remaining = snapshot.pending_count
-                _log(f"VLM says finish but {remaining} milestones still pending — continuing")
-                if remaining > 0:
+                consecutive_finish += 1
+                _log(f"VLM says finish but {remaining} milestones still pending "
+                     f"(attempt {consecutive_finish}/{FINISH_ARBITRATION_ATTEMPTS}) — continuing")
+                if remaining > 0 and consecutive_finish < FINISH_ARBITRATION_ATTEMPTS:
                     continue
+                # Repeated finish with stale plan bookkeeping: arbitrate with the
+                # independent Checker instead of looping forever.
+                if remaining > 0:
+                    _log("VLM insists task is done — invoking Checker to arbitrate")
+                    try:
+                        arb = call_checker(
+                            instruction=instruction,
+                            plan_text=plan_text,
+                            actions=actions,
+                            steps=step,
+                            screenshot_path=str(vshot_path) if vshot_path.exists() else "",
+                            vlm_caller=_call_vlm_simple,
+                            text_llm_caller=_get_text_llm_caller(),
+                        )
+                    except Exception as ex:
+                        arb = {}
+                        _log(f"Checker arbitration failed: {ex}")
+                    if arb.get("goal_achieved", True):
+                        _log("Checker confirms goal achieved — auto-completing remaining milestones")
+                        plan_text = _force_complete_plan(plan_text)
+                        status = "success"
+                        end_reason = "flash_completed_arbitrated"
+                        break
+                    else:
+                        _log("Checker says goal NOT achieved — resuming execution")
+                        consecutive_finish = 0
+                        continue
             status = "success"
             end_reason = "flash_completed"
             break
@@ -1209,6 +1257,7 @@ def _run_plan_guided_fallback(
     last_coords: list[str] = []
     blocked_coords: list[str] = []  # device-px coordinate taps rejected by validator
     last_action_types: list[str] = []  # Track recent action types for loop detection
+    consecutive_finish = 0  # Operator "finish" verdicts with pending milestones in a row
     plan_text = ""
     plan_generated = False
     validator_stats = {"approved": 0, "warned": 0, "rejected": 0}
@@ -1453,22 +1502,51 @@ def _run_plan_guided_fallback(
                 if snapshot.pending_count == 0:
                     # No [ ] milestones left — auto-complete remaining [/] items
                     _log("Operator says finish with 0 pending milestones — auto-completing plan")
-                    new_lines = []
-                    for line in plan_text.splitlines():
-                        m = re.match(r'^(\s*)- \[/\]\s', line)
-                        if m:
-                            line = m.group(1) + '- [x] ' + line[m.end():]
-                        new_lines.append(line)
-                    plan_text = "\n".join(new_lines)
+                    plan_text = _force_complete_plan(plan_text)
                     if is_task_complete(plan_text):
                         _log("Plan auto-completed successfully")
                         status = "success"
                         end_reason = "operator_finished_auto"
                         break
                 pending = snapshot.pending_count
-                _log(f"Operator says finish but {pending} milestones pending — continuing")
-                if pending > 0:
+                consecutive_finish += 1
+                _log(f"Operator says finish but {pending} milestones pending "
+                     f"(attempt {consecutive_finish}/{FINISH_ARBITRATION_ATTEMPTS}) — continuing")
+                if pending > 0 and consecutive_finish < FINISH_ARBITRATION_ATTEMPTS:
                     continue
+                # Repeated finish with stale plan bookkeeping: arbitrate with the
+                # independent Checker instead of looping forever.
+                if pending > 0:
+                    _log("Operator insists task is done — invoking Checker to arbitrate")
+                    final_shot = screenshots_dir / f"pro_arbitrate_{step}.png"
+                    _take_screenshot(adb_path, device, final_shot)
+                    try:
+                        arb = call_checker(
+                            instruction=instruction,
+                            plan_text=plan_text,
+                            actions=actions,
+                            steps=step,
+                            screenshot_path=str(final_shot) if final_shot.exists() else "",
+                            vlm_caller=_call_vlm_simple,
+                            text_llm_caller=_get_text_llm_caller(),
+                        )
+                    except Exception as ex:
+                        arb = {}
+                        _log(f"Checker arbitration failed: {ex}")
+                    if arb.get("goal_achieved", True):
+                        _log("Checker confirms goal achieved — auto-completing remaining milestones")
+                        plan_text = _force_complete_plan(plan_text)
+                        status = "success"
+                        end_reason = "operator_finished_arbitrated"
+                        break
+                    else:
+                        _log("Checker says goal NOT achieved — resuming execution")
+                        if arb.get("summary"):
+                            incident_tracker.add_recovery_hint(
+                                f"Checker: {arb.get('summary')}"
+                            )
+                        consecutive_finish = 0
+                        continue
             status = "success"
             end_reason = "operator_finished"
             break
