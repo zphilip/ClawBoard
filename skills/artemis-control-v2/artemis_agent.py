@@ -1221,13 +1221,6 @@ def _run_plan_guided_fallback(
     targeted_indices: dict[int, int] = {}  # element index → tap count (anti-loop)
     last_target_info: tuple[int, str] | None = None  # (idx, desc) of last targeted element
 
-    # Reload the scratchpad persisted by previous runs (Phase 1 notes).
-    if mem.enabled:
-        persisted = mem.load_scratchpad()
-        if persisted:
-            scratchpad.update(persisted)
-            _log(f"[MEMORY] loaded persisted scratchpad ({len(persisted)} keys)")
-
     # Lazy Diagnoser (Phase 2): fires once per failure burst when the
     # IncidentTracker's consecutive_failures crosses ``consecutive_failures``.
     _diag_cfg = _cfg.get("diagnoser", {})
@@ -1255,6 +1248,13 @@ def _run_plan_guided_fallback(
         log_fn=_log,
     )
     mem.setup()
+
+    # Reload the scratchpad persisted by previous runs (Phase 1 notes).
+    if mem.enabled:
+        persisted = mem.load_scratchpad()
+        if persisted:
+            scratchpad.update(persisted)
+            _log(f"[MEMORY] loaded persisted scratchpad ({len(persisted)} keys)")
 
     # Replay a stored task plan before spending any VLM budget
     # (skips Planner → Operator → Validator → Checker on a clean replay).
