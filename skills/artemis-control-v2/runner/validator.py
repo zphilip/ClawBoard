@@ -181,7 +181,7 @@ def call_validator(
         system_prompt,
         user_prompt,
         screenshot_path,
-        max_tokens=1024,
+        max_tokens=2048,
     )
 
     if not raw:

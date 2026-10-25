@@ -1865,21 +1865,45 @@ def _call_vlm(system_prompt: str, user_prompt: str, image_path: str,
                     raise ValueError("no choices in VLM response")
                 choice = result["choices"][0]
                 message = choice.get("message") or {}
+                finish = choice.get("finish_reason", "unknown")
                 content = message.get("content")
                 # Thinking models (glm / qwen / deepseek-reasoner) occasionally
                 # return content=null and put the answer in reasoning_content
-                # only — crashing on len(None) otherwise.
+                # only — crashing on len(None) otherwise.  Some gateways use a
+                # plain ``reasoning`` key instead, so try it too.
                 if content is None:
-                    content = message.get("reasoning_content") or ""
+                    content = (
+                        message.get("reasoning_content")
+                        or message.get("reasoning")
+                        or ""
+                    )
                 content = str(content)
                 if not content.strip():
-                    raise ValueError("empty assistant content")
-                finish = choice.get("finish_reason", "unknown")
+                    # Common with ``thinking`` enabled + a tight max_tokens:
+                    # the model burns the whole budget on reasoning and hits
+                    # finish_reason="length" with no final answer.  Signal the
+                    # caller to retry with thinking disabled.
+                    raise ValueError(
+                        f"empty assistant content (finish_reason={finish})"
+                    )
                 _trace(f"[vlm] API round-trip: {time.time() - t_call:.2f}s  model={model}  tokens={len(content)}")
                 return content, finish, norm_w, norm_h
         except (urllib.error.URLError, TimeoutError, ConnectionResetError,
                 OSError, ValueError) as e:
             last_error = str(e)
+            # Retry-once-with-thinking-disabled: when a thinking model returns
+            # empty content, resending the identical body just reproduces it.
+            # Drop the thinking envelope so the budget goes to the answer.
+            if (
+                last_error.startswith("empty assistant content")
+                and cfg.get("thinking")
+                and body.get("thinking") == {"type": "enabled"}
+            ):
+                body["thinking"] = {"type": "disabled"}
+                _log(
+                    "[vlm] empty content on thinking model — retrying with "
+                    "thinking disabled"
+                )
             if attempt < actual_retries:
                 delay = (attempt + 1) * 1.5
                 _log(f"VLM call failed (attempt {attempt+1}/{actual_retries+1}, retry in {delay:.1f}s): {last_error[:80]}")

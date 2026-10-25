@@ -191,7 +191,7 @@ def call_checker(
                 system_prompt,
                 user_prompt,
                 screenshot_path,
-                max_tokens=1024,
+                max_tokens=2048,
             )
         except Exception:
             raw = None
