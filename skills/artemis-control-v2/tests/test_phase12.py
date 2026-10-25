@@ -168,6 +168,70 @@ class _Idx:
         return []
 
 
+class TestFastpathBareCoordinate(unittest.TestCase):
+    """"Old (Phase 0) tap records are coordinate-only, with no resource-id,
+    class+text, or content-desc.  Replaying their pixel is unsafe (the layout
+    may have shifted: keyboard up, ad loaded, scrolled)."""
+
+    def test_fastpath_skips_bare_coordinate_tap(self):
+        d = tempfile.mkdtemp()
+        idx = _Idx()
+        mem = MemoryRuntime(
+            instruction="打开设置",
+            memory_cfg={
+                "enabled": True,
+                "mode": "enforce",
+                "min_score": 0.7,
+                "plan_min_successes": 1,
+                "max_replays_per_state": 2,
+            },
+            skill_dir=d,
+            execute_fn=lambda *a: None,
+            indexer=idx,
+            log_fn=lambda m: None,
+        )
+        mem.setup()
+
+        el = _El(rid="", text="设置", cls="android.widget.TextView",
+                 center=(166, 1357), index=0)
+        # Record a tap with NO relocatable key (bare coordinate only).
+        mem.record_action(
+            mem.describe_state([el]),
+            "tap", {"coordinate": [166, 1357]}, "设置图标",
+            target_rid="", post_pkg="com.x",
+        )
+        # Fastpath must refuse to replay it (falls back to VLM).
+        out = mem.fastpath(mem.describe_state([el]), [el])
+        self.assertIsNone(out)
+
+    def test_fastpath_replays_relocatable_tap(self):
+        d = tempfile.mkdtemp()
+        idx = _Idx()
+        mem = MemoryRuntime(
+            instruction="打开设置",
+            memory_cfg={
+                "enabled": True, "mode": "enforce", "min_score": 0.7,
+                "plan_min_successes": 1, "max_replays_per_state": 2,
+            },
+            skill_dir=d,
+            execute_fn=lambda *a: None,
+            indexer=idx,
+            log_fn=lambda m: None,
+        )
+        mem.setup()
+
+        el = _El(rid="com.x:id/settings_icon", text="设置",
+                 cls="android.widget.TextView", center=(166, 1357), index=0)
+        mem.record_action(
+            mem.describe_state([el]),
+            "tap", {"coordinate": [166, 1357]}, "设置图标",
+            target_rid="com.x:id/settings_icon", target_el=el,
+            post_pkg="com.x",
+        )
+        out = mem.fastpath(mem.describe_state([el]), [el])
+        self.assertIsNotNone(out)
+
+
 class TestDiagnoser(unittest.TestCase):
     def test_deterministic_fallback(self):
         out = deterministic_diagnosis([_Inc("validator rejected", cf=2)])

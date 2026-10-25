@@ -388,7 +388,12 @@ class MemoryRuntime:
             cls_name = args.pop("_cls", "") or ""
             txt = args.pop("_text", "") or ""
             cd = args.pop("_cd", "") or ""
-            if rid or cls_name or cd:
+            # A tap is only safe to replay when it can be re-located from the
+            # CURRENT element tree.  A bare (coordinate-only) record predates
+            # Tier 1.5 and its pixel is post-keyboard / post-ad stale — replaying
+            # it lands taps on the wrong element (e.g. the on-screen keyboard).
+            relocatable = rid or (cls_name and txt) or cd
+            if relocatable:
                 el = find_element_by_compound(
                     elements, rid=rid, class_name=cls_name,
                     text=txt, content_desc=cd, coord=args.get("coordinate"),
@@ -400,8 +405,11 @@ class MemoryRuntime:
                     key = rid or f"{cls_name}+{txt}" or cd
                     self.log(f"[MEMORY] tap fastpath: element '{key}' not on screen — skip")
                     return None
-            elif not args.get("coordinate"):
-                self.log("[MEMORY] tap fastpath: no coordinate and no element id — skip")
+            else:
+                self.log(
+                    "[MEMORY] tap fastpath: no relocatable key (bare coordinate) "
+                    "— fallback to VLM"
+                )
                 return None
 
         # Replay cap: if the exact same cached action has already been
@@ -529,6 +537,21 @@ class MemoryRuntime:
             elements = self.indexer.build_index()
             args = dict(step.action_args)
             if step.action_type == "tap":
+                relocatable = (
+                    step.target_rid
+                    or (step.class_name and step.text)
+                    or step.content_desc
+                )
+                if not relocatable:
+                    # A tap step without any re-locatable key (bare pixel
+                    # coordinate) predates Tier 1.5 and is unsafe to replay —
+                    # its pixel is stale (keyboard up, ad loaded, scrolled).
+                    self.log(
+                        f"[MEMORY] replay step {i}: tap has no relocatable key "
+                        f"(bare coordinate) — aborting replay"
+                    )
+                    self._plan_store.increment_plan_fail(self._intent_key)
+                    return {"status": "failed", "at_step": i}
                 el = find_element_by_compound(
                     elements,
                     rid=step.target_rid,
