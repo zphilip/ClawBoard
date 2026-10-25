@@ -2070,16 +2070,32 @@ def _call_vlm(system_prompt: str, user_prompt: str, image_path: str,
                     raise ValueError(
                         f"empty assistant content (finish_reason={finish})"
                     )
+                if (
+                    finish == "length"
+                    and cfg.get("thinking")
+                    and body.get("thinking") == {"type": "enabled"}
+                ):
+                    # Truncation on a thinking model usually means the budget
+                    # went to hidden reasoning instead of the JSON answer. Drop
+                    # thinking and retry for a parseable response.
+                    raise ValueError(
+                        f"length-truncated thinking response (finish_reason=length)"
+                    )
                 _trace(f"[vlm] API round-trip: {time.time() - t_call:.2f}s  model={model}  tokens={len(content)}")
                 return content, finish, norm_w, norm_h
         except (urllib.error.URLError, TimeoutError, ConnectionResetError,
                 OSError, ValueError) as e:
             last_error = str(e)
             # Retry-once-with-thinking-disabled: when a thinking model returns
-            # empty content, resending the identical body just reproduces it.
-            # Drop the thinking envelope so the budget goes to the answer.
-            if (
+            # empty OR length-truncated content, resending the identical body
+            # just reproduces it. Drop the thinking envelope so the budget goes
+            # to the answer.
+            thinking_truncated = (
                 last_error.startswith("empty assistant content")
+                or last_error.startswith("length-truncated thinking response")
+            )
+            if (
+                thinking_truncated
                 and cfg.get("thinking")
                 and body.get("thinking") == {"type": "enabled"}
             ):
@@ -2089,8 +2105,8 @@ def _call_vlm(system_prompt: str, user_prompt: str, image_path: str,
                 # retry would burn the budget again and return empty content.
                 body.pop("thinking", None)
                 _log(
-                    "[vlm] empty content on thinking model — retrying with "
-                    "thinking disabled"
+                    "[vlm] thinking model returned no parseable content — retrying "
+                    "with thinking disabled"
                 )
             if attempt < actual_retries:
                 delay = (attempt + 1) * 1.5
