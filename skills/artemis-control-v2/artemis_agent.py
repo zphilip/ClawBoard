@@ -110,6 +110,18 @@ def _force_complete_plan(plan_text: str) -> str:
         out.append(line)
     return "\n".join(out)
 
+
+def _checker_confirmed(arb: dict) -> bool:
+    """True only when the Checker actually ran AND confirmed the goal.
+
+    ``call_checker`` returns ``success=False`` (with a fallback
+    ``goal_achieved=True``) when the LLM call or JSON parse failed.  Arbitration
+    must NOT auto-complete on that fallback — a failed audit is not evidence of
+    success.
+    """
+    return bool(arb.get("success")) and bool(arb.get("goal_achieved", False))
+
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
@@ -1028,6 +1040,7 @@ def _run_reactive_fallback(
         t_exec = time.time()
         _execute_action_adb(adb_path, device, action_type, action_args, elements=elements)
         actions.append(action_desc)
+        consecutive_finish = 0  # a real action landed — reset the finish-vs-plan counter
         # Anti-loop: track which element indices we've targeted
         if action_type == "tap" and isinstance(action_args.get("target"), int):
             tidx = action_args["target"]
@@ -1155,7 +1168,7 @@ def _run_reactive_fallback(
                     except Exception as ex:
                         arb = {}
                         _log(f"Checker arbitration failed: {ex}")
-                    if arb.get("goal_achieved", True):
+                    if _checker_confirmed(arb):
                         _log("Checker confirms goal achieved — auto-completing remaining milestones")
                         plan_text = _force_complete_plan(plan_text)
                         status = "success"
@@ -1501,6 +1514,18 @@ def _run_plan_guided_fallback(
         if notes_updates and isinstance(notes_updates, dict):
             scratchpad.update(notes_updates)
 
+        # Apply plan updates BEFORE the finish gate, so a ``finish`` turn that
+        # also carries ``plan_updates.mark_done`` can flip the last milestone
+        # (mirrors the flash loop).  Otherwise a well-behaved Operator that marks
+        # the milestone AND finishes would be discarded and loop forever on
+        # "N milestones pending".
+        if plan_updates and plan_text:
+            new_plan_text, changed = apply_plan_updates(plan_text, plan_updates)
+            if changed:
+                plan_text = new_plan_text
+                snap = parse_plan(plan_text)
+                _trace(f"[pro-plan] step {step}: {snap.done_count}/{snap.total_count} done")
+
         # If operator says finish, check milestone completion
         if action_type == "finish":
             if plan_text and not is_task_complete(plan_text):
@@ -1539,7 +1564,7 @@ def _run_plan_guided_fallback(
                     except Exception as ex:
                         arb = {}
                         _log(f"Checker arbitration failed: {ex}")
-                    if arb.get("goal_achieved", True):
+                    if _checker_confirmed(arb):
                         _log("Checker confirms goal achieved — auto-completing remaining milestones")
                         plan_text = _force_complete_plan(plan_text)
                         status = "success"
@@ -1569,7 +1594,7 @@ def _run_plan_guided_fallback(
             proposed_action=action_desc,
             action_type=action_type,
             action_args=action_args,
-            screenshot_path=str(shot_path),
+            screenshot_path=str(vlm_shot_path),
             vlm_caller=_call_vlm_simple,
             previous_incidents=incident_context,
         )
@@ -1638,7 +1663,7 @@ def _run_plan_guided_fallback(
                 except Exception as ex:
                     arb = {}
                     _log(f"Checker arbitration failed: {ex}")
-                if arb.get("goal_achieved", True):
+                if _checker_confirmed(arb):
                     _log("Checker confirms goal already achieved — auto-completing plan")
                     plan_text = _force_complete_plan(plan_text)
                     status = "success"
@@ -1693,6 +1718,7 @@ def _run_plan_guided_fallback(
         # if a fresh burst starts later.
         incident_tracker.clear_on_success()
         diag_fired_this_burst = False
+        consecutive_finish = 0  # a real action landed — reset the finish-vs-plan counter
         # Anti-loop: track which element indices we've targeted
         if action_type == "tap" and isinstance(action_args.get("target"), int):
             tidx = action_args["target"]
@@ -1741,13 +1767,7 @@ def _run_plan_guided_fallback(
         except Exception:
             pass
 
-        # Apply plan updates
-        if plan_updates and plan_text:
-            new_plan_text, changed = apply_plan_updates(plan_text, plan_updates)
-            if changed:
-                plan_text = new_plan_text
-                snap = parse_plan(plan_text)
-                _trace(f"[pro-plan] step {step}: {snap.done_count}/{snap.total_count} done")
+        # (plan updates are applied before the finish gate, above)
 
         # Verification screenshot
         t_post = time.time()
@@ -2459,8 +2479,9 @@ def _decide_action_fallback(
     )
 
     user_prompt += (
-        "\n\nCOORDINATE SPACE: When using coordinate (fallback only), output in 0-1000 range."
-        " They will be auto-scaled to device pixels."
+        "\n\nCOORDINATE SPACE: When using coordinate (fallback only), output [x,y] in 0-1000."
+        " x=0..1000 maps LEFT→RIGHT across the width; y=0..1000 maps TOP→BOTTOM down the"
+        " full height (y=500 is the vertical middle, even on tall portrait screens)."
     )
 
     system_prompt = _get_operator_system_prompt()
@@ -2750,8 +2771,9 @@ def _decide_action_plan_guided(
     )
 
     user_prompt += (
-        "\n\nCOORDINATE SPACE: When using coordinate (fallback only), output in 0-1000 range."
-        " They will be auto-scaled to device pixels."
+        "\n\nCOORDINATE SPACE: When using coordinate (fallback only), output [x,y] in 0-1000."
+        " x=0..1000 maps LEFT→RIGHT across the width; y=0..1000 maps TOP→BOTTOM down the"
+        " full height (y=500 is the vertical middle, even on tall portrait screens)."
     )
 
     # Plan-guided operator needs more tokens for plan_updates + notes fields
