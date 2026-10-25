@@ -160,19 +160,34 @@ def find_element_by_compound(
     if not elements:
         return None
 
-    # Level 1 — resource id (exact, then short)
+    # Level 1 — resource id (exact, then short), disambiguated by label/coord.
     if rid:
-        for el in elements:
-            if el.resource_id == rid:
-                return el
         short = rid.rsplit("/", 1)[-1] if "/" in rid else rid
+        rid_cands: list[tuple[int, object]] = []
         for el in elements:
-            el_short = (
-                el.resource_id.rsplit("/", 1)[-1]
-                if "/" in (el.resource_id or "") else el.resource_id
+            el_rid = el.resource_id or ""
+            if el_rid == rid:
+                rid_cands.append((0, el))
+            elif short and el_rid.rsplit("/", 1)[-1] == short:
+                rid_cands.append((1, el))
+        if rid_cands:
+            # Generic ids like ``android:id/title`` appear on EVERY list row, so
+            # a bare rid match would grab the wrong row. Prefer the rid match
+            # whose label carries the recorded text/content_desc.
+            want = (text or content_desc).strip()
+            if want:
+                for _, el in rid_cands:
+                    el_label = (
+                        (el.text or "").strip()
+                        or (el.content_desc or "").strip()
+                    )
+                    if el_label and el_label == want:
+                        return el
+            # No label match — closest to the historical coordinate wins.
+            return min(
+                (el for _, el in rid_cands),
+                key=lambda e: _center_dist_sq(e, coord),
             )
-            if short and el_short == short:
-                return el
 
     # Level 2 — class + text
     if class_name and text:

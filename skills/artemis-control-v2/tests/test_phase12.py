@@ -80,6 +80,22 @@ class TestCompoundRelocalize(unittest.TestCase):
         )
         self.assertEqual(found.index, 1)
 
+    def test_level1_rid_disambiguated_by_label(self):
+        # Many list rows share android:id/title; a bare rid match would grab the
+        # wrong row. The label must win over the first rid hit.
+        els = [
+            _El(rid="android:id/title", text="SIM 卡和移动网络",
+                cls="android.widget.TextView", center=(160, 572), index=60),
+            _El(rid="android:id/title", text="WLAN 和互联网",
+                cls="android.widget.TextView", center=(720, 1300), index=89),
+        ]
+        found = find_element_by_compound(
+            els, rid="android:id/title",
+            class_name="android.widget.TextView", text="WLAN 和互联网",
+        )
+        self.assertIsNotNone(found)
+        self.assertEqual(found.index, 89)
+
     def test_none_when_no_match(self):
         self.assertIsNone(find_element_by_compound([], rid="x"))
         self.assertIsNone(find_element_by_compound(

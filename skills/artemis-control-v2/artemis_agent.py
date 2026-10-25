@@ -119,6 +119,10 @@ LOOP_THRESHOLD = 3
 # How many consecutive Operator "finish" verdicts with pending milestones are
 # allowed before an independent check (Checker) arbitrates instead of looping.
 FINISH_ARBITRATION_ATTEMPTS = 3
+# How many consecutive validator/safety failures trigger a Checker arbitration to
+# decide whether the goal is already achieved (breaks the "tap the wrong item
+# forever" loop that the Validator correctly rejects but the Operator re-proposes).
+STUCK_ARBITRATION_THRESHOLD = 4
 VERSION = "1.1.0"  # bump on every meaningful change
 
 # Common Chinese app → Android package name mapping
@@ -1256,6 +1260,7 @@ def _run_plan_guided_fallback(
     end_reason = "pro_started"
     last_coords: list[str] = []
     blocked_coords: list[str] = []  # device-px coordinate taps rejected by validator
+    blocked_targets: list[int] = []  # element indices rejected by validator
     last_action_types: list[str] = []  # Track recent action types for loop detection
     consecutive_finish = 0  # Operator "finish" verdicts with pending milestones in a row
     plan_text = ""
@@ -1488,6 +1493,7 @@ def _run_plan_guided_fallback(
                 targeted_indices=targeted_indices,
                 action_loop_note=action_loop_note,
                 blocked_coords=blocked_coords,
+                blocked_targets=blocked_targets,
             )
             _log(f"[timing] step {step} operator    → {time.time() - t_oper:.2f}s  (total {time.time() - t_step:.2f}s)")
 
@@ -1601,7 +1607,50 @@ def _run_plan_guided_fallback(
                 blocked_coords.append(f"tap [{int(c[0])},{int(c[1])}]")
                 if len(blocked_coords) > 20:
                     blocked_coords = blocked_coords[-20:]
+            # Remember rejected element indices so the Operator won't keep
+            # outputting the same target=N that the validator already rejected.
+            if action_type == "tap" and isinstance(action_args.get("target"), int):
+                ti = action_args["target"]
+                if ti not in blocked_targets:
+                    blocked_targets.append(ti)
+                if len(blocked_targets) > 20:
+                    blocked_targets = blocked_targets[-20:]
+                # Also mark it "tried" so the STUCK-DETECTED markers render.
+                targeted_indices[ti] = targeted_indices.get(ti, 0) + 1
             _maybe_diagnose()
+            # Stuck-tap arbitration: a long burst of consecutive rejections on
+            # the same screen usually means the goal is ALREADY met but the
+            # Operator keeps proposing taps. Let the independent Checker decide.
+            if incident_tracker.consecutive_failures >= STUCK_ARBITRATION_THRESHOLD:
+                _log("Stuck: consecutive rejections threshold reached — invoking Checker to arbitrate")
+                arb_shot = screenshots_dir / f"pro_arbitrate_{step}.png"
+                _take_screenshot(adb_path, device, arb_shot)
+                try:
+                    arb = call_checker(
+                        instruction=instruction,
+                        plan_text=plan_text,
+                        actions=actions,
+                        steps=step,
+                        screenshot_path=str(arb_shot) if arb_shot.exists() else "",
+                        vlm_caller=_call_vlm_simple,
+                        text_llm_caller=_get_text_llm_caller(),
+                    )
+                except Exception as ex:
+                    arb = {}
+                    _log(f"Checker arbitration failed: {ex}")
+                if arb.get("goal_achieved", True):
+                    _log("Checker confirms goal already achieved — auto-completing plan")
+                    plan_text = _force_complete_plan(plan_text)
+                    status = "success"
+                    end_reason = "stuck_arbitrated_success"
+                    break
+                else:
+                    _log("Checker says goal NOT achieved — feeding correction and continuing")
+                    if arb.get("summary"):
+                        incident_tracker.add_recovery_hint(f"Checker: {arb.get('summary')}")
+                    # Cap the burst so arbitration can fire again later if needed,
+                    # but don't loop forever on a single burst.
+                    incident_tracker.clear_on_success()
             continue
 
         elif verdict == "warn":
@@ -2557,6 +2606,7 @@ def _decide_action_plan_guided(
     targeted_indices: dict[int, int] | None = None,
     action_loop_note: str = "",
     blocked_coords: list[str] | None = None,
+    blocked_targets: list[int] | None = None,
 ) -> tuple[str, dict, str, dict | None, dict | None]:
     """Call the VLM with screenshot + element index + plan context to decide the next action.
 
@@ -2630,6 +2680,16 @@ def _decide_action_plan_guided(
             + "\n".join(f"  - {c}" for c in blocked_coords[-10:])
             + "\nIf your intended target is one of these, either use target=N for the"
             " matching element, swipe to bring the target into view, or tap a DIFFERENT point.\n"
+        )
+    if blocked_targets:
+        blocked_text += (
+            "⚠️  BLOCKED TARGETS — the validator already REJECTED these element"
+            " indices. DO NOT output target=N for them:\n"
+            + "  - " + ", ".join(str(t) for t in blocked_targets[-10:])
+            + "\n"
+            + "Re-check the CURRENT element list: the index numbers may have shifted"
+            " because the screen changed. The correct target is likely a DIFFERENT"
+            " index — or the goal may ALREADY be complete (then use finish + plan_updates).\n"
         )
 
     # Scratchpad notes (persistent cross-turn memory)
