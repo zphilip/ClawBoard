@@ -858,6 +858,7 @@ def _run_reactive_fallback(
     previous_post_shot: Optional[Path] = None  # For screenshot similarity detection
     targeted_indices: dict[int, int] = {}  # element index → tap count (anti-loop)
     last_target_info: tuple[int, str] | None = None  # (idx, desc) of last targeted element
+    last_action_effective: bool = True  # whether the last executed tap visibly changed the screen
     indexer = ElementIndexer(adb_path=adb_path, device=device)
 
     # ── Cross-run memory (Phase 0) ─────────────────────────────────────
@@ -1029,6 +1030,7 @@ def _run_reactive_fallback(
             scratchpad.update(notes_updates)
 
         # 4. Apply plan updates from VLM
+        plan_before_updates = plan_text
         if plan_updates and plan_text:
             new_plan_text, changed = apply_plan_updates(plan_text, plan_updates)
             if changed:
@@ -1095,6 +1097,17 @@ def _run_reactive_fallback(
         vshot_path = screenshots_dir / f"step_{step:03d}_{ts}_post.png"
         _take_screenshot(adb_path, device, vshot_path)
         previous_post_shot = vshot_path  # save for next step's similarity check
+        # Verify taps actually registered on the screen (same-step pre vs post).
+        if action_type in ("tap", "long_press"):
+            effect_diff = screenshot_diff_count(str(shot_path), str(vshot_path))
+            last_action_effective = effect_diff > 3
+            if not last_action_effective:
+                _log(f"[verify] {action_type} had no visible effect (diff={effect_diff}px)")
+        elif action_type != "finish":
+            # A pixel diff can't reliably judge swipe/type/back/open; reset so a
+            # later finish is only blocked by an immediately-preceding bad tap.
+            last_action_effective = True
+        # else: finish — keep the flag from the previous real action unchanged.
         _log(f"[timing] step {step} post-shot   → {time.time() - t_post:.2f}s  (total {time.time() - t_step:.2f}s)")
 
         _emit_progress(
@@ -1134,8 +1147,12 @@ def _run_reactive_fallback(
 
         # 9. Check task completion
         if action_type == "finish":
-            if plan_text and not is_task_complete(plan_text):
-                snapshot = parse_plan(plan_text)
+            # Evaluate against the plan state BEFORE this response's own
+            # plan_updates were applied. Otherwise a finish turn can mark its
+            # own remaining milestones done and bypass independent verification.
+            gate_plan = plan_before_updates if plan_before_updates else plan_text
+            if gate_plan and not is_task_complete(gate_plan):
+                snapshot = parse_plan(gate_plan)
                 if snapshot.pending_count == 0:
                     # No [ ] milestones left — auto-complete remaining [/] items
                     _log("VLM says finish with 0 pending milestones — auto-completing plan")
@@ -1178,6 +1195,34 @@ def _run_reactive_fallback(
                         _log("Checker says goal NOT achieved — resuming execution")
                         consecutive_finish = 0
                         continue
+            # A finish declared right after a tap that produced no visible screen
+            # change is not credible — require independent Checker confirmation.
+            if not last_action_effective:
+                _log("Finish follows an ineffective tap — invoking Checker to verify goal")
+                try:
+                    arb = call_checker(
+                        instruction=instruction,
+                        plan_text=plan_text,
+                        actions=actions,
+                        steps=step,
+                        screenshot_path=str(vshot_path) if vshot_path.exists() else "",
+                        vlm_caller=_call_vlm_simple,
+                        text_llm_caller=_get_text_llm_caller(),
+                    )
+                except Exception as ex:
+                    arb = {}
+                    _log(f"Checker verification failed: {ex}")
+                if _checker_confirmed(arb):
+                    _log("Checker confirms goal achieved — accepting finish")
+                    if plan_text:
+                        plan_text = _force_complete_plan(plan_text)
+                    status = "success"
+                    end_reason = "flash_completed_verified"
+                    break
+                else:
+                    _log("Checker says goal NOT achieved — resuming execution")
+                    consecutive_finish = 0
+                    continue
             status = "success"
             end_reason = "flash_completed"
             break
@@ -1514,11 +1559,10 @@ def _run_plan_guided_fallback(
         if notes_updates and isinstance(notes_updates, dict):
             scratchpad.update(notes_updates)
 
-        # Apply plan updates BEFORE the finish gate, so a ``finish`` turn that
-        # also carries ``plan_updates.mark_done`` can flip the last milestone
-        # (mirrors the flash loop).  Otherwise a well-behaved Operator that marks
-        # the milestone AND finishes would be discarded and loop forever on
-        # "N milestones pending".
+        # Snapshot the plan BEFORE applying this turn's plan_updates. The finish
+        # gate below uses this pre-update view so a ``finish`` turn cannot mark
+        # its own remaining milestones done and bypass independent verification.
+        plan_before_updates = plan_text
         if plan_updates and plan_text:
             new_plan_text, changed = apply_plan_updates(plan_text, plan_updates)
             if changed:
@@ -1528,8 +1572,9 @@ def _run_plan_guided_fallback(
 
         # If operator says finish, check milestone completion
         if action_type == "finish":
-            if plan_text and not is_task_complete(plan_text):
-                snapshot = parse_plan(plan_text)
+            gate_plan = plan_before_updates if plan_before_updates else plan_text
+            if gate_plan and not is_task_complete(gate_plan):
+                snapshot = parse_plan(gate_plan)
                 if snapshot.pending_count == 0:
                     # No [ ] milestones left — auto-complete remaining [/] items
                     _log("Operator says finish with 0 pending milestones — auto-completing plan")
@@ -2450,6 +2495,63 @@ def _get_text_llm_caller():
     return _call_text_llm
 
 
+def _resolve_target_center(idx, elements):
+    """Resolve a VLM target index → (center, is_clickable) in device pixels.
+
+    The VLM sometimes picks a wrapping ``android.view.ViewGroup`` (no text, no
+    resource id, not clickable) to represent a list row. Tap the center of the
+    largest clickable descendant inside its bounds instead, which is where the
+    actual button/song entry usually lives.
+
+    Returns ``(None, False)`` when the index is out of range or unresolvable.
+    """
+    if idx is None or not elements:
+        return None, False
+    try:
+        idx = int(idx)
+    except (TypeError, ValueError):
+        return None, False
+    if not (0 <= idx < len(elements)):
+        return None, False
+
+    el = elements[idx]
+    is_clickable = bool(getattr(el, "clickable", False) or getattr(el, "long_clickable", False))
+    if is_clickable:
+        return el.center, True
+
+    bounds = getattr(el, "bounds", None)
+    if not bounds or len(bounds) < 4:
+        _debug(f"[target] element {idx} is not clickable and has no bounds — tapping center anyway")
+        return el.center, False
+
+    left, top, right, bottom = bounds[:4]
+    best = None
+    best_area = -1
+    for cand in elements:
+        if cand is el:
+            continue
+        if not (getattr(cand, "clickable", False) or getattr(cand, "long_clickable", False)):
+            continue
+        cb = getattr(cand, "bounds", None)
+        if not cb or len(cb) < 4:
+            continue
+        cl, ct, cr, cbottom = cb[:4]
+        if cl >= left and ct >= top and cr <= right and cbottom <= bottom:
+            area = max(0, cr - cl) * max(0, cbottom - ct)
+            if area > best_area:
+                best_area = area
+                best = cand
+
+    if best is not None:
+        _debug(f"[target] element {idx} is a non-clickable container — "
+               f"redirecting to clickable descendant at {best.center}")
+        return best.center, True
+
+    _debug(f"[target] element {idx} is not clickable and has no clickable "
+           f"descendant — tapping center anyway")
+    return el.center, False
+
+
 # ── Helper: build description with element index so history is traceable ──
 def _desc_with_idx(prefix: str, idx, text: str) -> str:
     """Return ``[N] prefix text`` for element-targeted actions.
@@ -2590,16 +2692,9 @@ def _decide_action_fallback(
 
     # Resolve element index if the VLM used target=N
     def _resolve_target(idx, elements_ref):
-        """Resolve a target index to pixel center, or return None."""
-        if idx is None:
-            return None
-        try:
-            idx = int(idx)
-        except (TypeError, ValueError):
-            return None
-        if elements_ref and 0 <= idx < len(elements_ref):
-            return elements_ref[idx].center  # [cx, cy] in device pixels
-        return None
+        """Resolve a target index to pixel center, preferring a clickable node."""
+        center, _ = _resolve_target_center(idx, elements_ref)
+        return center
 
     # Normalize action_type and args
     if action == "tap":
@@ -2877,15 +2972,9 @@ def _decide_action_plan_guided(
 
     # Resolve element index if the VLM used target=N
     def _resolve_target_plan(idx, elements_ref):
-        if idx is None:
-            return None
-        try:
-            idx = int(idx)
-        except (TypeError, ValueError):
-            return None
-        if elements_ref and 0 <= idx < len(elements_ref):
-            return elements_ref[idx].center
-        return None
+        """Resolve a target index to pixel center, preferring a clickable node."""
+        center, _ = _resolve_target_center(idx, elements_ref)
+        return center
 
     # Normalize action_type and args (same logic as _decide_action_fallback)
     if action == "tap":
