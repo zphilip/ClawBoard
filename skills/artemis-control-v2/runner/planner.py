@@ -440,12 +440,18 @@ def generate_plan(
             system_prompt,
             user_prompt,
             screenshot_path,
-            max_tokens=2048,
+            max_tokens=4096,
         )
 
         if not raw:
             last_error = f"VLM returned empty response (attempt {attempt})"
             continue
+
+        if finish_reason == "length":
+            last_error = f"Planner VLM truncated output at length limit (attempt {attempt})"
+            if attempt < max_retries:
+                continue
+            break
 
         # Extract plan text: try to find markdown task list
         plan_text = _extract_plan_text(raw)

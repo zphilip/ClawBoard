@@ -2066,9 +2066,20 @@ def _call_vlm(system_prompt: str, user_prompt: str, image_path: str,
                     # Common with ``thinking`` enabled + a tight max_tokens:
                     # the model burns the whole budget on reasoning and hits
                     # finish_reason="length" with no final answer.  Signal the
-                    # caller to retry with thinking disabled.
+                    # caller to retry with thinking disabled and a larger token
+                    # budget for the next attempt.
                     raise ValueError(
                         f"empty assistant content (finish_reason={finish})"
+                    )
+                if (
+                    finish == "length"
+                    and body.get("max_tokens", max_tokens) < 4096
+                ):
+                    # A reasoning model can hit the token ceiling before it
+                    # produces the final answer. Retry once with a larger budget
+                    # instead of repeating the same truncated output.
+                    raise ValueError(
+                        f"length-truncated thinking response (finish_reason=length)"
                     )
                 if (
                     finish == "length"
@@ -2089,7 +2100,8 @@ def _call_vlm(system_prompt: str, user_prompt: str, image_path: str,
             # Retry-once-with-thinking-disabled: when a thinking model returns
             # empty OR length-truncated content, resending the identical body
             # just reproduces it. Drop the thinking envelope so the budget goes
-            # to the answer.
+            # to the answer; if the gateway still truncates at a low budget,
+            # retry once more with 4096 tokens.
             thinking_truncated = (
                 last_error.startswith("empty assistant content")
                 or last_error.startswith("length-truncated thinking response")
@@ -2108,6 +2120,12 @@ def _call_vlm(system_prompt: str, user_prompt: str, image_path: str,
                     "[vlm] thinking model returned no parseable content — retrying "
                     "with thinking disabled"
                 )
+            if thinking_truncated and body.get("max_tokens", max_tokens) < 4096:
+                body["max_tokens"] = 4096
+                _log(
+                    "[vlm] reasoning output hit the budget ceiling — retrying "
+                    "with max_tokens=4096"
+                )
             if attempt < actual_retries:
                 delay = (attempt + 1) * 1.5
                 _log(f"VLM call failed (attempt {attempt+1}/{actual_retries+1}, retry in {delay:.1f}s): {last_error[:80]}")
@@ -2124,7 +2142,7 @@ def _call_vlm(system_prompt: str, user_prompt: str, image_path: str,
 
 
 def _call_vlm_simple(system_prompt: str, user_prompt: str, image_path: str,
-                     max_tokens: int = 2048) -> tuple[Optional[str], str]:
+                     max_tokens: int = 4096) -> tuple[Optional[str], str]:
     """Adapter for callers that don't need coordinate normalization
     (planner, validator, checker)."""
     raw, reason, _w, _h = _call_vlm(system_prompt, user_prompt, image_path, max_tokens)
@@ -2808,12 +2826,14 @@ def _decide_action_plan_guided(
         " full height (y=500 is the vertical middle, even on tall portrait screens)."
     )
 
-    # Plan-guided operator needs more tokens for plan_updates + notes fields
-    raw, finish_reason, norm_w, norm_h = _call_vlm(system_prompt, user_prompt, screenshot_path, max_tokens=2048)
+    # Plan-guided operator needs more tokens for plan_updates + notes fields.
+    # Reasoning models commonly truncate at 2048 before emitting the final JSON,
+    # so use the larger budget up front and retry on length-failure.
+    raw, finish_reason, norm_w, norm_h = _call_vlm(system_prompt, user_prompt, screenshot_path, max_tokens=4096)
     if not raw:
         _log("Operator VLM returned no response — retrying once after pause")
         time.sleep(2)
-        raw, finish_reason, norm_w, norm_h = _call_vlm(system_prompt, user_prompt, screenshot_path, max_tokens=2048)
+        raw, finish_reason, norm_w, norm_h = _call_vlm(system_prompt, user_prompt, screenshot_path, max_tokens=4096)
         if not raw:
             _log("Operator VLM failed after retry — returning system_button: back")
             return ("system_button", {"button": "back"}, "VLM failure: back", None, None)
