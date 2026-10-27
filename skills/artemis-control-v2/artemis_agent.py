@@ -859,6 +859,7 @@ def _run_reactive_fallback(
     targeted_indices: dict[int, int] = {}  # element index → tap count (anti-loop)
     last_target_info: tuple[int, str] | None = None  # (idx, desc) of last targeted element
     last_action_effective: bool = True  # whether the last executed tap visibly changed the screen
+    pending_hint: str = ""  # correction fed back after the Operator's finish is blocked
     indexer = ElementIndexer(adb_path=adb_path, device=device)
 
     # ── Cross-run memory (Phase 0) ─────────────────────────────────────
@@ -1007,6 +1008,7 @@ def _run_reactive_fallback(
         t_vlm = time.time()
         mem_state = mem.describe_state(elements) if mem.enabled else None
         fast = mem.fastpath(mem_state, elements)
+        from_memory = bool(fast)
         if fast:
             action_type, action_args, action_desc = fast
             plan_updates = None
@@ -1021,9 +1023,11 @@ def _run_reactive_fallback(
                     scratchpad=scratchpad, similarity_note=similarity_note,
                     targeted_indices=targeted_indices,
                     action_loop_note=action_loop_note,
+                    pending_hint=pending_hint,
                 )
             )
             _log(f"[timing] step {step} VLM decide  → {time.time() - t_vlm:.2f}s  (total {time.time() - t_step:.2f}s)")
+        pending_hint = ""  # consumed by the decision above
 
         # Merge any notes written by the VLM into the scratchpad
         if notes_updates and isinstance(notes_updates, dict):
@@ -1042,7 +1046,11 @@ def _run_reactive_fallback(
         t_exec = time.time()
         _execute_action_adb(adb_path, device, action_type, action_args, elements=elements)
         actions.append(action_desc)
-        consecutive_finish = 0  # a real action landed — reset the finish-vs-plan counter
+        if action_type != "finish":
+            # A real action landed — reset the finish counter. Do NOT reset on
+            # ``finish`` itself, otherwise the escalated Checker arbitration
+            # (FINISH_ARBITRATION_ATTEMPTS) can never accumulate.
+            consecutive_finish = 0
         # Anti-loop: track which element indices we've targeted
         if action_type == "tap" and isinstance(action_args.get("target"), int):
             tidx = action_args["target"]
@@ -1103,6 +1111,14 @@ def _run_reactive_fallback(
             last_action_effective = effect_diff > 3
             if not last_action_effective:
                 _log(f"[verify] {action_type} had no visible effect (diff={effect_diff}px)")
+                # A memory-replayed tap that did nothing must not be replayed
+                # again next step — exhaust its replay budget now so the loop
+                # falls back to the VLM with full context.
+                if from_memory:
+                    try:
+                        mem.mark_ineffective(action_type, action_args)
+                    except Exception as e:
+                        _debug(f"memory mark_ineffective error: {e}")
         elif action_type != "finish":
             # A pixel diff can't reliably judge swipe/type/back/open; reset so a
             # later finish is only blocked by an immediately-preceding bad tap.
@@ -1167,6 +1183,15 @@ def _run_reactive_fallback(
                 _log(f"VLM says finish but {remaining} milestones still pending "
                      f"(attempt {consecutive_finish}/{FINISH_ARBITRATION_ATTEMPTS}) — continuing")
                 if remaining > 0 and consecutive_finish < FINISH_ARBITRATION_ATTEMPTS:
+                    pending_milestones = [
+                        item.text for item in snapshot.top_level if item.is_pending
+                    ]
+                    pending_hint = (
+                        "⚠️  You previously said finish, but these milestones are "
+                        "still pending:\n"
+                        + "\n".join(f"  - {t}" for t in pending_milestones)
+                        + "\nComplete them first (or output fail if impossible) BEFORE finish."
+                    )
                     continue
                 # Repeated finish with stale plan bookkeeping: arbitrate with the
                 # independent Checker instead of looping forever.
@@ -2773,6 +2798,7 @@ def _decide_action_plan_guided(
     action_loop_note: str = "",
     blocked_coords: list[str] | None = None,
     blocked_targets: list[int] | None = None,
+    pending_hint: str = "",
 ) -> tuple[str, dict, str, dict | None, dict | None]:
     """Call the VLM with screenshot + element index + plan context to decide the next action.
 
@@ -2911,6 +2937,7 @@ def _decide_action_plan_guided(
         + (f"\n{similarity_note}" if similarity_note else "")
         + (f"\n{action_loop_note}" if action_loop_note else "")
         + (f"\n{blocked_text}" if blocked_text else "")
+        + (f"\n{pending_hint}" if pending_hint else "")
         + targeting_rules
         + f"\n\n{index_text}"
     )

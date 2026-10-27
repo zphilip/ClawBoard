@@ -61,6 +61,14 @@ _FASTPATH_TYPES = {"tap", "type", "system_button", "open", "swipe"}
 #: (open launches vary by splash/ad; system buttons navigate anywhere).
 _VERIFY_SKIP_TYPES = {"open", "system_button", "swipe", "type"}
 
+#: Foreground packages that are transient (lockscreen / system UI) and must
+#: not abort a plan replay — the device usually settles into the real app
+#: within a moment.
+_TRANSIENT_FG_PKGS = {"com.android.systemui", "android"}
+
+#: How many extra re-checks when the foreground package starts transient.
+_REPLAY_VERIFY_RETRIES = 2
+
 #: Descriptions emitted when the Operator's VLM output was broken and the
 #: agent fell back to ``system_button: back``.  These are not real decisions
 #: and must not be learned as plan steps (a stray "back" is harmful on replay).
@@ -350,6 +358,45 @@ class MemoryRuntime:
             "texts": sorted(comp.labels),
         }
 
+    @staticmethod
+    def _bucket(v) -> int:
+        """Bucket a coordinate scalar to the nearest 100 px for stable sigs."""
+        try:
+            return int(round(float(v) / 100.0)) * 100
+        except (TypeError, ValueError):
+            return 0
+
+    def _physical_replay_sig(self, action_type: str, args: dict) -> str:
+        """Stable replay-cap key bound to the PHYSICAL target, not the UI state.
+
+        Element indices shift between screenshots and the UI fingerprint changes
+        after every tap, so neither was usable for counting replays (the cap
+        never accumulated and toggle buttons looped forever).  Coordinates are
+        bucketed to 100 px and ``target`` (the volatile index) is dropped;
+        ids/labels/buttons are kept verbatim.
+        """
+        norm: dict[str, Any] = {}
+        for k, v in args.items():
+            if k == "target":
+                continue  # element index is unstable across screenshots
+            if (
+                k in ("coordinate", "coordinate1", "coordinate2")
+                and isinstance(v, (list, tuple))
+                and len(v) >= 2
+            ):
+                norm[k] = [self._bucket(v[0]), self._bucket(v[1])]
+            else:
+                norm[k] = v
+        return f"{action_type}|{json.dumps(norm, ensure_ascii=False, sort_keys=True)}"
+
+    def mark_ineffective(self, action_type: str, args: dict) -> None:
+        """Mark a just-executed replay as ineffective so the same physical
+        target falls back to the VLM on the next step instead of looping."""
+        if not self.enabled:
+            return
+        sig = self._physical_replay_sig(action_type, args)
+        self._replay_counts[sig] = self.max_replays_per_state
+
     # ------------------------------------------------------------------ #
     # Action fastpath (before VLM)
     # ------------------------------------------------------------------ #
@@ -442,13 +489,12 @@ class MemoryRuntime:
                 )
                 return None
 
-        # Replay cap: if the exact same cached action has already been
-        # replayed this run (screen likely stuck), fall back to the VLM so it
-        # can see the loop-detection notes and pick a different approach.
-        sig = (
-            f"{state['state_key']}|{action_type}|"
-            f"{json.dumps(args, ensure_ascii=False, sort_keys=True)}"
-        )
+        # Replay cap: count against the PHYSICAL target (coordinate bucket +
+        # stable keys), not the UI fingerprint. The fingerprint changes after
+        # every tap (icons toggle, progress bars move), so the old key never
+        # accumulated and toggle buttons looped forever. A bucketed coordinate
+        # is stable across those minor repaints, so the cap actually triggers.
+        sig = self._physical_replay_sig(action_type, args)
         if self._replay_counts.get(sig, 0) >= self.max_replays_per_state:
             self.log("[MEMORY] fastpath: replay cap reached — fallback to VLM")
             return None
@@ -619,12 +665,23 @@ class MemoryRuntime:
 
             if step.action_type not in _VERIFY_SKIP_TYPES and step.post_pkg and post_pkg:
                 if post_pkg != step.post_pkg:
-                    self.log(
-                        f"[MEMORY] replay verify failed step {i}: "
-                        f"expected {step.post_pkg!r} got {post_pkg!r} — abort"
-                    )
-                    self._plan_store.increment_plan_fail(self._intent_key)
-                    return {"status": "failed", "at_step": i}
+                    # A transient foreground (lockscreen / system UI) right after
+                    # launch doesn't mean the step failed. Give the device a
+                    # moment to settle and re-check before aborting the replay.
+                    if post_pkg in _TRANSIENT_FG_PKGS:
+                        for _retry in range(_REPLAY_VERIFY_RETRIES):
+                            time.sleep(1.5)
+                            elements = self.indexer.build_index()
+                            post_pkg = self.fg_pkg(elements)
+                            if post_pkg == step.post_pkg:
+                                break
+                    if post_pkg != step.post_pkg:
+                        self.log(
+                            f"[MEMORY] replay verify failed step {i}: "
+                            f"expected {step.post_pkg!r} got {post_pkg!r} — abort"
+                        )
+                        self._plan_store.increment_plan_fail(self._intent_key)
+                        return {"status": "failed", "at_step": i}
 
             actions.append(step.description or f"{step.action_type}")
             if emit_fn:
