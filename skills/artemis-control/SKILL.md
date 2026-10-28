@@ -1,29 +1,23 @@
 ---
 name: artemis-control
 description: |
-  Controls a PHYSICAL ANDROID PHONE connected via USB — powered by Artemis (Google Research).
-  This skill wraps Artemis's multi-agent graph engine: Planner → Operator → Validator → Checker.
-  Supports two profiles: Flash (fast ~3-5s/step reactive loop) and Pro (full planning + safety net
-  + checkpoint verification ~15-40s/step).
+  Controls a PHYSICAL ANDROID PHONE over USB via the Artemis (Google Research)
+  multi-agent engine: Planner → Operator → Validator → Checker. Two profiles:
+  Flash (fast ~3-5s/step) and Pro (full planning + safety net + verification).
 
-  **Key differentiators vs mobile-control:**
-  - Pre-execution safety net: XML hierarchy check + pixel VLM fallback before every tap
-  - Execution incidents: structured failure tracking with self-healing across turns
-  - Explorer element indexer: references elements by index from the accessibility tree
-  - History compression: visual summaries replace old screenshots; search_history tool
-  - Structured final verification: Checker audits plan milestones against the original goal
-  - Click sequence batching: handles transient UI (toasts, auto-dismissing controls)
+  Key features: pre-execution safety net (XML + pixel VLM check), execution
+  incident tracking with self-healing, accessibility element indexer, history
+  compression, structured final verification.
 
-  **Response format:** Emits JSONL to stdout — `{"type":"progress",...}` lines for each step
-  (narrate these in real time) followed by a final `{"type":"result",...}` line. All diagnostic
-  logs go to stderr.
+  Response: JSONL to stdout — {"type":"progress"} lines then a final
+  {"type":"result"} line; logs go to stderr.
 
-  USE when: user says "on my phone", "open [app]", "send WeChat message", "set alarm",
-  "navigate home", "search in [app]", "play music on phone", "take a screenshot of my phone",
-  or any task that requires physically interacting with Android UI.
+  USE when: "on my phone", "open [app]", "send WeChat message", "set alarm",
+  "navigate home", "search in [app]", "play music", "screenshot", or any task
+  requiring physical Android UI interaction.
 
-  DO NOT USE for: PC/desktop tasks, web browsing on the host machine, iOS (iPhone/iPad),
-  file transfers (use adb pull/push), anything that doesn't require tapping the phone screen.
+  DO NOT USE for: PC/desktop tasks, host web browsing, iOS, file transfers
+  (use adb pull/push), anything that doesn't require tapping the phone screen.
 homepage: https://github.com/google/artemis
 metadata:
   {
