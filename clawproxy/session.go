@@ -15,7 +15,6 @@ package main
 //   clientSession.detach()               — called when the WebSocket closes
 
 import (
-	"encoding/json"
 	"fmt"
 	"sync"
 	"time"
@@ -42,9 +41,11 @@ type clientSession struct {
 	zcMu    sync.RWMutex
 	zcConns map[string]*agentConn
 
-	// upstream PC connection (single mux over all PC session_ids)
-	pcMu   sync.Mutex
-	pcConn *agentConn
+	// upstream PC connections, one per PC session_id.  picoclaw routes
+	// responses by the session_id the connection was dialed with, so a single
+	// shared connection cannot multiplex multiple app sessions.
+	pcMu    sync.RWMutex
+	pcConns map[string]*agentConn
 
 	// currently attached app (nil = offline)
 	appMu sync.RWMutex
@@ -137,33 +138,36 @@ func (cs *clientSession) getOrCreateZC(srv *proxyServer, sessionID string) (*age
 	return conn, nil
 }
 
-// getOrCreatePC returns the shared PC upstream or dials a new one.
-func (cs *clientSession) getOrCreatePC(srv *proxyServer) (*agentConn, error) {
-	cs.pcMu.Lock()
-	defer cs.pcMu.Unlock()
-	if cs.pcConn != nil {
+// getOrCreatePC returns a PC upstream for sessionID or dials a new one.
+// picoclaw routes responses by the session_id used at dial time, so we keep
+// ONE upstream per app session and dial it with that session_id (mirroring
+// getOrCreateZC), rather than multiplexing sessions over one shared conn.
+func (cs *clientSession) getOrCreatePC(srv *proxyServer, sessionID string) (*agentConn, error) {
+	cs.pcMu.RLock()
+	conn := cs.pcConns[sessionID]
+	cs.pcMu.RUnlock()
+	if conn != nil {
 		// Sync the current token in case picoclaw restarted and probeAll refreshed
 		// s.pcAuth.token.  reconnectLoop reads agentConn.token on every dial attempt,
 		// so keeping it current lets the background reconnect succeed with the new token.
-		cs.pcConn.mu.Lock()
-		cs.pcConn.token = srv.pcAuth.token
-		cs.pcConn.mu.Unlock()
-		return cs.pcConn, nil
+		conn.mu.Lock()
+		conn.token = srv.pcAuth.token
+		conn.mu.Unlock()
+		return conn, nil
 	}
 
 	pca := srv.pcAuth
 	if pca == nil {
 		return nil, fmt.Errorf("picoclaw not configured on this proxy")
 	}
-	sid := "proxy-" + cs.id
-	wsURL := appendSessionID(pca.wsURL, sid)
+	wsURL := appendSessionID(pca.wsURL, sessionID)
 	recv := make(chan []byte, 128)
 	stop := make(chan struct{})
-	conn := &agentConn{
+	conn = &agentConn{
 		kind:      kindPC,
 		wsURL:     wsURL,
 		token:     pca.token,
-		sessionID: sid,
+		sessionID: sessionID,
 		recv:      recv,
 		stop:      stop,
 	}
@@ -176,9 +180,11 @@ func (cs *clientSession) getOrCreatePC(srv *proxyServer) (*agentConn, error) {
 		return nil, fmt.Errorf("picoclaw connect: %w", err)
 	}
 	srv.setHealth("pc", "online")
-	cs.pcConn = conn
+	cs.pcMu.Lock()
+	cs.pcConns[sessionID] = conn
+	cs.pcMu.Unlock()
 	go conn.reconnectLoop()
-	go cs.drainPC(recv, stop)
+	go cs.drainPC(sessionID, recv, stop)
 	go func() {
 		t := time.NewTicker(30 * time.Second)
 		defer t.Stop()
@@ -191,7 +197,7 @@ func (cs *clientSession) getOrCreatePC(srv *proxyServer) (*agentConn, error) {
 			}
 		}
 	}()
-	fmt.Printf("%ssession %s: PC connected\n", prefixSYS(), cs.id)
+	fmt.Printf("%ssession %s: PC session=%s\n", prefixSYS(), cs.id, sessionID)
 	return conn, nil
 }
 
@@ -217,7 +223,7 @@ func (cs *clientSession) drainZC(sessionID string, recv chan []byte, stop chan s
 }
 
 // drainPC routes PC frames to the app (or to the queue while offline).
-func (cs *clientSession) drainPC(recv chan []byte, stop chan struct{}) {
+func (cs *clientSession) drainPC(sessionID string, recv chan []byte, stop chan struct{}) {
 	for {
 		select {
 		case <-stop:
@@ -226,11 +232,7 @@ func (cs *clientSession) drainPC(recv chan []byte, stop chan struct{}) {
 			if !ok {
 				return
 			}
-			var peek struct {
-				SessionID string `json:"session_id"`
-			}
-			json.Unmarshal(raw, &peek) //nolint:errcheck
-			cs.relay("pc", peek.SessionID, raw)
+			cs.relay("pc", sessionID, raw)
 		}
 	}
 }
@@ -244,10 +246,10 @@ func (cs *clientSession) closeUpstreams() {
 	cs.zcMu.Unlock()
 
 	cs.pcMu.Lock()
-	if cs.pcConn != nil {
-		cs.pcConn.close()
-		cs.pcConn = nil
+	for _, conn := range cs.pcConns {
+		conn.close()
 	}
+	cs.pcConns = make(map[string]*agentConn)
 	cs.pcMu.Unlock()
 }
 
@@ -314,9 +316,10 @@ func (ss *sessionStore) getOrCreate(clientID string) *clientSession {
 		return cs
 	}
 	cs := &clientSession{
-		id:      clientID,
-		db:      ss.db,
-		zcConns: make(map[string]*agentConn),
+		id:       clientID,
+		db:       ss.db,
+		zcConns:  make(map[string]*agentConn),
+		pcConns:  make(map[string]*agentConn),
 		lastSeen: time.Now(),
 	}
 	ss.sessions[clientID] = cs

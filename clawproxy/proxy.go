@@ -1796,15 +1796,15 @@ c.sendError("zc", msg.SessionID, err.Error())
 }
 
 func (c *proxyClient) sendToPC(msg appMsg) {
-conn, err := c.session.getOrCreatePC(c.server)
-if err != nil {
-c.sendError("pc", msg.SessionID, err.Error())
-return
-}
-content, _ := msg.Payload["content"].(string)
-if err := conn.sendPCWithSession(msg.SessionID, content); err != nil {
-c.sendError("pc", msg.SessionID, err.Error())
-}
+	conn, err := c.session.getOrCreatePC(c.server, msg.SessionID)
+	if err != nil {
+		c.sendError("pc", msg.SessionID, err.Error())
+		return
+	}
+	content, _ := msg.Payload["content"].(string)
+	if err := conn.sendPCWithSession(msg.SessionID, content); err != nil {
+		c.sendError("pc", msg.SessionID, err.Error())
+	}
 }
 
 func (c *proxyClient) relayRaw(agent, sessionID string, raw []byte) {
