@@ -25,6 +25,7 @@ def build_post_run_report(
     checker: dict | None = None,
     memory_replay: bool = False,
     elapsed_s: float = 0.0,
+    fail_reason: str = "",
 ) -> str:
     """Render the run's post-mortem as Markdown."""
     lines: list[str] = []
@@ -32,6 +33,8 @@ def build_post_run_report(
     lines.append("")
     lines.append(f"- **Generated**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     lines.append(f"- **Status**: `{status}` (reason: `{end_reason}`)")
+    if status == "fail" and fail_reason:
+        lines.append(f"- **Failure reason**: {fail_reason}")
     lines.append(f"- **Steps taken**: {steps}")
     lines.append(f"- **Elapsed**: {elapsed_s:.1f}s")
     lines.append(f"- **Memory replay**: {'yes (0 VLM)' if memory_replay else 'no'}")

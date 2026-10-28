@@ -725,6 +725,7 @@ def _finalize_run(
     incident_count: int = 0,
     checker: dict | None = None,
     memory_replay: bool = False,
+    fail_reason: str = "",
 ) -> Path | None:
     """Persist cross-run notes + write the deterministic post-run report.
 
@@ -752,6 +753,7 @@ def _finalize_run(
             checker=checker,
             memory_replay=memory_replay,
             elapsed_s=time.time() - start,
+            fail_reason=fail_reason,
         )
         report_path = write_report(Path(__file__).parent, profile, report_md)
         _emit({"type": "post_run_report", "profile": profile,
@@ -860,6 +862,7 @@ def _run_reactive_fallback(
     last_target_info: tuple[int, str] | None = None  # (idx, desc) of last targeted element
     last_action_effective: bool = True  # whether the last executed tap visibly changed the screen
     pending_hint: str = ""  # correction fed back after the Operator's finish is blocked
+    fail_reason: str = ""  # why the task failed (only set on a terminal fail)
     indexer = ElementIndexer(adb_path=adb_path, device=device)
 
     # ── Cross-run memory (Phase 0) ─────────────────────────────────────
@@ -1035,7 +1038,7 @@ def _run_reactive_fallback(
 
         # 4. Apply plan updates from VLM
         plan_before_updates = plan_text
-        if plan_updates and plan_text:
+        if plan_updates and plan_text and action_type != "fail":
             new_plan_text, changed = apply_plan_updates(plan_text, plan_updates)
             if changed:
                 plan_text = new_plan_text
@@ -1060,7 +1063,7 @@ def _run_reactive_fallback(
         _log(f"[timing] step {step} execute     → {time.time() - t_exec:.2f}s  (total {time.time() - t_step:.2f}s)")
 
         # 5.5 Memory: record the successful step (action + task plan)
-        if mem.enabled:
+        if mem.enabled and action_type != "fail":
             try:
                 target_el = None
                 target_rid = ""
@@ -1162,6 +1165,14 @@ def _run_reactive_fallback(
             _log("Action loop detected — repeated open_app + dismiss cycle")
 
         # 9. Check task completion
+        if action_type == "fail":
+            reason = (action_args or {}).get("reason", "") or (action_desc if action_desc else "")
+            _log(f"Task failed: {reason}")
+            fail_reason = reason or "task cannot be completed"
+            status = "fail"
+            end_reason = "flash_task_failed"
+            break
+
         if action_type == "finish":
             # Evaluate against the plan state BEFORE this response's own
             # plan_updates were applied. Otherwise a finish turn can mark its
@@ -1260,6 +1271,7 @@ def _run_reactive_fallback(
         mem=mem, scratchpad=scratchpad, plan_text=plan_text,
         profile="flash", instruction=instruction, status=status,
         end_reason=end_reason, step=step, actions=actions, start=start,
+        fail_reason=fail_reason,
     )
 
     # Cleanup
@@ -1279,9 +1291,10 @@ def _run_reactive_fallback(
         "status": status,
         "steps": step,
         "last_action": actions[-1] if actions else "",
+        "reason": fail_reason if status == "fail" else "",
         "message": message,
         "actions": actions,
-        "verification": {"passed": 0, "failed": 0, "inconclusive": 0},
+        "verification": {"passed": 0, "failed": 1 if status == "fail" else 0, "inconclusive": 0},
         "debug": {
             "end_reason": end_reason,
             "profile": "flash",
@@ -1346,6 +1359,7 @@ def _run_plan_guided_fallback(
     blocked_targets: list[int] = []  # element indices rejected by validator
     last_action_types: list[str] = []  # Track recent action types for loop detection
     consecutive_finish = 0  # Operator "finish" verdicts with pending milestones in a row
+    fail_reason: str = ""  # why the task failed (only set on a terminal fail)
     plan_text = ""
     plan_generated = False
     validator_stats = {"approved": 0, "warned": 0, "rejected": 0}
@@ -1588,12 +1602,23 @@ def _run_plan_guided_fallback(
         # gate below uses this pre-update view so a ``finish`` turn cannot mark
         # its own remaining milestones done and bypass independent verification.
         plan_before_updates = plan_text
-        if plan_updates and plan_text:
+        if plan_updates and plan_text and action_type != "fail":
             new_plan_text, changed = apply_plan_updates(plan_text, plan_updates)
             if changed:
                 plan_text = new_plan_text
                 snap = parse_plan(plan_text)
                 _trace(f"[pro-plan] step {step}: {snap.done_count}/{snap.total_count} done")
+
+        # If the Operator deems the task impossible (e.g. required app is not
+        # installed), terminate with an explicit failure — skipping validator,
+        # safety net and checker (there is nothing left to audit).
+        if action_type == "fail":
+            reason = (action_args or {}).get("reason", "") or (action_desc if action_desc else "")
+            _log(f"Operator reports task cannot be completed: {reason}")
+            fail_reason = reason or "task cannot be completed"
+            status = "fail"
+            end_reason = "pro_task_failed"
+            break
 
         # If operator says finish, check milestone completion
         if action_type == "finish":
@@ -1901,6 +1926,55 @@ def _run_plan_guided_fallback(
             )
 
     # ── Phase 3: Checker Node — final audit ──────────────────────────────
+    if status == "fail":
+        # No achievement audit for a definitively impossible task; surface the
+        # failure directly instead of letting the Checker overwrite the verdict.
+        _emit_progress(step, "failed", f"Task failed: {fail_reason}")
+        mem.on_run_end(status)
+        fail_report_path = _finalize_run(
+            mem=mem, scratchpad=scratchpad, plan_text=plan_text,
+            profile="pro", instruction=instruction, status=status,
+            end_reason=end_reason, step=step, actions=actions, start=start,
+            validator_stats=validator_stats,
+            incident_count=incident_tracker.count,
+            checker=None,
+            fail_reason=fail_reason,
+        )
+        try:
+            if screenshots_dir.exists():
+                shutil.rmtree(screenshots_dir, ignore_errors=True)
+        except Exception:
+            pass
+        fail_snapshot = parse_plan(plan_text) if plan_text else None
+        fail_done = fail_snapshot.done_count if fail_snapshot else 0
+        fail_total = fail_snapshot.total_count if fail_snapshot else 0
+        return {
+            "type": "result",
+            "status": "fail",
+            "steps": step,
+            "last_action": actions[-1] if actions else "",
+            "reason": fail_reason,
+            "message": (
+                f"Pro graph: fail after {step} steps — {fail_reason} "
+                f"[reason: {end_reason}]"
+            ),
+            "actions": actions,
+            "verification": {"passed": fail_done, "failed": 1, "inconclusive": max(0, fail_total - fail_done)},
+            "debug": {
+                "end_reason": end_reason,
+                "profile": "pro",
+                "plan_milestones_total": fail_total,
+                "plan_milestones_done": fail_done,
+                "incidents": incident_tracker.count,
+                "post_run_report": str(fail_report_path) if fail_report_path else None,
+            },
+            "plan": {
+                "text": plan_text,
+                "milestones_done": fail_done,
+                "milestones_total": fail_total,
+            } if plan_text else None,
+        }
+
     _log("Pro Phase 3: Checker node — auditing goal achievement...")
     _emit_progress(step, "checking", "Checker node: auditing task completion...")
 
@@ -1960,6 +2034,7 @@ def _run_plan_guided_fallback(
         validator_stats=validator_stats,
         incident_count=incident_tracker.count,
         checker=checker_result,
+        fail_reason=fail_reason,
     )
 
     # Cleanup
@@ -2776,7 +2851,7 @@ def _decide_action_fallback(
     elif action == "fail":
         reason = parsed.get("reason", "unknown")
         _log(f"VLM reports task cannot be completed: {reason}")
-        return ("finish", {}, f"Task failed: {reason}")
+        return ("fail", {"reason": reason}, f"Task failed: {reason}")
 
     else:  # finish or unknown
         return ("finish", {}, "task complete")
@@ -3056,7 +3131,7 @@ def _decide_action_plan_guided(
     elif action == "fail":
         reason = parsed.get("reason", "unknown")
         _log(f"VLM reports task cannot be completed: {reason}")
-        return ("finish", {}, f"Task failed: {reason}", plan_updates, notes_updates)
+        return ("fail", {"reason": reason}, f"Task failed: {reason}", plan_updates, notes_updates)
 
     else:  # finish or unknown
         return ("finish", {}, "task complete", plan_updates, notes_updates)
