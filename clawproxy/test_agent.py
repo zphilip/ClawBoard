@@ -158,8 +158,8 @@ def on_message(ws, raw):
 
         elif typ == "tool_call":
             name = msg.get("name", "")
-            args = msg.get("args", {})
-            out(f"\n{pzc('')}{GREY}tool_call{RESET} {name}  args={json.dumps(args)}")
+            tool_args = msg.get("args", {})
+            out(f"\n{pzc('')}{GREY}tool_call{RESET} {name}  args={json.dumps(tool_args)}")
 
         elif typ == "tool_result":
             name   = msg.get("name", "")
