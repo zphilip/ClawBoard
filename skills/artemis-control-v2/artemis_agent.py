@@ -135,6 +135,9 @@ FINISH_ARBITRATION_ATTEMPTS = 3
 # decide whether the goal is already achieved (breaks the "tap the wrong item
 # forever" loop that the Validator correctly rejects but the Operator re-proposes).
 STUCK_ARBITRATION_THRESHOLD = 4
+#: Consecutive open_app failures that failed to bring the target to the
+#: foreground before the run gives up with an explicit failure.
+OPEN_LAUNCH_RETRIES = 3
 VERSION = "1.1.0"  # bump on every meaningful change
 
 # Common Chinese app → Android package name mapping
@@ -863,6 +866,8 @@ def _run_reactive_fallback(
     last_action_effective: bool = True  # whether the last executed tap visibly changed the screen
     pending_hint: str = ""  # correction fed back after the Operator's finish is blocked
     fail_reason: str = ""  # why the task failed (only set on a terminal fail)
+    open_fail_count: int = 0  # consecutive open_app failures that never launched
+    failure_hint: str = ""  # structured launch-failure note fed to the next Operator call
     indexer = ElementIndexer(adb_path=adb_path, device=device)
 
     # ── Cross-run memory (Phase 0) ─────────────────────────────────────
@@ -1027,10 +1032,12 @@ def _run_reactive_fallback(
                     targeted_indices=targeted_indices,
                     action_loop_note=action_loop_note,
                     pending_hint=pending_hint,
+                    failure_hint=failure_hint,
                 )
             )
             _log(f"[timing] step {step} VLM decide  → {time.time() - t_vlm:.2f}s  (total {time.time() - t_step:.2f}s)")
         pending_hint = ""  # consumed by the decision above
+        failure_hint = ""  # consumed by the decision above
 
         # Merge any notes written by the VLM into the scratchpad
         if notes_updates and isinstance(notes_updates, dict):
@@ -1047,8 +1054,27 @@ def _run_reactive_fallback(
 
         # 5. Execute action (no safety net in flash mode)
         t_exec = time.time()
-        _execute_action_adb(adb_path, device, action_type, action_args, elements=elements)
+        open_error = _execute_action_adb(adb_path, device, action_type, action_args, elements=elements)
         actions.append(action_desc)
+        if open_error:
+            _log(f"[open] FAILED: {open_error}")
+            if "not installed" in open_error or "could not resolve" in open_error:
+                fail_reason = open_error
+                status = "fail"
+                end_reason = "flash_app_launch_failed"
+            else:
+                open_fail_count += 1
+                failure_hint = (
+                    f"\n⚠️  The last open_app action FAILED: {open_error}. "
+                    f"Do NOT retry the same open_app. If the target app cannot "
+                    f"be opened at all, output {{\"action\":\"fail\"}} with a reason.\n"
+                )
+                if open_fail_count >= OPEN_LAUNCH_RETRIES:
+                    fail_reason = open_error
+                    status = "fail"
+                    end_reason = "flash_app_launch_failed"
+        else:
+            open_fail_count = 0
         if action_type != "finish":
             # A real action landed — reset the finish counter. Do NOT reset on
             # ``finish`` itself, otherwise the escalated Checker arbitration
@@ -1063,7 +1089,7 @@ def _run_reactive_fallback(
         _log(f"[timing] step {step} execute     → {time.time() - t_exec:.2f}s  (total {time.time() - t_step:.2f}s)")
 
         # 5.5 Memory: record the successful step (action + task plan)
-        if mem.enabled and action_type != "fail":
+        if mem.enabled and action_type != "fail" and not open_error:
             try:
                 target_el = None
                 target_rid = ""
@@ -1165,6 +1191,9 @@ def _run_reactive_fallback(
             _log("Action loop detected — repeated open_app + dismiss cycle")
 
         # 9. Check task completion
+        if status == "fail":
+            break
+
         if action_type == "fail":
             reason = (action_args or {}).get("reason", "") or (action_desc if action_desc else "")
             _log(f"Task failed: {reason}")
@@ -1360,6 +1389,8 @@ def _run_plan_guided_fallback(
     last_action_types: list[str] = []  # Track recent action types for loop detection
     consecutive_finish = 0  # Operator "finish" verdicts with pending milestones in a row
     fail_reason: str = ""  # why the task failed (only set on a terminal fail)
+    open_fail_count: int = 0  # consecutive open_app failures that never launched
+    failure_hint: str = ""  # structured launch-failure note fed to the next Operator call
     plan_text = ""
     plan_generated = False
     validator_stats = {"approved": 0, "warned": 0, "rejected": 0}
@@ -1591,8 +1622,10 @@ def _run_plan_guided_fallback(
                 action_loop_note=action_loop_note,
                 blocked_coords=blocked_coords,
                 blocked_targets=blocked_targets,
+                failure_hint=failure_hint,
             )
             _log(f"[timing] step {step} operator    → {time.time() - t_oper:.2f}s  (total {time.time() - t_step:.2f}s)")
+        failure_hint = ""  # consumed by the decision above
 
         # Merge any notes written by the VLM into the scratchpad
         if notes_updates and isinstance(notes_updates, dict):
@@ -1818,8 +1851,28 @@ def _run_plan_guided_fallback(
 
         # ── 5. Execute ──────────────────────────────────────────────
         t_exec = time.time()
-        _execute_action_adb(adb_path, device, action_type, action_args, elements=elements)
+        open_error = _execute_action_adb(adb_path, device, action_type, action_args, elements=elements)
         actions.append(action_desc)
+        if open_error:
+            _log(f"[open] FAILED: {open_error}")
+            if "not installed" in open_error or "could not resolve" in open_error:
+                fail_reason = open_error
+                status = "fail"
+                end_reason = "pro_app_launch_failed"
+                break
+            open_fail_count += 1
+            failure_hint = (
+                f"\n⚠️  The last open_app action FAILED: {open_error}. "
+                f"Do NOT retry the same open_app. If the target app cannot "
+                f"be opened at all, output {{\"action\":\"fail\"}} with a reason.\n"
+            )
+            if open_fail_count >= OPEN_LAUNCH_RETRIES:
+                fail_reason = open_error
+                status = "fail"
+                end_reason = "pro_app_launch_failed"
+                break
+        else:
+            open_fail_count = 0
         # A successful execute ends any failure burst (validator rejections and
         # safety-net blocks both converge here), so the Diagnoser can fire again
         # if a fresh burst starts later.
@@ -1835,7 +1888,7 @@ def _run_plan_guided_fallback(
         _log(f"[timing] step {step} execute     → {time.time() - t_exec:.2f}s  (total {time.time() - t_step:.2f}s)")
 
         # Memory: record the successful step (action + task plan)
-        if mem.enabled:
+        if mem.enabled and not open_error:
             try:
                 target_el = None
                 target_rid = ""
@@ -2874,6 +2927,7 @@ def _decide_action_plan_guided(
     blocked_coords: list[str] | None = None,
     blocked_targets: list[int] | None = None,
     pending_hint: str = "",
+    failure_hint: str = "",
 ) -> tuple[str, dict, str, dict | None, dict | None]:
     """Call the VLM with screenshot + element index + plan context to decide the next action.
 
@@ -3013,6 +3067,7 @@ def _decide_action_plan_guided(
         + (f"\n{action_loop_note}" if action_loop_note else "")
         + (f"\n{blocked_text}" if blocked_text else "")
         + (f"\n{pending_hint}" if pending_hint else "")
+        + (f"\n{failure_hint}" if failure_hint else "")
         + targeting_rules
         + f"\n\n{index_text}"
     )
@@ -3137,14 +3192,62 @@ def _decide_action_plan_guided(
         return ("finish", {}, "task complete", plan_updates, notes_updates)
 
 
+def _pkg_installed(adb_path: str, device: str, pkg: str) -> bool:
+    """Whether a package is installed on the device.
+
+    ``pm list packages <filter>`` does a substring match and returns zero even
+    when the exact package is absent, so grep for an EXACT ``package:<pkg>``
+    line.  If the shell query itself fails (device busy), assume installed to
+    avoid false failures.
+    """
+    try:
+        rc, out, _ = _adb(
+            ["shell", "pm", "list", "packages", "|", "grep", "-x", f"package:{pkg}"],
+            adb_path=adb_path, device=device, timeout=10,
+        )
+    except Exception:
+        return True
+    if rc != 0:
+        return True  # could not verify — do not fail an installed app
+    return any(line.strip() == f"package:{pkg}" for line in out.splitlines())
+
+
+def _foreground_pkg(adb_path: str, device: str) -> str:
+    """Return the currently resumed package name, or '' if unresolvable."""
+    try:
+        rc, out, _ = _adb(
+            ["shell", "dumpsys", "activity", "activities"],
+            adb_path=adb_path, device=device, timeout=10,
+        )
+    except Exception:
+        return ""
+    if rc != 0 or not out:
+        return ""
+    for line in out.splitlines():
+        s = line.strip()
+        if s.startswith("mResumedActivity") or s.startswith("topResumedActivity"):
+            m = re.search(r"\bu0\s+([a-zA-Z][\w.]*)/", s)
+            if m:
+                return m.group(1)
+            m2 = re.search(r"([a-zA-Z][\w.]+(?:\.[\w.]+)+)/", s)
+            if m2:
+                return m2.group(1)
+    return ""
+
+
 def _execute_action_adb(
     adb_path: str,
     device: str,
     action_type: str,
     action_args: dict,
     elements: list | None = None,
-) -> None:
-    """Execute an action via ADB."""
+) -> str | None:
+    """Execute an action via ADB.
+
+    Returns ``None`` on success. For ``open`` actions that cannot launch the
+    target (package not installed, or the foreground never switched to it),
+    returns a human-readable failure reason instead of failing silently.
+    """
     if action_type == "tap":
         coord = action_args.get("coordinate", [0, 0])
         _adb(["shell", "input", "tap", str(coord[0]), str(coord[1])],
@@ -3168,26 +3271,36 @@ def _execute_action_adb(
     elif action_type == "open":
         app = action_args.get("text", "")
         pkg = _resolve_package(adb_path, device, app)
-        if pkg:
-            _log(f"open_app: resolved '{app}' → '{pkg}'")
-            # Try monkey first (reliable for known packages)
-            rc, _, _ = _adb(
-                ["shell", "monkey", "-p", pkg, "-c", "android.intent.category.LAUNCHER", "1"],
-                adb_path=adb_path, device=device, timeout=10,
-            )
-            if rc != 0:
-                # Fallback: am start with MAIN/LAUNCHER intent
-                _adb(
-                    ["shell", "am", "start", "-a", "android.intent.action.MAIN",
-                     "-c", "android.intent.category.LAUNCHER", pkg],
-                    adb_path=adb_path, device=device, timeout=10,
-                )
-        else:
+        if not pkg:
             _log(f"open_app: could not resolve '{app}' — trying raw monkey")
             _adb(["shell", "monkey", "-p", app, "1"],
                  adb_path=adb_path, device=device)
+            return f"could not resolve '{app}' to a package"
+        if not _pkg_installed(adb_path, device, pkg):
+            _log(f"open_app: '{app}' → '{pkg}' is NOT installed on this device")
+            return f"{app} (pkg={pkg}) is not installed"
+        _log(f"open_app: resolved '{app}' → '{pkg}'")
+        # Try monkey first (reliable for known packages)
+        rc, _, _ = _adb(
+            ["shell", "monkey", "-p", pkg, "-c", "android.intent.category.LAUNCHER", "1"],
+            adb_path=adb_path, device=device, timeout=10,
+        )
+        if rc != 0:
+            # Fallback: am start with MAIN/LAUNCHER intent
+            _adb(
+                ["shell", "am", "start", "-a", "android.intent.action.MAIN",
+                 "-c", "android.intent.category.LAUNCHER", pkg],
+                adb_path=adb_path, device=device, timeout=10,
+            )
+        # Verify the target app actually came to the foreground.
+        time.sleep(1.5)
+        fg = _foreground_pkg(adb_path, device)
+        if fg and fg != pkg:
+            _log(f"open_app: '{pkg}' did not come to foreground (got '{fg}')")
+            return f"{app} (pkg={pkg}) did not launch — foreground is '{fg}'"
     elif action_type == "finish":
         pass  # No ADB action needed
+    return None
 
 def _resolve_package(adb_path: str, device: str, app_name: str) -> str | None:
     """Resolve an app display name to a package name.
