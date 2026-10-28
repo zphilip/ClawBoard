@@ -642,7 +642,11 @@ def _make_run_screenshots_dir() -> Path:
 
 def _take_screenshot(adb_path: str, device: Optional[str], dest: Path,
                      max_age_seconds: int = 30) -> bool:
-    """Capture a screenshot from the device via ADB and save to dest."""
+    """Capture a screenshot from the device via ADB and save to dest.
+
+    If the first capture fails (commonly because the screen turned off mid-run
+    during a long automation session), wake the screen once and retry.
+    """
     dest.parent.mkdir(parents=True, exist_ok=True)
     if dest.exists():
         dest.unlink()
@@ -651,9 +655,15 @@ def _take_screenshot(adb_path: str, device: Optional[str], dest: Path,
     if device:
         cmd += ["-s", device]
     cmd += ["exec-out", "screencap", "-p"]
-    try:
-        result = _sp.run(cmd, capture_output=True, timeout=15)
-        if result.returncode == 0 and result.stdout:
+
+    for attempt in (1, 2):
+        result = None
+        try:
+            result = _sp.run(cmd, capture_output=True, timeout=15)
+        except Exception as e:
+            _log(f"Screenshot attempt {attempt} error: {e}")
+
+        if result is not None and result.returncode == 0 and result.stdout:
             dest.write_bytes(result.stdout)
 
             # Cache device resolution from the screenshot (first capture only)
@@ -672,8 +682,14 @@ def _take_screenshot(adb_path: str, device: Optional[str], dest: Path,
                 dest.unlink(missing_ok=True)
                 return False
             return True
-    except Exception as e:
-        _log(f"Screenshot failed: {e}")
+
+        if attempt == 1:
+            _log("Screenshot capture failed — waking screen and retrying")
+            try:
+                ensure_screen_on(adb_path, device)
+            except Exception as e:
+                _log(f"Screen wake failed: {e}")
+
     return False
 
 # ---------------------------------------------------------------------------
@@ -1014,8 +1030,17 @@ def _run_reactive_fallback(
 
         # 3. Determine action — memory fastpath first, then VLM (plan-guided)
         t_vlm = time.time()
+        # Never replay from memory while a loop / stale-screen / launch-failure /
+        # blocked-finish signal is active: the screen is not progressing, so a
+        # replayed action would very likely be another wasted repeat of what
+        # just failed to take effect. Force a deliberate VLM decision instead.
+        loop_signal = bool(action_loop_note or similarity_note or failure_hint or pending_hint)
         mem_state = mem.describe_state(elements) if mem.enabled else None
-        fast = mem.fastpath(mem_state, elements)
+        fast = None
+        if loop_signal:
+            _log("[memory] loop/stale-screen signal active — skipping fastpath, VLM will decide")
+        else:
+            fast = mem.fastpath(mem_state, elements)
         from_memory = bool(fast)
         if fast:
             action_type, action_args, action_desc = fast
@@ -1605,8 +1630,15 @@ def _run_plan_guided_fallback(
 
         # ── 2. Operator Node: memory fastpath first, then VLM ────────────
         t_oper = time.time()
+        # Never replay from memory while a loop / stale-screen / launch-failure
+        # signal is active: force a deliberate VLM decision instead.
+        loop_signal = bool(action_loop_note or similarity_note or failure_hint)
         mem_state = mem.describe_state(elements) if mem.enabled else None
-        fast = mem.fastpath(mem_state, elements)
+        fast = None
+        if loop_signal:
+            _log("[memory] loop/stale-screen signal active — skipping fastpath, VLM will decide")
+        else:
+            fast = mem.fastpath(mem_state, elements)
         if fast:
             action_type, action_args, action_desc = fast
             plan_updates = None
