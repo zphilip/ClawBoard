@@ -91,12 +91,12 @@ conn_ready  = threading.Event()
 conn_closed = threading.Event()
 
 
-def out(s):
+def out(s, end="\n"):
     """Streaming output → suppressed in --quiet mode (goes to stderr instead)."""
     if args.quiet:
-        print(s, file=sys.stderr, flush=True)
+        print(s, end=end, file=sys.stderr, flush=True)
     else:
-        print(s, flush=True)
+        print(s, end=end, flush=True)
 
 
 def tag4(a):
