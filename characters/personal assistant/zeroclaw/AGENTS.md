@@ -78,8 +78,9 @@ Skip secrets unless asked to keep them.
 - `mobile-control` 是较轻量的单应用备选（`python3 skills/mobile-control/mobile_agent.py --instruction "<任务>"`）— 见 TOOLS.md
 - **用裸 `python3`**，不要 `cd`（不在 allowed_commands），不要 `/opt/clawboard/venv/bin/python3`（`/opt` 在 forbidden_paths）
 - **轮询之间用 `adb shell sleep N` 等待**；宿主机 `sleep`/`timeout`/`nohup`/`ps` 都不在白名单，误试一次浪费一次工具调用
-- **不要用 `file_read` 读截图/PNG** — 二进制会被灌进上下文导致 token 溢出。核验屏幕用
-  `adb shell uiautomator dump` + `grep` 文本，或 `image_info` 只看元数据；截图由 artemis 内部自行传给 VLM
+- **不要用 `file_read` 读截图/PNG** — 它要么拒绝二进制、要么把 base64 灌进上下文导致 token 溢出。
+  要真正“看”截图文件，用 `image_info`：返回格式/尺寸并把图片附加给支持视觉的模型（`[IMAGE:…]` 标记）。
+  核验屏幕文本用 `adb shell uiautomator dump` + `grep`；截图由 artemis 内部自行传给 VLM
 - **技能生成的临时文件放在技能目录下**（截图在 `skills/artemis-control-v2/screenshots/`），
   不要 `adb pull` 拉到 workspace 根目录（这正是之前误 `file_read` 二进制的诱因）
 - 技能每步输出 `{"type":"progress",...}` — **实时向雇主播报每一步**操作

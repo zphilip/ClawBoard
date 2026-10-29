@@ -266,7 +266,9 @@ The ZeroClaw shell sandbox (e.g. `level = "supervised"` with a non-empty
   Artemis already does the screenshot→VLM upload internally and safely; the
   calling agent must NOT re-read those files. To verify the on-screen state, grep
   TEXT instead: `adb shell uiautomator dump` then `grep` the window/XML, or read
-  only the `result`/`progress` JSON lines. (`image_info` for metadata-only is fine.)
+  only the `result`/`progress` JSON lines. To actually LOOK at a screenshot file, use
+  `image_info` — it returns format/size/dimensions AND attaches the image to
+  vision-capable models via an `[IMAGE:…]` marker. Never `file_read` the PNG bytes.
 - **Skill-generated files stay under the skill dir.** Artemis writes its own
   screenshots to `skills/artemis-control-v2/screenshots/run_<ts>_<pid>/` and its
   log to `--log-file`. Do NOT `adb pull` screenshots/XML into the workspace root

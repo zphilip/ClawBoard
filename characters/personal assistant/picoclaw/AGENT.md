@@ -145,8 +145,9 @@ Skip secrets unless asked to keep them.
 - **Check screen state before waking**: `adb shell dumpsys power | grep -i mWakefulness`; only
   send `keyevent 26` if Dozing/Asleep (power-key toggle turns an awake screen OFF)
 - **Use bare `python3`**, never `cd` or `/opt/clawboard/venv/bin/python3`
-- **NEVER `file_read` a screenshot/`.png`** — binary floods context; verify via
-  `adb shell uiautomator dump` + `grep` or `image_info`. Keep screenshots under
+- **NEVER `file_read` a screenshot/`.png`** — it rejects binary or floods context. To look at
+  an image, use `image_info` (format/size/dimensions + attaches it to vision-capable models);
+  verify UI text via `adb shell uiautomator dump` + `grep`. Keep screenshots under
   `skills/artemis-control-v2/screenshots/`; don't `adb pull` them to the workspace root.
 - Example triggers: "打开微信", "帮我发消息", "截图", "滑动", "打开百度地图", "open [app]", "go to [screen]"
 - If no phone is connected, report status and suggest connecting via USB or wireless ADB

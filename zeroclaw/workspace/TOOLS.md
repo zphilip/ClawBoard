@@ -23,6 +23,9 @@ Things like:
 - **file_read** — Read file contents
 - Use when: inspecting project files, configs, or logs.
 - Don't use when: you only need a quick string search (prefer targeted search first).
+- **image_info** — Read image metadata (format, dimensions, size) and attach the image to vision-capable models
+- Use when: you need to actually look at a screenshot/PNG/photo, or verify an image file.
+- Don't use when: you only need to verify on-screen UI text (use `adb shell uiautomator dump` + `grep` instead).
 - **file_write** — Write file contents
 - Use when: applying focused edits, scaffolding files, or updating docs/code.
 - Don't use when: unsure about side effects or when the file should remain user-owned.
@@ -81,8 +84,9 @@ adb shell input keyevent 26                     # wake ONLY if Dozing/Asleep (th
 - host `sleep` / `timeout` / `nohup` / `setsid` / `ps` / `pgrep` / `ss` — not allowlisted
 - `> file` / `cat > file` / `tee` — file redirects blocked; use the skill's `--log-file`
 - **Wait via `adb shell sleep N`; read via `tail`/`grep`/`cat`** — those are the only safe ones
-- `file_read` on a **PNG/screenshot** — loads binary bytes into your context → token overflow.
-  Verify screens with text (`adb shell uiautomator dump` + `grep`) or `image_info` (metadata only).
+- `file_read` on a **PNG/screenshot** — rejects binary (utf8) or floods your context (base64).
+  Use `image_info` instead: metadata (format/size/dimensions) + attaches the image to
+  vision-capable models via an `[IMAGE:…]` marker. Verify UI text with `adb shell uiautomator dump` + `grep`.
 - `adb pull` of screenshots/XML into the workspace root — skill files stay under the skill dir
   (`skills/artemis-control-v2/screenshots/`); pulling binaries to the root is what made them
   tempting to `file_read`.

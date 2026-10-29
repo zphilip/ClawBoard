@@ -43,8 +43,9 @@ You are a helpful AI assistant. Be concise, accurate, and friendly.
   `keyevent 26` if Dozing/Asleep (it is the power-key TOGGLE and turns an awake screen OFF)
 - **Use bare `python3`**, never `cd` (not in `allowed_commands`) or `/opt/clawboard/venv/bin/python3` (`/opt` in `forbidden_paths`)
 - **Wait with `adb shell sleep N`** between polls; host `sleep`/`timeout`/`nohup`/`ps` are not allowlisted
-- **NEVER `file_read` a screenshot/`.png`** — the binary floods your context and overflows the token window.
-  Verify screens with text: `adb shell uiautomator dump` + `grep`, or `image_info` (metadata only)
+- **NEVER `file_read` a screenshot/`.png`** — it rejects binary (utf8) or floods your context (base64).
+  To actually LOOK at an image, use `image_info` (format/size/dimensions + attaches the image to
+  vision-capable models). Verify UI text with `adb shell uiautomator dump` + `grep`.
 - **Keep skill-generated files in the skill dir** — screenshots live under `skills/artemis-control-v2/screenshots/`;
   do NOT `adb pull` them into the workspace root
 - If no phone is connected and the user asks to operate a phone, report the connection status and suggest connecting a phone via USB or wireless ADB
