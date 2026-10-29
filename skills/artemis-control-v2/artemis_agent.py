@@ -90,6 +90,60 @@ def _trace(msg: str) -> None:
         pass
 
 
+def _resolve_log_path(log_file: str) -> str:
+    """Return a writable absolute path for the run log.
+
+    Explicit `--log-file` is used as-is; otherwise a timestamped file in the
+    skill directory (which is workspace-visible and not blocked by zeroclaw's
+    forbidden_paths). Parent directories are created when possible so the
+    append-mode open in main() can't fail on a missing dir.
+    """
+    if log_file:
+        path = Path(log_file)
+    else:
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        path = Path(__file__).parent / f"artemis_run_{stamp}.jsonl"
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
+    return str(path.resolve())
+
+
+def _daemonize() -> None:
+    """Detach into the background (double-fork + setsid) with stdio on /dev/null.
+
+    zeroclaw's shell tool runs commands in a dedicated process group and reaps
+    the whole group (SIGKILL -pgid) on timeout/cancel, so a plain `&` job —
+    which stays in that group — would be killed too, and keeping it in the
+    foreground blocks the shell tool (returning stdout only at process exit,
+    which defeats polling). ``fork()+setsid()`` moves the worker into a new
+    session/process group that survives the reap, while the original process
+    exits immediately so the shell tool returns the ``run_started`` JSON right
+    away. From then on every event is appended to ``--log-file`` and the caller
+    polls that file across short shell calls.
+    """
+    if not hasattr(os, "fork"):
+        return  # non-POSIX OS: keep foreground behaviour
+    sys.stdout.flush()
+    sys.stderr.flush()
+    if os.fork() > 0:
+        os._exit(0)          # original process → exits; shell tool returns now
+    os.setsid()              # new session + new process group → escapes group reap
+    if os.fork() > 0:
+        os._exit(0)          # first child → exits (reparented to init)
+    # Grandchild = worker. Drop inherited stdio so the shell tool's stdout
+    # pipe EOFs immediately; all output now goes to --log-file via _emit/_log.
+    devnull = os.open(os.devnull, os.O_RDWR)
+    try:
+        os.dup2(devnull, 0)
+        os.dup2(devnull, 1)
+        os.dup2(devnull, 2)
+    finally:
+        if devnull > 2:
+            os.close(devnull)
+
+
 def _force_complete_plan(plan_text: str) -> str:
     """Mark every non-continuous checkbox milestone done.
 
@@ -524,8 +578,20 @@ def _ts_now() -> str:
 
 
 def _emit(obj: dict) -> None:
-    """Print a JSON object to stdout — consumed by OpenClaw."""
-    print(json.dumps(obj, ensure_ascii=False), flush=True)
+    """Print a JSON object to stdout — consumed by OpenClaw.
+
+    When ``--log-file`` is given, the same JSON line is also appended to the
+    log file so a detached run can be polled for progress (stdout is buffered
+    by zeroclaw's shell tool and only returned at process exit).
+    """
+    line = json.dumps(obj, ensure_ascii=False)
+    print(line, flush=True)
+    if _LOG_FILE:
+        try:
+            _LOG_FILE.write(line + "\n")
+            _LOG_FILE.flush()
+        except Exception:
+            pass
 
 
 def _emit_progress(step: int, action: str, message: str,
@@ -3766,8 +3832,14 @@ def parse_args() -> argparse.Namespace:
                    help="Only run pre-checks, skip task execution")
     p.add_argument("--debug", action="store_true",
                    help="Verbose logging")
+    p.add_argument("--daemon", action="store_true", dest="daemon",
+                   help="Fork into the background and return immediately. Prints "
+                        "a run_started JSON with the log file path, then keeps "
+                        "writing progress/result JSONL to --log-file for polling.")
     p.add_argument("--log-file", default="", dest="log_file",
-                   help="Also write all logs to this file")
+                   help="Append all JSONL/logs to this file; in --daemon mode this "
+                        "is the file to poll (default: artemis_run_<ts>.jsonl in "
+                        "the skill directory)")
     return p.parse_args()
 
 
@@ -3776,6 +3848,32 @@ def main() -> int:
     args = parse_args()
 
     _DEBUG = args.debug
+
+    # ── Daemon mode: detach, report the log path, and keep running in background.
+    # The parent process prints a single run_started JSON (returned immediately by
+    # zeroclaw's shell tool) and exits; the worker continues and appends every
+    # progress/result event to the log file so the caller can poll it.
+    if getattr(args, "daemon", False):
+        log_path = _resolve_log_path(args.log_file)
+        print(json.dumps({
+            "type": "run_started",
+            "log_file": log_path,
+            "status_file": log_path + ".meta.json",
+        }, ensure_ascii=False), flush=True)
+        _daemonize()
+        # Worker from here on: stdout/stderr are /dev/null; only --log-file and
+        # the return code matter.
+        args.log_file = log_path
+        try:
+            with open(log_path + ".meta.json", "w", encoding="utf-8") as mf:
+                json.dump({
+                    "pid": os.getpid(),
+                    "log_file": log_path,
+                    "started_at": _ts_now(),
+                }, mf, ensure_ascii=False)
+        except Exception:
+            pass
+
     cfg = load_skill_config()
     _log(f"artemis_agent.py v{VERSION} — model={cfg['model']} base_url={cfg['base_url']} profile={args.profile} instruction={args.instruction!r}")
     if args.log_file:

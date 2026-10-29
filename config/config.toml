@@ -68,7 +68,9 @@ auto_approve = [
 always_ask = []
 allowed_roots = []
 non_cli_excluded_tools = []
-shell_timeout_secs = 60
+# Long-running skills (artemis-control* phone automation: 3–50 step VLM loop)
+# need far more than the 60s default, which SIGKILLs the run mid-task.
+shell_timeout_secs = 900
 
 [trust]
 initial_score = 0.8
@@ -766,4 +768,4 @@ approval_timeout_secs = 300
 max_finished_runs = 100
 
 [shell_tool]
-timeout_secs = 60
+timeout_secs = 900

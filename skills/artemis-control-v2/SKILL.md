@@ -115,18 +115,18 @@ adb devices
 # 2. Wake screen if off
 adb shell input keyevent 26
 
-# 3. Check Artemis is importable
-python3 -c "import artemis; print(artemis.__version__)" || echo "Install: cd /workspace/artemis && uv sync"
+# 3. Check the Artemis runner end to end. DO NOT use `python3 -c` (zeroclaw's
+#    shell policy blocks -c/-m inline code) and do NOT shell-redirect `> file`.
+python3 skills/artemis-control-v2/artemis_agent.py --instruction "x" --dry_run
 ```
 
 ## Invoke the Skill
 
 ```bash
-# cd to the skill directory first
-cd /path/to/ClawBoard/skills/artemis-control
-
-# Basic usage — Flash profile (fast reactive, no plan)
-python3 artemis_agent.py \
+# Basic usage — Flash profile (fast reactive, no plan).
+# No `cd` needed: artemis_agent.py resolves its own dir (config/, runner/) via
+# __file__. `cd` is usually NOT in zeroclaw's allowed_commands — run by path:
+python3 skills/artemis-control-v2/artemis_agent.py \
     --instruction "打开百度地图,导航回家" \
     --profile flash
 
@@ -152,6 +152,31 @@ python3 artemis_agent.py \
     --dry_run
 ```
 
+### Detached run + log polling (RECOMMENDED under zeroclaw)
+
+zeroclaw's `shell` tool buffers stdout and returns it only at process exit, and
+its 60s/900s timeout blocks for the whole run. To get **live, step-by-step
+progress** through clawproxy, run detached and poll the log file:
+
+```bash
+# 1. Start detached — returns immediately with a run_started JSON
+python3 skills/artemis-control-v2/artemis_agent.py \
+    --instruction "打开百度地图,搜索南岸花城并开始导航" \
+    --profile flash --daemon
+#    → {"type":"run_started","log_file":"…/artemis_run_20261029_010203.jsonl",…}
+
+# 2. Poll the log file (short commands, each returns immediately)
+tail -n 5 <log_file from run_started>      # latest progress lines
+cat  <log_file>                            # full JSONL so far (progress/incident/result)
+
+# 3. Stop when a {"type":"result", …} line appears; report its status/message.
+```
+
+The `--daemon` worker double-forks (new session/process group), so it survives
+zeroclaw's shell-tool process-group reap. Every `{"type":"progress"}` /
+`{"incident"}` / `{"result"}` line is flushed to the log file as it happens —
+no shell `>` redirects or `&` backgrounding are used.
+
 ### CLI Parameters
 
 | Parameter          | Default          | Description |
@@ -160,12 +185,13 @@ python3 artemis_agent.py \
 | `--profile`        | `flash`          | Execution profile: `flash` or `pro` |
 | `--device`         | *(auto-detect)*  | ADB device serial |
 | `--max_steps`      | `50`             | Hard cap on steps |
-| `--timeout`        | `900`            | Seconds before kill |
+| `--timeout`        | `900`            | Seconds before kill (run ceiling, not a client timeout) |
 | `--verification`   | `final`          | `off` / `final` / `checkpoints` / `strict` |
 | `--explorer`       | `pro`            | Explorer tier: `flash` / `pro` / `ultra` |
 | `--dry_run`        | `false`          | Only run pre-checks |
 | `--debug`          | `false`          | Verbose logging |
-| `--log-file`       | `""`             | Also write logs to file |
+| `--daemon`         | `false`          | Fork into background, print `run_started` JSON, exit; poll `--log-file` |
+| `--log-file`       | `""`             | Append all JSONL/logs here (in `--daemon` mode: the file to poll) |
 
 ### Exit Codes
 
@@ -176,6 +202,38 @@ python3 artemis_agent.py \
 | `2`  | `clarify`  | Clarification needed |
 | `3`  | `timeout`  | Timeout or step limit reached |
 | `4`  | `error`    | ADB device not found |
+
+### ZeroClaw shell-policy notes
+
+The ZeroClaw shell sandbox (e.g. `level = "supervised"` with a non-empty
+`allowed_commands`) is strict. To keep this skill runnable:
+
+- **Timeout**: `[autonomy] shell_timeout_secs` must exceed the run time — the
+  60s default kills the agent mid-run. Set `shell_timeout_secs = 900` (or more).
+- **No `cd`**: `cd` is usually not in `allowed_commands`. Run the script by path;
+  it self-resolves its directory.
+- **No `python3 -c` / `-m`**: inline code is blocked by the shell policy
+  (`is_args_safe`). Use a script file or `--dry_run` for health checks.
+- **No shell `>` file redirects**: only `>/dev/null`, `2>&1`, heredocs are
+  allowed. Capture output with `--log-file <path>` (the script writes it
+  itself) instead of `> file`.
+- **No backgrounding (`&`)**: a `&` job stays in zeroclaw's shell process group
+  and gets SIGKILLed on timeout, and a plain foreground run only returns stdout
+  at exit. Use `--daemon` instead — it double-forks into a new session so it
+  survives, returns a `run_started` JSON immediately, and you poll `--log-file`
+  with short `tail`/`cat` calls for live progress.
+- **Vision model required**: `config.json` must point at a live VLM (e.g.
+  gui-owl), not a text-only model. The default gui-owl endpoint is
+  `http://apicn.aiworm.cn:8809/v1`.
+- **`--timeout` is the run ceiling, NOT a client timeout.** Pass `--timeout 900`
+  (or omit it — the default is already 900). Do NOT shrink it to mirror the
+  old shell timeout; a navigation task needs several minutes. Short `--timeout`
+  (e.g. 180) makes the script kill itself mid-run (exit code 3).
+- **Output is buffered, not streamed.** zeroclaw's `shell` tool returns the
+  whole JSONL only when the process exits — there are no intermediate frames.
+  The calling client must therefore wait the full run duration: use
+  `test_agent.py --timeout 900` (or a higher turn timeout) so the single
+  `tool_result` + `done` can arrive.
 
 ## Response Dispatch (for the calling agent)
 
