@@ -58,17 +58,29 @@ Keep local notes (SSH hosts, device names, etc.) in `TOOLS.md`.
 When the user asks you to operate their phone — open apps, send messages, navigate,
 take screenshots, search within apps, set alarms, or any UI task on the phone:
 
-- **ALWAYS use the mobile-control skill** — run:
+- **Check the device first**: `adb devices`; if empty, tell the user
+- **Check screen state before waking**: `adb shell dumpsys power | grep -i mWakefulness`;
+  only send `adb shell input keyevent 26` if it prints Dozing/Asleep — keyevent 26 is the
+  power-key TOGGLE and will turn an awake screen OFF
+- **Use the artemis-control-v2 skill** — follow its SKILL.md golden path:
+  `--dry_run` → `--daemon` → poll the log file it reports:
 
   ```bash
-  cd skills/mobile-control && /opt/clawboard/venv/bin/python3 mobile_agent.py --instruction "<task>"
+  python3 skills/artemis-control-v2/artemis_agent.py --instruction "<task>" --profile flash --daemon
+  # → {"type":"run_started","log_file":"<LOG>",…}
+  adb shell sleep 30; tail -n 80 <LOG> | grep '"type"'
   ```
 
-- **NEVER use raw `adb shell` commands** to open apps, tap the screen, or type text —
-  the mobile-control skill handles all phone UI tasks via the VLM agent loop
-- Before invoking: verify a device is connected with `adb devices`; if empty, tell the user
-- The skill emits `{"type":"progress",...}` lines per step — **narrate each step** to the
-  user in real time as it executes
+- `mobile-control` is a lighter-weight single-app alternative — see TOOLS.md
+- **Use bare `python3`.** Never `cd` (not in `allowed_commands`) and never
+  `/opt/clawboard/venv/bin/python3` (`/opt` is in `forbidden_paths`)
+- **Wait with `adb shell sleep N`** between polls; host `sleep`/`timeout`/`nohup`/`ps` are
+  not allowlisted and each attempt wastes a turn. Read progress with `tail`/`grep`/`cat`
+- **NEVER `file_read` a screenshot/`.png`** — the raw binary floods your context and overflows
+  the token window. Artemis uploads screenshots to the VLM internally; verify screens by
+  grepping text (`adb shell uiautomator dump` + `grep`) or reading the JSON result lines.
+- **Keep skill-generated files in the skill dir** — screenshots live under
+  `skills/artemis-control-v2/screenshots/`; do NOT `adb pull` them into the workspace root.
 - The final `{"type":"result",...}` line reports success/timeout/error — report the outcome
 - If the instruction is too vague, the skill exits with `status: "clarify"` — ask the user
   which app and what specific action

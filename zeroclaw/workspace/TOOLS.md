@@ -81,6 +81,11 @@ adb shell input keyevent 26                     # wake ONLY if Dozing/Asleep (th
 - host `sleep` / `timeout` / `nohup` / `setsid` / `ps` / `pgrep` / `ss` — not allowlisted
 - `> file` / `cat > file` / `tee` — file redirects blocked; use the skill's `--log-file`
 - **Wait via `adb shell sleep N`; read via `tail`/`grep`/`cat`** — those are the only safe ones
+- `file_read` on a **PNG/screenshot** — loads binary bytes into your context → token overflow.
+  Verify screens with text (`adb shell uiautomator dump` + `grep`) or `image_info` (metadata only).
+- `adb pull` of screenshots/XML into the workspace root — skill files stay under the skill dir
+  (`skills/artemis-control-v2/screenshots/`); pulling binaries to the root is what made them
+  tempting to `file_read`.
 
 ### When NOT to Use
 

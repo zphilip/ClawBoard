@@ -260,6 +260,18 @@ The ZeroClaw shell sandbox (e.g. `level = "supervised"` with a non-empty
   `allowed_commands` — each failed attempt wastes a tool iteration. Read the
   final answer from the last `{"type":"result"}` object (`status`/`message`/
   `steps`), not from the `[log]` human-readable lines.
+- **NEVER `file_read` a screenshot/`.png`.** Reading a PNG through the calling
+  agent's `file_read` tool injects the raw binary bytes into the agent's own LLM
+  context and overflows the token window ("context window exceeds limit").
+  Artemis already does the screenshot→VLM upload internally and safely; the
+  calling agent must NOT re-read those files. To verify the on-screen state, grep
+  TEXT instead: `adb shell uiautomator dump` then `grep` the window/XML, or read
+  only the `result`/`progress` JSON lines. (`image_info` for metadata-only is fine.)
+- **Skill-generated files stay under the skill dir.** Artemis writes its own
+  screenshots to `skills/artemis-control-v2/screenshots/run_<ts>_<pid>/` and its
+  log to `--log-file`. Do NOT `adb pull` screenshots/XML into the workspace root
+  and do NOT create stray `zc_*.png` files — pulling binaries to the repo root is
+  what led to the accidental `file_read` of PNGs.
 
 ## Response Dispatch (for the calling agent)
 
@@ -267,7 +279,7 @@ The ZeroClaw shell sandbox (e.g. `level = "supervised"` with a non-empty
 
 | `"type"`      | Meaning | Action |
 |---------------|---------|--------|
-| `"progress"`  | One step executed | Narrate `message`; attach `screenshot` if present |
+| `"progress"`  | One step executed | Narrate `message`; report the `screenshot` path — NEVER `file_read` the PNG |
 | `"incident"`  | Safety net blocked an action | Note the incident; agent will self-heal |
 | `"result"`    | End of run | Read `status` → report outcome; read `message` for summary |
 

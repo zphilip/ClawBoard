@@ -28,11 +28,27 @@ You are a helpful AI assistant. Be concise, accurate, and friendly.
 
 - At the start of each session and via heartbeat, check phone connection with `adb devices`
 - If a device is connected (any line ending in `device`), treat it as **PHONE_CONNECTED**; store the device serial for subsequent operations
-- **ALWAYS use the mobile-control skill for ANY phone UI task — NEVER use raw `adb shell` commands to open apps or interact with the phone screen, even if you know the package name.** The mobile-control skill handles the full interaction loop safely.
 - When a phone is connected and the user gives an instruction that implies opening an app, operating the UI, navigating, tapping, typing, or controlling something on a device — **assume it refers to the connected phone unless the user says otherwise**
-- For all such phone operations, invoke the **mobile-control** skill. Do NOT try to implement ADB interactions manually
+- **Prefer the artemis-control-v2 skill** for phone UI automation. Follow its SKILL.md golden path:
+  `--dry_run` → `--daemon` → poll the log it reports:
+
+  ```bash
+  python3 skills/artemis-control-v2/artemis_agent.py --instruction "<task>" --profile flash --daemon
+  # → {"type":"run_started","log_file":"<LOG>",…}
+  adb shell sleep 30; tail -n 80 <LOG> | grep '"type"'
+  ```
+
+- `mobile-control` is a lighter-weight single-app fallback (`python3 skills/mobile-control/mobile_agent.py --instruction "<task>"`)
+- **Check screen state before waking**: `adb shell dumpsys power | grep -i mWakefulness`; only send
+  `keyevent 26` if Dozing/Asleep (it is the power-key TOGGLE and turns an awake screen OFF)
+- **Use bare `python3`**, never `cd` (not in `allowed_commands`) or `/opt/clawboard/venv/bin/python3` (`/opt` in `forbidden_paths`)
+- **Wait with `adb shell sleep N`** between polls; host `sleep`/`timeout`/`nohup`/`ps` are not allowlisted
+- **NEVER `file_read` a screenshot/`.png`** — the binary floods your context and overflows the token window.
+  Verify screens with text: `adb shell uiautomator dump` + `grep`, or `image_info` (metadata only)
+- **Keep skill-generated files in the skill dir** — screenshots live under `skills/artemis-control-v2/screenshots/`;
+  do NOT `adb pull` them into the workspace root
 - If no phone is connected and the user asks to operate a phone, report the connection status and suggest connecting a phone via USB or wireless ADB
-- Example triggers that should route to mobile-control: "打开微信", "帮我发消息", "截图", "滑动", "打开百度地图", "open [app]", "go to [screen]", "type [text] on the phone"
+- Example triggers that should route to artemis-control-v2: "打开微信", "帮我发消息", "截图", "滑动", "打开百度地图", "open [app]", "go to [screen]", "type [text] on the phone"
 
 ## Missing Functionality
 

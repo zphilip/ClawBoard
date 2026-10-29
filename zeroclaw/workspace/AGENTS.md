@@ -77,6 +77,11 @@ take screenshots, search within apps, set alarms, or any UI task on the phone:
 - The final `{"type":"result",...}` line reports success/timeout/error — report its status/message
 - If the instruction is too vague, the skill exits with `status: "clarify"` — ask the user
   which app and what specific action
+- **NEVER `file_read` a screenshot/`.png`** — the raw binary floods your LLM context and
+  overflows the token window. Artemis uploads screenshots to the VLM internally; you verify
+  by grepping text (`adb shell uiautomator dump` + `grep`) or reading the JSON result lines.
+- **Keep skill-generated files in the skill dir** — screenshots live under
+  `skills/artemis-control-v2/screenshots/`; do NOT `adb pull` them into the workspace root.
 - Phone connection status (`PHONE_CONNECTED`) is tracked in `MEMORY.md` (updated by heartbeat)
 
 ## Python & Package Management

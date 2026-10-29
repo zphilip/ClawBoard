@@ -64,17 +64,26 @@ Skip secrets unless asked to keep them.
 
 当雇主需要操作手机时 — 打开应用、发送消息、导航、截图、搜索、设闹钟等：
 
-- **必须使用 mobile-control 技能** — 运行：
+- **先确认设备**: `adb devices`；若无设备则告知雇主
+- **先查屏幕状态再唤醒**: `adb shell dumpsys power | grep -i mWakefulness`；仅当输出
+  Dozing/Asleep 才 `adb shell input keyevent 26`（电源键是 toggle，屏幕已亮时反而会灭屏）
+- **优先使用 artemis-control-v2 技能** — 按 SKILL.md 的 golden path（`--dry_run` → `--daemon` → 轮询日志）:
 
   ```bash
-  cd skills/mobile-control && /opt/clawboard/venv/bin/python3 mobile_agent.py --instruction "<任务描述>"
+  python3 skills/artemis-control-v2/artemis_agent.py --instruction "<任务描述>" --profile flash --daemon
+  # → {"type":"run_started","log_file":"<LOG>",…}
+  adb shell sleep 30; tail -n 80 <LOG> | grep '"type"'
   ```
 
-- **严禁使用原始 `adb shell` 命令**来打开应用、点击屏幕或输入文字 —
-  mobile-control 技能通过 VLM agent loop 提供完整的多步骤操控、进度播报、错误处理、循环检测和权限弹窗自动处理
-- 调用前验证设备已连接: `adb devices`；若无设备则告知雇主
+- `mobile-control` 是较轻量的单应用备选（`python3 skills/mobile-control/mobile_agent.py --instruction "<任务>"`）— 见 TOOLS.md
+- **用裸 `python3`**，不要 `cd`（不在 allowed_commands），不要 `/opt/clawboard/venv/bin/python3`（`/opt` 在 forbidden_paths）
+- **轮询之间用 `adb shell sleep N` 等待**；宿主机 `sleep`/`timeout`/`nohup`/`ps` 都不在白名单，误试一次浪费一次工具调用
+- **不要用 `file_read` 读截图/PNG** — 二进制会被灌进上下文导致 token 溢出。核验屏幕用
+  `adb shell uiautomator dump` + `grep` 文本，或 `image_info` 只看元数据；截图由 artemis 内部自行传给 VLM
+- **技能生成的临时文件放在技能目录下**（截图在 `skills/artemis-control-v2/screenshots/`），
+  不要 `adb pull` 拉到 workspace 根目录（这正是之前误 `file_read` 二进制的诱因）
 - 技能每步输出 `{"type":"progress",...}` — **实时向雇主播报每一步**操作
-- 最终 `{"type":"result",...}` 报告成功/超时/错误 — 汇报结果
+- 最终 `{"type":"result",...}` 报告成功/超时/错误 — 汇报结果；完成后不必额外写 MEMORY.md/TOOLS.md
 - 若指令过于模糊，技能返回 `status: "clarify"` — 追问具体应用和操作
 - 手机连接状态 (`PHONE_CONNECTED`) 由心跳任务维护在 `MEMORY.md` 中
 

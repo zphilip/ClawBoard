@@ -36,56 +36,55 @@ Things like:
 - Use when: memory is incorrect, stale, or explicitly requested to be removed.
 - Don't use when: uncertain about impact; verify before deleting.
 
-## mobile-control — Phone UI Automation
+## Phone UI Automation — artemis-control-v2 (primary) / mobile-control (fallback)
 
-- **ALWAYS use the mobile-control skill for phone UI tasks — NEVER use raw `adb shell`
-  to open apps or tap the screen.** The skill provides a VLM-powered agent loop with
-  progress narration, error handling, loop detection, and permission-auto-tapping that
-  raw ADB cannot match.
+- **For phone UI tasks use the artemis-control-v2 skill** — it wraps the Artemis
+  multi-agent VLM loop (Planner → Operator → Validator → Checker) with progress
+  narration, loop detection, and permission-auto-tapping. It runs detached and
+  survives the shell-tool timeout via `--daemon`.
+- `mobile-control` is a lighter-weight single-app fallback. Never use raw `adb shell`
+  to open apps or tap the screen — either skill handles that better.
 
-### Invocation
-
-```bash
-cd skills/mobile-control && /opt/clawboard/venv/bin/python3 mobile_agent.py --instruction "<task>"
-```
-
-With explicit device (multi-device setups):
-```bash
-cd skills/mobile-control && /opt/clawboard/venv/bin/python3 mobile_agent.py \
-    --instruction "Open WeChat and send hello to Mom" \
-    --device "emulator-5554"
-```
-
-### Pre-flight
+### artemis-control-v2 invocation (zeroclaw-safe golden path)
 
 ```bash
-adb devices                          # confirm device is connected
-adb shell input keyevent 26          # wake screen if off
-adb shell ime set com.android.adbkeyboard/.AdbIME  # force ADB keyboard
+python3 skills/artemis-control-v2/artemis_agent.py --instruction "<task>" --profile flash --daemon
+# → {"type":"run_started","log_file":"<LOG>",…}
+adb shell sleep 30; tail -n 80 <LOG> | grep '"type"'   # repeat until {"type":"result"}
 ```
 
-### Key Parameters
+### mobile-control invocation (fallback)
 
-| Param | Default | Notes |
-|---|---|---|
-| `--max_steps` | 30 | Raise for complex multi-app tasks |
-| `--timeout` | 120 | Seconds before kill |
-| `--debug` | false | Writes full log to /tmp/mobile_agent.log |
-| `--dry_run` | false | Only check ADB + screen, no model calls |
+```bash
+python3 skills/mobile-control/mobile_agent.py --instruction "<task>"
+```
+
+### Pre-flight (both skills)
+
+```bash
+adb devices                                     # confirm device is connected
+adb shell dumpsys power | grep -i mWakefulness  # check screen state FIRST
+adb shell input keyevent 26                     # wake ONLY if Dozing/Asleep (this key toggles)
+```
+
+### ZeroClaw shell-policy gotchas (BLOCKED — don't try them)
+
+- `cd …` — not in `allowed_commands`; run scripts by path
+- `/opt/clawboard/venv/bin/python3` — `/opt` is in `forbidden_paths`; use bare `python3`
+- `python3 -c/-m …` — inline code is blocked
+- host `sleep` / `timeout` / `nohup` / `setsid` / `ps` / `pgrep` / `ss` — not allowlisted
+- `> file` / `cat > file` / `tee` — file redirects blocked; use the skill's `--log-file`
+- **Wait via `adb shell sleep N`; read via `tail`/`grep`/`cat`** — those are the only safe ones
+- `file_read` on a **PNG/screenshot** — binary bytes flood your context → token overflow.
+  Verify screens with text (`adb shell uiautomator dump` + `grep`) or `image_info` (metadata only).
+- `adb pull` of screenshots/XML into the workspace root — skill files stay under the skill dir
+  (`skills/artemis-control-v2/screenshots/`); don't pull binaries to the repo root.
 
 ### When NOT to Use
 
 - No device connected (`adb devices` returns empty) — tell the user, don't try
 - File transfer — use `adb pull` / `adb push` instead
 - iOS devices — ADB doesn't work on iPhones
-
-### Troubleshooting
-
-```bash
-sudo systemctl restart adb-server && adb devices   # reset ADB
-tail -f /tmp/mobile_agent.log                       # watch live log
-pkill -f run_gui_owl_1_5_for_mobile.py              # kill stuck run
-```
 
 ## xiaomi-home — Smart Home Control
 
