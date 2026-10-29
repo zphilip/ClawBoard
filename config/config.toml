@@ -202,7 +202,9 @@ max_concurrent = 4
 
 [agent]
 compact_context = false
-max_tool_iterations = 30
+# Long phone-automation runs (artemis-control*) poll their log several times;
+# 30 turns is too tight — every poll costs one tool iteration.
+max_tool_iterations = 60
 max_history_messages = 50
 max_context_tokens = 32000
 parallel_tools = false

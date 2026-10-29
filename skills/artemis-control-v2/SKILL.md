@@ -112,13 +112,21 @@ metadata:
 # 1. Confirm device is connected
 adb devices
 
-# 2. Wake screen if off
+# 2. Check screen state FIRST — do NOT blindly send keyevent 26: it is the
+#    power-key TOGGLE, so on an already-awake screen it turns the screen OFF.
+adb shell dumpsys power | grep -i mWakefulness
+#    → only if it prints Dozing/Asleep, wake:
 adb shell input keyevent 26
 
 # 3. Check the Artemis runner end to end. DO NOT use `python3 -c` (zeroclaw's
 #    shell policy blocks -c/-m inline code) and do NOT shell-redirect `> file`.
 python3 skills/artemis-control-v2/artemis_agent.py --instruction "x" --dry_run
 ```
+
+Text input needs **no checks**: artemis injects text itself (uiautomator2
+`set_text` → clipboard paste → `input text`). Do NOT probe or install an ADB
+keyboard, do NOT run `python3 -c "import uiautomator2"`, do NOT run `ime set` —
+every one of those is a wasted tool call that burns the turn budget.
 
 ## Invoke the Skill
 
@@ -152,30 +160,43 @@ python3 artemis_agent.py \
     --dry_run
 ```
 
-### Detached run + log polling (RECOMMENDED under zeroclaw)
+### Detached run + log polling — the zeroclaw golden path (≤12 tool calls)
 
 zeroclaw's `shell` tool buffers stdout and returns it only at process exit, and
-its 60s/900s timeout blocks for the whole run. To get **live, step-by-step
-progress** through clawproxy, run detached and poll the log file:
+its timeout blocks for the whole run — so run detached and poll the log file.
+**The turn budget is the enemy**: every poll costs one tool call and zeroclaw
+caps a turn at `[agent] max_tool_iterations`. Keep the WHOLE task inside this
+sequence (~5 pre-flight calls + ~5 poll calls):
 
 ```bash
-# 1. Start detached — returns immediately with a run_started JSON
+# 5. Launch detached — returns immediately with a run_started JSON
 python3 skills/artemis-control-v2/artemis_agent.py \
     --instruction "打开百度地图,搜索南岸花城并开始导航" \
     --profile flash --daemon
-#    → {"type":"run_started","log_file":"…/artemis_run_20261029_010203.jsonl",…}
+#    → {"type":"run_started","log_file":"<LOG>",…}   ← remember <LOG>
 
-# 2. Poll the log file (short commands, each returns immediately)
-tail -n 5 <log_file from run_started>      # latest progress lines
-cat  <log_file>                            # full JSONL so far (progress/incident/result)
+# 6. Poll: WAIT via on-device sleep, then read. Repeat ~3-5 times; a step takes
+#    ~20-100s so 30s per poll is about right. Stop at {"type":"result"}.
+adb shell sleep 30; tail -n 80 <LOG> | grep '"type"'
 
-# 3. Stop when a {"type":"result", …} line appears; report its status/message.
+# 7. Report the final result's status / message / steps to the user.
 ```
 
-The `--daemon` worker double-forks (new session/process group), so it survives
-zeroclaw's shell-tool process-group reap. Every `{"type":"progress"}` /
-`{"incident"}` / `{"result"}` line is flushed to the log file as it happens —
-no shell `>` redirects or `&` backgrounding are used.
+Why exactly this shape — zeroclaw's shell policy (`level="supervised"` + a
+non-empty `allowed_commands`) is strict, and these are the ONLY safe patterns:
+
+- ✅ `adb shell sleep N`  — the only way to wait (`sleep` is NOT allowlisted on the host)
+- ✅ `tail -n N <LOG>` / `cat <LOG>` / `grep` / `wc` — the only readers
+- ❌ `sleep` / `timeout` / `nohup` / `setsid` / `ps` / `pgrep` / `ss` — not allowlisted;
+  each attempt is a wasted turn
+- ❌ `python3 -c …` / `python3 -m …` — inline code is blocked
+- ❌ `cat > file` / `> file` / `tee` — file redirects are blocked
+- ❌ `browser` wait / `file_write` poller scripts — may be unavailable or need approval
+
+A `--daemon` run double-forks (new session/process group), so it survives zeroclaw's
+shell-tool process-group reap and is NOT bound by `[shell_tool] timeout`. Every
+`{"type":"progress"}` / `{"incident"}` / `{"result"}` line is flushed to `<LOG>`
+as it happens.
 
 ### CLI Parameters
 
@@ -234,6 +255,11 @@ The ZeroClaw shell sandbox (e.g. `level = "supervised"` with a non-empty
   The calling client must therefore wait the full run duration: use
   `test_agent.py --timeout 900` (or a higher turn timeout) so the single
   `tool_result` + `done` can arrive.
+- **Wait = `adb shell sleep N`; read = `tail -n 80 <LOG> | grep '"type"'`.**
+  Host `sleep`/`timeout`/`nohup`/`setsid`/`ps`/`pgrep`/`ss` are NOT in
+  `allowed_commands` — each failed attempt wastes a tool iteration. Read the
+  final answer from the last `{"type":"result"}` object (`status`/`message`/
+  `steps`), not from the `[log]` human-readable lines.
 
 ## Response Dispatch (for the calling agent)
 
