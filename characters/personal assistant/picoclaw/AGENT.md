@@ -153,6 +153,8 @@ Skip secrets unless asked to keep them.
   ~5 polls), rescue with ≤2 targeted adb calls verified by `uiautomator dump` — then immediately
   re-launch artemis (`--daemon`) with the *remaining* sub-goal. Never finish the whole navigation
   with raw `adb` taps/text.
+- **Search/input flows need an explicit submit** — `type` enters text but never presses Enter; spell
+  out the submit step in the instruction (e.g. "type GAI, then press Enter / tap the top result").
 - Example triggers: "打开微信", "帮我发消息", "截图", "滑动", "打开百度地图", "open [app]", "go to [screen]"
 - If no phone is connected, report status and suggest connecting via USB or wireless ADB
 

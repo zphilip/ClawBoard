@@ -87,6 +87,9 @@ take screenshots, search within apps, set alarms, or any UI task on the phone:
   ~5 polls), rescue with ≤2 targeted adb calls verified by `uiautomator dump` — then immediately
   re-launch artemis (`--daemon`) with the *remaining* sub-goal and poll that log. Never finish the
   whole navigation with raw `adb` taps/text.
+- **Search/input flows need an explicit submit** — `type` enters text but never presses Enter. When
+  the task routes through a search/text box, spell out the submit step in the instruction (e.g.
+  "type GAI, then press Enter / tap the top result"); otherwise artemis retypes the same text forever.
 - Phone connection status (`PHONE_CONNECTED`) is tracked in `MEMORY.md` (updated by heartbeat)
 
 ## Python & Package Management

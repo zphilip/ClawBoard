@@ -86,6 +86,8 @@ Skip secrets unless asked to keep them.
 - **恢复交还**:若 `--daemon` 卡住（同样的 `type`/`tap` 反复出现、轮询 ~5 次仍无 `result`），
   用 ≤2 次定向 adb 动作 + `uiautomator dump` 核验把状态救回正轨——随即用*剩余子目标*重新
   `--daemon` 启动 artemis 并继续轮询。严禁用裸 `adb` 点按/输字完成整段导航。
+- **搜索/输入流程要显式提交** — `type` 只输入文字、不按回车。任务若经过搜索/输入框，
+  在指令里写明提交步骤（如“输入 GAI 后按回车或点顶部结果”），否则 artemis 会反复重打同一段文字直到超时。
 - 技能每步输出 `{"type":"progress",...}` — **实时向雇主播报每一步**操作
 - 最终 `{"type":"result",...}` 报告成功/超时/错误 — 汇报结果；完成后不必额外写 MEMORY.md/TOOLS.md
 - 若指令过于模糊，技能返回 `status: "clarify"` — 追问具体应用和操作

@@ -215,6 +215,13 @@ MUST hand back:
    that violates the "no raw adb" rule and burns the turn budget (each
    dump/tap is one tool call).
 
+### Instruction-writing tips
+
+- **Search/input flows need an explicit submit.** `type` only enters text —
+  never Enter. When the task goes through a search box, spell out the submit
+  step (e.g. "type GAI, then press Enter / tap the top result"). Without it
+  the VLM re-types the same text and stalls until `--max_steps`.
+
 ### CLI Parameters
 
 | Parameter          | Default          | Description |
