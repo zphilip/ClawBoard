@@ -12,7 +12,7 @@
 
     "opencodego": {
       "_comment": "OpenCode Go gateway — requires x-opencode-* headers.",
-      "model": "deepseek-v4-pro",
+      "model": "dglm-5.3-flash",
       "base_url": "https://opencode.ai/zen/go/v1",
       "api_key_env": "OPENCODE_GO_API_KEY",
       "opencode_headers": true,
@@ -21,7 +21,7 @@
 
     "opencodezen": {
       "_comment": "OpenCode Zen gateway — same header requirement, different base URL.",
-      "model": "deepseek-v4-flash-free",
+      "model": "glm-5.3-flash",
       "base_url": "https://opencode.ai/zen/v1",
       "api_key_env": "OPENCODE_API_KEY",
       "opencode_headers": true,

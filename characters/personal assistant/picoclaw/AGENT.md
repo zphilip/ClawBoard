@@ -149,6 +149,10 @@ Skip secrets unless asked to keep them.
   an image, use `image_info` (format/size/dimensions + attaches it to vision-capable models);
   verify UI text via `adb shell uiautomator dump` + `grep`. Keep screenshots under
   `skills/artemis-control-v2/screenshots/`; don't `adb pull` them to the workspace root.
+- **Recovery hand-back:** if a `--daemon` run stalls (same `type`/`tap` repeats, no `result` after
+  ~5 polls), rescue with ≤2 targeted adb calls verified by `uiautomator dump` — then immediately
+  re-launch artemis (`--daemon`) with the *remaining* sub-goal. Never finish the whole navigation
+  with raw `adb` taps/text.
 - Example triggers: "打开微信", "帮我发消息", "截图", "滑动", "打开百度地图", "open [app]", "go to [screen]"
 - If no phone is connected, report status and suggest connecting via USB or wireless ADB
 

@@ -91,6 +91,14 @@ adb shell input keyevent 26                     # wake ONLY if Dozing/Asleep (th
   (`skills/artemis-control-v2/screenshots/`); pulling binaries to the root is what made them
   tempting to `file_read`.
 
+### Stalled run — hand back to artemis
+
+If a `--daemon` run repeats the same `type`/`tap` and no `{"type":"result"}` appears after
+~5 polls: diagnose with ≤2 calls (`adb shell uiautomator dump` + `grep`), apply the minimum
+fix (e.g. `KEYCODE_ENTER` to submit, or one corrective tap), then **re-launch artemis with the
+remaining sub-goal** and poll its log. Never finish the rest of the navigation with raw
+`adb shell input tap/text` — each dump/tap is a tool call and it burns the turn budget.
+
 ### When NOT to Use
 
 - No device connected (`adb devices` returns empty) — tell the user, don't try

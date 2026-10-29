@@ -83,6 +83,9 @@ Skip secrets unless asked to keep them.
   核验屏幕文本用 `adb shell uiautomator dump` + `grep`；截图由 artemis 内部自行传给 VLM
 - **技能生成的临时文件放在技能目录下**（截图在 `skills/artemis-control-v2/screenshots/`），
   不要 `adb pull` 拉到 workspace 根目录（这正是之前误 `file_read` 二进制的诱因）
+- **恢复交还**:若 `--daemon` 卡住（同样的 `type`/`tap` 反复出现、轮询 ~5 次仍无 `result`），
+  用 ≤2 次定向 adb 动作 + `uiautomator dump` 核验把状态救回正轨——随即用*剩余子目标*重新
+  `--daemon` 启动 artemis 并继续轮询。严禁用裸 `adb` 点按/输字完成整段导航。
 - 技能每步输出 `{"type":"progress",...}` — **实时向雇主播报每一步**操作
 - 最终 `{"type":"result",...}` 报告成功/超时/错误 — 汇报结果；完成后不必额外写 MEMORY.md/TOOLS.md
 - 若指令过于模糊，技能返回 `status: "clarify"` — 追问具体应用和操作

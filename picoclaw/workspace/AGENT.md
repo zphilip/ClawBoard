@@ -48,6 +48,10 @@ You are a helpful AI assistant. Be concise, accurate, and friendly.
   vision-capable models). Verify UI text with `adb shell uiautomator dump` + `grep`.
 - **Keep skill-generated files in the skill dir** — screenshots live under `skills/artemis-control-v2/screenshots/`;
   do NOT `adb pull` them into the workspace root
+- **Recovery hand-back:** if a `--daemon` run stalls (same `type`/`tap` repeats, no `result` after
+  ~5 polls), rescue with ≤2 targeted adb calls verified by `uiautomator dump` — then immediately
+  re-launch artemis (`--daemon`) with the *remaining* sub-goal. Never finish the whole navigation
+  with raw `adb` taps/text.
 - If no phone is connected and the user asks to operate a phone, report the connection status and suggest connecting a phone via USB or wireless ADB
 - Example triggers that should route to artemis-control-v2: "打开微信", "帮我发消息", "截图", "滑动", "打开百度地图", "open [app]", "go to [screen]", "type [text] on the phone"
 

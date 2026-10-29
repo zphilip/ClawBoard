@@ -81,6 +81,10 @@ take screenshots, search within apps, set alarms, or any UI task on the phone:
   attaches the image to vision-capable models). Verify UI text via `adb shell uiautomator dump` + `grep`.
 - **Keep skill-generated files in the skill dir** — screenshots live under
   `skills/artemis-control-v2/screenshots/`; do NOT `adb pull` them into the workspace root.
+- **Recovery hand-back:** if a `--daemon` run stalls (same `type`/`tap` repeats, no `result` after
+  ~5 polls), rescue with ≤2 targeted adb calls verified by `uiautomator dump` — then immediately
+  re-launch artemis (`--daemon`) with the *remaining* sub-goal and poll that log. Never finish the
+  whole navigation with raw `adb` taps/text.
 - The final `{"type":"result",...}` line reports success/timeout/error — report the outcome
 - If the instruction is too vague, the skill exits with `status: "clarify"` — ask the user
   which app and what specific action

@@ -198,6 +198,23 @@ shell-tool process-group reap and is NOT bound by `[shell_tool] timeout`. Every
 `{"type":"progress"}` / `{"incident"}` / `{"result"}` line is flushed to `<LOG>`
 as it happens.
 
+### Stalled run — hand-back protocol
+
+If a `--daemon` run repeats the same `type`/`tap` and no `{"type":"result"}`
+appears after ~5 polls, it is stuck (search inputs that never submit, IME
+weirdness, stale element references). The calling agent may rescue it, then
+MUST hand back:
+
+1. Diagnose with **≤2 tool calls**: `adb shell uiautomator dump` + `grep` (do
+   NOT `file_read` screenshots) to see the real on-screen state.
+2. Apply the **minimum** fix — e.g. press `KEYCODE_ENTER` to submit, clear a
+   duplicated text, or one corrective tap.
+3. **Immediately re-launch** artemis with the *remaining* sub-goal
+   (`--instruction "<remaining>" --profile flash --daemon`) and poll that log.
+4. Never complete the rest of the task with raw `adb shell input tap/text`:
+   that violates the "no raw adb" rule and burns the turn budget (each
+   dump/tap is one tool call).
+
 ### CLI Parameters
 
 | Parameter          | Default          | Description |
