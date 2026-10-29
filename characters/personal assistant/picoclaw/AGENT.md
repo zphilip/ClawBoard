@@ -138,13 +138,13 @@ Skip secrets unless asked to keep them.
   (`--dry_run` → `--daemon` → poll the log); `mobile-control` is the lighter fallback:
 
   ```bash
-  python3 skills/artemis-control-v2/artemis_agent.py --instruction "<task>" --profile flash --daemon
+  /opt/clawboard/venv/bin/python3 skills/artemis-control-v2/artemis_agent.py --instruction "<task>" --profile flash --daemon
   adb shell sleep 30; tail -n 80 <LOG> | grep '"type"'
   ```
 
 - **Check screen state before waking**: `adb shell dumpsys power | grep -i mWakefulness`; only
   send `keyevent 26` if Dozing/Asleep (power-key toggle turns an awake screen OFF)
-- **Use bare `python3`**, never `cd` or `/opt/clawboard/venv/bin/python3`
+- **Use `/opt/clawboard/venv/bin/python3`** (venv has `uiautomator2`), never bare `python3` nor `cd`
 - **NEVER `file_read` a screenshot/`.png`** — it rejects binary or floods context. To look at
   an image, use `image_info` (format/size/dimensions + attaches it to vision-capable models);
   verify UI text via `adb shell uiautomator dump` + `grep`. Keep screenshots under

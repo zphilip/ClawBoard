@@ -49,8 +49,8 @@ Things like:
 ### artemis-control-v2 invocation (zeroclaw-safe)
 
 ```bash
-# From workspace root, by path (no `cd`, bare python3):
-python3 skills/artemis-control-v2/artemis_agent.py --instruction "<task>" --profile flash --daemon
+# From workspace root, by path (no `cd`). Use the VENV python (has uiautomator2):
+/opt/clawboard/venv/bin/python3 skills/artemis-control-v2/artemis_agent.py --instruction "<task>" --profile flash --daemon
 # → {"type":"run_started","log_file":"<LOG>",…}
 adb shell sleep 30; tail -n 80 <LOG> | grep '"type"'   # wait + read; repeat until {"type":"result"}
 ```
@@ -79,7 +79,7 @@ adb shell input keyevent 26                     # wake ONLY if Dozing/Asleep (th
 ### ZeroClaw shell-policy gotchas (BLOCKED — don't try them)
 
 - `cd …` — not in `allowed_commands`; run scripts by path instead
-- `/opt/clawboard/venv/bin/python3` — `/opt` is in `forbidden_paths`; use bare `python3`
+- bare `python3` — the system interpreter WITHOUT `uiautomator2` (artemis text input silently degrades). Use `/opt/clawboard/venv/bin/python3` — `/opt` is NOT in `forbidden_paths`.
 - `python3 -c/-m …` — inline code is blocked (`is_args_safe`)
 - host `sleep` / `timeout` / `nohup` / `setsid` / `ps` / `pgrep` / `ss` — not allowlisted
 - `> file` / `cat > file` / `tee` — file redirects blocked; use the skill's `--log-file`

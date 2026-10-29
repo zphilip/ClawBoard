@@ -66,14 +66,14 @@ take screenshots, search within apps, set alarms, or any UI task on the phone:
   `--dry_run` → `--daemon` → poll the log file it reports:
 
   ```bash
-  python3 skills/artemis-control-v2/artemis_agent.py --instruction "<task>" --profile flash --daemon
+  /opt/clawboard/venv/bin/python3 skills/artemis-control-v2/artemis_agent.py --instruction "<task>" --profile flash --daemon
   # → {"type":"run_started","log_file":"<LOG>",…}
   adb shell sleep 30; tail -n 80 <LOG> | grep '"type"'
   ```
 
 - `mobile-control` is a lighter-weight single-app alternative — see TOOLS.md
-- **Use bare `python3`.** Never `cd` (not in `allowed_commands`) and never
-  `/opt/clawboard/venv/bin/python3` (`/opt` is in `forbidden_paths`)
+- **Use `/opt/clawboard/venv/bin/python3`** (the venv with `uiautomator2`). Bare `python3` is the
+  system interpreter without it, so artemis text input silently degrades. Never `cd` (not in `allowed_commands`)
 - **Wait with `adb shell sleep N`** between polls; host `sleep`/`timeout`/`nohup`/`ps` are
   not allowlisted and each attempt wastes a turn. Read progress with `tail`/`grep`/`cat`
 - **NEVER `file_read` a screenshot/`.png`** — it rejects binary (utf8) or floods your context

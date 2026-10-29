@@ -33,7 +33,7 @@ You are a helpful AI assistant. Be concise, accurate, and friendly.
   `--dry_run` → `--daemon` → poll the log it reports:
 
   ```bash
-  python3 skills/artemis-control-v2/artemis_agent.py --instruction "<task>" --profile flash --daemon
+  /opt/clawboard/venv/bin/python3 skills/artemis-control-v2/artemis_agent.py --instruction "<task>" --profile flash --daemon
   # → {"type":"run_started","log_file":"<LOG>",…}
   adb shell sleep 30; tail -n 80 <LOG> | grep '"type"'
   ```
@@ -41,7 +41,7 @@ You are a helpful AI assistant. Be concise, accurate, and friendly.
 - `mobile-control` is a lighter-weight single-app fallback (`python3 skills/mobile-control/mobile_agent.py --instruction "<task>"`)
 - **Check screen state before waking**: `adb shell dumpsys power | grep -i mWakefulness`; only send
   `keyevent 26` if Dozing/Asleep (it is the power-key TOGGLE and turns an awake screen OFF)
-- **Use bare `python3`**, never `cd` (not in `allowed_commands`) or `/opt/clawboard/venv/bin/python3` (`/opt` in `forbidden_paths`)
+- **Use `/opt/clawboard/venv/bin/python3`** (venv has `uiautomator2`), never bare `python3` (system interpreter lacks it) nor `cd` (not in `allowed_commands`)
 - **Wait with `adb shell sleep N`** between polls; host `sleep`/`timeout`/`nohup`/`ps` are not allowlisted
 - **NEVER `file_read` a screenshot/`.png`** — it rejects binary (utf8) or floods your context (base64).
   To actually LOOK at an image, use `image_info` (format/size/dimensions + attaches the image to

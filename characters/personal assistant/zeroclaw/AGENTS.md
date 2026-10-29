@@ -70,13 +70,13 @@ Skip secrets unless asked to keep them.
 - **优先使用 artemis-control-v2 技能** — 按 SKILL.md 的 golden path（`--dry_run` → `--daemon` → 轮询日志）:
 
   ```bash
-  python3 skills/artemis-control-v2/artemis_agent.py --instruction "<任务描述>" --profile flash --daemon
+  /opt/clawboard/venv/bin/python3 skills/artemis-control-v2/artemis_agent.py --instruction "<任务描述>" --profile flash --daemon
   # → {"type":"run_started","log_file":"<LOG>",…}
   adb shell sleep 30; tail -n 80 <LOG> | grep '"type"'
   ```
 
 - `mobile-control` 是较轻量的单应用备选（`python3 skills/mobile-control/mobile_agent.py --instruction "<任务>"`）— 见 TOOLS.md
-- **用裸 `python3`**，不要 `cd`（不在 allowed_commands），不要 `/opt/clawboard/venv/bin/python3`（`/opt` 在 forbidden_paths）
+- **用 `/opt/clawboard/venv/bin/python3`**（装了 `uiautomator2` 的 venv）；裸 `python3` 是系统解释器、没有 uiautomator2，文字输入会隐性降级。不要 `cd`（不在 allowed_commands）
 - **轮询之间用 `adb shell sleep N` 等待**；宿主机 `sleep`/`timeout`/`nohup`/`ps` 都不在白名单，误试一次浪费一次工具调用
 - **不要用 `file_read` 读截图/PNG** — 它要么拒绝二进制、要么把 base64 灌进上下文导致 token 溢出。
   要真正“看”截图文件，用 `image_info`：返回格式/尺寸并把图片附加给支持视觉的模型（`[IMAGE:…]` 标记）。

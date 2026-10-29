@@ -120,7 +120,7 @@ adb shell input keyevent 26
 
 # 3. Check the Artemis runner end to end. DO NOT use `python3 -c` (zeroclaw's
 #    shell policy blocks -c/-m inline code) and do NOT shell-redirect `> file`.
-python3 skills/artemis-control-v2/artemis_agent.py --instruction "x" --dry_run
+/opt/clawboard/venv/bin/python3 skills/artemis-control-v2/artemis_agent.py --instruction "x" --dry_run
 ```
 
 Text input needs **no checks**: artemis injects text itself (uiautomator2
@@ -134,7 +134,7 @@ every one of those is a wasted tool call that burns the turn budget.
 # Basic usage — Flash profile (fast reactive, no plan).
 # No `cd` needed: artemis_agent.py resolves its own dir (config/, runner/) via
 # __file__. `cd` is usually NOT in zeroclaw's allowed_commands — run by path:
-python3 skills/artemis-control-v2/artemis_agent.py \
+/opt/clawboard/venv/bin/python3 skills/artemis-control-v2/artemis_agent.py \
     --instruction "打开百度地图,导航回家" \
     --profile flash
 
@@ -170,7 +170,7 @@ sequence (~5 pre-flight calls + ~5 poll calls):
 
 ```bash
 # 5. Launch detached — returns immediately with a run_started JSON
-python3 skills/artemis-control-v2/artemis_agent.py \
+/opt/clawboard/venv/bin/python3 skills/artemis-control-v2/artemis_agent.py \
     --instruction "打开百度地图,搜索南岸花城并开始导航" \
     --profile flash --daemon
 #    → {"type":"run_started","log_file":"<LOG>",…}   ← remember <LOG>
