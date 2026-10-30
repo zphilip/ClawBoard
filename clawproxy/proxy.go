@@ -1790,7 +1790,10 @@ c.sendError("zc", msg.SessionID, err.Error())
 return
 }
 content, _ := msg.Payload["content"].(string)
+fmt.Printf("%sZC ⇨ gw session=%s (%d chars): %s\n",
+		prefixSYS(), msg.SessionID, len([]rune(content)), truncate(content, 120))
 if err := conn.sendZC(content); err != nil {
+fmt.Printf("%sZC ⇨ gw write-err: %v\n", prefixERR(), err)
 c.sendError("zc", msg.SessionID, err.Error())
 }
 }
@@ -1802,7 +1805,10 @@ func (c *proxyClient) sendToPC(msg appMsg) {
 		return
 	}
 	content, _ := msg.Payload["content"].(string)
+	fmt.Printf("%sPC ⇨ gw session=%s (%d chars): %s\n",
+		prefixSYS(), msg.SessionID, len([]rune(content)), truncate(content, 120))
 	if err := conn.sendPCWithSession(msg.SessionID, content); err != nil {
+		fmt.Printf("%sPC ⇨ gw write-err: %v\n", prefixERR(), err)
 		c.sendError("pc", msg.SessionID, err.Error())
 	}
 }

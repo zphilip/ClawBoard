@@ -691,7 +691,10 @@ func (a *agentConn) readLoop() {
 			// proxy mode: route raw bytes to drain goroutine
 			select {
 			case a.recv <- raw:
+				fmt.Printf("%s%s ⇦ gw %s\n", prefixSYS(), a.kind, protoFrameSummary(raw))
 			default: // drop if full (backpressure)
+				fmt.Printf("%s%s ⇦ gw DROPPED %s (recv full — backpressure)\n",
+					prefixSYS(), a.kind, protoFrameSummary(raw))
 			}
 		} else if a.kind == kindZC {
 			a.handleZC(raw)
@@ -806,6 +809,25 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return s[:n] + "…"
+}
+
+// protoFrameSummary returns a compact "<type> (<N> B): <preview>" line for a
+// raw gateway frame, used by the /proxy/ws relay path debug logging.
+func protoFrameSummary(raw []byte) string {
+	var probe struct {
+		Type string `json:"type"`
+	}
+	_ = json.Unmarshal(raw, &probe)
+	typ := probe.Type
+	if typ == "" {
+		typ = "?"
+	}
+	s := string(raw)
+	if len(s) > 120 {
+		s = s[:120] + "…"
+	}
+	s = strings.ReplaceAll(s, "\n", " ")
+	return fmt.Sprintf("%s (%d B) %s", typ, len(raw), s)
 }
 
 func min(a, b int) int {
