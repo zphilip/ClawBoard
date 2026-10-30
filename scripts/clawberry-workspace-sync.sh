@@ -15,9 +15,14 @@
 #                      Targets: all | config.json | config.toml | security.yml
 #                      May be repeated: -config config.json -config config.toml
 #
+#   --include <files>  Force-overwrite protected workspace memory files that
+#                      are otherwise only created if absent. Supported:
+#                      memory (workspace MEMORY.md).
+#
 #   Without -config the three protected files (config.json, config.toml,
 #   .security.yml) are NEVER touched; only workspace/dashboard/binary files
-#   are updated.
+#   are updated. Agent memory files (MEMORY.md) are created only if missing —
+#   they are never overwritten unless --include memory is given.
 #
 # Examples:
 #   clawberry-workspace-sync.sh
@@ -29,6 +34,8 @@
 #   • rsync each workspace subtree into the target, preserving any local
 #     files the service may have added (--update: skip if dest is newer)
 #   • Never delete files the service has created locally
+#   • Never overwrite agent memory (MEMORY.md) — create it only if it does
+#     not already exist, unless --include memory is given
 #   • Set correct ownership after copy
 
 set -euo pipefail
@@ -64,6 +71,7 @@ die() { echo "[workspace-sync] ERROR: $*" >&2; exit 1; }
 SYNC_CONFIG_JSON=no
 SYNC_CONFIG_TOML=no
 SYNC_SECURITY_YML=no
+FORCE_MEMORY=no
 
 parse_args() {
     while [[ $# -gt 0 ]]; do
@@ -78,6 +86,17 @@ parse_args() {
                         config.toml)   SYNC_CONFIG_TOML=yes ;;
                         security.yml)  SYNC_SECURITY_YML=yes ;;
                         *) die "Unknown -config target: '$_t' (use all|config.json|config.toml|security.yml)" ;;
+                    esac
+                done
+                shift 2
+                ;;
+            --include)
+                [[ $# -ge 2 ]] || die "--include requires an argument (memory)"
+                IFS=',' read -ra _incs <<< "$2"
+                for _i in "${_incs[@]}"; do
+                    case "$_i" in
+                        memory|MEMORY.md) FORCE_MEMORY=yes ;;
+                        *) die "Unknown --include target: '$_i' (use memory)" ;;
                     esac
                 done
                 shift 2
@@ -689,7 +708,23 @@ sync_workspace() {
     # --recursive  : recurse into subdirs
     # --times      : preserve timestamps (needed for --update comparisons)
     # No --delete  : never remove files the agent has created locally
-    rsync --archive --update --times "$src/" "$dst/"
+    # MEMORY.md is excluded below and handled separately so an existing agent
+    # memory is never overwritten (created only if missing).
+    rsync --archive --update --times \
+          --exclude='/MEMORY.md' \
+          "$src/" "$dst/"
+
+    # Agent memory: create-if-missing by default; overwrite only when the
+    # caller explicitly passed --include memory.
+    if [[ -f "$src/MEMORY.md" ]]; then
+        if [[ "$FORCE_MEMORY" == "yes" ]]; then
+            rsync --archive --times "$src/MEMORY.md" "$dst/MEMORY.md"
+            log "Memory file: overwritten $dst/MEMORY.md (--include memory)"
+        else
+            rsync --archive --ignore-existing "$src/MEMORY.md" "$dst/MEMORY.md"
+            log "Memory file: ensured $dst/MEMORY.md exists (left untouched if present)"
+        fi
+    fi
 
     # Fix ownership so the service user can read/write
     chown -R "$owner:$owner" "$dst" 2>/dev/null || \
@@ -762,12 +797,16 @@ done
 # ── Seed MEMORY.md into picoclaw workspace/memory/ ───────────────────────────
 # MEMORY.md lives at the workspace root in the repo but picoclaw expects it
 # (and writes runtime updates to) ~/.picoclaw/workspace/memory/MEMORY.md.
-# --update: skip if the device copy is newer so the agent's own edits survive.
+# Create-if-missing by default; overwrite only with --include memory.
 PICOCLAW_MEMORY_SRC="$WORK_DIR/$PICOCLAW_WORKSPACE_SRC/MEMORY.md"
 PICOCLAW_MEMORY_DST_DIR="$PICOCLAW_WORKSPACE_DST/memory"
 if [[ -f "$PICOCLAW_MEMORY_SRC" ]]; then
     mkdir -p "$PICOCLAW_MEMORY_DST_DIR"
-    rsync --archive --update "$PICOCLAW_MEMORY_SRC" "$PICOCLAW_MEMORY_DST_DIR/MEMORY.md"
+    if [[ "$FORCE_MEMORY" == "yes" ]]; then
+        rsync --archive "$PICOCLAW_MEMORY_SRC" "$PICOCLAW_MEMORY_DST_DIR/MEMORY.md"
+    else
+        rsync --archive --ignore-existing "$PICOCLAW_MEMORY_SRC" "$PICOCLAW_MEMORY_DST_DIR/MEMORY.md"
+    fi
     chown -R "$PICOCLAW_USER:$PICOCLAW_USER" "$PICOCLAW_MEMORY_DST_DIR" 2>/dev/null || \
         log "WARNING: chown $PICOCLAW_USER failed for $PICOCLAW_MEMORY_DST_DIR"
     log "Seeded MEMORY.md → $PICOCLAW_MEMORY_DST_DIR/MEMORY.md"
