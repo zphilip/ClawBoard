@@ -316,14 +316,29 @@ def on_message(ws, raw):
 
     elif agent == "pc":
         if typ == "message.create":
-            content = (msg.get("payload") or {}).get("content", "")
-            final_text = content
-            out(ppc(content))
-            turn_done.set()
+            payload = msg.get("payload") or {}
+            content = payload.get("content", "")
+            kind = payload.get("kind", "")
+            if kind == "thought" or payload.get("thought"):
+                # Chain-of-thought: show it as part of the stream, but it is
+                # NOT the final answer — keep waiting.
+                out(f"{ppc('')}{GREY}[thought]{RESET} {content}")
+            elif kind == "tool_calls":
+                tool_calls = payload.get("tool_calls", "")
+                out(f"{ppc('')}{GREY}[tool_calls]{RESET} {tool_calls}")
+            else:
+                final_text = content
+                out(ppc(content))
+                turn_done.set()
 
         elif typ == "message.update":
-            content = (msg.get("payload") or {}).get("content", "")
-            out(ppc(f"{GREY}(update){RESET} {content}"))
+            payload = msg.get("payload") or {}
+            content = payload.get("content", "")
+            kind = payload.get("kind", "")
+            if kind == "thought" or payload.get("thought"):
+                out(f"{ppc('')}{GREY}[thought]{RESET} {content}")
+            else:
+                out(ppc(f"{GREY}(update){RESET} {content}"))
 
         elif typ == "typing.start":
             out(f"{ppc('')}{GREY}(typing...){RESET}", end="")
