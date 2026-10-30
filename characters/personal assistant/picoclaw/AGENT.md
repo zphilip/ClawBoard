@@ -144,7 +144,9 @@ Skip secrets unless asked to keep them.
 
 - **Check screen state before waking**: `adb shell dumpsys power | grep -i mWakefulness`; only
   send `keyevent 26` if Dozing/Asleep (power-key toggle turns an awake screen OFF)
-- **Use `/opt/clawboard/venv/bin/python3`** (venv has `uiautomator2`), never bare `python3` nor `cd`
+- **Use `/opt/clawboard/venv/bin/python3`** (venv has `uiautomator2`), never bare `python3`.
+  The exec sandbox is open (`restrict_to_workspace: false`) and `/opt/clawboard/venv` is
+  whitelisted in `tools.allow_read_paths`, so the absolute path runs directly — no wrapper needed.
 - **NEVER `file_read` a screenshot/`.png`** — it rejects binary or floods context. To look at
   an image, use `image_info` (format/size/dimensions + attaches it to vision-capable models);
   verify UI text via `adb shell uiautomator dump` + `grep`. Keep screenshots under
