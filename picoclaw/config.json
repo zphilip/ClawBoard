@@ -9,8 +9,8 @@
   "agents": {
     "defaults": {
       "workspace": "/var/lib/picoclaw/.picoclaw/workspace",
-      "restrict_to_workspace": true,
-      "allow_read_outside_workspace": false,
+      "restrict_to_workspace": false,
+      "allow_read_outside_workspace": true,
       "provider": "",
       "model_name": "MiniMax-M2.7",
       "max_tokens": 32768,
@@ -460,7 +460,7 @@
     }
   },
   "tools": {
-    "allow_read_paths": null,
+    "allow_read_paths": ["^/opt/clawboard/venv(?:/|$)"],
     "allow_write_paths": null,
     "filter_sensitive_data": true,
     "filter_min_length": 8,
