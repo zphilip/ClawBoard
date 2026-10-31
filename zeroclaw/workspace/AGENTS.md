@@ -69,7 +69,6 @@ take screenshots, search within apps, set alarms, or any UI task on the phone:
   adb shell sleep 30; tail -n 80 <LOG> | grep '"type"'
   ```
 
-- `mobile-control` is a lighter-weight single-app alternative — see TOOLS.md
 - **Use `/opt/clawboard/venv/bin/python3`** (the venv with `uiautomator2`). Bare `python3` is the
   system interpreter without it, so artemis text input silently degrades. Never `cd` (not in `allowed_commands`)
 - **Wait with `adb shell sleep N`** between polls; host `sleep`/`timeout`/`nohup`/`ps` are
@@ -91,6 +90,14 @@ take screenshots, search within apps, set alarms, or any UI task on the phone:
   the task routes through a search/text box, spell out the submit step in the instruction (e.g.
   "type GAI, then press Enter / tap the top result"); otherwise artemis retypes the same text forever.
 - Phone connection status (`PHONE_CONNECTED`) is tracked in `MEMORY.md` (updated by heartbeat)
+- **Never re-verify by tapping after a run:** once artemis returns the final
+  `{"type":"result",...}`, do NOT `tap` / `type` / `adb input` the phone to
+  "double-check" — a second agent's taps overwrite the finished UI (this has
+  repeatedly caused mis-taps). Confirm read-only, in order:
+  ① run log (`result.status` + `result.verification` + `memory/notes/_scratchpad.json`)
+  ② `adb shell dumpsys window | grep mCurrentFocus`,
+  `adb shell dumpsys activity services <pkg> | grep -i nav`
+  ③ if genuinely unsure, re-run with `--profile pro --verification final`.
 
 ## Python & Package Management
 

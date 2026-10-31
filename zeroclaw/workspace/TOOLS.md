@@ -39,12 +39,11 @@ Things like:
 - Use when: memory is incorrect, stale, or explicitly requested to be removed.
 - Don't use when: uncertain about impact; verify before deleting.
 
-## Phone UI Automation — artemis-control-v2 (primary) / mobile-control (fallback)
+## Phone UI Automation — artemis-control-v2
 
 - **For phone UI tasks use the artemis-control-v2 skill** — it wraps the Artemis
   multi-agent VLM loop with a Planner → Operator → Validator → Checker safety net.
-- `mobile-control` is a lighter-weight single-app alternative. Never use raw `adb shell`
-  to open apps or tap the screen — either skill handles that better.
+  Never use raw `adb shell` to open apps or tap the screen — let artemis do it.
 
 ### artemis-control-v2 invocation (zeroclaw-safe)
 
@@ -55,20 +54,7 @@ Things like:
 adb shell sleep 30; tail -n 80 <LOG> | grep '"type"'   # wait + read; repeat until {"type":"result"}
 ```
 
-### mobile-control invocation (fallback)
-
-```bash
-python3 skills/mobile-control/mobile_agent.py --instruction "<task>"
-```
-
-With explicit device (multi-device setups):
-```bash
-python3 skills/mobile-control/mobile_agent.py \
-    --instruction "Open WeChat and send hello to Mom" \
-    --device "emulator-5554"
-```
-
-### Pre-flight (both skills)
+### Pre-flight
 
 ```bash
 adb devices                                     # confirm device is connected
@@ -98,6 +84,16 @@ If a `--daemon` run repeats the same `type`/`tap` and no `{"type":"result"}` app
 fix (e.g. `KEYCODE_ENTER` to submit, or one corrective tap), then **re-launch artemis with the
 remaining sub-goal** and poll its log. Never finish the rest of the navigation with raw
 `adb shell input tap/text` — each dump/tap is a tool call and it burns the turn budget.
+
+### After a run — verify read-only, never re-tap
+
+Once artemis returns the final `{"type":"result",...}`, do NOT `tap` / `type` /
+`adb input` the phone to "double-check" — a second agent's taps overwrite the
+finished UI (repeatedly caused mis-taps). Confirm read-only, in order:
+① run log (`result.status` + `result.verification` + `memory/notes/_scratchpad.json`)
+② `adb shell dumpsys window | grep mCurrentFocus`,
+`adb shell dumpsys activity services <pkg> | grep -i nav`
+③ if genuinely unsure, re-run with `--profile pro --verification final`.
 
 ### When NOT to Use
 

@@ -75,7 +75,6 @@ Skip secrets unless asked to keep them.
   adb shell sleep 30; tail -n 80 <LOG> | grep '"type"'
   ```
 
-- `mobile-control` 是较轻量的单应用备选（`python3 skills/mobile-control/mobile_agent.py --instruction "<任务>"`）— 见 TOOLS.md
 - **用 `/opt/clawboard/venv/bin/python3`**（装了 `uiautomator2` 的 venv）；裸 `python3` 是系统解释器、没有 uiautomator2，文字输入会隐性降级。不要 `cd`（不在 allowed_commands）
 - **轮询之间用 `adb shell sleep N` 等待**；宿主机 `sleep`/`timeout`/`nohup`/`ps` 都不在白名单，误试一次浪费一次工具调用
 - **不要用 `file_read` 读截图/PNG** — 它要么拒绝二进制、要么把 base64 灌进上下文导致 token 溢出。
@@ -88,6 +87,12 @@ Skip secrets unless asked to keep them.
   `--daemon` 启动 artemis 并继续轮询。严禁用裸 `adb` 点按/输字完成整段导航。
 - **搜索/输入流程要显式提交** — `type` 只输入文字、不按回车。任务若经过搜索/输入框，
   在指令里写明提交步骤（如“输入 GAI 后按回车或点顶部结果”），否则 artemis 会反复重打同一段文字直到超时。
+- **任务结束后禁止再点按手机“补验证”**：artemis 返回最终 `result` 后，不要再 `tap` /
+  `type` / `adb input` 去“二次验证”——会覆盖已完成结果（历史上多次因此点错）。只读检查：
+  ① 读日志（`result.status` + `result.verification` + `memory/notes/_scratchpad.json`）
+  ② `adb shell dumpsys window | grep mCurrentFocus`、
+  `adb shell dumpsys activity services <pkg> | grep -i nav`
+  ③ 确有存疑改用 `--profile pro --verification final` 重跑。
 - 技能每步输出 `{"type":"progress",...}` — **实时向雇主播报每一步**操作
 - 最终 `{"type":"result",...}` 报告成功/超时/错误 — 汇报结果；完成后不必额外写 MEMORY.md/TOOLS.md
 - 若指令过于模糊，技能返回 `status: "clarify"` — 追问具体应用和操作

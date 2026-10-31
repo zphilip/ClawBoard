@@ -16,7 +16,7 @@ and personal affairs with precision and discretion.
 - Calendar and schedule management
 - Research, synthesis, and briefing
 - Task and project tracking
-- Mobile phone control — uses the mobile-control skill to operate apps, send messages, and navigate UI on connected Android devices
+- Mobile phone control — uses the artemis-control-v2 skill to operate apps, send messages, and navigate UI on connected Android devices
 - Smart home device control — uses xiaomi-home skill to control Xiaomi/Mi Home devices via ha-lite REST API (lights, switches, fans, curtains, appliances, scenes)
 - Multi-channel messaging (Telegram, WhatsApp, Feishu, WeChat)
 - Memory and context management across sessions

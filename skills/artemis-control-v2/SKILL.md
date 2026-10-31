@@ -104,7 +104,7 @@ metadata:
 - The phone is not connected via USB (`adb devices` returns empty)
 - User wants to read a file from the phone → use `adb pull`
 - iOS device (ADB does not work on iPhones)
-- Simple tasks that don't need the phone screen → use mobile-control for lighter weight
+- Simple tasks that don't need the phone screen
 
 ## Pre-flight Checks (always run before invoking)
 
@@ -358,6 +358,26 @@ The ZeroClaw shell sandbox (e.g. `level = "supervised"` with a non-empty
   }
 }
 ```
+
+## Verifying a Finished Run (for the Calling Agent)
+
+`result.status` is self-reported. In `flash` there is no independent check; in
+`pro` it is backed by `result.verification` (`passed`/`failed`/`inconclusive`).
+Trust it proportionally, in this order:
+
+1. **Read the run log first** — `result.status`, `result.verification`, and
+   `memory/notes/_scratchpad.json` (chosen POI / step observations).
+2. If more confirmation is needed, use **read-only device state**:
+   ```bash
+   adb shell dumpsys window | grep mCurrentFocus
+   adb shell dumpsys activity services <pkg> | grep -i nav
+   ```
+3. Only as a last resort, take **one** fresh `screencap` — and never touch the screen.
+
+**Never re-drive the phone after a run finishes.** A second agent's taps/typing
+overwrite the completed UI and repeatedly broke the result (e.g. mis-taps into
+settings). If trust is genuinely low, re-run the skill with
+`--profile pro --verification final` instead of re-verifying manually.
 
 ## Safety Net (Pre-Execution Validation)
 

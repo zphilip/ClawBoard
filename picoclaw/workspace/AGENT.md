@@ -38,7 +38,6 @@ You are a helpful AI assistant. Be concise, accurate, and friendly.
   adb shell sleep 30; tail -n 80 <LOG> | grep '"type"'
   ```
 
-- `mobile-control` is a lighter-weight single-app fallback (`python3 skills/mobile-control/mobile_agent.py --instruction "<task>"`)
 - **Check screen state before waking**: `adb shell dumpsys power | grep -i mWakefulness`; only send
   `keyevent 26` if Dozing/Asleep (it is the power-key TOGGLE and turns an awake screen OFF)
 - **Use `/opt/clawboard/venv/bin/python3`** (venv has `uiautomator2`), never bare `python3` (system interpreter lacks it) nor `cd` (not in `allowed_commands`)
@@ -56,6 +55,14 @@ You are a helpful AI assistant. Be concise, accurate, and friendly.
   out the submit step in the instruction (e.g. "type GAI, then press Enter / tap the top result").
 - If no phone is connected and the user asks to operate a phone, report the connection status and suggest connecting a phone via USB or wireless ADB
 - Example triggers that should route to artemis-control-v2: "打开微信", "帮我发消息", "截图", "滑动", "打开百度地图", "open [app]", "go to [screen]", "type [text] on the phone"
+- **Never re-verify by tapping after a run:** once artemis returns the final
+  `{"type":"result",...}`, do NOT `tap` / `type` / `adb input` the phone to
+  "double-check" — a second agent's taps overwrite the finished UI (this has
+  repeatedly caused mis-taps). Confirm read-only, in order:
+  ① run log (`result.status` + `result.verification` + `memory/notes/_scratchpad.json`)
+  ② `adb shell dumpsys window | grep mCurrentFocus`,
+  `adb shell dumpsys activity services <pkg> | grep -i nav`
+  ③ if genuinely unsure, re-run with `--profile pro --verification final`.
 
 ## Missing Functionality
 

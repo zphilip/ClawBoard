@@ -104,7 +104,7 @@ metadata:
 - The phone is not connected via USB (`adb devices` returns empty)
 - User wants to read a file from the phone → use `adb pull`
 - iOS device (ADB does not work on iPhones)
-- Simple tasks that don't need the phone screen → use mobile-control for lighter weight
+- Simple tasks that don't need the phone screen
 
 ## Pre-flight Checks (always run before invoking)
 

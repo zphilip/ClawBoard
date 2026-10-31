@@ -763,23 +763,7 @@ if [[ -d "$WORK_DIR/skills" ]]; then
 else
     log "WARNING: skills/ not found in repo — skipping"
 fi
-# ── Seed mobile-control config.json from example (first-time only) ───────────
-for _mc_user_dir in \
-    "/var/lib/picoclaw/.picoclaw/workspace" \
-    "/var/lib/zeroclaw/.zeroclaw/workspace" \
-    "/var/lib/openclaw/.openclaw/workspace"
-do
-    _mc_example="$_mc_user_dir/skills/mobile-control/config.json.example"
-    _mc_config="$_mc_user_dir/skills/mobile-control/config.json"
-    if [[ -f "$_mc_example" && ! -f "$_mc_config" ]]; then
-        cp "$_mc_example" "$_mc_config"
-        # chown to the owner of the workspace dir
-        _mc_owner=$(stat -c '%U' "$_mc_user_dir" 2>/dev/null || echo "")
-        [[ -n "$_mc_owner" ]] && chown "${_mc_owner}:${_mc_owner}" "$_mc_config" 2>/dev/null || true
-        log "mobile-control config.json seeded from example → $_mc_config"
-    fi
-done
-# ── Seed artemis-control config.json from example (first-time only) ───────────
+# ── Seed artemis-control config.json from example (first-time only) ────────
 for _ac_user_dir in \
     "/var/lib/picoclaw/.picoclaw/workspace" \
     "/var/lib/zeroclaw/.zeroclaw/workspace" \
