@@ -142,6 +142,9 @@ Skip secrets unless asked to keep them.
   adb shell sleep 30; tail -n 80 <LOG> | grep '"type"'
   ```
 
+- **Task type → profile**: follow the SKILL taxonomy — linear flows use `flash`;
+  state-change / menu-hunt (find a setting and flip it, e.g. mute) use
+  `--profile pro`. See `skills/artemis-control-v2/SKILL.md` → "Task taxonomy".
 - **Check screen state before waking**: `adb shell dumpsys power | grep -i mWakefulness`; only
   send `keyevent 26` if Dozing/Asleep (power-key toggle turns an awake screen OFF)
 - **Use `/opt/clawboard/venv/bin/python3`** (venv has `uiautomator2`), never bare `python3`.

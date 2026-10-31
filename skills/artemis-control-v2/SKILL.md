@@ -83,7 +83,34 @@ metadata:
 | Safety net | None | XML + pixel validation per action |
 | Verification | None | Checkpoint + final review |
 | History | Visual summaries | Full transcript ledger + chunking |
-| Best for | Routine tasks | Complex multi-app workflows |
+| Best for | Category A (linear flows) | Categories B/C/D (state change, multi-app, risky) |
+
+### Task taxonomy — pick the profile before you invoke
+
+Classify the task FIRST; the failure mode differs by class:
+
+| Class | What it looks like | Profile | Verification |
+|-------|--------------------|---------|--------------|
+| **A — Linear flow** | Fixed path: open app → search → submit → choose result (open WeChat, navigate, send message, set alarm) | `flash` | `final` (default) |
+| **B — State change / menu hunt** | Find a named item in a scrollable settings/list and flip its state (mute, dark mode, Wi-Fi/BT/DND toggle) | `pro` | `checkpoints` or `strict` |
+| **C — Multi-app orchestration** | Crosses apps and carries state across steps (route → text ETA to Mom) | `pro` | `final` |
+| **D — Irreversible / high-risk** | Pay, delete, sign out, factory reset, transfer | `pro` | `strict` |
+
+**Class B (state change) — generic handling:**
+
+- **Prefer the shortest UI path** over hunting in Settings: use a hardware key or a
+  quick-settings tile to reach the toggle directly. Example: mute → `KEYCODE_VOLUME_UP`
+  to raise the volume panel, then tap the bell icon; DND → pull down quick settings.
+- **If Settings is unavoidable** → `--profile pro --verification checkpoints`, and get
+  there via the Settings **search box** (spell out the submit step) instead of scrolling.
+- **Make acceptance scriptable, not visual.** Verify a state change with a read-only adb
+  probe instead of "make sure the icon looks right":
+
+  ```bash
+  adb shell media volume --stream 2 --get            # ring volume; 0 = silent
+  adb shell dumpsys audio | grep -iE 'mode'          # ringer mode / DND state
+  adb shell settings get global airplane_mode_on     # 1 = airplane mode
+  ```
 
 ## When to Use
 
@@ -202,8 +229,10 @@ as it happens.
 
 If a `--daemon` run repeats the same `type`/`tap` and no `{"type":"result"}`
 appears after ~5 polls, it is stuck (search inputs that never submit, IME
-weirdness, stale element references). The calling agent may rescue it, then
-MUST hand back:
+weirdness, stale element references). Escalation signals: the same `type`/`tap`
+repeating, **3+ same-direction swipes in a row**, **`press(home)`**, or a
+back-press out of the target app — any of these means the agent is *lost*, not
+slow. The calling agent may rescue it, then MUST hand back:
 
 1. Diagnose with **≤2 tool calls**: `adb shell uiautomator dump` + `grep` (do
    NOT `file_read` screenshots) to see the real on-screen state.
@@ -217,10 +246,20 @@ MUST hand back:
 
 ### Instruction-writing tips
 
+- **Single entry, linear path.** Never write "or / either…or…" into the
+  instruction. Pick the ONE shortest UI path and spell it out step by step. If
+  that path can fail (item not found), add the recovery as a single explicit
+  fallback step (e.g. "if not visible within 3 screens, use the Settings search
+  box"), never as a parallel entry point.
 - **Search/input flows need an explicit submit.** `type` only enters text —
-  never Enter. When the task goes through a search box, spell out the submit
-  step (e.g. "type GAI, then press Enter / tap the top result"). Without it
-  the VLM re-types the same text and stalls until `--max_steps`.
+  never Enter. When the task goes through a search box or text field, spell out
+  the submit step (e.g. "type GAI, then press Enter / tap the top result").
+  Without it the VLM re-types the same text and stalls until `--max_steps`.
+- **Give a scriptable acceptance criterion.** End the instruction with a
+  machine-checkable success condition (a foreground app, a running service, a
+  settings value via `adb shell settings get`), not "make sure it looks right".
+- **State change / menu hunt → Class B.** If the task means "find a setting and
+  flip it", it is Class B: invoke `--profile pro`, not `flash`.
 
 ### CLI Parameters
 

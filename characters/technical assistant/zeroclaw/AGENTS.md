@@ -71,6 +71,9 @@ take screenshots, search within apps, set alarms, or any UI task on the phone:
   adb shell sleep 30; tail -n 80 <LOG> | grep '"type"'
   ```
 
+- **Task type → profile**: follow the SKILL taxonomy — linear flows use `flash`;
+  state-change / menu-hunt (find a setting and flip it, e.g. mute) use
+  `--profile pro`. See `skills/artemis-control-v2/SKILL.md` → "Task taxonomy".
 - **Use `/opt/clawboard/venv/bin/python3`** (the venv with `uiautomator2`). Bare `python3` is the
   system interpreter without it, so artemis text input silently degrades. Never `cd` (not in `allowed_commands`)
 - **Wait with `adb shell sleep N`** between polls; host `sleep`/`timeout`/`nohup`/`ps` are

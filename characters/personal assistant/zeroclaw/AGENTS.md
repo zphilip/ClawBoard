@@ -75,6 +75,8 @@ Skip secrets unless asked to keep them.
   adb shell sleep 30; tail -n 80 <LOG> | grep '"type"'
   ```
 
+- **任务类型→profile**：按 `skills/artemis-control-v2/SKILL.md` 的「任务分类法」选择——线性流程用
+  `flash`；「找设置项并切换状态」（如静音）属于 B 类，用 `--profile pro`。
 - **用 `/opt/clawboard/venv/bin/python3`**（装了 `uiautomator2` 的 venv）；裸 `python3` 是系统解释器、没有 uiautomator2，文字输入会隐性降级。不要 `cd`（不在 allowed_commands）
 - **轮询之间用 `adb shell sleep N` 等待**；宿主机 `sleep`/`timeout`/`nohup`/`ps` 都不在白名单，误试一次浪费一次工具调用
 - **不要用 `file_read` 读截图/PNG** — 它要么拒绝二进制、要么把 base64 灌进上下文导致 token 溢出。
