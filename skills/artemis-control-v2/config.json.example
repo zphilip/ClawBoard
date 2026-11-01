@@ -85,6 +85,14 @@
     "xml_cache_ttl": 2.0
   },
 
+  "planner": {
+    "_comment": "Plan-generation latency budget. thinking=false is essential: a reasoning pass on the ~3.9k-token planner prompt takes minutes instead of seconds. max_retries=1 avoids the old nested retry ladder (plan x http x parse).",
+    "max_retries": 1,
+    "timeout": 90,
+    "total_budget": 150,
+    "thinking": false
+  },
+
   "context": {
     "_comment": "History and context management settings.",
     "max_stored_screenshots": 6,

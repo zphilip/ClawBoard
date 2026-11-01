@@ -509,6 +509,55 @@ def _resolve_api_key(cfg: dict) -> str:
     return cfg.get("api_key", "")
 
 
+def _coerce_flag(value, default: bool = False) -> bool:
+    """Coerce a config value to a bool.
+
+    Config files in this skill write ``"thinking": "medium"`` (a *level*, not a
+    switch).  ``bool("medium")`` is True but ``bool("off")`` is also True, so a
+    naive cast can never disable anything — hence the explicit deny-list.
+    """
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return str(value).strip().lower() not in ("", "0", "off", "false", "no", "none", "disabled")
+
+
+def _planner_options() -> dict:
+    """Planner latency knobs from the ``planner`` section of config.json.
+
+    Defaults are deliberately tight: planning only needs a short markdown list,
+    so a single non-thinking call inside a hard wall-clock budget.
+    """
+    cfg = load_skill_config()
+    section = cfg.get("planner") or {}
+    if not isinstance(section, dict):
+        section = {}
+    try:
+        max_retries = int(section.get("max_retries", 1))
+    except (TypeError, ValueError):
+        max_retries = 1
+    try:
+        timeout = float(section.get("timeout", 90))
+    except (TypeError, ValueError):
+        timeout = 90.0
+    try:
+        total_budget = float(section.get("total_budget", 150))
+    except (TypeError, ValueError):
+        total_budget = 150.0
+    # Planner thinking defaults to OFF: a reasoning pass on the ~3.9k-token
+    # planner prompt is the difference between ~20 s and ~8 min per plan.
+    thinking = _coerce_flag(section.get("thinking"), default=False)
+    return {
+        "max_retries": max(1, max_retries),
+        "timeout": max(10.0, timeout),
+        "total_budget": max(20.0, total_budget),
+        "thinking": thinking,
+    }
+
+
 def _build_openai_headers(cfg: dict, api_key: str) -> dict[str, str]:
     """Build the HTTP headers for an OpenAI-compatible POST request.
 
@@ -1085,11 +1134,18 @@ def _run_reactive_fallback(
     _log("Flash: generating plan...")
 
     plan_shot = screenshots_dir / "flash_plan_initial.png"
+    t_plan = time.time()
     if _take_screenshot(adb_path, device, plan_shot):
+        _log("[planner] VLM plan generation started (watch [vlm] lines for liveness)...")
         plan_result = generate_plan(
             instruction=instruction,
             screenshot_path=str(plan_shot),
             vlm_caller=_call_vlm_simple,
+            **_planner_options(),
+        )
+        _log(
+            f"[planner] plan generation finished in {time.time() - t_plan:.1f}s "
+            f"(success={bool(plan_result.get('success'))})"
         )
     else:
         plan_result = {"success": False, "error": "Screenshot failed", "plan_text": "", "plan_snapshot": parse_plan("")}
@@ -1639,11 +1695,18 @@ def _run_plan_guided_fallback(
     _log("Pro Phase 1: Planner node")
 
     plan_shot = screenshots_dir / "pro_plan_initial.png"
+    t_plan = time.time()
     if _take_screenshot(adb_path, device, plan_shot):
+        _log("[planner] VLM plan generation started (watch [vlm] lines for liveness)...")
         plan_result = generate_plan(
             instruction=instruction,
             screenshot_path=str(plan_shot),
             vlm_caller=_call_vlm_simple,
+            **_planner_options(),
+        )
+        _log(
+            f"[planner] plan generation finished in {time.time() - t_plan:.1f}s "
+            f"(success={bool(plan_result.get('success'))})"
         )
     else:
         _log("Screenshot failed for planning — falling back to flash loop")
@@ -2387,12 +2450,18 @@ def _encode_image(image_path: str) -> tuple[str, int, int]:
 def _call_vlm(system_prompt: str, user_prompt: str, image_path: str,
               max_tokens: int = 2048,
               timeout: int | None = None,
-              retries: int | None = None) -> tuple[Optional[str], str, int, int]:
+              retries: int | None = None,
+              thinking: bool | None = None) -> tuple[Optional[str], str, int, int]:
     """Send a prompt + screenshot to the configured VLM.
 
     Returns (response_text, finish_reason, norm_w, norm_h) where norm_w/norm_h
     are the dimensions of the normalized image sent to the VLM.  VLM coordinates
     are relative to this space — scale them to device pixels via _scale_coordinate.
+
+    ``thinking`` overrides the provider's ``thinking`` setting for this call only
+    (``None`` = follow config).  Callers that want a SHORT answer (planner) must
+    pass ``thinking=False``: a reasoning pass over a long system prompt is what
+    turned a ~20 s plan into an ~8 min one.
 
     On failure returns (None, "error", 0, 0).
     """
@@ -2403,6 +2472,7 @@ def _call_vlm(system_prompt: str, user_prompt: str, image_path: str,
 
     actual_timeout = timeout if timeout is not None else cfg.get("vlm_timeout", 120)
     actual_retries = retries if retries is not None else cfg.get("vlm_retries", 2)
+    thinking_on = bool(cfg.get("thinking")) if thinking is None else bool(thinking)
 
     b64, norm_w, norm_h = _encode_image(image_path)
     t_encode = time.time()
@@ -2421,12 +2491,24 @@ def _call_vlm(system_prompt: str, user_prompt: str, image_path: str,
         "max_tokens": max_tokens,
         "temperature": 0.1,
     }
-    if cfg.get("thinking"):
+    if thinking_on:
         body["thinking"] = {"type": "enabled"}
 
     url = f"{base_url}/chat/completions"
     last_error = ""
+
+    if not api_key and base_url.startswith("http"):
+        _log(
+            f"[vlm] WARNING: empty API key for {base_url} — the POST may hang "
+            "or return 401 instead of failing fast"
+        )
+    _log(
+        f"[vlm] POST {url} model={model} thinking={'on' if thinking_on else 'off'} "
+        f"attempts={actual_retries + 1} timeout={actual_timeout}s"
+    )
+
     for attempt in range(actual_retries + 1):
+        _log(f"[vlm] call attempt {attempt + 1}/{actual_retries + 1} ...")
         try:
             req = urllib.request.Request(
                 url,
@@ -2475,7 +2557,7 @@ def _call_vlm(system_prompt: str, user_prompt: str, image_path: str,
                     )
                 if (
                     finish == "length"
-                    and cfg.get("thinking")
+                    and thinking_on
                     and body.get("thinking") == {"type": "enabled"}
                 ):
                     # Truncation on a thinking model usually means the budget
@@ -2484,7 +2566,9 @@ def _call_vlm(system_prompt: str, user_prompt: str, image_path: str,
                     raise ValueError(
                         f"length-truncated thinking response (finish_reason=length)"
                     )
-                _trace(f"[vlm] API round-trip: {time.time() - t_call:.2f}s  model={model}  tokens={len(content)}")
+                elapsed = time.time() - t_call
+                _trace(f"[vlm] API round-trip: {elapsed:.2f}s  model={model}  tokens={len(content)}")
+                _log(f"[vlm] attempt {attempt + 1} ok in {elapsed:.1f}s (finish={finish})")
                 return content, finish, norm_w, norm_h
         except (urllib.error.URLError, TimeoutError, ConnectionResetError,
                 OSError, ValueError) as e:
@@ -2500,7 +2584,7 @@ def _call_vlm(system_prompt: str, user_prompt: str, image_path: str,
             )
             if (
                 thinking_truncated
-                and cfg.get("thinking")
+                and thinking_on
                 and body.get("thinking") == {"type": "enabled"}
             ):
                 # Omitting the key entirely is the only universally-safe "off"
@@ -2534,10 +2618,16 @@ def _call_vlm(system_prompt: str, user_prompt: str, image_path: str,
 
 
 def _call_vlm_simple(system_prompt: str, user_prompt: str, image_path: str,
-                     max_tokens: int = 4096) -> tuple[Optional[str], str]:
+                     max_tokens: int = 4096,
+                     timeout: int | None = None,
+                     retries: int | None = None,
+                     thinking: bool | None = None) -> tuple[Optional[str], str]:
     """Adapter for callers that don't need coordinate normalization
     (planner, validator, checker)."""
-    raw, reason, _w, _h = _call_vlm(system_prompt, user_prompt, image_path, max_tokens)
+    raw, reason, _w, _h = _call_vlm(
+        system_prompt, user_prompt, image_path, max_tokens,
+        timeout=timeout, retries=retries, thinking=thinking,
+    )
     return raw, reason
 
 
@@ -2799,7 +2889,16 @@ def _call_text_llm(system_prompt: str, user_prompt: str,
 
     url = f"{base_url}/chat/completions"
     last_error = ""
+
+    if not api_key and base_url.startswith("http"):
+        _log(
+            f"[text_llm] WARNING: empty API key for {base_url} — the POST may hang "
+            "or return 401 instead of failing fast"
+        )
+    _log(f"[text_llm] POST {url} model={model} attempts={actual_retries + 1} timeout={actual_timeout}s")
+
     for attempt in range(actual_retries + 1):
+        _log(f"[text_llm] call attempt {attempt + 1}/{actual_retries + 1} ...")
         try:
             req = urllib.request.Request(
                 url,
@@ -2814,13 +2913,16 @@ def _call_text_llm(system_prompt: str, user_prompt: str,
         except (urllib.error.URLError, TimeoutError, ConnectionResetError,
                 OSError) as e:
             last_error = str(e)
-            if attempt < retries:
+            # NOTE: must use ``actual_retries`` — ``retries`` is None when the
+            # caller relies on the config default, and ``None < 0`` raises
+            # TypeError inside the except block (masking the real error).
+            if attempt < actual_retries:
                 delay = (attempt + 1) * 1.5
-                _log(f"Text LLM call failed (attempt {attempt+1}/{retries+1}, retry in {delay:.1f}s): {last_error[:80]}")
+                _log(f"Text LLM call failed (attempt {attempt+1}/{actual_retries+1}, retry in {delay:.1f}s): {last_error[:80]}")
                 time.sleep(delay)
             else:
-                _log(f"Text LLM call failed after {retries+1} attempts ({url}): {last_error}")
-                _trace(f"[text_llm] call failed after {retries+1} attempts: {last_error}")
+                _log(f"Text LLM call failed after {actual_retries+1} attempts ({url}): {last_error}")
+                _trace(f"[text_llm] call failed after {actual_retries+1} attempts: {last_error}")
         except Exception as e:
             _log(f"Text LLM call failed ({url}): {e}")
             _trace(f"[text_llm] call failed: {e}")

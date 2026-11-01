@@ -527,16 +527,36 @@ def generate_plan(
     vlm_caller: Callable[
         [str, str, str, int], tuple[Optional[str], str]
     ],
-    max_retries: int = MAX_PLAN_RETRIES,
+    max_retries: int = 1,
+    timeout: float = 90.0,
+    total_budget: float = 150.0,
+    thinking: bool = False,
 ) -> dict:
     """Generate a milestone plan for the given instruction.
+
+    Cost control (this used to take 8 minutes):
+    - ``max_retries`` defaults to **1**: a plan call is a short, deterministic
+      answer; a second full attempt is rarely worth the latency.
+    - ``timeout`` is the per-HTTP-call socket timeout.
+    - ``total_budget`` is a hard WALL-CLOCK deadline. The previous code nested
+      three retry layers (generate_plan × _call_vlm × plan-parse) with a 120 s
+      socket timeout each — a slow gateway could spend up to 21 HTTP calls, and
+      the 120 s socket timeout does not bound total wall time because it applies
+      per blocking socket operation, not per request.
+    - ``thinking`` is passed to the caller as ``False`` by default: the planner
+      only needs a ~10-line markdown answer, so a reasoning pass on a ~3.9k-token
+      system prompt is pure latency.
 
     Args:
         instruction: The natural-language task.
         screenshot_path: Path to a current device screenshot.
         vlm_caller: Function (system_prompt, user_prompt, image_path, max_tokens)
-            → (response_text, finish_reason).
+            → (response_text, finish_reason). Extra keyword arguments (timeout,
+            retries, thinking) are passed when the caller accepts them.
         max_retries: How many times to retry on parse failure.
+        timeout: Per-call socket timeout in seconds.
+        total_budget: Wall-clock budget for the whole planning step.
+        thinking: Whether to let the model reason before answering.
 
     Returns:
         dict with keys:
@@ -545,29 +565,50 @@ def generate_plan(
           - ``raw_response``: The VLM's raw response
           - ``success``: bool — whether a valid plan was generated
           - ``error``: Error message if failed
+          - ``elapsed_s``: Wall-clock time spent
     """
+    import time as _time
+
+    started = _time.monotonic()
+    deadline = started + max(1.0, float(total_budget))
     system_prompt = build_planner_system_prompt()
     user_prompt = f"Goal: {instruction}\n\nGenerate a task plan for this Android automation goal based on the screenshot showing the current device state."
 
     last_error = ""
 
-    for attempt in range(1, max_retries + 1):
-        raw, finish_reason = vlm_caller(
-            system_prompt,
-            user_prompt,
-            screenshot_path,
-            max_tokens=4096,
-        )
+    def _call(prompt_timeout: float) -> tuple[Optional[str], str]:
+        """Call the VLM, passing the optional knobs only if it accepts them."""
+        kwargs = {"timeout": prompt_timeout, "retries": 0, "thinking": thinking}
+        try:
+            return vlm_caller(
+                system_prompt, user_prompt, screenshot_path, 4096, **kwargs
+            )
+        except TypeError:
+            # Older/test callers take only (system, user, image, max_tokens).
+            return vlm_caller(system_prompt, user_prompt, screenshot_path, 4096)
 
+    for attempt in range(1, max(1, max_retries) + 1):
+        remaining = deadline - _time.monotonic()
+        if remaining <= 1.0:
+            last_error = (
+                f"Planning budget of {total_budget:.0f}s exhausted before attempt {attempt}"
+            )
+            break
+
+        raw, finish_reason = _call(min(float(timeout), remaining))
+
+        elapsed = _time.monotonic() - started
         if not raw:
-            last_error = f"VLM returned empty response (attempt {attempt})"
+            last_error = (
+                f"VLM returned empty response (attempt {attempt}, {elapsed:.1f}s)"
+            )
             continue
 
         if finish_reason == "length":
-            last_error = f"Planner VLM truncated output at length limit (attempt {attempt})"
-            if attempt < max_retries:
-                continue
-            break
+            last_error = (
+                f"Planner VLM truncated output at length limit (attempt {attempt}, {elapsed:.1f}s)"
+            )
+            continue
 
         # Extract plan text: try to find markdown task list
         plan_text = _extract_plan_text(raw)
@@ -582,6 +623,7 @@ def generate_plan(
                 "raw_response": raw,
                 "success": True,
                 "error": "",
+                "elapsed_s": _time.monotonic() - started,
             }
 
         last_error = f"Plan validation failed (attempt {attempt}): {error_msg}"
@@ -593,6 +635,7 @@ def generate_plan(
         "raw_response": "",
         "success": False,
         "error": last_error,
+        "elapsed_s": _time.monotonic() - started,
     }
 
 
