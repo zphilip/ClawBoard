@@ -43,9 +43,12 @@ import time
 import urllib.request
 import urllib.error
 import uuid
+import http.client
+import socket
+import ssl
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 # App package name resolution (bidirectional map from packages.py)
 from runner.packages import NAME_PACKAGE_DICT, normalize_package_name
@@ -2517,6 +2520,72 @@ def _encode_image(image_path: str) -> tuple[str, int, int]:
     return b64, norm_w, norm_h
 
 
+# --- DNS cache + connection reuse ---------------------------------------------------
+#
+# Every VLM call used to open a brand-new HTTPSConnection, which means a fresh
+# DNS lookup + TCP connect + TLS handshake per call. On the Radxa that setup cost
+# a constant ~83 s per request — identical for a 165 KB and a 361 KB image, which
+# is the giveaway that it is NOT model generation. Caching the resolved address
+# and keeping the connection alive removes it from every call after the first.
+
+_DNS_CACHE: dict[tuple[str, int], tuple[float, str]] = {}
+_DNS_TTL = 600.0
+_CONN_CACHE: dict[tuple[str, str, int], Any] = {}
+
+
+def _resolve_ip(host: str, port: int) -> tuple[str, float]:
+    """Resolve *host* through a TTL cache; returns ``(ip, elapsed_seconds)``.
+
+    IPv4 is preferred: an SBC on a typical home network often has an IPv6
+    route that resolves but blackholes, which turns each connect into a timeout.
+    """
+    key = (host, port)
+    now = time.monotonic()
+    cached = _DNS_CACHE.get(key)
+    if cached and (now - cached[0]) < _DNS_TTL:
+        return cached[1], 0.0
+
+    t0 = time.monotonic()
+    infos = socket.getaddrinfo(host, port, proto=socket.IPPROTO_TCP)
+    elapsed = time.monotonic() - t0
+
+    ip = ""
+    for family, _type, _proto, _canon, sockaddr in infos:
+        if family == socket.AF_INET:
+            ip = sockaddr[0]
+            break
+    if not ip and infos:
+        ip = infos[0][4][0]
+    if not ip:
+        raise OSError(f"could not resolve {host}")
+    _DNS_CACHE[key] = (now, ip)
+    return ip, elapsed
+
+
+class _PinnedHTTPConnection(http.client.HTTPConnection):
+    """HTTPConnection that dials a pre-resolved IP (skips repeated DNS)."""
+
+    def __init__(self, host, port, ip, timeout):
+        super().__init__(host, port, timeout=timeout)
+        self._pinned_ip = ip
+
+    def connect(self):
+        self.sock = socket.create_connection((self._pinned_ip, self.port), self.timeout)
+
+
+class _PinnedHTTPSConnection(http.client.HTTPSConnection):
+    """HTTPSConnection that dials a pre-resolved IP but keeps SNI + cert checks
+    bound to the real hostname."""
+
+    def __init__(self, host, port, ip, timeout, context):
+        super().__init__(host, port, timeout=timeout, context=context)
+        self._pinned_ip = ip
+
+    def connect(self):
+        sock = socket.create_connection((self._pinned_ip, self.port), self.timeout)
+        self.sock = self._context.wrap_socket(sock, server_hostname=self.host)
+
+
 def _post_json_with_deadline(
     url: str,
     payload: bytes,
@@ -2553,20 +2622,69 @@ def _post_json_with_deadline(
 
     budget = max(1.0, deadline - start)
     sock_timeout = max(1.0, min(connect_timeout, budget))
-    if parts.scheme == "https":
-        conn = http.client.HTTPSConnection(
-            host, port, timeout=sock_timeout, context=ssl.create_default_context()
-        )
-    else:
-        conn = http.client.HTTPConnection(host, port, timeout=sock_timeout)
+    cache_key = (parts.scheme, host, port)
 
     # How long a single blocking read may sit before we re-check the deadline.
     # A non-streaming model can be legitimately silent for a long time, so a
     # read timeout is NOT treated as failure — it just returns control so the
     # cumulative deadline can be evaluated.
     tick = 2.0
+
+    def _new_connection() -> tuple[Any, float, float, bool]:
+        """Open a connection → (conn, dns_s, handshake_s, reused).
+
+        Reuses a cached keep-alive connection when the server left it open —
+        that is what removes the constant setup cost from every call.
+        """
+        reused = _CONN_CACHE.pop(cache_key, None)
+        if reused is not None and reused.sock is not None:
+            return reused, 0.0, 0.0, True
+        if reused is not None:
+            try:
+                reused.close()
+            except Exception:
+                pass
+
+        ip, dns_s = _resolve_ip(host, port)
+        t_conn = time.monotonic()
+        if parts.scheme == "https":
+            conn = _PinnedHTTPSConnection(
+                host, port, ip, sock_timeout, ssl.create_default_context()
+            )
+        else:
+            conn = _PinnedHTTPConnection(host, port, ip, sock_timeout)
+        # Dial now so DNS/connect/TLS are timed separately from the model's own
+        # latency — that separation is what identified the fixed 83 s overhead.
+        try:
+            conn.connect()
+        except TypeError:
+            pass  # already connected
+        return conn, dns_s, time.monotonic() - t_conn, False
+
+    conn = None
     try:
-        conn.request("POST", path, body=payload, headers=headers)
+        # One redial: a keep-alive socket the server has since closed must not
+        # surface as a failed call.
+        for dial_attempt in range(2):
+            conn, dns_s, connect_s, reused_conn = _new_connection()
+            _log(
+                f"[vlm] connect dns={dns_s:.1f}s handshake={connect_s:.1f}s "
+                f"reused={'yes' if reused_conn else 'no'}"
+            )
+            try:
+                conn.request("POST", path, body=payload, headers=headers)
+                break
+            except (http.client.RemoteDisconnected, ConnectionResetError,
+                    BrokenPipeError, _socket.timeout, ssl.SSLError) as e:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+                conn = None
+                if dial_attempt == 1:
+                    raise
+                _log(f"[vlm] stale keep-alive connection ({e}) — redialing once")
+
         sock = conn.sock
         resp = conn.getresponse()
         status = resp.status
@@ -2598,12 +2716,21 @@ def _post_json_with_deadline(
             chunks.append(chunk)
 
         body = b"".join(chunks).decode("utf-8", "replace")
-        return status, body, first_byte, time.monotonic() - start
-    finally:
+        # Keep the connection for the next call when the server left it open:
+        # reusing it skips DNS + TCP + TLS entirely on the following request.
         try:
-            conn.close()
+            if not resp.will_close and conn is not None and conn.sock is not None:
+                _CONN_CACHE[cache_key] = conn
+                conn = None
         except Exception:
             pass
+        return status, body, first_byte, time.monotonic() - start
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 def _call_vlm(system_prompt: str, user_prompt: str, image_path: str,
