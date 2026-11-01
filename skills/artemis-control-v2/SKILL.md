@@ -112,6 +112,29 @@ Classify the task FIRST; the failure mode differs by class:
   adb shell settings get global airplane_mode_on     # 1 = airplane mode
   ```
 
+### Acceptance check lines + read-only probes (pro)
+
+For Class B/C/D tasks the Planner SHOULD declare `- verify:` lines under a
+milestone so completion is judged by device STATE, not by the presence of a
+button that may not exist on a given skin ("静音" has no dedicated toggle on
+many ColorOS/MIUI screens — dragging the volume slider to 0 satisfies it).
+
+Grammar (indented under a milestone):
+- `- verify: <observable acceptance criterion>` — judged by the Checker; a
+  failure sends the milestone back for repair.
+- `- assert: <test expectation>` — recorded truthfully, never repaired.
+- `- verify@end: <criterion>` (zero indent) — judged at task exit.
+
+Name a read-only probe so the checker has concrete evidence, e.g.:
+```
+- [ ] 将手机设置为静音
+  - verify: 铃声已静音（铃声模式为静音）[probe: audio]
+```
+
+Enumerated probes the Checker may run (no free-form commands): `alarms`,
+`battery`, `foreground`, `notifications`, `audio` (`dumpsys audio`),
+`setting` (`<namespace> <key>`), `content` (`<uri>`), `packages`, `prop`.
+
 ## When to Use
 
 ✅ **USE this skill when:**

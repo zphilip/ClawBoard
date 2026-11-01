@@ -42,6 +42,15 @@ CHECKBOX_LINE_RE = re.compile(
 _LOOP_TAG_RE = re.compile(r"\[Loop(?::continuous)?\]")
 _CONTINUOUS_TAG_RE = re.compile(re.escape(CONTINUOUS_LOOP_TAG))
 
+# Check lines are indented attachments under a top-level subgoal
+# (``- verify: ...`` / ``- assert: ...``) or task-level free items at zero
+# indent. The optional ``@end`` suffix moves the judgment moment from the
+# anchored subgoal's completion to task exit (mirrors upstream
+# artemis/utils/plan_grammar.py CHECK_LINE_RE).
+CHECK_LINE_RE = re.compile(
+    r"^(?P<indent>\s*)-\s*(?P<kind>verify|assert)(?P<at_end>@end)?\s*:\s*(?P<text>\S.*?)\s*$"
+)
+
 # Maximum plan generation retries on parse failure
 MAX_PLAN_RETRIES = 3
 
@@ -87,12 +96,43 @@ class PlanItem:
     def is_continuous(self) -> bool:
         return bool(_CONTINUOUS_TAG_RE.search(self.text))
 
+    @property
+    def key(self) -> str:
+        """Stable identity hash of the item text (mirrors upstream subgoal_hash)."""
+        import hashlib
+        return hashlib.md5(self.text.strip().encode("utf-8")).hexdigest()
+
+
+@dataclass(frozen=True)
+class CheckItem:
+    """One declared check line of the plan's machine channel.
+
+    ``verify`` marks a completion acceptance criterion (a failure triggers
+    repair); ``assert`` marks a test assertion (a failure is recorded as a
+    legitimate test result, never repaired). Mirrors upstream
+    ``artemis/utils/plan_grammar.py CheckItem``.
+    """
+
+    kind: str  # "verify" | "assert"
+    when: str  # "on_complete" | "at_end"
+    text: str
+    parent_key: Optional[str] = None
+
+    @property
+    def is_verify(self) -> bool:
+        return self.kind == "verify"
+
+    @property
+    def is_assert(self) -> bool:
+        return self.kind == "assert"
+
 
 @dataclass(frozen=True)
 class PlanSnapshot:
     """Read-only derived view of a plan. Never persisted, never written back."""
 
     items: tuple[PlanItem, ...] = field(default_factory=tuple)
+    check_items: tuple[CheckItem, ...] = field(default_factory=tuple)
 
     @property
     def top_level(self) -> tuple[PlanItem, ...]:
@@ -149,6 +189,22 @@ class PlanSnapshot:
     def milestone_texts(self) -> tuple[str, ...]:
         return tuple(i.text.strip() for i in self.top_level)
 
+    def check_items_of(self, item: PlanItem) -> tuple[CheckItem, ...]:
+        """Check lines anchored to the given top-level subgoal."""
+        if not item.is_top_level:
+            return ()
+        return tuple(ci for ci in self.check_items if ci.parent_key == item.key)
+
+    @property
+    def task_level_check_items(self) -> tuple[CheckItem, ...]:
+        """``verify@end`` / ``assert@end`` lines at zero indent (task level)."""
+        return tuple(ci for ci in self.check_items if ci.parent_key is None)
+
+    @property
+    def all_check_items(self) -> tuple[CheckItem, ...]:
+        """Every declared check item, regardless of anchor."""
+        return self.check_items
+
     def render_for_prompt(self) -> str:
         """Render the plan as a prompt block showing status of all milestones."""
         if not self.items:
@@ -203,23 +259,43 @@ class PlanSnapshot:
 def parse_plan(content: str | None) -> PlanSnapshot:
     """Parse plan markdown into its machine channel.
 
-    Non-checkbox lines are ignored. Only ``- [<status>] <text>`` lines
-    contribute to the snapshot.
+    Non-checkbox lines are ignored for milestone tracking, EXCEPT check lines
+    (``- verify:`` / ``- assert:``), which are extracted into
+    :class:`CheckItem` entries anchored to the nearest top-level milestone:
+    indented check lines attach to that milestone (``on_complete``), zero-indent
+    lines are task-level (``at_end`` equivalent).
     """
     items: list[PlanItem] = []
+    checks: list[CheckItem] = []
+    current_top: Optional[PlanItem] = None
     if content:
         for line_no, line in enumerate(content.splitlines()):
             match = CHECKBOX_LINE_RE.match(line)
             if match:
-                items.append(
-                    PlanItem(
-                        indent=len(match.group("indent")),
-                        status=match.group("status"),
-                        text=match.group("text").strip(),
-                        line_no=line_no,
+                item = PlanItem(
+                    indent=len(match.group("indent")),
+                    status=match.group("status"),
+                    text=match.group("text").strip(),
+                    line_no=line_no,
+                )
+                items.append(item)
+                if item.is_top_level:
+                    current_top = item
+                continue
+            check_match = CHECK_LINE_RE.match(line)
+            if check_match:
+                indented = bool(check_match.group("indent"))
+                at_end = bool(check_match.group("at_end"))
+                parent_key = current_top.key if (indented and current_top) else None
+                checks.append(
+                    CheckItem(
+                        kind=check_match.group("kind"),
+                        when="at_end" if at_end else "on_complete",
+                        text=check_match.group("text").strip(),
+                        parent_key=parent_key,
                     )
                 )
-    return PlanSnapshot(items=tuple(items))
+    return PlanSnapshot(items=tuple(items), check_items=tuple(checks))
 
 
 def validate_plan_format(content: str) -> tuple[bool, str]:
@@ -256,7 +332,32 @@ Every checklist line MUST match `<indent>- [<status>] <text>`:
 - Top-level lines (no indentation) are strategic milestones. Nested lines are their sub-goals: 2 spaces for a sub-goal, 4 spaces for a sub-sub-goal beneath it (deeper nesting is allowed). Only zero-indent lines count as milestones for termination and validation; nested lines are the executor's live ledger. All other text in the note is free-form context.
 - `{LOOP_TAG}` tags a BOUNDED iterative milestone: declare its exit boundary (e.g., `(Exit: <condition>; Interval: <cadence>)`) and mark it `[{STATUS_DONE}]` only once that exit condition is verifiably met.
 - `{CONTINUOUS_LOOP_TAG}` tags an UNBOUNDED continuous-monitoring milestone: it must stay `[{STATUS_ACTIVE}]` and can never be marked `[{STATUS_DONE}]`, deleted, or untagged by you — the system mechanically rejects such edits. Only an explicit external stop signal injected by the user unlocks its completion; that signal is an external interruption delivered by the system, never something inferred from the screen or the plan.
-- The task terminates only when every top-level milestone is `[{STATUS_DONE}]`."""
+- The task terminates only when every top-level milestone is `[{STATUS_DONE}]`.
+
+### Acceptance check lines (for state-change / verification-sensitive tasks)
+Under a milestone you MAY write check lines (2-space indented) that declare how
+the milestone's success is judged. They are NEVER milestones; they are the
+acceptance contract the Checker audits:
+
+- `- verify: <observable acceptance criterion>` — a completion acceptance
+  criterion. The final Checker judges it against device state; a failed verify
+  sends the milestone back for repair.
+- `- assert: <test expectation>` — a test assertion recorded truthfully, never
+  repaired.
+- `- verify@end: <criterion>` (zero indent) — judged at task exit against the
+  final device state.
+
+For state-change tasks (mute, Wi-Fi, brightness, DND, airplane mode, …) ALWAYS
+add a `- verify:` line that names a READ-ONLY device-state probe, not a visual
+look. Preferred probe tags: `[probe: audio]` (ringer/volume),
+`[probe: setting global zen_mode]`, `[probe: setting system screen_brightness]`,
+`[probe: setting global wifi_on]`, `[probe: foreground]`, `[probe: battery]`.
+Example:
+
+```
+- [ ] 将手机设置为静音
+  - verify: 响铃音量已降到 0 且铃声模式为静音 [probe: audio]
+```"""
 
 
 def render_plan_grammar_spec() -> str:
@@ -382,6 +483,20 @@ _PLANNER_EXAMPLE = """## Example: Multi-App Workflow
 ```
 *(Fails: micromanages exact coordinates that may differ per device; treats UI micro-actions as milestones rather than strategic phases)*"""
 
+_PLANNER_STATE_CHANGE_EXAMPLE = """## Example: State-Change Task (must carry a verify line)
+
+**Goal**: "把手机设置成静音"
+
+### Correct Approach (outcome milestone + scriptable verify):
+```
+- [ ] 将手机切换到静音（铃声静音）
+  - verify: 铃声已静音，酷炫模式下提醒方式为静音 [probe: audio]
+```
+
+*(verify line names a read-only probe the Checker can run, so acceptance no
+longer depends on finding a visible "静音" button that may not exist — the
+equivalence (drag volume to 0, use DND) satisfies the same state.)*"""
+
 
 def build_planner_system_prompt() -> str:
     """Assemble the full system prompt for plan generation.
@@ -397,6 +512,7 @@ def build_planner_system_prompt() -> str:
             _PLANNER_CAPABILITIES,
             _PLANNER_OUTPUT_PROTOCOL,
             _PLANNER_EXAMPLE,
+            _PLANNER_STATE_CHANGE_EXAMPLE,
         ]
     )
 

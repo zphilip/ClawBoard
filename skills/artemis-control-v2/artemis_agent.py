@@ -69,6 +69,11 @@ from runner.planner import (
 )
 from runner.validator import call_validator
 from runner.checker import call_checker
+from runner.probes import (
+    build_probe_argv,
+    derive_probes,
+    summarize_probe_output,
+)
 from runner.memory_runtime import MemoryRuntime
 from runner.diagnoser import call_diagnoser
 from runner.post_run_report import build_post_run_report, write_report
@@ -174,6 +179,88 @@ def _checker_confirmed(arb: dict) -> bool:
     success.
     """
     return bool(arb.get("success")) and bool(arb.get("goal_achieved", False))
+
+
+def _snapshot_check_items(plan_text: str) -> list[dict]:
+    """Extract declared ``- verify:`` / ``- assert:`` check items from the plan.
+
+    Returns a list of dicts (kind/when/text) ready for the Checker; empty when
+    the plan declared no check lines.
+    """
+    if not plan_text:
+        return []
+    snapshot = parse_plan(plan_text)
+    return [
+        {"kind": ci.kind, "when": ci.when, "text": ci.text}
+        for ci in snapshot.all_check_items
+    ]
+
+
+def _run_check_probes(
+    check_items: list[dict],
+    adb_path: str,
+    device: str,
+) -> dict:
+    """Run read-only device probes for each check item and return evidence.
+
+    Mapping check-item text → probe output. A probe is derived from an explicit
+    ``[probe: …]`` hint or keyword rules (see runner/probes.py).  Only
+    enumerated probes run; anything else is skipped.  A probe failure records
+    "(probe failed: …)" as the evidence rather than aborting the run.
+    """
+    results: dict = {}
+    for ci in check_items:
+        text = ci.get("text", "")
+        probes = derive_probes(text)
+        rows: list[str] = []
+        for kind, params in probes:
+            try:
+                argv = build_probe_argv(kind, params)
+            except ValueError as e:
+                rows.append(f"probe {kind}: invalid — {e}")
+                continue
+            rc, out, err = _adb(
+                ["shell"] + list(argv), adb_path=adb_path, device=device, timeout=15,
+            )
+            if rc != 0:
+                rows.append(f"probe {kind}: failed (rc={rc}) — {err.strip()[:200]}")
+            else:
+                summary = summarize_probe_output(kind, out)
+                rows.append(f"probe {kind}: {summary}")
+        if rows:
+            results[text] = "\n".join(rows)
+    return results
+
+
+def _call_checker_with_probes(
+    instruction: str,
+    plan_text: str,
+    actions: list,
+    steps: int,
+    screenshot_path: str,
+    adb_path: str,
+    device: str,
+) -> dict:
+    """Checker call that threads declared check items + read-only probe evidence.
+
+    Used by the arbitration paths (finish/stuck) so the independent verdict also
+    audits any ``- verify:`` acceptance criteria, not just screenshots.
+    """
+    check_items = _snapshot_check_items(plan_text)
+    probe_results = _run_check_probes(check_items, adb_path, device) if check_items else {}
+    if check_items:
+        _log(f"Checker probes: {len(probe_results)}/{len(check_items)} check items probed")
+    return call_checker(
+        instruction=instruction,
+        plan_text=plan_text,
+        actions=actions,
+        steps=steps,
+        screenshot_path=screenshot_path,
+        vlm_caller=_call_vlm_simple,
+        text_llm_caller=_get_text_llm_caller(),
+        check_items=check_items,
+        probe_results=probe_results,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1329,14 +1416,14 @@ def _run_reactive_fallback(
                 if remaining > 0:
                     _log("VLM insists task is done — invoking Checker to arbitrate")
                     try:
-                        arb = call_checker(
+                        arb = _call_checker_with_probes(
                             instruction=instruction,
                             plan_text=plan_text,
                             actions=actions,
                             steps=step,
                             screenshot_path=str(vshot_path) if vshot_path.exists() else "",
-                            vlm_caller=_call_vlm_simple,
-                            text_llm_caller=_get_text_llm_caller(),
+                            adb_path=adb_path,
+                            device=device,
                         )
                     except Exception as ex:
                         arb = {}
@@ -1356,14 +1443,14 @@ def _run_reactive_fallback(
             if not last_action_effective:
                 _log("Finish follows an ineffective tap — invoking Checker to verify goal")
                 try:
-                    arb = call_checker(
+                    arb = _call_checker_with_probes(
                         instruction=instruction,
                         plan_text=plan_text,
                         actions=actions,
                         steps=step,
                         screenshot_path=str(vshot_path) if vshot_path.exists() else "",
-                        vlm_caller=_call_vlm_simple,
-                        text_llm_caller=_get_text_llm_caller(),
+                        adb_path=adb_path,
+                        device=device,
                     )
                 except Exception as ex:
                     arb = {}
@@ -1778,14 +1865,14 @@ def _run_plan_guided_fallback(
                     final_shot = screenshots_dir / f"pro_arbitrate_{step}.png"
                     _take_screenshot(adb_path, device, final_shot)
                     try:
-                        arb = call_checker(
+                        arb = _call_checker_with_probes(
                             instruction=instruction,
                             plan_text=plan_text,
                             actions=actions,
                             steps=step,
                             screenshot_path=str(final_shot) if final_shot.exists() else "",
-                            vlm_caller=_call_vlm_simple,
-                            text_llm_caller=_get_text_llm_caller(),
+                            adb_path=adb_path,
+                            device=device,
                         )
                     except Exception as ex:
                         arb = {}
@@ -1889,14 +1976,14 @@ def _run_plan_guided_fallback(
                 arb_shot = screenshots_dir / f"pro_arbitrate_{step}.png"
                 _take_screenshot(adb_path, device, arb_shot)
                 try:
-                    arb = call_checker(
+                    arb = _call_checker_with_probes(
                         instruction=instruction,
                         plan_text=plan_text,
                         actions=actions,
                         steps=step,
                         screenshot_path=str(arb_shot) if arb_shot.exists() else "",
-                        vlm_caller=_call_vlm_simple,
-                        text_llm_caller=_get_text_llm_caller(),
+                        adb_path=adb_path,
+                        device=device,
                     )
                 except Exception as ex:
                     arb = {}
@@ -2146,6 +2233,12 @@ def _run_plan_guided_fallback(
         f"Safety incidents: {incident_tracker.count}"
     )
 
+    # Declared acceptance criteria + read-only device-state evidence.
+    check_items = _snapshot_check_items(plan_text)
+    probe_results = _run_check_probes(check_items, adb_path, device) if check_items else {}
+    if check_items:
+        _log(f"Checker probes: {len(probe_results)}/{len(check_items)} check items probed")
+
     checker_result = call_checker(
         instruction=instruction,
         plan_text=plan_text,
@@ -2155,6 +2248,8 @@ def _run_plan_guided_fallback(
         vlm_caller=_call_vlm_simple,
         text_llm_caller=_get_text_llm_caller(),
         verification_summary=verification_summary,
+        check_items=check_items,
+        probe_results=probe_results,
     )
 
     _emit({
@@ -2165,6 +2260,7 @@ def _run_plan_guided_fallback(
         "evidence": checker_result.get("evidence", []),
         "concerns": checker_result.get("concerns", []),
         "recommendation": checker_result.get("recommendation", ""),
+        "check_items": checker_result.get("check_items", []),
     })
 
     checker_verdict = checker_result.get("goal_achieved", True)

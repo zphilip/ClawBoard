@@ -40,12 +40,27 @@ as success or failure to the user.
   - Screenshot showing the expected final state
   - Action history showing the right sequence
   - Plan milestones all marked complete
+  - **Device probe output** (read-only state: settings values, dumpsys) when a
+    declared check item names a state change
 - What evidence is MISSING?
   - We can't see toast messages that have already disappeared
   - We can't verify content that scrolled off-screen
   - We can't confirm network operations completed
 
-### 3. Failure Modes
+### 3. Declared check items & probes
+When the prompt includes "Declared check items" with "Device probe results":
+- Each `verify:` item is an acceptance criterion you MUST judge explicitly.
+  A `verify` item FAILS only when the probe output contradicts it with concrete
+  evidence; if the needed probe was never run or returned nothing decisive,
+  treat it as inconclusive and say so.
+- Judge each `verify` item against its own probe result, then combine them into
+  the overall `goal_achieved` verdict: goal is achieved only if every `verify`
+  item passed (or is inconclusive with no contradicting evidence).
+- A `verify` item is about persistent device STATE, not about seeing a literal
+  UI label. "静音" is satisfied if the ringer mode is SILENT or volume is 0 —
+  do NOT fail it just because no "静音" button was present.
+
+### 4. Failure Modes
 - Was the wrong app opened? Wrong account? Wrong setting changed?
 - Did the agent get stuck on a permission dialog or ad?
 - Did the agent navigate to the right screen but fail to perform the final action?
@@ -60,10 +75,17 @@ You MUST respond with a single JSON object. No other text.
   "summary": "One sentence summarizing what happened",
   "evidence": ["bullet point", "bullet point"],
   "concerns": ["missing evidence", "potential issue"],
-  "recommendation": "What to tell the user (if failed, suggest next steps)"
+  "recommendation": "What to tell the user (if failed, suggest next steps)",
+  "check_items": [
+    {"text": "the check-item text, quoted verbatim", "kind": "verify", "status": "passed|failed|inconclusive", "evidence": "probe output / observation"}
+  ]
 }
 ```
 
+- Check the example first — do NOT use leading spaces, newline is not allowed in expected JSON schema
+- **`check_items` is REQUIRED when "Declared check items" appear in the prompt**:
+  one entry per item, status ∈ passed/failed/inconclusive, each with concrete
+  evidence. If no check items were declared, return `"check_items": []`.
 - **goal_achieved**: true if you are confident the goal was met
 - **confidence**: 0.0-1.0 — how certain you are (0.5 = unsure)
 - **summary**: One line describing the outcome
@@ -92,6 +114,8 @@ def build_checker_user_prompt(
     actions: list[str],
     steps: int,
     verification_summary: str = "",
+    check_items: list[dict] | None = None,
+    probe_results: dict | None = None,
 ) -> str:
     """Build the Checker's user prompt with full execution context.
 
@@ -101,6 +125,9 @@ def build_checker_user_prompt(
         actions: List of human-readable action descriptions.
         steps: Total steps taken.
         verification_summary: Summary of milestone verification results.
+        check_items: Declared ``- verify:`` / ``- assert:`` items (list of dicts
+            with ``kind``/``when``/``text``).
+        probe_results: Mapping check-item text → read-only probe output.
     """
     action_summary = "\n".join(f"  {i+1}. {a}" for i, a in enumerate(actions[-20:]))
     if len(actions) > 20:
@@ -116,6 +143,19 @@ def build_checker_user_prompt(
 
     if verification_summary:
         parts.extend(["", f"## Milestone Verification\n{verification_summary}"])
+
+    if check_items:
+        rendered = []
+        for ci in check_items:
+            kind = ci.get("kind", "verify")
+            when = ci.get("when", "on_complete")
+            text = ci.get("text", "")
+            probe = (probe_results or {}).get(text, "")
+            line = f"- [{kind}@{when}] {text}"
+            if probe:
+                line += f"\n  probe: {probe}"
+            rendered.append(line)
+        parts.extend(["", "## Declared check items\n" + "\n".join(rendered)])
 
     parts.extend([
         "",
@@ -139,6 +179,8 @@ def call_checker(
         [str, str, int], tuple[Optional[str], str]
     ] | None = None,
     verification_summary: str = "",
+    check_items: list[dict] | None = None,
+    probe_results: dict | None = None,
 ) -> dict:
     """Call the Checker to audit task completion.
 
@@ -169,6 +211,8 @@ def call_checker(
         actions=actions,
         steps=steps,
         verification_summary=verification_summary,
+        check_items=check_items,
+        probe_results=probe_results,
     )
 
     raw = None
@@ -204,6 +248,7 @@ def call_checker(
             "evidence": [],
             "concerns": ["Checker LLM call failed — no audit performed"],
             "recommendation": "Task appears complete but could not be verified.",
+            "check_items": _unjudged_check_items(check_items),
             "success": False,
         }
 
@@ -227,8 +272,25 @@ def call_checker(
             "evidence": [],
             "concerns": [f"Raw response: {raw[:300]}"],
             "recommendation": "Task appears complete but verification failed.",
+            "check_items": _unjudged_check_items(check_items),
             "success": False,
         }
 
     parsed["success"] = True
+    # Backfill missing per-item verdicts so callers can always read check_items.
+    if parsed.get("check_items") is None:
+        parsed["check_items"] = _unjudged_check_items(check_items)
     return parsed
+
+
+def _unjudged_check_items(check_items: list[dict] | None) -> list[dict]:
+    """Per-item verdicts for when the Checker LLM could not judge them."""
+    return [
+        {
+            "text": ci.get("text", ""),
+            "kind": ci.get("kind", "verify"),
+            "status": "inconclusive",
+            "evidence": "Checker unavailable — no judgment produced",
+        }
+        for ci in (check_items or [])
+    ]
