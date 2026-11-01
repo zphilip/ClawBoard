@@ -207,6 +207,17 @@ def _snapshot_check_items(plan_text: str) -> list[dict]:
     ]
 
 
+def _probe_label(kind: str, params: dict | None) -> str:
+    """Readable probe name including its parameters.
+
+    ``probe setting global zen_mode`` instead of ``probe setting`` — without the
+    keys a settings reading cannot be interpreted by anyone (or anything).
+    """
+    if not params:
+        return kind
+    return kind + " " + " ".join(str(v) for v in params.values())
+
+
 def _run_check_probes(
     check_items: list[dict],
     adb_path: str,
@@ -228,16 +239,18 @@ def _run_check_probes(
             try:
                 argv = build_probe_argv(kind, params)
             except ValueError as e:
-                rows.append(f"probe {kind}: invalid — {e}")
+                label = _probe_label(kind, params)
+                rows.append(f"probe {label}: invalid — {e}")
                 continue
+            label = _probe_label(kind, params)
             rc, out, err = _adb(
                 ["shell"] + list(argv), adb_path=adb_path, device=device, timeout=15,
             )
             if rc != 0:
-                rows.append(f"probe {kind}: failed (rc={rc}) — {err.strip()[:200]}")
+                rows.append(f"probe {label}: failed (rc={rc}) — {err.strip()[:200]}")
             else:
                 summary = summarize_probe_output(kind, out)
-                rows.append(f"probe {kind}: {summary}")
+                rows.append(f"probe {label}: {summary}")
         if rows:
             results[text] = "\n".join(rows)
     return results
@@ -277,15 +290,17 @@ def _probe_state_mid_run(
                 try:
                     argv = build_probe_argv(kind, params)
                 except ValueError as e:
-                    rows.append(f"probe {kind}: invalid — {e}")
+                    label = _probe_label(kind, params)
+                    rows.append(f"probe {label}: invalid — {e}")
                     continue
+                label = _probe_label(kind, params)
                 rc, out, err = _adb(
                     ["shell"] + list(argv), adb_path=adb_path, device=device, timeout=15,
                 )
                 if rc != 0:
-                    rows.append(f"probe {kind}: failed (rc={rc}) — {err.strip()[:120]}")
+                    rows.append(f"probe {label}: failed (rc={rc}) — {err.strip()[:120]}")
                 else:
-                    rows.append(f"probe {kind}: {summarize_probe_output(kind, out)}")
+                    rows.append(f"probe {label}: {summarize_probe_output(kind, out)}")
             if rows:
                 results[ci.text] = "\n".join(rows)
                 flat = " | ".join(r.replace("\n", " ")[:110] for r in rows)
@@ -336,29 +351,52 @@ def _acceptance_from_probes(verify_texts: list[str], probe_results: dict):
     """Deterministic acceptance check from read-only probe output.
 
     Returns True (satisfied), False (contradicted) or None (cannot tell — the
-    final Checker decides). Deliberately narrow: only the signals that are
-    unambiguous are judged here, so a path is never marked done on a guess.
+    final Checker decides).
+
+    Parses the probes' ACTUAL output shapes rather than assuming:
+      ``media volume --stream 2 --get`` prints
+          ``[v] will control stream=2 (STREAM_RING)``
+          ``[v] volume is 1 in range [0..7]``      ← the number is HERE
+      ``dumpsys audio`` carries ``mRingerMode=0``.
+
+    A "silent" goal is satisfied by EITHER ring volume 0 OR ringer mode SILENT:
+    Android clamps STREAM_RING to >= 1 while the ringer mode is NORMAL, so a
+    volume-only predicate can never be met on such a ROM.
     """
-    saw_volume = False
+    satisfied = False
+    decisive = False
     for text in verify_texts:
         evidence = probe_results.get(text, "")
         if not evidence:
             continue
         for line in evidence.splitlines():
             low = line.lower()
-            if "probe volume:" in low:
-                saw_volume = True
-                m = re.search(r"probe volume:\s*(-?\d+)", low)
+            # NOTE: match the VALUE lines, not the ``probe <kind>:`` prefix. In a
+            # multi-line probe summary only the first line carries the prefix, so
+            # keying on "probe volume" made the actual reading unreachable.
+            m = re.search(r"volume is (-?\d+)", low)
+            if m:
+                decisive = True
+                if int(m.group(1)) == 0:
+                    satisfied = True
+                continue
+            m = re.search(r"mringermode\s*=\s*(\d+)", low)
+            if m:
+                decisive = True
+                if int(m.group(1)) == 0:  # 0 = SILENT
+                    satisfied = True
+                continue
+            if "zen_mode" in low:
+                m = re.search(r"zen_mode.*?(-?\d+)\s*$", low) or re.search(
+                    r"(-?\d+)", low
+                )
                 if m:
-                    return int(m.group(1)) == 0
-            if "probe audio:" in low and ("mringermode" in low or "ringer" in low):
-                m = re.search(r"mringermode\s*=\s*(\d+)", low)
-                if m:
-                    return int(m.group(1)) == 0
-            if "probe setting:" in low and "zen_mode" in low:
-                m = re.search(r"probe setting:\s*(-?\d+)", low)
-                if m and int(m.group(1)) != 0:
-                    return True
+                    decisive = True
+                    if int(m.group(1)) != 0:  # any DND mode suppresses sound
+                        satisfied = True
+    if satisfied:
+        return True
+    return False if decisive else None
     if saw_volume:
         return None
     return None
@@ -569,6 +607,11 @@ Available actions:
   {"action": "long_press", "target": 3}                   — long-press element N
   {"action": "swipe", "coordinate1": [x1,y1], "coordinate2": [x2,y2], "duration": 300}
                                                           — BOTH endpoints in 0-1000, must differ by >=100 (never the same point)
+  {"action": "scroll", "direction": "up", "target": 12}  — PREFERRED over swipe for
+      scrolling: the system derives the gesture from element 12's scrollable bounds.
+  {"action": "set_slider", "target": 12, "fraction": 0.0} — PREFERRED over swipe for a
+      seekbar/volume slider: the system drags element 12's own track to `fraction`
+      (0.0 = far left/minimum, 1.0 = far right/maximum). NEVER guess a slider's y.
   {"action": "type", "text": "hello"}                     — type text into focused field
   {"action": "system_button", "button": "back"}           — back / home / enter / recent_apps
   {"action": "system_button", "button": "volume_up"}      — raise volume (opens the volume panel)
@@ -684,6 +727,8 @@ Android device operator. Output ONLY a JSON object per turn.
 {"action":"tap","coordinate":[x,y]}                    — tap at 0-1000 coords (only when element NOT in list)
 {"action":"long_press","target":3}                     — long-press element N
 {"action":"swipe","coordinate1":[x1,y1],"coordinate2":[x2,y2],"duration":300}
+{"action":"scroll","direction":"up","target":12}        — prefer for scrolling
+{"action":"set_slider","target":12,"fraction":0.0}      — prefer for seekbars/sliders
 {"action":"type","text":"text to type"}
 {"action":"system_button","button":"back|home|enter|recent_apps"}
 {"action":"open_app","app_name":"app name"}
@@ -3328,6 +3373,93 @@ def _coerce_coord(value, axis: int) -> int:
 MIN_SWIPE_TRAVEL = 30
 
 
+def _element_by_index(elements, idx):
+    """The element with ``index == idx``, or None."""
+    if not isinstance(idx, int):
+        return None
+    for e in elements or []:
+        if getattr(e, "index", None) == idx:
+            return e
+    return None
+
+
+def _scroll_gesture(elements, target_idx, direction: str) -> dict | None:
+    """Swipe endpoints that scroll a REAL scrollable container.
+
+    The Operator cannot know where a scrollable area is; guessing two raw
+    coordinates is what produced the dead/ineffective swipes in the field. Here
+    the geometry is derived from the container's accessibility bounds, so the
+    gesture always starts and ends inside the scrollable region.
+    """
+    el = _element_by_index(elements, target_idx)
+    if el is None or not getattr(el, "bounds", None):
+        for e in elements or []:
+            if getattr(e, "scrollable", False) and getattr(e, "bounds", None):
+                el = e
+                break
+    dev = _DEVICE_RESOLUTION
+    if el is not None and getattr(el, "bounds", None):
+        left, top, right, bottom = el.bounds
+        cx = (left + right) // 2
+        h = max(1, bottom - top)
+        travel = max(MIN_SWIPE_TRAVEL * 2, int(h * 0.35))
+        cy = (top + bottom) // 2
+        if str(direction).lower() == "down":
+            y1, y2 = cy - travel // 2, cy + travel // 2
+        else:  # "up" = reveal content further down the page
+            y1, y2 = cy + travel // 2, cy - travel // 2
+        y1 = max(top + 2, min(y1, bottom - 2))
+        y2 = max(top + 2, min(y2, bottom - 2))
+    elif dev:
+        cx, h = dev[0] // 2, dev[1]
+        travel = int(h * 0.3)
+        if str(direction).lower() == "down":
+            y1, y2 = h // 2 - travel // 2, h // 2 + travel // 2
+        else:
+            y1, y2 = h // 2 + travel // 2, h // 2 - travel // 2
+    else:
+        return None
+    return {
+        "coordinate1": [int(cx), int(y1)],
+        "coordinate2": [int(cx), int(y2)],
+        "duration": 400,
+    }
+
+
+def _slider_gesture(elements, target_idx, fraction: float) -> dict | None:
+    """Drag a slider/seekbar to ``fraction`` (0..1) of its own track.
+
+    Computing the endpoints from the element's bounds is the only reliable way to
+    move a seekbar: the Operator has no way to know the track's y, which is why
+    every field attempt dragged 150px off and left the volume unchanged.
+    """
+    el = _element_by_index(elements, target_idx)
+    if el is None or not getattr(el, "bounds", None):
+        return None
+    left, top, right, bottom = el.bounds
+    w = max(1, right - left)
+    cy = (top + bottom) // 2
+    try:
+        frac = max(0.0, min(1.0, float(fraction)))
+    except (TypeError, ValueError):
+        frac = 0.0
+    inset = max(4, int(w * 0.02))
+    tx = left + inset + int((w - 2 * inset) * frac)
+    # Start at the OPPOSITE end of the track and drag to the target. Starting at
+    # the middle would (a) make frac=0.5 a zero-travel gesture, and (b) on a
+    # seekbar the initial press already sets the value, so the drag must always
+    # travel toward the target from the far side.
+    if frac <= 0.5:
+        sx = right - inset
+    else:
+        sx = left + inset
+    return {
+        "coordinate1": [int(sx), int(cy)],
+        "coordinate2": [int(tx), int(cy)],
+        "duration": 400,
+    }
+
+
 def _degenerate_gesture_reason(action_type: str, action_args: dict) -> str:
     """Why a gesture is a no-op, or "" when the geometry is usable.
 
@@ -3918,6 +4050,24 @@ def _decide_action_fallback(
         _log(f"[coord] swipe {list(c1)}→{list(c2)} ⇒ DEV ({x1},{y1})→({x2},{y2})")
         return ("swipe", {"coordinate1": [x1, y1], "coordinate2": [x2, y2], "duration": dur}, desc)
 
+    elif action == "scroll":
+        direction = str(parsed.get("direction", "up")).lower()
+        gesture = _scroll_gesture(elements, parsed.get("target"), direction)
+        if gesture is None:
+            return ("system_button", {"button": "back"}, "scroll failed: no scrollable region", None, None)
+        desc = target_desc or f"scroll {direction} in #{parsed.get('target')}"
+        _log(f"[gesture] scroll {direction} ⇒ {gesture['coordinate1']}→{gesture['coordinate2']}")
+        return ("swipe", gesture, desc)
+
+    elif action == "set_slider":
+        frac = parsed.get("fraction", 0.0)
+        gesture = _slider_gesture(elements, parsed.get("target"), frac)
+        if gesture is None:
+            return ("system_button", {"button": "back"}, "set_slider failed: target has no bounds", None, None)
+        desc = target_desc or f"set_slider #{parsed.get('target')} → {frac}"
+        _log(f"[gesture] set_slider frac={frac} ⇒ {gesture['coordinate1']}→{gesture['coordinate2']}")
+        return ("swipe", gesture, desc)
+
     elif action == "type":
         text = parsed.get("text", "")
         desc = f"type({text[:30]})"
@@ -4211,6 +4361,26 @@ def _decide_action_plan_guided(
         _log(f"[coord] swipe {list(c1)}→{list(c2)} ⇒ DEV ({x1},{y1})→({x2},{y2})")
         return ("swipe", {"coordinate1": [x1, y1], "coordinate2": [x2, y2],
                           "duration": dur}, desc, plan_updates, notes_updates)
+
+    elif action == "scroll":
+        direction = str(parsed.get("direction", "up")).lower()
+        gesture = _scroll_gesture(elements, parsed.get("target"), direction)
+        if gesture is None:
+            return ("system_button", {"button": "back"},
+                    "scroll failed: no scrollable region", plan_updates, notes_updates)
+        desc = target_desc or f"scroll {direction} in #{parsed.get('target')}"
+        _log(f"[gesture] scroll {direction} ⇒ {gesture['coordinate1']}→{gesture['coordinate2']}")
+        return ("swipe", gesture, desc, plan_updates, notes_updates)
+
+    elif action == "set_slider":
+        frac = parsed.get("fraction", 0.0)
+        gesture = _slider_gesture(elements, parsed.get("target"), frac)
+        if gesture is None:
+            return ("system_button", {"button": "back"},
+                    "set_slider failed: target has no bounds", plan_updates, notes_updates)
+        desc = target_desc or f"set_slider #{parsed.get('target')} → {frac}"
+        _log(f"[gesture] set_slider frac={frac} ⇒ {gesture['coordinate1']}→{gesture['coordinate2']}")
+        return ("swipe", gesture, desc, plan_updates, notes_updates)
 
     elif action == "type":
         text = parsed.get("text", "")

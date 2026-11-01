@@ -156,6 +156,29 @@ kind=…]:` lines as **siblings of the milestone**, sharing one `- verify:`:
 actions** (1–10) and only orders paths inside a tier. So 勿扰模式 is cheap
 (cost=2) yet still runs LAST, because it only approximates "静音".
 
+### Two geometry-derived actions (prefer them over raw swipes)
+
+The Operator cannot know where a scrollable area or a slider track is; asking it
+to emit two raw coordinates is what produced dead and off-target swipes in the
+field. These two actions derive the gesture from the element's accessibility
+bounds instead:
+
+```json
+{"action": "scroll",     "direction": "up", "target": 12}
+{"action": "set_slider", "target": 12, "fraction": 0.0}
+```
+
+- `scroll` — swipes inside element 12's scrollable bounds (~35 % of its height),
+  so the gesture always lands on the scrollable region. `up` reveals content
+  further down the page.
+- `set_slider` — drags element 12's own track to `fraction` (`0.0` = far left /
+  minimum, `1.0` = far right / maximum). This is the reliable way to zero a
+  volume slider: guessing the seekbar's `y` is off by ~150 px on real devices.
+
+Raw `swipe` still works and stays cacheable; both endpoints must be in 0-1000 and
+differ by at least 100. A gesture whose endpoints collapse (or travel < 30 px) is
+refused before any model call, with the reason fed back.
+
 The executor runs **one path at a time** (`max_steps_per_path`, default 6), then
 falls back to the next. After every step it reads the acceptance probe; the
 moment the probe shows the target state the milestone is **completed by device

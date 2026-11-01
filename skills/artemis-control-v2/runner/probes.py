@@ -204,13 +204,33 @@ def derive_probes(check_text: str) -> list[tuple[str, dict]]:
     """
     explicit = _parse_probe_hint(check_text)
     if explicit:
+        lowered = check_text.lower()
+        # An explicit ``[probe: volume ring]`` on a "silent" criterion must still
+        # bring the ringer-mode probe along: Android clamps STREAM_RING to >= 1
+        # while the ringer mode is NORMAL, so volume alone may be unsatisfiable.
+        if (
+            any(kind == "volume" for kind, _ in explicit)
+            and not any(kind == "audio" for kind, _ in explicit)
+            and any(k in lowered for k in ("静音", "mute", "silent", "铃声模式", "ringer"))
+        ):
+            explicit = explicit + [("audio", {})]
         return explicit
 
     lowered = check_text.lower()
     for keywords, kind, params in KEYWORD_PROBE_RULES:
         for kw in keywords:
             if kw in lowered:
-                return [(kind, dict(params))]
+                probes: list[tuple[str, dict]] = [(kind, dict(params))]
+                # A "silent" goal can be satisfied EITHER by the ring stream
+                # reaching 0 OR by the ringer mode becoming SILENT — and Android
+                # clamps STREAM_RING to >= 1 while the ringer mode is NORMAL, so
+                # the volume probe alone can never reach 0 on such ROMs. Emit
+                # both so acceptance is actually reachable.
+                if kind == "volume" and any(
+                    k in lowered for k in ("静音", "mute", "silent", "铃声模式", "ringer")
+                ):
+                    probes.append(("audio", {}))
+                return probes
     return []
 
 
