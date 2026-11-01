@@ -3442,6 +3442,34 @@ def _scroll_wants_below(direction: str) -> bool:
 _SLIDER_CLASS_HINTS = ("seekbar", "progressbar", "slider", "rangebar")
 
 
+def _edge_safe_rect() -> tuple[int, int, int, int]:
+    """The screen area a gesture may START in: (x0, y0, x1, y1).
+
+    Android's gesture navigation owns a strip along the left and right edges
+    (typically 20-40dp). A swipe that begins inside that strip is intercepted by
+    the system and delivered to the app as a plain tap plus a BACK — which is
+    exactly how a slider drag turned into "it tapped the right spot but never
+    dragged, and the page went away".
+
+    Insets are derived from the real resolution with a conservative floor, so
+    they hold on any density without needing the dpi.
+    """
+    dev = _DEVICE_RESOLUTION
+    if not dev:
+        return 0, 0, 10 ** 6, 10 ** 6
+    w, h = dev
+    edge_x = max(72, round(w * 0.07))
+    top = max(80, round(h * 0.03))      # status bar
+    bottom = max(96, round(h * 0.04))   # gesture nav / nav bar
+    return edge_x, top, max(edge_x + 1, w - edge_x), max(top + 1, h - bottom)
+
+
+def _clip_point(x, y) -> tuple[int, int]:
+    """Clamp a point into the edge-safe rect."""
+    x0, y0, x1, y1 = _edge_safe_rect()
+    return (int(max(x0, min(int(x), x1))), int(max(y0, min(int(y), y1))))
+
+
 def _is_slider_element(el) -> bool:
     cls = (getattr(el, "class_name", "") or "").lower()
     return any(h in cls for h in _SLIDER_CLASS_HINTS)
@@ -3509,8 +3537,12 @@ def _scroll_gesture(elements, target_idx, direction: str) -> dict | None:
             y1, y2 = cy + travel // 2, cy - travel // 2
         else:
             y1, y2 = cy - travel // 2, cy + travel // 2
-        y1 = max(top + 2, min(y1, bottom - 2))
-        y2 = max(top + 2, min(y2, bottom - 2))
+        sx0, sy0, sx1, sy1_lim = _edge_safe_rect()
+        y1 = max(top + 2, min(y1, bottom - 2), sy0)
+        y2 = max(top + 2, min(y2, bottom - 2), sy0)
+        y1 = min(y1, sy1_lim)
+        y2 = min(y2, sy1_lim)
+        cx = max(sx0, min(cx, sx1))  # never start a scroll from an edge strip
         if abs(y2 - y1) < MIN_SWIPE_TRAVEL:
             return None
     elif dev:
@@ -3569,27 +3601,55 @@ def _slider_gesture(elements, target_idx, fraction: float) -> dict | None:
 
     if el is None or not getattr(el, "bounds", None):
         return None
+    if not _is_slider_element(el):
+        # No SeekBar/ProgressBar was indexed at this target; we drag the row's
+        # own bounds. Logged so the field log shows WHY a drag might miss.
+        _log(
+            f"[gesture] set_slider: no SeekBar found for "
+            f"#{getattr(el, 'index', '?')} ({getattr(el, 'class_name', '?')}) — "
+            "dragging its row bounds"
+        )
     left, top, right, bottom = el.bounds
-    w = max(1, right - left)
     cy = (top + bottom) // 2
+
+    # The track must stay INSIDE the system edge-back strips. A drag that starts
+    # at the very right end of a full-width row begins ~18dp from the edge, so
+    # Android swallows it as a back gesture: the app only ever sees the initial
+    # press (=> the slider jumps, "it tapped but never dragged") and the page is
+    # navigated away. That is why an apparent tap and a "back" were seen at once.
+    sx0, sy0, sx1, sy1 = _edge_safe_rect()
+    track_left = max(left, sx0)
+    track_right = min(right, sx1)
+    if track_right - track_left < MIN_SWIPE_TRAVEL:
+        _log(
+            f"[gesture] set_slider: track #{getattr(el, 'index', '?')} is too "
+            "narrow inside the edge-safe zone"
+        )
+        return None
+    cy = max(sy0, min(cy, sy1))
+    w = max(1, track_right - track_left)
+
     try:
         frac = max(0.0, min(1.0, float(fraction)))
     except (TypeError, ValueError):
         frac = 0.0
-    inset = max(4, int(w * 0.02))
-    tx = left + inset + int((w - 2 * inset) * frac)
+    inset = max(4, int(w * 0.03))
+    tx = track_left + inset + int((w - 2 * inset) * frac)
+
     # Start at the OPPOSITE end of the track and drag to the target. Starting at
     # the middle would (a) make frac=0.5 a zero-travel gesture, and (b) on a
     # seekbar the initial press already sets the value, so the drag must always
     # travel toward the target from the far side.
     if frac <= 0.5:
-        sx = right - inset
+        sx = track_right - inset
     else:
-        sx = left + inset
+        sx = track_left + inset
+    if abs(tx - sx) < MIN_SWIPE_TRAVEL:
+        return None
     return {
         "coordinate1": [int(sx), int(cy)],
         "coordinate2": [int(tx), int(cy)],
-        "duration": 400,
+        "duration": 500,
     }
 
 
@@ -4179,6 +4239,13 @@ def _decide_action_fallback(
         # the gesture into a zero-travel no-op.
         x1, y1 = _coerce_coord(c1[0], 0), _coerce_coord(c1[1], 1)
         x2, y2 = _coerce_coord(c2[0], 0), _coerce_coord(c2[1], 1)
+        # Never START inside the system edge-back strip: such a swipe is stolen
+        # by the OS (the app sees a tap, the page navigates back).
+        cx1, cy1 = _clip_point(x1, y1)
+        cx2, cy2 = _clip_point(x2, y2)
+        if (cx1, cy1) != (x1, y1) or (cx2, cy2) != (x2, y2):
+            _log(f"[gesture] swipe clipped to edge-safe zone ({x1},{y1})→({x2},{y2}) ⇒ ({cx1},{cy1})→({cx2},{cy2})")
+        x1, y1, x2, y2 = cx1, cy1, cx2, cy2
         desc = target_desc if target_desc else f"swipe(({x1},{y1})→({x2},{y2}))"
         _log(f"[coord] swipe {list(c1)}→{list(c2)} ⇒ DEV ({x1},{y1})→({x2},{y2})")
         return ("swipe", {"coordinate1": [x1, y1], "coordinate2": [x2, y2], "duration": dur}, desc)
@@ -4490,6 +4557,13 @@ def _decide_action_plan_guided(
         # the gesture into a zero-travel no-op.
         x1, y1 = _coerce_coord(c1[0], 0), _coerce_coord(c1[1], 1)
         x2, y2 = _coerce_coord(c2[0], 0), _coerce_coord(c2[1], 1)
+        # Never START inside the system edge-back strip: such a swipe is stolen
+        # by the OS (the app sees a tap, the page navigates back).
+        cx1, cy1 = _clip_point(x1, y1)
+        cx2, cy2 = _clip_point(x2, y2)
+        if (cx1, cy1) != (x1, y1) or (cx2, cy2) != (x2, y2):
+            _log(f"[gesture] swipe clipped to edge-safe zone ({x1},{y1})→({x2},{y2}) ⇒ ({cx1},{cy1})→({cx2},{cy2})")
+        x1, y1, x2, y2 = cx1, cy1, cx2, cy2
         desc = target_desc if target_desc else f"swipe(({x1},{y1})→({x2},{y2}))"
         _log(f"[coord] swipe {list(c1)}→{list(c2)} ⇒ DEV ({x1},{y1})→({x2},{y2})")
         return ("swipe", {"coordinate1": [x1, y1], "coordinate2": [x2, y2],

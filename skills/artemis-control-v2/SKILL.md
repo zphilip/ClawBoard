@@ -179,6 +179,15 @@ Raw `swipe` still works and stays cacheable; both endpoints must be in 0-1000 an
 differ by at least 100. A gesture whose endpoints collapse (or travel < 30 px) is
 refused before any model call, with the reason fed back.
 
+**Edge-safe zone (why a drag can look like a tap).** Android's gesture navigation
+owns a strip along the left/right edges (≈20–40 dp) and swallows any swipe that
+begins there: the app receives only the initial press, so the slider jumps and
+looks like a tap, while the page navigates **back**. Every generated gesture is
+therefore clipped into an edge-safe rect (`x ∈ [7 %W, 93 %W]`,
+`y ∈ [3 %H, 96 %H]`); for sliders the draggable track is intersected with that
+rect first. Raw swipes are clipped the same way and logged as
+`[gesture] swipe clipped to edge-safe zone …`.
+
 The executor runs **one path at a time** (`max_steps_per_path`, default 6), then
 falls back to the next. After every step it reads the acceptance probe; the
 moment the probe shows the target state the milestone is **completed by device
