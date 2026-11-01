@@ -607,8 +607,12 @@ Available actions:
   {"action": "long_press", "target": 3}                   — long-press element N
   {"action": "swipe", "coordinate1": [x1,y1], "coordinate2": [x2,y2], "duration": 300}
                                                           — BOTH endpoints in 0-1000, must differ by >=100 (never the same point)
-  {"action": "scroll", "direction": "up", "target": 12}  — PREFERRED over swipe for
-      scrolling: the system derives the gesture from element 12's scrollable bounds.
+  {"action": "scroll", "direction": "down", "target": 12} — PREFERRED over swipe for
+      scrolling. `direction` is WHICH PART OF THE PAGE YOU WANT TO REACH, not the
+      way your finger moves: "down" = show me what is further DOWN the page.
+      The system derives the gesture from element 12's scrollable bounds (or the
+      largest scrollable region if 12 is not scrollable). If a scroll leaves the
+      screen unchanged twice, STOP scrolling — the control is already visible.
   {"action": "set_slider", "target": 12, "fraction": 0.0} — PREFERRED over swipe for a
       seekbar/volume slider: the system drags element 12's own track to `fraction`
       (0.0 = far left/minimum, 1.0 = far right/maximum). NEVER guess a slider's y.
@@ -727,7 +731,8 @@ Android device operator. Output ONLY a JSON object per turn.
 {"action":"tap","coordinate":[x,y]}                    — tap at 0-1000 coords (only when element NOT in list)
 {"action":"long_press","target":3}                     — long-press element N
 {"action":"swipe","coordinate1":[x1,y1],"coordinate2":[x2,y2],"duration":300}
-{"action":"scroll","direction":"up","target":12}        — prefer for scrolling
+{"action":"scroll","direction":"down","target":12}      — prefer for scrolling
+      (direction = the part of the page you want: "down" = lower content)
 {"action":"set_slider","target":12,"fraction":0.0}      — prefer for seekbars/sliders
 {"action":"type","text":"text to type"}
 {"action":"system_button","button":"back|home|enter|recent_apps"}
@@ -1927,6 +1932,7 @@ def _run_plan_guided_fallback(
     # probe contradicts it or it burns ``max_steps_per_path`` without progress.
     path_cursor: dict[str, int] = {}
     path_steps: dict[str, int] = {}
+    ineffective_scrolls = 0  # consecutive gestures that moved no pixels
     path_cfg = _cfg.get("paths") or {}
     if not isinstance(path_cfg, dict):
         path_cfg = {}
@@ -2182,9 +2188,11 @@ def _run_plan_guided_fallback(
             action_type, action_args, action_desc = fast
             plan_updates = None
             notes_updates = None
+            from_memory = True
             _log(f"[memory] step {step} fastpath hit: {action_desc}")
             _log(f"[timing] step {step} operator    → 0.00s (memory fastpath)  (total {time.time() - t_step:.2f}s)")
         else:
+            from_memory = False
             action_type, action_args, action_desc, plan_updates, notes_updates = _decide_action_plan_guided(
                 instruction, step, elements, incident_tracker, last_coords,
                 str(vlm_shot_path), actions, plan_text, history=history,
@@ -2544,6 +2552,34 @@ def _run_plan_guided_fallback(
         _take_screenshot(adb_path, device, vshot_path)
         previous_post_shot = vshot_path  # save for next step's similarity check
         _log(f"[timing] step {step} post-shot   → {time.time() - t_post:.2f}s  (total {time.time() - t_step:.2f}s)")
+
+        # Did the gesture actually move the screen? A scroll/swipe that leaves the
+        # pixels identical is either past the end of the list or landing on a
+        # non-scrollable region — either way repeating it wastes the path budget.
+        if action_type == "swipe":
+            _move_px = screenshot_diff_count(str(shot_path), str(vshot_path))
+            if _move_px <= 3:
+                ineffective_scrolls += 1
+                _log(
+                    f"[scroll] gesture had no visual effect (diff={_move_px}px, "
+                    f"consecutive={ineffective_scrolls})"
+                )
+                if from_memory:
+                    try:
+                        mem.mark_ineffective(action_type, action_args)
+                    except Exception as e:
+                        _debug(f"memory mark_ineffective error: {e}")
+                if ineffective_scrolls >= 2:
+                    failure_hint = (
+                        "\n⚠️  SCROLLING HAS NO EFFECT: your last "
+                        f"{ineffective_scrolls} gestures left the screen "
+                        "unchanged. The content is either already at its edge or "
+                        "that area is not scrollable. Do NOT scroll again — the "
+                        "control you need is already visible on the current "
+                        "screen, or reachable by tapping what IS visible.\n"
+                    )
+            else:
+                ineffective_scrolls = 0
 
         # Mid-run read-only state probe for the plan's verify items. Cheap, and
         # it makes device state visible in the log every step instead of only in
@@ -3383,6 +3419,55 @@ def _element_by_index(elements, idx):
     return None
 
 
+#: ``direction`` names the part of the page you want to REACH, not the way the
+#: finger moves. "down" = show me what is further down the page (finger swipes
+#: bottom→top). The field used to mean finger direction, which the model read
+#: both ways — it asked for "向下滚动" and got an upward-content scroll, then the
+#: next call flipped. Synonyms are accepted so a near-miss cannot invert it.
+_SCROLL_BELOW = frozenset({"down", "below", "next", "forward", "page_down",
+                           "pagedown", "bottom", "further", "more", "lower"})
+_SCROLL_ABOVE = frozenset({"up", "above", "prev", "previous", "back", "page_up",
+                           "pageup", "top", "earlier", "upper"})
+
+
+def _scroll_wants_below(direction: str) -> bool:
+    """True when the caller wants content further DOWN the page."""
+    d = str(direction or "").strip().lower()
+    if d in _SCROLL_ABOVE:
+        return False
+    return True  # default to "reveal more below" — the common intent
+
+
+#: Element classes that are actually draggable tracks.
+_SLIDER_CLASS_HINTS = ("seekbar", "progressbar", "slider", "rangebar")
+
+
+def _is_slider_element(el) -> bool:
+    cls = (getattr(el, "class_name", "") or "").lower()
+    return any(h in cls for h in _SLIDER_CLASS_HINTS)
+
+
+def _largest_scrollable(elements, exclude_idx=None):
+    """The biggest scrollable element — usually the page container.
+
+    Picking the FIRST scrollable in the tree grabbed nested mini-lists, so the
+    gesture scrolled a few hundred pixels inside a row while the page never
+    moved. Area is the reliable discriminator.
+    """
+    best = None
+    best_area = 0
+    for e in elements or []:
+        if not getattr(e, "scrollable", False) or not getattr(e, "bounds", None):
+            continue
+        if exclude_idx is not None and getattr(e, "index", None) == exclude_idx:
+            continue
+        left, top, right, bottom = e.bounds
+        area = max(0, right - left) * max(0, bottom - top)
+        if area > best_area:
+            best, best_area = e, area
+    return best
+
+
 def _scroll_gesture(elements, target_idx, direction: str) -> dict | None:
     """Swipe endpoints that scroll a REAL scrollable container.
 
@@ -3390,33 +3475,51 @@ def _scroll_gesture(elements, target_idx, direction: str) -> dict | None:
     coordinates is what produced the dead/ineffective swipes in the field. Here
     the geometry is derived from the container's accessibility bounds, so the
     gesture always starts and ends inside the scrollable region.
+
+    ``direction`` names the part of the page to REACH (see _SCROLL_BELOW/_ABOVE).
     """
     el = _element_by_index(elements, target_idx)
-    if el is None or not getattr(el, "bounds", None):
-        for e in elements or []:
-            if getattr(e, "scrollable", False) and getattr(e, "bounds", None):
-                el = e
-                break
+    biggest = _largest_scrollable(elements)
+    if el is None or not getattr(el, "scrollable", False):
+        # A non-scrollable target is common (the model points at a row label).
+        # Fall back to the biggest scrollable region, which is the page body.
+        el = biggest or el
+    elif biggest is not None and getattr(el, "bounds", None) and el is not biggest:
+        # The target IS scrollable but may be a small nested list; scrolling
+        # inside it leaves the page untouched. Prefer the page container unless
+        # the target is comparably large.
+        def _area(e):
+            b = getattr(e, "bounds", None) or [0, 0, 0, 0]
+            return max(0, b[2] - b[0]) * max(0, b[3] - b[1])
+
+        if _area(el) < 0.4 * _area(biggest):
+            el = biggest
+
+    wants_below = _scroll_wants_below(direction)
     dev = _DEVICE_RESOLUTION
+
     if el is not None and getattr(el, "bounds", None):
         left, top, right, bottom = el.bounds
         cx = (left + right) // 2
         h = max(1, bottom - top)
-        travel = max(MIN_SWIPE_TRAVEL * 2, int(h * 0.35))
+        travel = max(MIN_SWIPE_TRAVEL * 3, int(h * 0.45))
         cy = (top + bottom) // 2
-        if str(direction).lower() == "down":
-            y1, y2 = cy - travel // 2, cy + travel // 2
-        else:  # "up" = reveal content further down the page
+        if wants_below:
+            # reveal content lower down  →  finger travels bottom → top
             y1, y2 = cy + travel // 2, cy - travel // 2
+        else:
+            y1, y2 = cy - travel // 2, cy + travel // 2
         y1 = max(top + 2, min(y1, bottom - 2))
         y2 = max(top + 2, min(y2, bottom - 2))
+        if abs(y2 - y1) < MIN_SWIPE_TRAVEL:
+            return None
     elif dev:
         cx, h = dev[0] // 2, dev[1]
-        travel = int(h * 0.3)
-        if str(direction).lower() == "down":
-            y1, y2 = h // 2 - travel // 2, h // 2 + travel // 2
-        else:
+        travel = int(h * 0.35)
+        if wants_below:
             y1, y2 = h // 2 + travel // 2, h // 2 - travel // 2
+        else:
+            y1, y2 = h // 2 - travel // 2, h // 2 + travel // 2
     else:
         return None
     return {
@@ -3434,6 +3537,36 @@ def _slider_gesture(elements, target_idx, fraction: float) -> dict | None:
     every field attempt dragged 150px off and left the volume unchanged.
     """
     el = _element_by_index(elements, target_idx)
+    # The model often points at the ROW that contains the slider ("铃声和振动音量
+    # 滑条") rather than the SeekBar itself. Resolve to a real track inside that
+    # row's bounds, otherwise the drag lands on a label and nothing moves.
+    if el is not None and not _is_slider_element(el):
+        holder = getattr(el, "bounds", None)
+        candidate = None
+        best_area = 0
+        for e in elements or []:
+            if not _is_slider_element(e) or not getattr(e, "bounds", None):
+                continue
+            left, top, right, bottom = e.bounds
+            if holder and not (
+                left >= holder[0] - 8 and right <= holder[2] + 8
+                and top >= holder[1] - 8 and bottom <= holder[3] + 8
+            ):
+                continue
+            area = max(0, right - left) * max(0, bottom - top)
+            if area > best_area:
+                candidate, best_area = e, area
+        if candidate is None:
+            # Any slider on screen is still a better bet than a text row.
+            for e in elements or []:
+                if _is_slider_element(e) and getattr(e, "bounds", None):
+                    left, top, right, bottom = e.bounds
+                    area = max(0, right - left) * max(0, bottom - top)
+                    if area > best_area:
+                        candidate, best_area = e, area
+        if candidate is not None:
+            el = candidate
+
     if el is None or not getattr(el, "bounds", None):
         return None
     left, top, right, bottom = el.bounds
