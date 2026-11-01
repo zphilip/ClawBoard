@@ -99,6 +99,7 @@
 
   "vlm_timeout": 120,
   "vlm_retries": 2,
+  "vlm_connect_timeout": 10,
 
   "context": {
     "_comment": "History and context management settings.",

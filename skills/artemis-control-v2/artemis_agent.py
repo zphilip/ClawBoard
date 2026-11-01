@@ -2591,7 +2591,7 @@ def _post_json_with_deadline(
     payload: bytes,
     headers: dict,
     deadline_s: float,
-    connect_timeout: float = 20.0,
+    connect_timeout: float = 10.0,
 ) -> tuple[int, str, float, float]:
     """POST JSON and read the whole body under a HARD wall-clock deadline.
 
@@ -2638,6 +2638,16 @@ def _post_json_with_deadline(
         """
         reused = _CONN_CACHE.pop(cache_key, None)
         if reused is not None and reused.sock is not None:
+            # CRITICAL: reset the socket timeout before reusing. The previous
+            # call's read loop left a short per-chunk timeout (``tick``) armed on
+            # this socket, so the next request aborted after ~2 s with "The read
+            # operation timed out" / "The write operation timed out". That single
+            # omission made EVERY first attempt on a reused connection fail.
+            try:
+                reused.sock.settimeout(sock_timeout)
+                reused.timeout = sock_timeout
+            except OSError:
+                pass
             return reused, 0.0, 0.0, True
         if reused is not None:
             try:
@@ -2662,9 +2672,11 @@ def _post_json_with_deadline(
         return conn, dns_s, time.monotonic() - t_conn, False
 
     conn = None
+    resp = None
     try:
         # One redial: a keep-alive socket the server has since closed must not
-        # surface as a failed call.
+        # surface as a failed call. getresponse() is inside the loop on purpose —
+        # a server that closed the idle connection fails there, not at request().
         for dial_attempt in range(2):
             conn, dns_s, connect_s, reused_conn = _new_connection()
             _log(
@@ -2673,20 +2685,21 @@ def _post_json_with_deadline(
             )
             try:
                 conn.request("POST", path, body=payload, headers=headers)
+                resp = conn.getresponse()
                 break
-            except (http.client.RemoteDisconnected, ConnectionResetError,
-                    BrokenPipeError, _socket.timeout, ssl.SSLError) as e:
+            except (http.client.RemoteDisconnected, http.client.BadStatusLine,
+                    ConnectionResetError, BrokenPipeError, _socket.timeout,
+                    ssl.SSLError) as e:
                 try:
                     conn.close()
                 except Exception:
                     pass
                 conn = None
-                if dial_attempt == 1:
+                if dial_attempt == 1 or reused_conn is False:
                     raise
                 _log(f"[vlm] stale keep-alive connection ({e}) — redialing once")
 
         sock = conn.sock
-        resp = conn.getresponse()
         status = resp.status
         first_byte = time.monotonic() - start
 
@@ -2718,8 +2731,12 @@ def _post_json_with_deadline(
         body = b"".join(chunks).decode("utf-8", "replace")
         # Keep the connection for the next call when the server left it open:
         # reusing it skips DNS + TCP + TLS entirely on the following request.
+        # Re-arm a normal timeout first — the read loop left ``tick`` armed, and
+        # caching that would abort the next request after ~2 s.
         try:
             if not resp.will_close and conn is not None and conn.sock is not None:
+                conn.sock.settimeout(sock_timeout)
+                conn.timeout = sock_timeout
                 _CONN_CACHE[cache_key] = conn
                 conn = None
         except Exception:
@@ -2804,6 +2821,7 @@ def _call_vlm(system_prompt: str, user_prompt: str, image_path: str,
                 payload,
                 _build_openai_headers(cfg, api_key),
                 deadline_s=float(actual_timeout),
+                connect_timeout=float(cfg.get("vlm_connect_timeout", 10)),
             )
             _log(
                 f"[vlm] http {status} — first byte {first_byte:.1f}s, "
@@ -3203,6 +3221,7 @@ def _call_text_llm(system_prompt: str, user_prompt: str,
                 payload,
                 _build_openai_headers(cfg, api_key),
                 deadline_s=float(actual_timeout),
+                connect_timeout=float(cfg.get("vlm_connect_timeout", 10)),
             )
             _log(
                 f"[text_llm] http {status} — first byte {first_byte:.1f}s, "
