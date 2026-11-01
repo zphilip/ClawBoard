@@ -99,25 +99,18 @@ Classify the task FIRST; the failure mode differs by class:
 **Class B (state change) — generic handling:**
 
 - **Prefer the shortest UI path** over hunting in Settings: use a hardware key or a
-  quick-settings tile to reach the toggle directly. Example: mute → `KEYCODE_VOLUME_UP`
-  to raise the volume panel, then tap the bell icon; DND → pull down quick settings.
+  quick-settings tile when one reaches the toggle directly.
 - **If Settings is unavoidable** → `--profile pro --verification checkpoints`, and get
   there via the Settings **search box** (spell out the submit step) instead of scrolling.
-- **Make acceptance scriptable, not visual.** Verify a state change with a read-only adb
-  probe instead of "make sure the icon looks right":
-
-  ```bash
-  adb shell media volume --stream 2 --get            # ring volume; 0 = silent
-  adb shell dumpsys audio | grep -iE 'mode'          # ringer mode / DND state
-  adb shell settings get global airplane_mode_on     # 1 = airplane mode
-  ```
+- **Make acceptance scriptable, not visual** — evidence must come from a read-only
+  probe (see the enumerated list below), never from "the icon looks right".
 
 ### Acceptance check lines + read-only probes (pro)
 
 For Class B/C/D tasks the Planner SHOULD declare `- verify:` lines under a
 milestone so completion is judged by device STATE, not by the presence of a
-button that may not exist on a given skin ("静音" has no dedicated toggle on
-many ColorOS/MIUI screens — dragging the volume slider to 0 satisfies it).
+particular UI control — the control may be named differently, be nested, or be
+absent entirely on a given skin.
 
 Grammar (indented under a milestone):
 - `- verify: <observable acceptance criterion>` — judged by the Checker; a
@@ -125,11 +118,9 @@ Grammar (indented under a milestone):
 - `- assert: <test expectation>` — recorded truthfully, never repaired.
 - `- verify@end: <criterion>` (zero indent) — judged at task exit.
 
-Name a read-only probe so the checker has concrete evidence, e.g.:
-```
-- [ ] 将手机设置为静音
-  - verify: 铃声已静音（铃声模式为静音）[probe: audio]
-```
+Each `verify:` line MAY carry a `[probe: <kind> …]` tag naming the read-only
+probe that supplies its evidence. A criterion without a probe is judged from the
+screenshot alone and will usually come back `inconclusive`.
 
 Enumerated probes the Checker may run (no free-form commands): `alarms`,
 `battery`, `foreground`, `notifications`, `audio` (`dumpsys audio`),
@@ -139,22 +130,23 @@ Enumerated probes the Checker may run (no free-form commands): `alarms`,
 ### Strategy ladder — several ways to reach the same milestone
 
 For a state change, the Planner emits an ordered ladder of `- path N [cost=K
-kind=…]:` lines as **siblings of the milestone**, sharing one `- verify:`:
+kind=…]:` lines as **siblings of the milestone**, all sharing one `- verify:`
+acceptance line:
 
 ```markdown
-- [ ] 将手机切换到静音模式（铃声静音）
-  - verify: 响铃音量为 0 或铃声模式为静音 [probe: volume ring]
-  - path 1 [cost=1 kind=primary]:     按 VOLUME_UP 调出音量面板 → 点铃铛
-  - path 2 [cost=3 kind=primary]:     设置 → 声音与振动 → 响铃/振动/静音 → 静音
-  - path 3 [cost=5 kind=alternative]: 无静音控件 → 把所有音量滑条拖到 0 + 关「静音时振动」
-  - path 4 [cost=2 kind=equivalent]:  下拉快捷面板 → 点「勿扰」（副作用：通知/闹钟一并静音）
+- [ ] <milestone describing the desired end state>
+  - verify: <observable criterion> [probe: <kind> <args>]
+  - path 1 [cost=<1-10> kind=primary]:     <most direct approach>
+  - path 2 [cost=<1-10> kind=primary]:     <same state, different route>
+  - path 3 [cost=<1-10> kind=alternative]: <fallback when a control is missing>
+  - path 4 [cost=<1-10> kind=equivalent]:  <related state + its side effect>
 ```
 
 `kind` is **semantic fidelity** and is the primary sort key:
 `primary` (the requested state) → `alternative` (same state, other route) →
 `equivalent` (related state with side effects). `cost` is the **number of UI
-actions** (1–10) and only orders paths inside a tier. So 勿扰模式 is cheap
-(cost=2) yet still runs LAST, because it only approximates "静音".
+actions** (1–10) and only orders paths inside a tier. A cheap `equivalent` path
+still runs after an expensive `primary` one, because fidelity outranks effort.
 
 ### Action vocabulary the skill can actually execute
 
@@ -177,39 +169,31 @@ runs, and never counts as completion):
 `volume_up=24`, `volume_down=25`, `volume_mute=164`. They are the fastest way to
 a ringer change and need no UI hunting.
 
-Two ringer facts worth knowing before writing a plan:
+Two rules that matter when the milestone changes device state:
 
-- **`STREAM_RING` cannot reach 0 while the ringer mode is NORMAL** — Android
-  clamps it to >= 1. So "volume == 0" alone is unsatisfiable; the acceptance test
-  must also allow the ringer mode going SILENT (`probe: volume ring` +
-  `probe: audio` are both emitted for silence goals for exactly this reason).
-- **`volume_up` moves AWAY from the goal** for a mute task, and any path whose
-  first action raises the ringer is rejected by the guardrail — the rest of that
-  path is never reached. Start with `volume_down` / `volume_mute`, the settings
-  radio, or `set_slider`.
+- **An acceptance test must be satisfiable by the device.** The OS may clamp a
+  value or expose the same end state two different ways; when it does, name every
+  probe that could confirm it, otherwise a correct run reports `inconclusive`.
+- **A path's first action must move toward the goal.** If it moves the state the
+  other way, the guardrail rejects the step and the rest of that path is never
+  reached — a path that can never run.
 
 ### Two geometry-derived actions (prefer them over raw swipes)
 
 The Operator cannot know where a scrollable area or a slider track is; asking it
 to emit two raw coordinates is what produced dead and off-target swipes in the
 field. These two actions derive the gesture from the element's accessibility
-bounds instead:
+bounds instead. Both take the element index and no coordinates:
 
-```json
-{"action": "scroll",     "direction": "up", "target": 12}
-{"action": "set_slider", "target": 12, "fraction": 0.0}
-```
-
-- `scroll` — swipes inside element 12's scrollable bounds (~35 % of its height),
-  so the gesture always lands on the scrollable region. `up` reveals content
-  further down the page.
-- `set_slider` — **taps** element 12's own track at `fraction` (`0.0` = far left /
-  minimum, `1.0` = far right / maximum). A SeekBar maps a touch straight to a
-  value, so one tap is a deterministic assignment; a drag is not (the initial
-  DOWN already sets a value, and a long MOVE is often reinterpreted as a
-  fling/scroll, which is why field drags left the volume untouched). If the value
-  provably does not change after a tap, the run switches to drag mode for the
-  remaining steps.
+- **`scroll`** — needs `direction` (`up` | `down` = which part of the page you
+  want to reach) and `target` (the scrollable element). The gesture is derived
+  from that element's bounds, so it always lands on the scrollable region.
+- **`set_slider`** — needs `target` (the slider) and `fraction` (`0.0` = far
+  left/minimum, `1.0` = far right/maximum). It **taps** the track rather than
+  dragging it: a seekbar maps a touch straight to a value, whereas a drag's
+  initial press already commits a value and the long move is often reinterpreted
+  as a fling. If the value provably does not change after a tap, the run switches
+  to drag mode for the remaining steps.
 
 Raw `swipe` still works and stays cacheable; both endpoints must be in 0-1000 and
 differ by at least 100. A gesture whose endpoints collapse (or travel < 30 px) is
@@ -353,8 +337,8 @@ slow. The calling agent may rescue it, then MUST hand back:
 
 1. Diagnose with **≤2 tool calls**: `adb shell uiautomator dump` + `grep` (do
    NOT `file_read` screenshots) to see the real on-screen state.
-2. Apply the **minimum** fix — e.g. press `KEYCODE_ENTER` to submit, clear a
-   duplicated text, or one corrective tap.
+2. Apply the **minimum** corrective action — submit a pending field, clear a
+   duplicated text, or make one corrective tap.
 3. **Immediately re-launch** artemis with the *remaining* sub-goal
    (`--instruction "<remaining>" --profile flash --daemon`) and poll that log.
 4. Never complete the rest of the task with raw `adb shell input tap/text`:
@@ -370,7 +354,7 @@ slow. The calling agent may rescue it, then MUST hand back:
   box"), never as a parallel entry point.
 - **Search/input flows need an explicit submit.** `type` only enters text —
   never Enter. When the task goes through a search box or text field, spell out
-  the submit step (e.g. "type GAI, then press Enter / tap the top result").
+  the submit step as its own clause ("type <query>, then submit the search").
   Without it the VLM re-types the same text and stalls until `--max_steps`.
 - **Give a scriptable acceptance criterion.** End the instruction with a
   machine-checkable success condition (a foreground app, a running service, a
