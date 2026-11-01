@@ -421,6 +421,37 @@ def _advance_path(item, ladder, path_cursor: dict, path_steps: dict,
     return True
 
 
+def _self_declared_done_rejected(plan_updates: dict, new_plan_text: str,
+                                probe_results: dict | None) -> str:
+    """The milestone the Operator claimed done but the probes contradict.
+
+    Returns the milestone text when the claim must be rejected, "" otherwise.
+    Only a *decisive* contradiction counts (``_acceptance_from_probes`` is
+    False); an undecidable probe never blocks the Operator's own bookkeeping.
+    """
+    try:
+        raw = (plan_updates or {}).get("mark_done")
+        targets = raw if isinstance(raw, list) else [raw]
+        snapshot = parse_plan(new_plan_text)
+        for tgt in targets:
+            if not isinstance(tgt, str) or not tgt.strip():
+                continue
+            want = tgt.strip().lower()
+            for item in snapshot.top_level:
+                if item.text.strip().lower() != want:
+                    continue
+                checks = [ci.text for ci in snapshot.check_items_of(item)
+                          if ci.kind == "verify"]
+                if not checks:
+                    return ""
+                if _acceptance_from_probes(checks, probe_results or {}) is False:
+                    return item.text
+                return ""
+    except Exception as e:
+        _debug(f"[plan] self-declared completion check skipped: {e}")
+    return ""
+
+
 def _describe_validator_target(action_type: str, action_args: dict, elements: list) -> str:
     """Authoritative description of WHERE the action will land.
 
@@ -1934,6 +1965,7 @@ def _run_plan_guided_fallback(
     path_steps: dict[str, int] = {}
     ineffective_scrolls = 0  # consecutive gestures that moved no pixels
     last_probe_volume = None  # ring-volume reading from the previous step
+    step_probes: dict = {}    # probe evidence from the last executed step
     path_cfg = _cfg.get("paths") or {}
     if not isinstance(path_cfg, dict):
         path_cfg = {}
@@ -2219,9 +2251,27 @@ def _run_plan_guided_fallback(
         if plan_updates and plan_text and action_type != "fail":
             new_plan_text, changed = apply_plan_updates(plan_text, plan_updates)
             if changed:
-                plan_text = new_plan_text
-                snap = parse_plan(plan_text)
-                _trace(f"[pro-plan] step {step}: {snap.done_count}/{snap.total_count} done")
+                # Anti self-certification: the Operator may NOT declare a
+                # milestone complete while the read-only probes contradict it.
+                # Without this, "finish + mark_done" ended the run as a success
+                # even though the phone had done nothing.
+                contradicted = _self_declared_done_rejected(
+                    plan_updates, new_plan_text, step_probes
+                )
+                if contradicted:
+                    _log(
+                        f"[plan] ignored Operator's mark_done for "
+                        f"{contradicted[:40]!r} — device state contradicts it"
+                    )
+                    failure_hint = (
+                        f"\n\u26a0\ufe0f  You marked {contradicted!r} as done but the "
+                        "device state says otherwise. Do NOT mark a milestone "
+                        "complete until its acceptance probe passes.\n"
+                    )
+                else:
+                    plan_text = new_plan_text
+                    snap = parse_plan(plan_text)
+                    _trace(f"[pro-plan] step {step}: {snap.done_count}/{snap.total_count} done")
 
         # If the Operator deems the task impossible (e.g. required app is not
         # installed), terminate with an explicit failure — skipping validator,
@@ -2234,13 +2284,56 @@ def _run_plan_guided_fallback(
             end_reason = "pro_task_failed"
             break
 
+        # An unrecognised action is a model error, not a completion signal.
+        # Re-prompt with the exact schema instead of executing or finishing.
+        if action_type == "invalid":
+            _raw = (action_args or {}).get("raw_action", "?")
+            _log(f"[action] rejected unsupported action {_raw!r} — re-prompting")
+            incident_tracker.add_incident(
+                category="invalid_action",
+                reason=f"unsupported action {_raw!r}",
+                action=str(_raw), step=step, action_args=action_args or {},
+                kind="safety_net",
+            )
+            failure_hint = (
+                f"\n\u26a0\ufe0f  YOUR LAST RESPONSE USED AN UNSUPPORTED ACTION: {_raw!r}. "
+                "Nothing was executed. Reply with ONE of the documented actions "
+                "only: tap, long_press, swipe, scroll, set_slider, type, "
+                "open_app, system_button (button=back|home|enter|recent_apps|"
+                "volume_up|volume_down|volume_mute), finish, fail. "
+                "To press a volume key use {\"action\":\"system_button\","
+                "\"button\":\"volume_down\"}.\n"
+            )
+            continue
+
         # If operator says finish, check milestone completion
         if action_type == "finish":
             gate_plan = plan_before_updates if plan_before_updates else plan_text
             if gate_plan and not is_task_complete(gate_plan):
                 snapshot = parse_plan(gate_plan)
                 if snapshot.pending_count == 0:
-                    # No [ ] milestones left — auto-complete remaining [/] items
+                    # No [ ] milestones left. Before declaring success, check the
+                    # acceptance probes: a plan that only *claims* completion must
+                    # not end the run.
+                    _blocked = ""
+                    for _it in snapshot.top_level:
+                        _checks = [ci.text for ci in snapshot.check_items_of(_it)
+                                   if ci.kind == "verify"]
+                        if _checks and _acceptance_from_probes(_checks, step_probes) is False:
+                            _blocked = _it.text
+                            break
+                    if _blocked:
+                        _log(
+                            f"[plan] finish refused — probes contradict "
+                            f"{_blocked[:40]!r}; keeping the milestone open"
+                        )
+                        failure_hint = (
+                            f"\n\u26a0\ufe0f  You reported completion, but the device "
+                            f"probe contradicts the acceptance criteria of "
+                            f"{_blocked!r}. Keep working on it.\n"
+                        )
+                        consecutive_finish = 0
+                        continue
                     _log("Operator says finish with 0 pending milestones — auto-completing plan")
                     plan_text = _force_complete_plan(plan_text)
                     if is_task_complete(plan_text):
@@ -2814,13 +2907,31 @@ def _run_plan_guided_fallback(
     except Exception:
         pass
 
+    # Report VERIFIED outcomes, not the plan's self-reported bookkeeping. The
+    # plan can look 1/1 complete while the Checker says the goal was not met,
+    # and printing "passed: 1" in that case is actively misleading.
+    _items = checker_result.get("check_items") or []
+    _passed = sum(1 for v in _items if str(v.get("status", "")).lower() == "passed")
+    _failed = sum(1 for v in _items if str(v.get("status", "")).lower() == "failed")
+    _incon = sum(1 for v in _items
+                 if str(v.get("status", "")).lower() not in ("passed", "failed"))
+    if not _items:
+        # No declared criteria: fall back to the plan, but never claim a pass
+        # for a run the Checker did not accept.
+        _passed = plan_done if checker_verdict else 0
+        _failed = 0 if checker_verdict else 1
+        _incon = max(0, plan_total - _passed - _failed)
+
     message = (
         f"Pro graph: {status} after {step} steps. "
         f"Plan: {plan_done}/{plan_total} milestones. "
-        f"Checker: {'✓ passed' if checker_verdict else '✗ failed'} "
-        f"(confidence: {checker_result.get('confidence', 0):.0%}). "
+        f"Checker: {'✓ passed' if checker_verdict else '✗ FAILED'} "
+        f"(confidence: {checker_result.get('confidence', 0):.0%}) "
+        f"— {_passed} passed / {_failed} failed / {_incon} inconclusive. "
         f"[reason: {end_reason}]"
     )
+    if not checker_verdict:
+        message += " Do not report this task as done to the user."
     return {
         "type": "result",
         "status": "success" if checker_verdict else "checker_failed",
@@ -2829,9 +2940,9 @@ def _run_plan_guided_fallback(
         "message": message,
         "actions": actions,
         "verification": {
-            "passed": plan_done,
-            "failed": 0,
-            "inconclusive": max(0, plan_total - plan_done),
+            "passed": _passed,
+            "failed": _failed,
+            "inconclusive": _incon,
         },
         "debug": {
             "end_reason": end_reason,
@@ -4158,6 +4269,46 @@ def _desc_with_idx(prefix: str, idx, text: str) -> str:
     return f"[{idx}] {prefix} {base}"
 
 
+#: Action names the model invents that mean an existing action. ``press`` was
+#: the one that hurt: it fell through to the "unknown" branch and silently
+#: completed the task.
+_ACTION_SYNONYMS = {
+    "press": "system_button",
+    "key": "system_button",
+    "keyevent": "system_button",
+    "button": "system_button",
+    "sysbutton": "system_button",
+    "openapp": "open_app",
+    "launch": "open_app",
+    "openapp": "open_app",
+    "click": "tap",
+    "touch": "tap",
+    "click_element": "tap",
+    "input": "type",
+    "text": "type",
+    "drag": "swipe",
+    "scroll_up": "scroll",
+    "scroll_down": "scroll",
+    "done": "finish",
+    "complete": "finish",
+}
+
+
+def _normalise_action_name(parsed: dict) -> str:
+    """The canonical action name for a parsed VLM response.
+
+    Normalises case/whitespace, applies the synonym table, and — importantly —
+    does NOT default to ``finish``: a missing or unknown action must be reported
+    as invalid, never as task completion.
+    """
+    raw = parsed.get("action")
+    name = str(raw).strip().lower().replace("-", "_").replace(" ", "_") if raw else ""
+    name = _ACTION_SYNONYMS.get(name, name)
+    if not name:
+        _log("[action] response has no 'action' field — treating as invalid")
+    return name or "invalid"
+
+
 def _decide_action_fallback(
     instruction: str,
     step: int,
@@ -4284,7 +4435,7 @@ def _decide_action_fallback(
         _debug(f"VLM JSON parse failed after repair: {json_str[:300]}")
         return ("system_button", {"button": "back"}, f"VLM parse error: {json_str[:80]}")
 
-    action = parsed.get("action", "finish")
+    action = _normalise_action_name(parsed)
     target_desc = parsed.get("target_description", "")
     target_idx = parsed.get("target")  # element index (preferred over raw coordinates)
     _log(f"[vlm-decision] action={action} target={target_idx} desc={target_desc} coords={parsed.get('coordinate', parsed.get('coordinate1', ''))}")
@@ -4390,8 +4541,15 @@ def _decide_action_fallback(
         _log(f"VLM reports task cannot be completed: {reason}")
         return ("fail", {"reason": reason}, f"Task failed: {reason}")
 
-    else:  # finish or unknown
+    elif action == "finish":
         return ("finish", {}, "task complete")
+
+    else:
+        # NEVER treat an unrecognised action as completion. 'press' (a natural
+        # synonym for system_button) used to fall through here and finish the
+        # task while the phone had done nothing at all.
+        _log(f"[action] unrecognised action {action!r} — refusing to treat it as finish")
+        return ("invalid", {"raw_action": action}, f"unsupported action: {action}")
 
 
 def _decide_action_plan_guided(
@@ -4610,7 +4768,7 @@ def _decide_action_plan_guided(
     plan_updates = parsed.get("plan_updates")
     notes_updates = parsed.get("notes")
 
-    action = parsed.get("action", "finish")
+    action = _normalise_action_name(parsed)
     target_desc = parsed.get("target_description", "")
     target_idx = parsed.get("target")  # element index (preferred over raw coordinates)
     _log(f"[vlm-decision] action={action} target={target_idx} desc={target_desc} coords={parsed.get('coordinate', parsed.get('coordinate1', ''))}")
@@ -4717,8 +4875,16 @@ def _decide_action_plan_guided(
         _log(f"VLM reports task cannot be completed: {reason}")
         return ("fail", {"reason": reason}, f"Task failed: {reason}", plan_updates, notes_updates)
 
-    else:  # finish or unknown
+    elif action == "finish":
         return ("finish", {}, "task complete", plan_updates, notes_updates)
+
+    else:
+        # NEVER treat an unrecognised action as completion. 'press' (a natural
+        # synonym for system_button) used to fall through here and finish the
+        # task while the phone had done nothing at all.
+        _log(f"[action] unrecognised action {action!r} — refusing to treat it as finish")
+        return ("invalid", {"raw_action": action}, f"unsupported action: {action}",
+                plan_updates, notes_updates)
 
 
 def _pkg_installed(adb_path: str, device: str, pkg: str) -> bool:
