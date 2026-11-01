@@ -171,9 +171,13 @@ bounds instead:
 - `scroll` — swipes inside element 12's scrollable bounds (~35 % of its height),
   so the gesture always lands on the scrollable region. `up` reveals content
   further down the page.
-- `set_slider` — drags element 12's own track to `fraction` (`0.0` = far left /
-  minimum, `1.0` = far right / maximum). This is the reliable way to zero a
-  volume slider: guessing the seekbar's `y` is off by ~150 px on real devices.
+- `set_slider` — **taps** element 12's own track at `fraction` (`0.0` = far left /
+  minimum, `1.0` = far right / maximum). A SeekBar maps a touch straight to a
+  value, so one tap is a deterministic assignment; a drag is not (the initial
+  DOWN already sets a value, and a long MOVE is often reinterpreted as a
+  fling/scroll, which is why field drags left the volume untouched). If the value
+  provably does not change after a tap, the run switches to drag mode for the
+  remaining steps.
 
 Raw `swipe` still works and stays cacheable; both endpoints must be in 0-1000 and
 differ by at least 100. A gesture whose endpoints collapse (or travel < 30 px) is
