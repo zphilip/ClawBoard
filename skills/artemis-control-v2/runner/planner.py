@@ -21,6 +21,11 @@ import re
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
+
+def _log(msg: str) -> None:
+    """Log sink. ``artemis_agent`` rebinds this to its own logger on import."""
+    return None
+
 # ---------------------------------------------------------------------------
 # Plan grammar constants (from artemis/utils/plan_grammar.py)
 # ---------------------------------------------------------------------------
@@ -49,6 +54,14 @@ _CONTINUOUS_TAG_RE = re.compile(re.escape(CONTINUOUS_LOOP_TAG))
 # artemis/utils/plan_grammar.py CHECK_LINE_RE).
 CHECK_LINE_RE = re.compile(
     r"^(?P<indent>\s*)-\s*(?P<kind>verify|assert)(?P<at_end>@end)?\s*:\s*(?P<text>\S.*?)\s*$"
+)
+
+#: Strategy-ladder lines: alternative implementations of the SAME milestone,
+#: written as siblings of the milestone (zero-indent), never as sub-tasks.
+#: ``- path 1 [cost=1]: 按音量键调出面板 → 点铃铛``
+PATH_LINE_RE = re.compile(
+    r"^(?P<indent>\s*)-\s*path\s*(?P<idx>\d+)\s*"
+    r"(?:\[\s*cost\s*=\s*(?P<cost>\d+)\s*\])?\s*:\s*(?P<text>\S.*?)\s*$"
 )
 
 # Maximum plan generation retries on parse failure
@@ -128,11 +141,33 @@ class CheckItem:
 
 
 @dataclass(frozen=True)
+class StrategyPath:
+    """One alternative implementation of a milestone (part of the ladder).
+
+    Only ONE path is ever executed for a milestone. ``cost`` is the Planner's
+    one-time estimate of how many UI actions the path needs, so the executor can
+    try the cheapest first instead of asking a model which is faster (that would
+    cost a reasoning pass per step).
+    """
+
+    index: int       # declared order (1-based)
+    cost: int        # lower = tried first
+    text: str        # the concrete approach
+    parent_key: str  # owning milestone
+
+    @property
+    def is_fallback(self) -> bool:
+        """Last-resort path (semantically equivalent, e.g. DND for silent)."""
+        return self.cost >= 8
+
+
+@dataclass(frozen=True)
 class PlanSnapshot:
     """Read-only derived view of a plan. Never persisted, never written back."""
 
     items: tuple[PlanItem, ...] = field(default_factory=tuple)
     check_items: tuple[CheckItem, ...] = field(default_factory=tuple)
+    paths: tuple[StrategyPath, ...] = field(default_factory=tuple)
 
     @property
     def top_level(self) -> tuple[PlanItem, ...]:
@@ -205,6 +240,16 @@ class PlanSnapshot:
         """Every declared check item, regardless of anchor."""
         return self.check_items
 
+    def paths_of(self, item: "PlanItem") -> tuple[StrategyPath, ...]:
+        """The strategy ladder for a milestone, cheapest first.
+
+        Ordered by ``(cost, index)`` so the executor simply walks the tuple.
+        """
+        if not item.is_top_level:
+            return ()
+        ladder = [p for p in self.paths if p.parent_key == item.key]
+        return tuple(sorted(ladder, key=lambda p: (p.cost, p.index)))
+
     def render_for_prompt(self) -> str:
         """Render the plan as a prompt block showing status of all milestones."""
         if not self.items:
@@ -221,6 +266,15 @@ class PlanSnapshot:
 
             indent_str = "  " * (item.indent // 2) if item.indent else ""
             lines.append(f"{indent_str}{status_display} [{item.status}] {item.text}")
+
+            # Strategy ladder: show the alternatives under their milestone so the
+            # Operator (and the flash profile) can see them; the executor tells
+            # the Operator which ONE to follow.
+            if item.is_top_level:
+                for p in self.paths_of(item):
+                    lines.append(
+                        f"    ↳ path {p.index} (cost={p.cost}): {p.text}"
+                    )
 
         # Progress summary
         done = self.done_count
@@ -267,6 +321,7 @@ def parse_plan(content: str | None) -> PlanSnapshot:
     """
     items: list[PlanItem] = []
     checks: list[CheckItem] = []
+    paths: list[StrategyPath] = []
     current_top: Optional[PlanItem] = None
     if content:
         for line_no, line in enumerate(content.splitlines()):
@@ -295,7 +350,23 @@ def parse_plan(content: str | None) -> PlanSnapshot:
                         parent_key=parent_key,
                     )
                 )
-    return PlanSnapshot(items=tuple(items), check_items=tuple(checks))
+                continue
+            path_match = PATH_LINE_RE.match(line)
+            if path_match and current_top is not None:
+                try:
+                    idx = int(path_match.group("idx"))
+                except (TypeError, ValueError):
+                    idx = len(paths) + 1
+                raw_cost = path_match.group("cost")
+                paths.append(
+                    StrategyPath(
+                        index=idx,
+                        cost=int(raw_cost) if raw_cost else idx,
+                        text=path_match.group("text").strip(),
+                        parent_key=current_top.key,
+                    )
+                )
+    return PlanSnapshot(items=tuple(items), check_items=tuple(checks), paths=tuple(paths))
 
 
 def validate_plan_format(content: str) -> tuple[bool, str]:
@@ -349,9 +420,34 @@ acceptance contract the Checker audits:
 
 For state-change tasks (mute, Wi-Fi, brightness, DND, airplane mode, …) ALWAYS
 add a `- verify:` line that names a READ-ONLY device-state probe, not a visual
-look. Preferred probe tags: `[probe: audio]` (ringer/volume),
-`[probe: setting global zen_mode]`, `[probe: setting system screen_brightness]`,
-`[probe: setting global wifi_on]`, `[probe: foreground]`, `[probe: battery]`.
+look. Preferred probe tags: `[probe: volume ring]` (ring volume; 0 = silent),
+`[probe: audio]` (ringer mode), `[probe: setting global zen_mode]`,
+`[probe: setting system screen_brightness]`, `[probe: setting global wifi_on]`,
+`[probe: foreground]`, `[probe: battery]`.
+
+### Strategy Ladder (multiple ways to reach the SAME milestone)
+
+When a milestone changes device STATE and more than one approach exists, you MUST
+emit an ordered ladder of 2–5 `- path` lines, cheapest first, as SIBLINGS of the
+milestone. The `verify` line is the SHARED acceptance test for every path.
+
+```
+- [ ] 将手机切换到静音模式（铃声静音）
+  - verify: 响铃音量为 0 或铃声模式为静音 [probe: volume ring]
+  - path 1 [cost=1]: 按 VOLUME_UP 调出音量面板 → 点铃铛/静音图标
+  - path 2 [cost=3]: 设置 → 声音与振动 → 响铃/振动/静音 单选 → 静音
+  - path 3 [cost=5]: 界面无静音控件 → 把所有音量滑条拖到 0 + 关闭「静音时振动」
+  - path 4 [cost=8]: 语义等效 → 打开勿扰模式（zen_mode=1）
+```
+
+Rules for the ladder:
+- `cost` = expected number of UI actions (1–10); the executor tries the LOWEST
+  cost first and falls back down the list, so order them honestly.
+- If a device skin may LACK a dedicated control, you MUST include the
+  "drag every slider / change the settings radio" path AND a semantically
+  equivalent fallback (e.g. DND for silent).
+- A purely linear task (open app → search → submit) has ONE path: omit `- path`
+  lines entirely. Do not invent alternatives for its own sake.
 Example:
 
 ```
@@ -443,7 +539,11 @@ Your output must be ONLY the task plan in markdown format. No introductions, no 
 - For linear milestones: `- [ ] <Phase Description>`
 - For bounded repetitive/polling milestones: `- [ ] [Loop] <Goal> (Exit: <condition>; Interval: <cadence>)`
 - For unbounded continuous monitoring: `- [ ] [Loop:continuous] <Goal> (Interval: <cadence>)`
-- **Strict Two-Tier Hierarchy**: Sub-tasks MUST be 2-space indented under their parent `[Loop]` milestone
+- **Two-Tier Hierarchy**: Sub-tasks MUST be 2-space indented under their milestone
+- `- path N [cost=K]:` lines are **SIBLINGS of the milestone** (zero indent), never
+  sub-tasks and never milestones: they are ALTERNATIVE IMPLEMENTATIONS of the same
+  milestone, and exactly ONE of them is executed
+- NEVER express alternatives as multiple sub-tasks or multiple milestones
 - Every `[Loop]` milestone MUST be initialized with at least one concrete first-instance sub-task
 - NEVER flatten individual iterations to top-level milestones
 
@@ -483,19 +583,66 @@ _PLANNER_EXAMPLE = """## Example: Multi-App Workflow
 ```
 *(Fails: micromanages exact coordinates that may differ per device; treats UI micro-actions as milestones rather than strategic phases)*"""
 
-_PLANNER_STATE_CHANGE_EXAMPLE = """## Example: State-Change Task (must carry a verify line)
+_PLANNER_STATE_CHANGE_EXAMPLE = """## Example: State-Change Task (verify line + strategy ladder)
 
 **Goal**: "把手机设置成静音"
 
-### Correct Approach (outcome milestone + scriptable verify):
+### Correct Approach (outcome milestone + scriptable acceptance + ladder):
 ```
-- [ ] 将手机切换到静音（铃声静音）
-  - verify: 铃声已静音，酷炫模式下提醒方式为静音 [probe: audio]
+- [ ] 将手机切换到静音模式（铃声静音）
+  - verify: 响铃音量为 0 或铃声模式为静音 [probe: volume ring]
+  - path 1 [cost=1]: 按 VOLUME_UP 调出音量面板 → 点铃铛/静音图标
+  - path 2 [cost=3]: 设置 → 声音与振动 → 响铃/振动/静音 单选 → 静音
+  - path 3 [cost=5]: 界面无静音控件 → 把所有音量滑条拖到 0 + 关闭「静音时振动」
+  - path 4 [cost=8]: 语义等效 → 打开勿扰模式（zen_mode=1）
 ```
 
-*(verify line names a read-only probe the Checker can run, so acceptance no
-longer depends on finding a visible "静音" button that may not exist — the
-equivalence (drag volume to 0, use DND) satisfies the same state.)*"""
+### Incorrect Approach (symptoms you must avoid):
+```
+- [ ] 找到并点击"静音"按钮
+- [ ] 若无静音按钮则进入声音设置
+- [ ] 若仍失败则拖动音量条
+```
+*(Fails three ways: it invents a "静音" button that many skins do not have; the
+alternatives are listed as separate STEPS rather than `- path` lines, so the
+executor will do all of them; and there is no acceptance test, so nothing can
+tell whether the phone actually ended up silent.)*"""
+
+
+#: Milestone-level check items whose probe reads persistent STATE. A milestone
+#: carrying one of these is a state-change milestone and therefore needs a
+#: strategy ladder (see ``missing_ladder_milestones``).
+_STATE_PROBE_KINDS = frozenset({"volume", "audio", "setting"})
+
+
+def missing_ladder_milestones(snapshot: "PlanSnapshot") -> list:
+    """State-change milestones that declare fewer than two ``- path`` lines.
+
+    Prompt instructions alone do not reliably produce a ladder, so the caller
+    re-asks the model ONCE with this list. Only milestones whose acceptance is a
+    persistent-state probe are checked: a linear milestone legitimately has no
+    alternatives.
+    """
+    missing = []
+    for item in snapshot.top_level:
+        checks = snapshot.check_items_of(item)
+        if not checks:
+            continue
+        is_state = False
+        for ci in checks:
+            if ci.kind != "verify":
+                continue
+            try:
+                from runner.probes import derive_probes
+
+                if any(kind in _STATE_PROBE_KINDS for kind, _params in derive_probes(ci.text)):
+                    is_state = True
+                    break
+            except Exception:
+                continue
+        if is_state and len(snapshot.paths_of(item)) < 2:
+            missing.append(item)
+    return missing
 
 
 def build_planner_system_prompt() -> str:
@@ -576,6 +723,11 @@ def generate_plan(
     user_prompt = f"Goal: {instruction}\n\nGenerate a task plan for this Android automation goal based on the screenshot showing the current device state."
 
     last_error = ""
+    corrective = False  # the one-shot strategy-ladder re-ask has not fired yet
+
+    def _budget_spent() -> bool:
+        """True when less than a couple of seconds remain in the total budget."""
+        return (deadline - _time.monotonic()) <= 2.0
 
     def _call(prompt_timeout: float) -> tuple[Optional[str], str]:
         """Call the VLM, passing the optional knobs only if it accepts them."""
@@ -618,6 +770,33 @@ def generate_plan(
         is_valid, error_msg = validate_plan_format(plan_text)
         if is_valid:
             snapshot = parse_plan(plan_text)
+            # A state-change milestone without a strategy ladder means the
+            # executor has no fallback when the chosen UI control does not exist
+            # on this skin. Re-ask ONCE (asking twice is what made planning slow
+            # before); the wall-clock budget still applies.
+            missing = [] if corrective else missing_ladder_milestones(snapshot)
+            if missing and attempt < max(1, max_retries) and not _budget_spent():
+                titles = "\n".join(f'- "{i.text}"' for i in missing)
+                _log(
+                    f"[planner] {len(missing)} state milestone(s) lack a strategy"
+                    " ladder — re-asking once with a corrective instruction"
+                )
+                corrective = True
+                last_error = "plan lacked a strategy ladder for state milestones"
+                user_prompt = (
+                    f"Goal: {instruction}\n\n"
+                    "Your previous plan was rejected: the milestones below change "
+                    "device state but declare fewer than two `- path` lines, so the "
+                    "executor has no fallback if this device skin lacks that "
+                    "control. Rewrite the WHOLE plan, adding an ordered "
+                    "`- path N [cost=K]:` ladder (cheapest first, 2–5 paths, "
+                    "including a settings-radio path and a semantically equivalent "
+                    "fallback) as siblings of each milestone below:\n"
+                    f"{titles}\n\n"
+                    "Keep the existing `- verify:` acceptance line as the shared "
+                    "test for every path. Output ONLY the corrected plan."
+                )
+                continue
             return {
                 "plan_text": plan_text,
                 "plan_snapshot": snapshot,

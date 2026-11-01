@@ -133,7 +133,27 @@ Name a read-only probe so the checker has concrete evidence, e.g.:
 
 Enumerated probes the Checker may run (no free-form commands): `alarms`,
 `battery`, `foreground`, `notifications`, `audio` (`dumpsys audio`),
+`volume` (`media volume --stream N --get`; `ring`/`music`/`alarm` aliases),
 `setting` (`<namespace> <key>`), `content` (`<uri>`), `packages`, `prop`.
+
+### Strategy ladder — several ways to reach the same milestone
+
+For a state change, the Planner emits an ordered ladder of `- path N [cost=K]:`
+lines (cheapest first) as **siblings of the milestone**, sharing one `- verify:`:
+
+```markdown
+- [ ] 将手机切换到静音模式（铃声静音）
+  - verify: 响铃音量为 0 或铃声模式为静音 [probe: volume ring]
+  - path 1 [cost=1]: 按 VOLUME_UP 调出音量面板 → 点铃铛
+  - path 2 [cost=3]: 设置 → 声音与振动 → 响铃/振动/静音 → 静音
+  - path 3 [cost=5]: 无静音控件 → 把所有音量滑条拖到 0 + 关「静音时振动」
+  - path 4 [cost=8]: 语义等效 → 勿扰模式（zen_mode=1）
+```
+
+The executor runs **one path at a time** (`max_steps_per_path`, default 6), then
+falls back to the next. After every step it reads the acceptance probe; the
+moment the probe shows the target state the milestone is **completed by device
+state** — no hunting for a button that may not exist.
 
 ## When to Use
 

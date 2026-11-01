@@ -26,6 +26,25 @@ _KEY_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 _URI_RE = re.compile(r"^content://[A-Za-z0-9./_-]+$")
 _SETTING_NAMESPACES = frozenset({"system", "secure", "global"})
 
+#: AudioManager stream index or a name alias; the value is additionally checked
+#: against :data:`_STREAM_ALIASES`, and only digits ever reach the argv after
+#: :func:`_canonical_stream` maps the name.
+_STREAM_RE = re.compile(r"^[A-Za-z0-9]+$")
+#: Named aliases so a plan can say ``[probe: volume ring]`` instead of
+#: remembering that ring == stream 2.
+_STREAM_ALIASES = frozenset(
+    {"0", "1", "2", "3", "4", "5", "6", "7", "8", "9",
+     "voice", "system", "ring", "music", "alarm", "notification"}
+)
+
+
+def _canonical_stream(value: str) -> str:
+    """Map a stream alias to its AudioManager index (ring → 2)."""
+    return {
+        "voice": "0", "system": "1", "ring": "2", "music": "3",
+        "alarm": "4", "notification": "5",
+    }.get(str(value).strip().lower(), str(value).strip())
+
 
 @dataclass(frozen=True)
 class ProbeParam:
@@ -65,6 +84,14 @@ PROBES: dict[str, ProbeSpec] = {
     ),
     "packages": ProbeSpec(argv=("pm", "list", "packages")),
     "prop": ProbeSpec(argv=("getprop", "<key>"), params=(ProbeParam("key", _KEY_RE),)),
+    # ``media volume --stream N --get`` prints a single integer, which is far
+    # more decisive than parsing ``dumpsys audio``. Only the read-only ``--get``
+    # operation is expressible: ``--set``/``--adj`` can never be produced because
+    # the argv template is fixed.
+    "volume": ProbeSpec(
+        argv=("media", "volume", "--stream", "<stream>", "--get"),
+        params=(ProbeParam("stream", _STREAM_RE, _STREAM_ALIASES),),
+    ),
 }
 
 
@@ -92,13 +119,16 @@ def build_probe_argv(kind: str, params: Optional[dict] = None) -> list[str]:
     values: dict[str, str] = {}
     for p in spec.params:
         raw = params[p.name]
-        if not isinstance(raw, str) or not p.pattern.match(raw):
+        if not isinstance(raw, str) or not p.pattern.match(raw.strip()):
             raise ValueError(f"Probe '{kind}' parameter '{p.name}' has an invalid value.")
-        if p.allowed is not None and raw not in p.allowed:
+        if p.allowed is not None and raw.strip() not in p.allowed:
             raise ValueError(
                 f"Probe '{kind}' parameter '{p.name}' must be one of {sorted(p.allowed)}."
             )
-        values[p.name] = raw
+        values[p.name] = raw.strip()
+
+    if kind == "volume":
+        values["stream"] = _canonical_stream(values["stream"])
 
     argv: list[str] = []
     for token in spec.argv:
@@ -126,7 +156,12 @@ KEYWORD_PROBE_RULES: list[tuple[tuple[str, ...], str, dict]] = [
     (("wifi", "wlan", "无线"), "setting", {"namespace": "global", "key": "wifi_on"}),
     (("bluetooth", "蓝牙", "bt"), "setting", {"namespace": "global", "key": "bluetooth_on"}),
     (("brightness", "亮度"), "setting", {"namespace": "system", "key": "screen_brightness"}),
-    (("静音", "mute", "silent", "volume", "音量", "音响", "audible", "rintone", "ringtone", "ringer"), "audio", {}),
+    # Static/visual intents first: "静音时振动已关闭" is a setting, not a volume read.
+    (("静音时振动", "vibrate when ringing", "振动"), "setting", {"namespace": "system", "key": "vibrate_when_ringing"}),
+    # Ring-stream volume is the decisive signal for mute/silent; aliases keep the
+    # emitted tag short (``[probe: volume ring]``).
+    (("静音", "mute", "silent", "volume", "音量", "音响", "audible", "rintone", "ringtone", "ringer", "响铃", "铃声"),
+     "volume", {"stream": "ring"}),
     (("battery", "电量", "电池", "percentage", "充电"), "battery", {}),
     (("foreground", "前台", "foreground app", "当前应用", "on screen"), "foreground", {}),
     (("alarm", "闹钟"), "alarms", {}),
@@ -190,6 +225,8 @@ _KEEP_LINES: dict[str, re.Pattern] = {
     "audio": re.compile(r"ring(er)?[_-]?mode|stream|volume|mode|audio_mode|state", re.IGNORECASE),
     "foreground": re.compile(r"mResumedActivity|mFocusedApp|mCurrentFocus|topResumedActivity|ResumedActivity", re.IGNORECASE),
     "battery": re.compile(r"level|status|present|charged|AC powered|USB powered", re.IGNORECASE),
+    # ``media volume --get`` prints just the integer; keep any digit line.
+    "volume": re.compile(r"\d", re.IGNORECASE),
 }
 
 

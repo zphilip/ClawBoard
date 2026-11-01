@@ -81,6 +81,14 @@ from runner.memory_runtime import MemoryRuntime
 from runner.diagnoser import call_diagnoser
 from runner.post_run_report import build_post_run_report, write_report
 
+# Give the planner module the agent's log sink so its corrective-re-ask notice
+# reaches the run log instead of vanishing into a no-op.
+try:
+    import runner.planner as _planner_module
+    _planner_module._log = _log
+except Exception:  # pragma: no cover
+    pass
+
 # ---------------------------------------------------------------------------
 # Global log handles
 # ---------------------------------------------------------------------------
@@ -287,6 +295,94 @@ def _probe_state_mid_run(
     return results
 
 
+# ---------------------------------------------------------------------------
+# Strategy ladder execution (P3)
+# ---------------------------------------------------------------------------
+#
+# A milestone may declare an ordered ladder of ``- path N [cost=K]:`` lines: the
+# same outcome reached several ways, cheapest first. Only ONE path is executed
+# at a time; the executor walks the ladder when the current path neither
+# satisfies the acceptance probe nor makes progress within its step budget.
+
+def _active_path(snapshot, path_cursor: dict):
+    """Return (milestone, current_path, ladder) for the milestone in progress."""
+    if snapshot is None:
+        return None, None, ()
+    item = snapshot.active_milestone()
+    if item is None:
+        return None, None, ()
+    ladder = snapshot.paths_of(item)
+    if not ladder:
+        return item, None, ()
+    idx = max(0, min(path_cursor.get(item.key, 0), len(ladder) - 1))
+    return item, ladder[idx], ladder
+
+
+def _render_path_directive(item, path, idx: int, total: int) -> str:
+    """Operator-facing block: follow THIS path only, do not improvise."""
+    if item is None or path is None:
+        return ""
+    return (
+        "## Active Strategy Path (execute ONLY this path)\n"
+        f"Milestone: {item.text}\n"
+        f"Path {idx + 1}/{total} (cost={path.cost}): {path.text}\n"
+        "Do NOT switch to a different approach on your own. If this path is "
+        "impossible on this screen, report it via `notes` and pick the action that "
+        "gets closest — the system will fall back to the next path automatically."
+    )
+
+
+def _acceptance_from_probes(verify_texts: list[str], probe_results: dict):
+    """Deterministic acceptance check from read-only probe output.
+
+    Returns True (satisfied), False (contradicted) or None (cannot tell — the
+    final Checker decides). Deliberately narrow: only the signals that are
+    unambiguous are judged here, so a path is never marked done on a guess.
+    """
+    saw_volume = False
+    for text in verify_texts:
+        evidence = probe_results.get(text, "")
+        if not evidence:
+            continue
+        for line in evidence.splitlines():
+            low = line.lower()
+            if "probe volume:" in low:
+                saw_volume = True
+                m = re.search(r"probe volume:\s*(-?\d+)", low)
+                if m:
+                    return int(m.group(1)) == 0
+            if "probe audio:" in low and ("mringermode" in low or "ringer" in low):
+                m = re.search(r"mringermode\s*=\s*(\d+)", low)
+                if m:
+                    return int(m.group(1)) == 0
+            if "probe setting:" in low and "zen_mode" in low:
+                m = re.search(r"probe setting:\s*(-?\d+)", low)
+                if m and int(m.group(1)) != 0:
+                    return True
+    if saw_volume:
+        return None
+    return None
+
+
+def _advance_path(item, ladder, path_cursor: dict, path_steps: dict,
+                  max_steps_per_path: int, reason: str) -> bool:
+    """Move to the next path in the ladder. True when a path was consumed."""
+    if item is None or len(ladder) < 2:
+        return False
+    cur = path_cursor.get(item.key, 0)
+    if cur >= len(ladder) - 1:
+        return False
+    path_cursor[item.key] = cur + 1
+    path_steps[item.key] = 0
+    nxt = ladder[cur + 1]
+    _log(
+        f"[path] '{item.text[:30]}' → path {cur + 1}/{len(ladder)} exhausted "
+        f"({reason}); trying path {cur + 2}/{len(ladder)} (cost={nxt.cost}): "
+        f"{nxt.text[:60]}"
+    )
+    return True
+
+
 def _call_checker_with_probes(
     instruction: str,
     plan_text: str,
@@ -395,6 +491,9 @@ Available actions:
   {"action": "swipe", "coordinate1": [x1,y1], "coordinate2": [x2,y2], "duration": 300}
   {"action": "type", "text": "hello"}                     — type text into focused field
   {"action": "system_button", "button": "back"}           — back / home / enter / recent_apps
+  {"action": "system_button", "button": "volume_up"}      — raise volume (opens the volume panel)
+  {"action": "system_button", "button": "volume_down"}    — lower volume
+  {"action": "system_button", "button": "volume_mute"}    — toggle mute
   {"action": "finish"}                                    — task completed
   {"action": "fail", "reason": "why"}                     — task cannot be completed
 
@@ -1698,6 +1797,19 @@ def _run_plan_guided_fallback(
     targeted_indices: dict[int, int] = {}  # element index → tap count (anti-loop)
     last_target_info: tuple[int, str] | None = None  # (idx, desc) of last targeted element
 
+    # Strategy-ladder state (P3): milestone key → which path we are on, and how
+    # many steps that path has consumed. A path is abandoned when its acceptance
+    # probe contradicts it or it burns ``max_steps_per_path`` without progress.
+    path_cursor: dict[str, int] = {}
+    path_steps: dict[str, int] = {}
+    path_cfg = _cfg.get("paths") or {}
+    if not isinstance(path_cfg, dict):
+        path_cfg = {}
+    try:
+        max_steps_per_path = int(path_cfg.get("max_steps_per_path", 6))
+    except (TypeError, ValueError):
+        max_steps_per_path = 6
+
     # Lazy Diagnoser (Phase 2): fires ONCE per failure burst (when the
     # IncidentTracker's consecutive_failures first crosses the threshold), not
     # once per increment — otherwise a long stuck loop re-runs the text LLM on
@@ -1910,6 +2022,37 @@ def _run_plan_guided_fallback(
             _log("[memory] loop/stale-screen signal active — skipping fastpath, VLM will decide")
         else:
             fast = mem.fastpath(mem_state, elements)
+        # ── Strategy ladder: decide which path this step belongs to ──────
+        # A path that burned its step budget without satisfying the acceptance
+        # probe is abandoned here, so the Operator is always told exactly one
+        # approach to follow instead of improvising.
+        path_directive = ""
+        cur_item = cur_path = None
+        cur_ladder: tuple = ()
+        if plan_text:
+            try:
+                _snap_now = parse_plan(plan_text)
+                cur_item, cur_path, cur_ladder = _active_path(_snap_now, path_cursor)
+                if cur_item is not None and cur_path is not None:
+                    used = path_steps.get(cur_item.key, 0)
+                    if used >= max_steps_per_path:
+                        if _advance_path(
+                            cur_item, cur_ladder, path_cursor, path_steps,
+                            max_steps_per_path,
+                            f"{used} steps without meeting acceptance",
+                        ):
+                            cur_path = cur_ladder[path_cursor[cur_item.key]]
+                            _log(
+                                f"[path] '{cur_item.text[:30]}' now on path "
+                                f"{path_cursor[cur_item.key] + 1}/{len(cur_ladder)}"
+                            )
+                    path_directive = _render_path_directive(
+                        cur_item, cur_path,
+                        path_cursor.get(cur_item.key, 0), len(cur_ladder),
+                    )
+            except Exception as e:
+                _debug(f"[path] directive skipped: {e}")
+
         if fast:
             action_type, action_args, action_desc = fast
             plan_updates = None
@@ -1926,6 +2069,7 @@ def _run_plan_guided_fallback(
                 blocked_coords=blocked_coords,
                 blocked_targets=blocked_targets,
                 failure_hint=failure_hint,
+                path_directive=path_directive,
             )
             _log(f"[timing] step {step} operator    → {time.time() - t_oper:.2f}s  (total {time.time() - t_step:.2f}s)")
         failure_hint = ""  # consumed by the decision above
@@ -2242,7 +2386,36 @@ def _run_plan_guided_fallback(
         # Mid-run read-only state probe for the plan's verify items. Cheap, and
         # it makes device state visible in the log every step instead of only in
         # the final Checker verdict.
-        _probe_state_mid_run(plan_text, adb_path, device, step)
+        step_probes = _probe_state_mid_run(plan_text, adb_path, device, step)
+
+        # Strategy ladder: if the current path's acceptance probe is now
+        # satisfied, the milestone is DONE — the operator no longer has to hunt
+        # for a control that may not exist (this is the whole point of judging
+        # by device state instead of by a button's presence).
+        if cur_item is not None and cur_path is not None:
+            path_steps[cur_item.key] = path_steps.get(cur_item.key, 0) + 1
+            try:
+                _snap_acc = parse_plan(plan_text)
+                verify_texts = [
+                    ci.text for ci in _snap_acc.check_items_of(cur_item)
+                    if ci.kind == "verify"
+                ]
+                verdict = _acceptance_from_probes(verify_texts, step_probes)
+            except Exception as e:
+                _debug(f"[path] acceptance eval skipped: {e}")
+                verdict = None
+            if verdict is True:
+                new_plan, changed = apply_plan_updates(
+                    plan_text, {"mark_done": cur_item.text}
+                )
+                if changed:
+                    plan_text = new_plan
+                    _log(
+                        f"[path] '{cur_item.text[:30]}' acceptance MET on path "
+                        f"{path_cursor.get(cur_item.key, 0) + 1}/{len(cur_ladder)}"
+                        " — milestone completed by device state"
+                    )
+                    path_steps[cur_item.key] = 0
 
         _emit_progress(
             step, action_desc,
@@ -3603,6 +3776,7 @@ def _decide_action_plan_guided(
     blocked_targets: list[int] | None = None,
     pending_hint: str = "",
     failure_hint: str = "",
+    path_directive: str = "",
 ) -> tuple[str, dict, str, dict | None, dict | None]:
     """Call the VLM with screenshot + element index + plan context to decide the next action.
 
@@ -3734,7 +3908,8 @@ def _decide_action_plan_guided(
         + (f"{history_block}\n" if history_block else "")
         + (f"{scratchpad_block}" if scratchpad_block else "")
         + f"\n{plan_block}"
-        f"Step: {step}\n"
+        + (f"{path_directive}\n" if path_directive else "")
+        + f"Step: {step}\n"
         + (f"\n{prev_text}" if prev_text else "")
         + (f"\n{loop_text}" if loop_text else "")
         + (f"\n{incident_text}" if incident_text else "")
@@ -3939,7 +4114,13 @@ def _execute_action_adb(
         _adb_type_text(adb_path, device, text, elements=elements)
     elif action_type == "system_button":
         btn = action_args.get("button", "").upper()
-        key_map = {"HOME": "3", "BACK": "4", "ENTER": "66", "APP_SWITCH": "187"}
+        # Volume keys matter for state-change tasks: they are the shortest path
+        # to the "silent" state (raise the volume panel, then tap the bell),
+        # which is why the Planner's Strategy Ladder lists them as cost=1.
+        key_map = {
+            "HOME": "3", "BACK": "4", "ENTER": "66", "APP_SWITCH": "187",
+            "VOLUME_UP": "24", "VOLUME_DOWN": "25", "VOLUME_MUTE": "164",
+        }
         code = key_map.get(btn, "3")
         _adb(["shell", "input", "keyevent", code],
              adb_path=adb_path, device=device)
