@@ -235,6 +235,58 @@ def _run_check_probes(
     return results
 
 
+def _probe_state_mid_run(
+    plan_text: str,
+    adb_path: str,
+    device: str,
+    step: int,
+) -> dict:
+    """Read-only device-state snapshot for the plan's ``verify`` items.
+
+    Runs after every executed step (a few ``adb shell`` reads, ~0.2 s total).
+    Without this the probes only ran inside the final Checker, so during a run
+    there was no visible evidence that a state change had landed — which is why
+    a "mute the phone" task looked like it was operating blind. Logging the
+    state each step also makes the acceptance criteria observable in the run log
+    instead of only in the end-of-run verdict.
+
+    Returns ``{check_text: evidence}`` (also fed to the Checker).
+    """
+    results: dict = {}
+    if not plan_text:
+        return results
+    try:
+        snapshot = parse_plan(plan_text)
+        verify_items = [ci for ci in snapshot.all_check_items if ci.kind == "verify"]
+        if not verify_items:
+            return results
+        for ci in verify_items:
+            probes = derive_probes(ci.text)
+            if not probes:
+                continue
+            rows: list[str] = []
+            for kind, params in probes:
+                try:
+                    argv = build_probe_argv(kind, params)
+                except ValueError as e:
+                    rows.append(f"probe {kind}: invalid — {e}")
+                    continue
+                rc, out, err = _adb(
+                    ["shell"] + list(argv), adb_path=adb_path, device=device, timeout=15,
+                )
+                if rc != 0:
+                    rows.append(f"probe {kind}: failed (rc={rc}) — {err.strip()[:120]}")
+                else:
+                    rows.append(f"probe {kind}: {summarize_probe_output(kind, out)}")
+            if rows:
+                results[ci.text] = "\n".join(rows)
+                flat = " | ".join(r.replace("\n", " ")[:110] for r in rows)
+                _log(f"[probe] step {step} STATE → {flat}")
+    except Exception as e:
+        _debug(f"[probe] mid-run probe skipped: {e}")
+    return results
+
+
 def _call_checker_with_probes(
     instruction: str,
     plan_text: str,
@@ -2186,6 +2238,11 @@ def _run_plan_guided_fallback(
         _take_screenshot(adb_path, device, vshot_path)
         previous_post_shot = vshot_path  # save for next step's similarity check
         _log(f"[timing] step {step} post-shot   → {time.time() - t_post:.2f}s  (total {time.time() - t_step:.2f}s)")
+
+        # Mid-run read-only state probe for the plan's verify items. Cheap, and
+        # it makes device state visible in the log every step instead of only in
+        # the final Checker verdict.
+        _probe_state_mid_run(plan_text, adb_path, device, step)
 
         _emit_progress(
             step, action_desc,
