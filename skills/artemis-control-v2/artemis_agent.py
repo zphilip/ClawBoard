@@ -325,7 +325,7 @@ def _render_path_directive(item, path, idx: int, total: int) -> str:
     return (
         "## Active Strategy Path (execute ONLY this path)\n"
         f"Milestone: {item.text}\n"
-        f"Path {idx + 1}/{total} (cost={path.cost}): {path.text}\n"
+        f"Path {idx + 1}/{total} [{path.kind}, cost={path.cost}]: {path.text}\n"
         "Do NOT switch to a different approach on your own. If this path is "
         "impossible on this screen, report it via `notes` and pick the action that "
         "gets closest — the system will fall back to the next path automatically."
@@ -377,8 +377,8 @@ def _advance_path(item, ladder, path_cursor: dict, path_steps: dict,
     nxt = ladder[cur + 1]
     _log(
         f"[path] '{item.text[:30]}' → path {cur + 1}/{len(ladder)} exhausted "
-        f"({reason}); trying path {cur + 2}/{len(ladder)} (cost={nxt.cost}): "
-        f"{nxt.text[:60]}"
+        f"({reason}); trying path {cur + 2}/{len(ladder)} "
+        f"[{nxt.kind}, cost={nxt.cost}]: {nxt.text[:60]}"
     )
     return True
 

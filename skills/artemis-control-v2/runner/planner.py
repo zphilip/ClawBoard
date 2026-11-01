@@ -58,11 +58,22 @@ CHECK_LINE_RE = re.compile(
 
 #: Strategy-ladder lines: alternative implementations of the SAME milestone,
 #: written as siblings of the milestone (zero-indent), never as sub-tasks.
-#: ``- path 1 [cost=1]: 按音量键调出面板 → 点铃铛``
+#:   - path 1 [cost=1 kind=primary]: 按音量键调出面板 → 点铃铛
+#: ``cost`` is the number of UI actions (effort); ``kind`` is how faithful the
+#: path is to the requested state (primary / alternative / equivalent). They are
+#: SEPARATE axes: DND is cheap in actions but only semantically equivalent, so it
+#: must sort last despite a low cost.
 PATH_LINE_RE = re.compile(
     r"^(?P<indent>\s*)-\s*path\s*(?P<idx>\d+)\s*"
-    r"(?:\[\s*cost\s*=\s*(?P<cost>\d+)\s*\])?\s*:\s*(?P<text>\S.*?)\s*$"
+    r"(?:\[(?P<attrs>[^\]]*)\])?\s*:\s*(?P<text>\S.*?)\s*$"
 )
+
+#: ``cost=3`` / ``kind=primary`` inside the attribute brackets (order-agnostic).
+PATH_ATTR_RE = re.compile(r"(?P<key>cost|kind)\s*=\s*(?P<value>[A-Za-z]+|\d+)", re.IGNORECASE)
+
+#: Semantic-fidelity tiers, best first. This is the PRIMARY sort key.
+PATH_KIND_RANK = {"primary": 0, "alternative": 1, "equivalent": 2}
+PATH_KINDS = tuple(PATH_KIND_RANK)
 
 # Maximum plan generation retries on parse failure
 MAX_PLAN_RETRIES = 3
@@ -144,21 +155,33 @@ class CheckItem:
 class StrategyPath:
     """One alternative implementation of a milestone (part of the ladder).
 
-    Only ONE path is ever executed for a milestone. ``cost`` is the Planner's
-    one-time estimate of how many UI actions the path needs, so the executor can
-    try the cheapest first instead of asking a model which is faster (that would
-    cost a reasoning pass per step).
+    Only ONE path is ever executed for a milestone. The two attributes are
+    deliberately orthogonal:
+
+    - ``kind`` — how faithful the path is to the requested state.
+      ``primary`` (the state itself) → ``alternative`` (same state, other route)
+      → ``equivalent`` (a related state with side effects, e.g. DND for silent).
+    - ``cost`` — how many UI actions it takes (1–10), used to order paths
+      *within* a tier.
+
+    Ordering is ``(kind_rank, cost, index)``, so a cheap-but-only-equivalent
+    path (DND = 2 actions) still runs after an expensive-but-exact one.
     """
 
     index: int       # declared order (1-based)
-    cost: int        # lower = tried first
+    cost: int        # lower = tried first WITHIN the same kind
     text: str        # the concrete approach
     parent_key: str  # owning milestone
+    kind: str = "alternative"  # primary | alternative | equivalent
+
+    @property
+    def kind_rank(self) -> int:
+        return PATH_KIND_RANK.get(self.kind, 1)
 
     @property
     def is_fallback(self) -> bool:
-        """Last-resort path (semantically equivalent, e.g. DND for silent)."""
-        return self.cost >= 8
+        """Last-resort path: reaches a *related* state, not the requested one."""
+        return self.kind == "equivalent"
 
 
 @dataclass(frozen=True)
@@ -241,14 +264,18 @@ class PlanSnapshot:
         return self.check_items
 
     def paths_of(self, item: "PlanItem") -> tuple[StrategyPath, ...]:
-        """The strategy ladder for a milestone, cheapest first.
+        """The strategy ladder for a milestone, in execution order.
 
-        Ordered by ``(cost, index)`` so the executor simply walks the tuple.
+        Sorted by ``(kind_rank, cost, index)``: semantic fidelity first, effort
+        second. A cheap-but-only-equivalent path therefore never pre-empts an
+        exact one.
         """
         if not item.is_top_level:
             return ()
         ladder = [p for p in self.paths if p.parent_key == item.key]
-        return tuple(sorted(ladder, key=lambda p: (p.cost, p.index)))
+        return tuple(
+            sorted(ladder, key=lambda p: (p.kind_rank, p.cost, p.index))
+        )
 
     def render_for_prompt(self) -> str:
         """Render the plan as a prompt block showing status of all milestones."""
@@ -273,7 +300,7 @@ class PlanSnapshot:
             if item.is_top_level:
                 for p in self.paths_of(item):
                     lines.append(
-                        f"    ↳ path {p.index} (cost={p.cost}): {p.text}"
+                        f"    ↳ path {p.index} [{p.kind}, cost={p.cost}]: {p.text}"
                     )
 
         # Progress summary
@@ -357,13 +384,30 @@ def parse_plan(content: str | None) -> PlanSnapshot:
                     idx = int(path_match.group("idx"))
                 except (TypeError, ValueError):
                     idx = len(paths) + 1
-                raw_cost = path_match.group("cost")
+                cost: Optional[int] = None
+                kind = ""
+                for attr in PATH_ATTR_RE.finditer(path_match.group("attrs") or ""):
+                    key = attr.group("key").lower()
+                    value = attr.group("value").strip().lower()
+                    if key == "cost":
+                        try:
+                            cost = int(value)
+                        except ValueError:
+                            cost = None
+                    elif key == "kind" and value in PATH_KIND_RANK:
+                        kind = value
+                resolved_cost = cost if cost is not None else idx
+                if not kind:
+                    # Back-compat with plans that only carry [cost=K]: a very high
+                    # cost was the old way of marking "last resort".
+                    kind = "equivalent" if resolved_cost >= 8 else "alternative"
                 paths.append(
                     StrategyPath(
                         index=idx,
-                        cost=int(raw_cost) if raw_cost else idx,
+                        cost=resolved_cost,
                         text=path_match.group("text").strip(),
                         parent_key=current_top.key,
+                        kind=kind,
                     )
                 )
     return PlanSnapshot(items=tuple(items), check_items=tuple(checks), paths=tuple(paths))
@@ -428,26 +472,38 @@ look. Preferred probe tags: `[probe: volume ring]` (ring volume; 0 = silent),
 ### Strategy Ladder (multiple ways to reach the SAME milestone)
 
 When a milestone changes device STATE and more than one approach exists, you MUST
-emit an ordered ladder of 2–5 `- path` lines, cheapest first, as SIBLINGS of the
-milestone. The `verify` line is the SHARED acceptance test for every path.
+emit an ordered ladder of 2–5 `- path` lines as SIBLINGS of the milestone. The
+`verify` line is the SHARED acceptance test for every path.
 
 ```
 - [ ] 将手机切换到静音模式（铃声静音）
   - verify: 响铃音量为 0 或铃声模式为静音 [probe: volume ring]
-  - path 1 [cost=1]: 按 VOLUME_UP 调出音量面板 → 点铃铛/静音图标
-  - path 2 [cost=3]: 设置 → 声音与振动 → 响铃/振动/静音 单选 → 静音
-  - path 3 [cost=5]: 界面无静音控件 → 把所有音量滑条拖到 0 + 关闭「静音时振动」
-  - path 4 [cost=8]: 语义等效 → 打开勿扰模式（zen_mode=1）
+  - path 1 [cost=1 kind=primary]:     按 VOLUME_UP 调出音量面板 → 点铃铛/静音图标
+  - path 2 [cost=3 kind=primary]:     设置 → 声音与振动 → 响铃/振动/静音 单选 → 静音
+  - path 3 [cost=5 kind=alternative]: 界面无静音控件 → 把所有音量滑条拖到 0 + 关闭「静音时振动」
+  - path 4 [cost=2 kind=equivalent]:  下拉快捷面板 → 点「勿扰」（会静音铃声，但连通知/闹钟一起压掉）
 ```
 
-Rules for the ladder:
-- `cost` = expected number of UI actions (1–10); the executor tries the LOWEST
-  cost first and falls back down the list, so order them honestly.
-- If a device skin may LACK a dedicated control, you MUST include the
-  "drag every slider / change the settings radio" path AND a semantically
-  equivalent fallback (e.g. DND for silent).
-- A purely linear task (open app → search → submit) has ONE path: omit `- path`
-  lines entirely. Do not invent alternatives for its own sake.
+### The two attributes are INDEPENDENT — do not merge them
+
+`kind` = how faithful the path is to the requested state (the PRIMARY sort key):
+- `primary` — reaches the requested state itself.
+- `alternative` — reaches the SAME state by a different route (drag sliders to 0
+  for "silent" is the same state; only the route differs).
+- `equivalent` — reaches a RELATED but different state, with side effects. You
+  MUST name the side effect in the path text. 勿扰模式 for "静音" is
+  `equivalent`: the ringer stops, but notifications and alarms are suppressed
+  too. It is cheap in actions yet still the LAST resort.
+
+`cost` = number of UI actions (1–10), secondary key, orders paths within a tier:
+- each tap / long-press / swipe / key press / app launch counts 1
+- entering a second-level screen adds 1
+- examples: 下拉面板+点磁贴 = 2；设置→声音与振动→点静音 = 3；
+  打开面板+拖 3 条滑条 = 4
+
+The harness sorts by `(kind, cost)`. So a **cheap but only-equivalent** path
+(e.g. 勿扰 at cost=2) runs AFTER an **expensive but exact** one — never score
+`equivalent` paths as expensive to force them last; mark them `kind=equivalent`.
 Example:
 
 ```
@@ -591,11 +647,15 @@ _PLANNER_STATE_CHANGE_EXAMPLE = """## Example: State-Change Task (verify line + 
 ```
 - [ ] 将手机切换到静音模式（铃声静音）
   - verify: 响铃音量为 0 或铃声模式为静音 [probe: volume ring]
-  - path 1 [cost=1]: 按 VOLUME_UP 调出音量面板 → 点铃铛/静音图标
-  - path 2 [cost=3]: 设置 → 声音与振动 → 响铃/振动/静音 单选 → 静音
-  - path 3 [cost=5]: 界面无静音控件 → 把所有音量滑条拖到 0 + 关闭「静音时振动」
-  - path 4 [cost=8]: 语义等效 → 打开勿扰模式（zen_mode=1）
+  - path 1 [cost=1 kind=primary]:     按 VOLUME_UP 调出音量面板 → 点铃铛/静音图标
+  - path 2 [cost=3 kind=primary]:     设置 → 声音与振动 → 响铃/振动/静音 单选 → 静音
+  - path 3 [cost=5 kind=alternative]: 界面无静音控件 → 把所有音量滑条拖到 0 + 关闭「静音时振动」
+  - path 4 [cost=2 kind=equivalent]:  下拉快捷面板 → 点「勿扰」（副作用：通知与闹钟一并静音）
 ```
+
+*(Note path 4: 勿扰 needs only 2 actions — it is CHEAP — but it is marked
+`kind=equivalent` because it suppresses notifications and alarms as well. Sorting
+is by (kind, cost), so it still runs last even though it is the cheapest.)*
 
 ### Incorrect Approach (symptoms you must avoid):
 ```

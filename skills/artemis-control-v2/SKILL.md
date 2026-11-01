@@ -138,17 +138,23 @@ Enumerated probes the Checker may run (no free-form commands): `alarms`,
 
 ### Strategy ladder — several ways to reach the same milestone
 
-For a state change, the Planner emits an ordered ladder of `- path N [cost=K]:`
-lines (cheapest first) as **siblings of the milestone**, sharing one `- verify:`:
+For a state change, the Planner emits an ordered ladder of `- path N [cost=K
+kind=…]:` lines as **siblings of the milestone**, sharing one `- verify:`:
 
 ```markdown
 - [ ] 将手机切换到静音模式（铃声静音）
   - verify: 响铃音量为 0 或铃声模式为静音 [probe: volume ring]
-  - path 1 [cost=1]: 按 VOLUME_UP 调出音量面板 → 点铃铛
-  - path 2 [cost=3]: 设置 → 声音与振动 → 响铃/振动/静音 → 静音
-  - path 3 [cost=5]: 无静音控件 → 把所有音量滑条拖到 0 + 关「静音时振动」
-  - path 4 [cost=8]: 语义等效 → 勿扰模式（zen_mode=1）
+  - path 1 [cost=1 kind=primary]:     按 VOLUME_UP 调出音量面板 → 点铃铛
+  - path 2 [cost=3 kind=primary]:     设置 → 声音与振动 → 响铃/振动/静音 → 静音
+  - path 3 [cost=5 kind=alternative]: 无静音控件 → 把所有音量滑条拖到 0 + 关「静音时振动」
+  - path 4 [cost=2 kind=equivalent]:  下拉快捷面板 → 点「勿扰」（副作用：通知/闹钟一并静音）
 ```
+
+`kind` is **semantic fidelity** and is the primary sort key:
+`primary` (the requested state) → `alternative` (same state, other route) →
+`equivalent` (related state with side effects). `cost` is the **number of UI
+actions** (1–10) and only orders paths inside a tier. So 勿扰模式 is cheap
+(cost=2) yet still runs LAST, because it only approximates "静音".
 
 The executor runs **one path at a time** (`max_steps_per_path`, default 6), then
 falls back to the next. After every step it reads the acceptance probe; the
