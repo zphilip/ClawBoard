@@ -156,6 +156,38 @@ kind=…]:` lines as **siblings of the milestone**, sharing one `- verify:`:
 actions** (1–10) and only orders paths inside a tier. So 勿扰模式 is cheap
 (cost=2) yet still runs LAST, because it only approximates "静音".
 
+### Action vocabulary the skill can actually execute
+
+The Operator must pick from this closed set (anything else is rejected before it
+runs, and never counts as completion):
+
+| action | payload | notes |
+|---|---|---|
+| `tap` | `target: N` **or** `coordinate: [x,y]` | `target` is the indexed element |
+| `long_press` | `target: N` | |
+| `swipe` | `coordinate1`, `coordinate2`, `duration` | both endpoints 0-1000, inside the edge-safe rect |
+| `scroll` | `direction: up\|down`, `target: N` | derive the gesture from the container bounds |
+| `set_slider` | `target: N`, `fraction: 0.0..1.0` | taps the slider track at that fraction |
+| `type` | `text` | focus the field first |
+| `open_app` | `app_name` | |
+| `system_button` | `button: back \| home \| enter \| recent_apps \| volume_up \| volume_down \| volume_mute` | hardware keys via `input keyevent` |
+| `finish` / `fail` | — / `reason` | |
+
+**Volume keys are available and cheap** — `system_button` maps to keyevents
+`volume_up=24`, `volume_down=25`, `volume_mute=164`. They are the fastest way to
+a ringer change and need no UI hunting.
+
+Two ringer facts worth knowing before writing a plan:
+
+- **`STREAM_RING` cannot reach 0 while the ringer mode is NORMAL** — Android
+  clamps it to >= 1. So "volume == 0" alone is unsatisfiable; the acceptance test
+  must also allow the ringer mode going SILENT (`probe: volume ring` +
+  `probe: audio` are both emitted for silence goals for exactly this reason).
+- **`volume_up` moves AWAY from the goal** for a mute task, and any path whose
+  first action raises the ringer is rejected by the guardrail — the rest of that
+  path is never reached. Start with `volume_down` / `volume_mute`, the settings
+  radio, or `set_slider`.
+
 ### Two geometry-derived actions (prefer them over raw swipes)
 
 The Operator cannot know where a scrollable area or a slider track is; asking it

@@ -478,10 +478,11 @@ emit an ordered ladder of 2–5 `- path` lines as SIBLINGS of the milestone. The
 ```
 - [ ] 将手机切换到静音模式（铃声静音）
   - verify: 响铃音量为 0 或铃声模式为静音 [probe: volume ring]
-  - path 1 [cost=1 kind=primary]:     按 VOLUME_UP 调出音量面板 → 点铃铛/静音图标
-  - path 2 [cost=3 kind=primary]:     设置 → 声音与振动 → 响铃/振动/静音 单选 → 静音
-  - path 3 [cost=5 kind=alternative]: 界面无静音控件 → 把所有音量滑条拖到 0 + 关闭「静音时振动」
-  - path 4 [cost=2 kind=equivalent]:  下拉快捷面板 → 点「勿扰」（会静音铃声，但连通知/闹钟一起压掉）
+  - path 1 [cost=1 kind=primary]:     按 system_button volume_mute 直接切换静音
+  - path 2 [cost=3 kind=primary]:     连续按 system_button volume_down（3~5 次）直到铃声模式变为静音
+  - path 3 [cost=3 kind=primary]:     设置 → 声音与振动 → 响铃/振动/静音 单选 → 静音
+  - path 4 [cost=5 kind=alternative]: 无静音控件 → set_slider 把铃声滑条设为 0 + 关闭「静音时振动」
+  - path 5 [cost=2 kind=equivalent]:  下拉快捷面板 → 点「勿扰」（会静音铃声，但连通知/闹钟一起压掉）
 ```
 
 ### The two attributes are INDEPENDENT — do not merge them
@@ -500,6 +501,13 @@ emit an ordered ladder of 2–5 `- path` lines as SIBLINGS of the milestone. The
 - entering a second-level screen adds 1
 - examples: 下拉面板+点磁贴 = 2；设置→声音与振动→点静音 = 3；
   打开面板+拖 3 条滑条 = 4
+
+### Direction rule for the FIRST action of a path
+**Never open a path with an action that INCREASES the quantity you want to
+reduce.** "Press VOLUME_UP → tap the bell" is invalid for a mute goal: the first
+action raises the ringer, the guardrail rejects the whole path, and the bell is
+never reached. Move toward the target instead — `volume_down` / `volume_mute`,
+or the settings radio.
 
 The harness sorts by `(kind, cost)`. So a **cheap but only-equivalent** path
 (e.g. 勿扰 at cost=2) runs AFTER an **expensive but exact** one — never score
@@ -647,10 +655,11 @@ _PLANNER_STATE_CHANGE_EXAMPLE = """## Example: State-Change Task (verify line + 
 ```
 - [ ] 将手机切换到静音模式（铃声静音）
   - verify: 响铃音量为 0 或铃声模式为静音 [probe: volume ring]
-  - path 1 [cost=1 kind=primary]:     按 VOLUME_UP 调出音量面板 → 点铃铛/静音图标
-  - path 2 [cost=3 kind=primary]:     设置 → 声音与振动 → 响铃/振动/静音 单选 → 静音
-  - path 3 [cost=5 kind=alternative]: 界面无静音控件 → 把所有音量滑条拖到 0 + 关闭「静音时振动」
-  - path 4 [cost=2 kind=equivalent]:  下拉快捷面板 → 点「勿扰」（副作用：通知与闹钟一并静音）
+  - path 1 [cost=1 kind=primary]:     按 system_button volume_mute 直接切换静音
+  - path 2 [cost=3 kind=primary]:     连续按 system_button volume_down（3~5 次）直到铃声模式变为静音
+  - path 3 [cost=3 kind=primary]:     设置 → 声音与振动 → 响铃/振动/静音 单选 → 静音
+  - path 4 [cost=5 kind=alternative]: 无静音控件 → set_slider 把铃声滑条设为 0 + 关闭「静音时振动」
+  - path 5 [cost=2 kind=equivalent]:  下拉快捷面板 → 点「勿扰」（副作用：通知与闹钟一并静音）
 ```
 
 *(Note path 4: 勿扰 needs only 2 actions — it is CHEAP — but it is marked
