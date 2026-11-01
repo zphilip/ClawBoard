@@ -536,9 +536,9 @@ def _planner_options() -> dict:
     if not isinstance(section, dict):
         section = {}
     try:
-        max_retries = int(section.get("max_retries", 1))
+        max_retries = int(section.get("max_retries", 2))
     except (TypeError, ValueError):
-        max_retries = 1
+        max_retries = 2
     try:
         timeout = float(section.get("timeout", 90))
     except (TypeError, ValueError):

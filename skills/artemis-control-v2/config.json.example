@@ -87,7 +87,7 @@
 
   "planner": {
     "_comment": "Plan-generation latency budget. thinking=false is essential: a reasoning pass on the ~3.9k-token planner prompt takes minutes instead of seconds. max_retries=1 avoids the old nested retry ladder (plan x http x parse).",
-    "max_retries": 1,
+    "max_retries": 2,
     "timeout": 90,
     "total_budget": 150,
     "thinking": false

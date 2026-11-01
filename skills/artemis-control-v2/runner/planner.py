@@ -527,7 +527,7 @@ def generate_plan(
     vlm_caller: Callable[
         [str, str, str, int], tuple[Optional[str], str]
     ],
-    max_retries: int = 1,
+    max_retries: int = 2,
     timeout: float = 90.0,
     total_budget: float = 150.0,
     thinking: bool = False,
@@ -535,8 +535,9 @@ def generate_plan(
     """Generate a milestone plan for the given instruction.
 
     Cost control (this used to take 8 minutes):
-    - ``max_retries`` defaults to **1**: a plan call is a short, deterministic
-      answer; a second full attempt is rarely worth the latency.
+    - ``max_retries`` defaults to **2**: enough to survive one transient
+      gateway hiccup (a plan failure downgrades pro → flash, which loses the
+      safety net AND the probe-backed Checker), while staying bounded.
     - ``timeout`` is the per-HTTP-call socket timeout.
     - ``total_budget`` is a hard WALL-CLOCK deadline. The previous code nested
       three retry layers (generate_plan × _call_vlm × plan-parse) with a 120 s
