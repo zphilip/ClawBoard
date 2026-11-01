@@ -751,9 +751,10 @@ def generate_plan(
     """Generate a milestone plan for the given instruction.
 
     Cost control (this used to take 8 minutes):
-    - ``max_retries`` defaults to **2**: enough to survive one transient
-      gateway hiccup (a plan failure downgrades pro → flash, which loses the
-      safety net AND the probe-backed Checker), while staying bounded.
+    - ``max_retries`` defaults to **2** outer attempts, each with an
+      internal HTTP retry of 2 — enough to ride out two handshake hiccups per
+      attempt (a plan failure downgrades pro → flash, which loses the safety net
+      AND the probe-backed Checker), while staying bounded by ``total_budget``.
     - ``timeout`` is the per-HTTP-call socket timeout.
     - ``total_budget`` is a hard WALL-CLOCK deadline. The previous code nested
       three retry layers (generate_plan × _call_vlm × plan-parse) with a 120 s
@@ -799,8 +800,17 @@ def generate_plan(
         return (deadline - _time.monotonic()) <= 2.0
 
     def _call(prompt_timeout: float) -> tuple[Optional[str], str]:
-        """Call the VLM, passing the optional knobs only if it accepts them."""
-        kwargs = {"timeout": prompt_timeout, "retries": 0, "thinking": thinking}
+        """Call the VLM, passing the optional knobs only if it accepts them.
+
+        ``retries=2`` matters: the gateway intermittently drops the TLS
+        handshake (``_ssl.c:1012: The handshake operation timed out``), and a
+        single such hiccup must NOT fail planning — a failed plan silently
+        downgrades pro → flash and silently loses the probes, the Validator and
+        the Checker. The outer ``max_retries`` loop stays as the parse/format
+        backstop; these are per-HTTP-socket retries on the very failure mode we
+        saw in the field.
+        """
+        kwargs = {"timeout": prompt_timeout, "retries": 2, "thinking": thinking}
         try:
             return vlm_caller(
                 system_prompt, user_prompt, screenshot_path, 4096, **kwargs

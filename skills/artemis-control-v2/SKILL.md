@@ -159,7 +159,7 @@ runs, and never counts as completion):
 | `long_press` | `target: N` | |
 | `swipe` | `coordinate1`, `coordinate2`, `duration` | both endpoints 0-1000, inside the edge-safe rect |
 | `scroll` | `direction: up\|down`, `target: N` | derive the gesture from the container bounds |
-| `set_slider` | `target: N`, `fraction: 0.0..1.0` | taps the slider track at that fraction |
+| `set_slider` | `target: N`, `fraction: 0.0..1.0` | **drags** the track past that fraction, fully past the boundary at 0.0/1.0 |
 | `type` | `text` | focus the field first |
 | `open_app` | `app_name` | |
 | `system_button` | `button: back \| home \| enter \| recent_apps \| volume_up \| volume_down \| volume_mute` | hardware keys via `input keyevent` |
@@ -189,11 +189,11 @@ bounds instead. Both take the element index and no coordinates:
   want to reach) and `target` (the scrollable element). The gesture is derived
   from that element's bounds, so it always lands on the scrollable region.
 - **`set_slider`** — needs `target` (the slider) and `fraction` (`0.0` = far
-  left/minimum, `1.0` = far right/maximum). It **taps** the track rather than
-  dragging it: a seekbar maps a touch straight to a value, whereas a drag's
-  initial press already commits a value and the long move is often reinterpreted
-  as a fling. If the value provably does not change after a tap, the run switches
-  to drag mode for the remaining steps.
+  left/minimum, `1.0` = far right/maximum). It **drags** the track: the finger
+  starts at the opposite end and travels past the target (and past the boundary
+  itself for 0.0 / 1.0 — Android clamps the overshoot), because touch slop eats
+  the first few pixels and a drag that stops dead on the target (or a tap) is
+  frequently not delivered, leaving the value unchanged.
 
 Raw `swipe` still works and stays cacheable; both endpoints must be in 0-1000 and
 differ by at least 100. A gesture whose endpoints collapse (or travel < 30 px) is

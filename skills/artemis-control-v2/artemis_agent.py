@@ -1964,7 +1964,6 @@ def _run_plan_guided_fallback(
     path_cursor: dict[str, int] = {}
     path_steps: dict[str, int] = {}
     ineffective_scrolls = 0  # consecutive gestures that moved no pixels
-    last_probe_volume = None  # ring-volume reading from the previous step
     step_probes: dict = {}    # probe evidence from the last executed step
     path_cfg = _cfg.get("paths") or {}
     if not isinstance(path_cfg, dict):
@@ -2679,34 +2678,6 @@ def _run_plan_guided_fallback(
         # it makes device state visible in the log every step instead of only in
         # the final Checker verdict.
         step_probes = _probe_state_mid_run(plan_text, adb_path, device, step)
-
-        # set_slider self-heal: a tap on the track should jump the value. If the
-        # ring volume is unchanged after one, fall back to a real drag for the
-        # rest of the run (some ROMs only honour a moved pointer).
-        try:
-            vol_now = None
-            for _ev in (step_probes or {}).values():
-                import re as _re
-
-                m = _re.search(r"volume is (\d+)", _ev)
-                if m:
-                    vol_now = int(m.group(1))
-                    break
-            if vol_now is not None:
-                if (
-                    action_desc.lower().startswith("set_slider")
-                    or "set_slider" in action_desc.lower()
-                ) and last_probe_volume is not None and vol_now == last_probe_volume:
-                    global _SLIDER_FORCE_DRAG
-                    if not _SLIDER_FORCE_DRAG:
-                        _SLIDER_FORCE_DRAG = True
-                        _log(
-                            "[gesture] set_slider tap did not change the value "
-                            f"(still {vol_now}) — switching to drag mode"
-                        )
-                last_probe_volume = vol_now
-        except Exception as e:
-            _debug(f"[gesture] slider self-heal skipped: {e}")
 
         # Strategy ladder: if the current path's acceptance probe is now
         # satisfied, the milestone is DONE — the operator no longer has to hunt
@@ -3701,11 +3672,6 @@ def _scroll_gesture(elements, target_idx, direction: str) -> dict | None:
     }
 
 
-#: When True, set_slider falls back to a drag instead of a tap. Flipped at
-#: run time by the pro loop when a tap on the track demonstrably did nothing.
-_SLIDER_FORCE_DRAG = False
-
-
 def _resolve_slider_element(elements, target_idx):
     """The element whose bounds are a real draggable track (or None)."""
     el = _element_by_index(elements, target_idx)
@@ -3736,91 +3702,31 @@ def _resolve_slider_element(elements, target_idx):
     return best if best is not None else el
 
 
-def _slider_tap_point(elements, target_idx, fraction: float) -> tuple[int, int, object] | None:
-    """Point on the slider TRACK that corresponds to ``fraction``.
+def _slider_gesture(elements, target_idx, fraction: float) -> dict | None:
+    """Drag a slider/seekbar to ``fraction`` (0..1) of its track.
 
-    A SeekBar maps a touch straight to a value (``setProgress`` at the touch x),
-    so a single tap is a deterministic assignment. Dragging is not: the initial
-    DOWN already sets a value, and a long MOVE is frequently reinterpreted as a
-    fling/scroll, which is why field drags left the volume untouched and the
-    screen pixel-identical.
+    Emits a SWIPE whose end lands PAST the target in the travel direction, and
+    PAST the extreme boundary when the target is 0.0 or 1.0. Touch slop eats the
+    first few pixels of a drag, so a gesture that stops dead on the target — or a
+    tap, or a "precise" 3 %-inset endpoint — is frequently not delivered at all
+    and the value snaps back, leaving the screen pixel-identical. This is exactly
+    what the field logs showed for the volume slider, and why the upstream rule is
+    "swipe fully to the extreme boundary, drag slightly past the target".
     """
     el = _resolve_slider_element(elements, target_idx)
     if el is None or not getattr(el, "bounds", None):
         return None
-    left, top, right, bottom = el.bounds
-    sx0, sy0, sx1, sy1 = _edge_safe_rect()
-    track_left, track_right = max(left, sx0), min(right, sx1)
-    if track_right - track_left < MIN_SWIPE_TRAVEL:
-        return None
-    cy = (top + bottom) // 2
-    cy = max(sy0, min(cy, sy1))
-    w = max(1, track_right - track_left)
-    try:
-        frac = max(0.0, min(1.0, float(fraction)))
-    except (TypeError, ValueError):
-        frac = 0.0
-    inset = max(4, int(w * 0.03))
-    tx = track_left + inset + int((w - 2 * inset) * frac)
-    return int(tx), int(cy), el
-
-
-def _slider_gesture(elements, target_idx, fraction: float) -> dict | None:
-    """Drag a slider/seekbar to ``fraction`` (0..1) of its own track.
-
-    Computing the endpoints from the element's bounds is the only reliable way to
-    move a seekbar: the Operator has no way to know the track's y, which is why
-    every field attempt dragged 150px off and left the volume unchanged.
-    """
-    el = _element_by_index(elements, target_idx)
-    # The model often points at the ROW that contains the slider ("铃声和振动音量
-    # 滑条") rather than the SeekBar itself. Resolve to a real track inside that
-    # row's bounds, otherwise the drag lands on a label and nothing moves.
-    if el is not None and not _is_slider_element(el):
-        holder = getattr(el, "bounds", None)
-        candidate = None
-        best_area = 0
-        for e in elements or []:
-            if not _is_slider_element(e) or not getattr(e, "bounds", None):
-                continue
-            left, top, right, bottom = e.bounds
-            if holder and not (
-                left >= holder[0] - 8 and right <= holder[2] + 8
-                and top >= holder[1] - 8 and bottom <= holder[3] + 8
-            ):
-                continue
-            area = max(0, right - left) * max(0, bottom - top)
-            if area > best_area:
-                candidate, best_area = e, area
-        if candidate is None:
-            # Any slider on screen is still a better bet than a text row.
-            for e in elements or []:
-                if _is_slider_element(e) and getattr(e, "bounds", None):
-                    left, top, right, bottom = e.bounds
-                    area = max(0, right - left) * max(0, bottom - top)
-                    if area > best_area:
-                        candidate, best_area = e, area
-        if candidate is not None:
-            el = candidate
-
-    if el is None or not getattr(el, "bounds", None):
-        return None
     if not _is_slider_element(el):
-        # No SeekBar/ProgressBar was indexed at this target; we drag the row's
-        # own bounds. Logged so the field log shows WHY a drag might miss.
         _log(
             f"[gesture] set_slider: no SeekBar found for "
             f"#{getattr(el, 'index', '?')} ({getattr(el, 'class_name', '?')}) — "
             "dragging its row bounds"
         )
     left, top, right, bottom = el.bounds
-    cy = (top + bottom) // 2
 
-    # The track must stay INSIDE the system edge-back strips. A drag that starts
-    # at the very right end of a full-width row begins ~18dp from the edge, so
-    # Android swallows it as a back gesture: the app only ever sees the initial
-    # press (=> the slider jumps, "it tapped but never dragged") and the page is
-    # navigated away. That is why an apparent tap and a "back" were seen at once.
+    # The track must stay INSIDE the system edge-back strips (only the START is
+    # edge-sensitive — a horizontal resume is not a back gesture if the finger
+    # never began in the left/right strip).
     sx0, sy0, sx1, sy1 = _edge_safe_rect()
     track_left = max(left, sx0)
     track_right = min(right, sx1)
@@ -3830,6 +3736,7 @@ def _slider_gesture(elements, target_idx, fraction: float) -> dict | None:
             "narrow inside the edge-safe zone"
         )
         return None
+    cy = (top + bottom) // 2
     cy = max(sy0, min(cy, sy1))
     w = max(1, track_right - track_left)
 
@@ -3837,23 +3744,31 @@ def _slider_gesture(elements, target_idx, fraction: float) -> dict | None:
         frac = max(0.0, min(1.0, float(fraction)))
     except (TypeError, ValueError):
         frac = 0.0
-    inset = max(4, int(w * 0.03))
-    tx = track_left + inset + int((w - 2 * inset) * frac)
 
-    # Start at the OPPOSITE end of the track and drag to the target. Starting at
-    # the middle would (a) make frac=0.5 a zero-travel gesture, and (b) on a
-    # seekbar the initial press already sets the value, so the drag must always
-    # travel toward the target from the far side.
+    tx = track_left + int(w * frac)
+
+    # Start at the OPPOSITE end so the gesture always travels the full track in
+    # the target direction. A seekbar commits a value on press, so a mid-track
+    # start both zeroes the travel around 0.5 and writes a spurious value.
     if frac <= 0.5:
-        sx = track_right - inset
+        sx, direction = track_right, -1
     else:
-        sx = track_left + inset
+        sx, direction = track_left, +1
+
+    # Overshoot PAST the target. For the extremes this carries the finger past
+    # the boundary itself (Android clamps to the end of the range).
+    overshoot = max(MIN_SWIPE_TRAVEL, int(w * 0.08))
+    tx = tx + direction * overshoot
+    dev = _DEVICE_RESOLUTION
+    max_x = (dev[0] - 1) if dev else 10 ** 6
+    tx = max(0, min(tx, max_x))
+
     if abs(tx - sx) < MIN_SWIPE_TRAVEL:
         return None
     return {
         "coordinate1": [int(sx), int(cy)],
         "coordinate2": [int(tx), int(cy)],
-        "duration": 500,
+        "duration": 600,
     }
 
 
@@ -4505,18 +4420,11 @@ def _decide_action_fallback(
 
     elif action == "set_slider":
         frac = parsed.get("fraction", 0.0)
-        if not _SLIDER_FORCE_DRAG:
-            pt = _slider_tap_point(elements, parsed.get("target"), frac)
-            if pt is not None:
-                tx, ty, el = pt
-                desc = target_desc or f"set_slider #{parsed.get('target')} → {frac}"
-                _log(f"[gesture] set_slider tap-on-track frac={frac} ⇒ ({tx},{ty})")
-                return ("tap", {"coordinate": [tx, ty]}, desc)
         gesture = _slider_gesture(elements, parsed.get("target"), frac)
         if gesture is None:
             return ("system_button", {"button": "back"}, "set_slider failed: target has no bounds", None, None)
         desc = target_desc or f"set_slider #{parsed.get('target')} → {frac}"
-        _log(f"[gesture] set_slider drag frac={frac} ⇒ {gesture['coordinate1']}→{gesture['coordinate2']}")
+        _log(f"[gesture] set_slider frac={frac} ⇒ {gesture['coordinate1']}→{gesture['coordinate2']}")
         return ("swipe", gesture, desc)
 
     elif action == "type":
@@ -4839,19 +4747,12 @@ def _decide_action_plan_guided(
 
     elif action == "set_slider":
         frac = parsed.get("fraction", 0.0)
-        if not _SLIDER_FORCE_DRAG:
-            pt = _slider_tap_point(elements, parsed.get("target"), frac)
-            if pt is not None:
-                tx, ty, _el = pt
-                desc = target_desc or f"set_slider #{parsed.get('target')} → {frac}"
-                _log(f"[gesture] set_slider tap-on-track frac={frac} ⇒ ({tx},{ty})")
-                return ("tap", {"coordinate": [tx, ty]}, desc, plan_updates, notes_updates)
         gesture = _slider_gesture(elements, parsed.get("target"), frac)
         if gesture is None:
             return ("system_button", {"button": "back"},
                     "set_slider failed: target has no bounds", plan_updates, notes_updates)
         desc = target_desc or f"set_slider #{parsed.get('target')} → {frac}"
-        _log(f"[gesture] set_slider drag frac={frac} ⇒ {gesture['coordinate1']}→{gesture['coordinate2']}")
+        _log(f"[gesture] set_slider frac={frac} ⇒ {gesture['coordinate1']}→{gesture['coordinate2']}")
         return ("swipe", gesture, desc, plan_updates, notes_updates)
 
     elif action == "type":
