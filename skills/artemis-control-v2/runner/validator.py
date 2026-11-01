@@ -43,11 +43,34 @@ and advancing the task. You never execute or modify actions; you only evaluate t
 - Is it a no-op — tapping an already-selected tab, typing empty text, swiping on a
   non-scrollable area?
 
-### 3. Element Correctness (FAIL if wrong target)
+### 3. Element Correctness (FAIL if wrong target — but ONLY the element choice)
 - Does the tapped element match the action's intent?
   - Tapping the settings gear when the goal says "open WeChat" → FAIL
   - Tapping a search bar when the milestone says "find a contact" → APPROVE
-- Is the coordinate landing on the correct element, or is it off-target?
+- Judge whether the ELEMENT is right. Do NOT judge the landing position when the
+  action names `target=N` (see Coordinate Spaces below).
+
+## Coordinate Spaces — read this before judging any position
+This screen mixes TWO coordinate systems. Comparing them directly produces wrong
+verdicts, so always convert first.
+
+- The element list below renders `center=(nx,ny)` in **NORMALIZED 0-1000** space
+  (x: 0 = left edge … 1000 = right edge; y: 0 = top … 1000 = bottom).
+- A `tap`/`swipe` may carry `coordinate=[x,y]` in **DEVICE PIXELS**. The user
+  message states the device resolution.
+- Conversion: `pixel_x = nx / 1000 * device_width`, `pixel_y = ny / 1000 * device_height`.
+  A normalized value is NEVER directly comparable to a pixel value: on a 1440×3120
+  device, normalized (447,640) IS pixel (644,1997) — the same point.
+
+**Hard rules:**
+1. If the action is `tap` with `target=N`, the harness taps element N's center
+   exactly. The coordinate is correct *by construction* — never reject it for its
+   position. Judge only whether element N is the right element.
+2. If the action carries an explicit pixel `coordinate`, convert it to normalized
+   before comparing it with an element centre.
+3. "The coordinate is off-target" is only a valid rejection reason when the
+   coordinate was proposed directly AND it demonstrably lands on a different
+   element. If you cannot show that with the numbers above, do not reject.
 
 ## Response Format
 You MUST respond with a single JSON object. No other text.
@@ -89,6 +112,8 @@ def build_validator_user_prompt(
     action_args: dict | None = None,
     previous_incidents: str = "",
     element_index: str = "",
+    device_resolution: str = "",
+    target_resolution: str = "",
 ) -> str:
     """Build the Validator's user prompt with full context.
 
@@ -99,6 +124,12 @@ def build_validator_user_prompt(
         action_type: The action type (tap, swipe, type, open_app, etc.).
         action_args: The action arguments (coordinates, text, etc.).
         previous_incidents: Rendered incident history, if any.
+        element_index: Rendered element list (centres are NORMALIZED 0-1000).
+        device_resolution: ``"1440x3120"`` — required for the model to convert
+            normalized centres to pixels and back.
+        target_resolution: Pre-computed, authoritative statement of where the
+            action will land. Removes the need for the model to do the
+            coordinate math that produced false "off-target" rejections.
     """
     args_str = json.dumps(action_args or {}, ensure_ascii=False)
 
@@ -133,6 +164,18 @@ def build_validator_user_prompt(
         f"Description: {proposed_action}",
     ])
 
+    coord_lines = [
+        "",
+        "## Coordinate Spaces (authoritative)",
+        f"- Device resolution: {device_resolution or 'unknown'} px",
+        "- Element `center=` values below are NORMALIZED 0-1000.",
+        "- Action coordinates are DEVICE PIXELS.",
+        "- Convert with: pixel = normalized / 1000 * device.",
+    ]
+    if target_resolution:
+        coord_lines.extend(["", "## Where this action lands", target_resolution])
+    parts.extend(coord_lines)
+
     if element_index:
         parts.extend([
             "",
@@ -164,6 +207,8 @@ def call_validator(
     ],
     previous_incidents: str = "",
     element_index: str = "",
+    device_resolution: str = "",
+    target_resolution: str = "",
 ) -> dict:
     """Call the Validator VLM to judge a proposed action.
 
@@ -185,6 +230,8 @@ def call_validator(
         action_args=action_args,
         previous_incidents=previous_incidents,
         element_index=element_index,
+        device_resolution=device_resolution,
+        target_resolution=target_resolution,
     )
 
     raw, finish_reason = vlm_caller(

@@ -383,6 +383,85 @@ def _advance_path(item, ladder, path_cursor: dict, path_steps: dict,
     return True
 
 
+def _describe_validator_target(action_type: str, action_args: dict, elements: list) -> str:
+    """Authoritative description of WHERE the action will land.
+
+    The Validator used to be asked "is the coordinate landing on the correct
+    element?" while being given element centres in NORMALIZED 0-1000 space and
+    action coordinates in DEVICE PIXELS. It resolved that ambiguity by inventing
+    a pixel number and comparing it with a normalized one, producing false
+    rejections of correct taps — e.g. rejecting pixel (644,1997) as "far below
+    the row centred at (447,640)", which on a 1440x3120 screen is the SAME point.
+
+    Two deterministic facts remove the ambiguity entirely:
+    - ``tap target=N`` always lands on element N's centre (the harness resolves
+      it), so its position cannot be wrong;
+    - an explicit pixel coordinate is pre-converted to normalized space here.
+    """
+    if action_type not in ("tap", "long_press"):
+        return "(not a positional action — no coordinate to judge)"
+
+    dev = _DEVICE_RESOLUTION
+
+    target = action_args.get("target")
+    if isinstance(target, int):
+        el = None
+        for e in elements or []:
+            if getattr(e, "index", None) == target:
+                el = e
+                break
+        if el is None:
+            return (
+                f"target={target} is NOT present in the current element index, so the "
+                "harness cannot resolve it and the tap will do nothing."
+            )
+        try:
+            nx, ny = el.normalized_center
+            nx, ny = round(nx), round(ny)
+        except Exception:
+            nx = ny = None
+        label = (getattr(el, "display_text", "") or "")[:40]
+        msg = (
+            f"target={target} resolves to element #{target} \"{label}\""
+            + (f", centre normalized ({nx},{ny})" if nx is not None else "")
+        )
+        if dev and nx is not None:
+            msg += f" = pixel ({round(nx / 1000 * dev[0])},{round(ny / 1000 * dev[1])})"
+        return (
+            msg
+            + ". The harness taps that exact centre, so the LANDING POINT IS CORRECT BY "
+            "CONSTRUCTION. Judge only whether this element is the right one for the "
+            "milestone; never reject it because of its position."
+        )
+
+    coord = action_args.get("coordinate")
+    if isinstance(coord, (list, tuple)) and len(coord) >= 2:
+        try:
+            x, y = float(coord[0]), float(coord[1])
+        except (TypeError, ValueError):
+            return "(unparseable coordinate)"
+        msg = f"tap coordinate = pixel ({int(x)},{int(y)})"
+        if dev:
+            msg += (
+                f" = normalized ({round(x / dev[0] * 1000)},{round(y / dev[1] * 1000)})"
+                f" on a {dev[0]}x{dev[1]} screen"
+            )
+        return (
+            msg
+            + ". Compare this against the element centres in the SAME (normalized) "
+            "space; a pixel value is never directly comparable to a normalized centre."
+        )
+
+    return "(no positional target or coordinate in this action)"
+
+
+def _device_resolution_text() -> str:
+    """``"1440x3120"`` for the Validator prompt, or ``""`` when unknown."""
+    if _DEVICE_RESOLUTION:
+        return f"{_DEVICE_RESOLUTION[0]}x{_DEVICE_RESOLUTION[1]}"
+    return ""
+
+
 def _call_checker_with_probes(
     instruction: str,
     plan_text: str,
@@ -2184,6 +2263,10 @@ def _run_plan_guided_fallback(
             vlm_caller=_call_vlm_simple,
             previous_incidents=incident_context,
             element_index=validator_elements_text,
+            device_resolution=_device_resolution_text(),
+            target_resolution=_describe_validator_target(
+                action_type, action_args, elements
+            ),
         )
         _log(f"[timing] step {step} validator   → {time.time() - t_vali:.2f}s  (total {time.time() - t_step:.2f}s)")
 
