@@ -2447,6 +2447,165 @@ def _encode_image(image_path: str) -> tuple[str, int, int]:
         return b64, 1080, 2400
 
 
+def _encode_image_payload(image_path: str) -> tuple[str, str, int, int]:
+    """Read + downscale a screenshot, returning (base64, mime, norm_w, norm_h).
+
+    Encoding choice matters more than it looks: a 2000 px PNG screenshot
+    base64-encodes to several MB, and the whole body is uploaded in ONE request
+    before the model starts working. On a weak uplink that upload alone can take
+    minutes — which is exactly the shape of a "365 s / 484 s single call that
+    still reports finish=stop".
+
+    So the default is JPEG (``image_format``/``image_quality`` in config):
+    5-10× smaller with no measurable effect on UI grounding accuracy.
+    """
+    cfg = load_skill_config()
+    fmt = str(cfg.get("image_format") or "jpeg").strip().lower()
+    try:
+        quality = int(cfg.get("image_quality") or 85)
+    except (TypeError, ValueError):
+        quality = 85
+    quality = max(30, min(quality, 95))
+    try:
+        max_dim = int(cfg.get("image_max_dim") or NORM_MAX_DIM)
+    except (TypeError, ValueError):
+        max_dim = NORM_MAX_DIM
+
+    try:
+        from PIL import Image
+        from io import BytesIO
+
+        img = Image.open(image_path)
+        orig_w, orig_h = img.size
+        scale = max_dim / max(orig_w, orig_h)
+        if scale < 1.0:
+            img = img.resize(
+                (max(1, round(orig_w * scale)), max(1, round(orig_h * scale))),
+                Image.LANCZOS,
+            )
+
+        buf = BytesIO()
+        if fmt in ("jpeg", "jpg"):
+            img.convert("RGB").save(buf, format="JPEG", quality=quality, optimize=True)
+            mime = "image/jpeg"
+        else:
+            img.convert("RGB").save(buf, format="PNG", optimize=True)
+            mime = "image/png"
+        raw_bytes = buf.getvalue()
+        b64 = base64.b64encode(raw_bytes).decode("ascii")
+        _log(
+            f"[vlm] image {mime} q={quality} {len(raw_bytes)/1024:.0f} KB "
+            f"→ base64 {len(b64)/1024:.0f} KB"
+        )
+        # Always report 1000×1000 as the coordinate space — the canonical
+        # convention that VLM mobile agents are trained on (Artemis).
+        return b64, mime, 1000, 1000
+    except ImportError:
+        with open(image_path, "rb") as f:
+            raw_bytes = f.read()
+        b64 = base64.b64encode(raw_bytes).decode("ascii")
+        mime = "image/jpeg" if image_path.lower().endswith((".jpg", ".jpeg")) else "image/png"
+        _log(f"[vlm] image (no PIL) {mime} → base64 {len(b64)/1024:.0f} KB")
+        if _DEVICE_RESOLUTION:
+            return b64, mime, _DEVICE_RESOLUTION[0], _DEVICE_RESOLUTION[1]
+        return b64, mime, 1080, 2400
+
+
+def _encode_image(image_path: str) -> tuple[str, int, int]:
+    """Back-compat wrapper → (base64, norm_w, norm_h). See _encode_image_payload."""
+    b64, _mime, norm_w, norm_h = _encode_image_payload(image_path)
+    return b64, norm_w, norm_h
+
+
+def _post_json_with_deadline(
+    url: str,
+    payload: bytes,
+    headers: dict,
+    deadline_s: float,
+    connect_timeout: float = 20.0,
+) -> tuple[int, str, float, float]:
+    """POST JSON and read the whole body under a HARD wall-clock deadline.
+
+    Why not ``urllib.request.urlopen(req, timeout=N)``: that timeout is applied
+    per socket operation, so a server that trickles bytes (or holds the response
+    queued) resets the timer on every successful ``recv``. That is how a call
+    with ``timeout=120`` ran for 484 s. Here the socket timeout is re-armed from
+    the *remaining* budget on every chunk, so the deadline is a real ceiling.
+
+    Returns ``(status, body_text, first_byte_s, elapsed_s)`` — the split tells an
+    upload/queue problem (late first byte) apart from slow generation (early
+    first byte, late completion).
+    """
+    import http.client
+    import socket as _socket
+    import ssl
+    from urllib.parse import urlsplit
+
+    start = time.monotonic()
+    deadline = start + max(1.0, float(deadline_s))
+
+    parts = urlsplit(url)
+    host = parts.hostname or ""
+    port = parts.port or (443 if parts.scheme == "https" else 80)
+    path = parts.path or "/"
+    if parts.query:
+        path = f"{path}?{parts.query}"
+
+    budget = max(1.0, deadline - start)
+    sock_timeout = max(1.0, min(connect_timeout, budget))
+    if parts.scheme == "https":
+        conn = http.client.HTTPSConnection(
+            host, port, timeout=sock_timeout, context=ssl.create_default_context()
+        )
+    else:
+        conn = http.client.HTTPConnection(host, port, timeout=sock_timeout)
+
+    # How long a single blocking read may sit before we re-check the deadline.
+    # A non-streaming model can be legitimately silent for a long time, so a
+    # read timeout is NOT treated as failure — it just returns control so the
+    # cumulative deadline can be evaluated.
+    tick = 2.0
+    try:
+        conn.request("POST", path, body=payload, headers=headers)
+        sock = conn.sock
+        resp = conn.getresponse()
+        status = resp.status
+        first_byte = time.monotonic() - start
+
+        chunks: list[bytes] = []
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError(
+                    f"deadline {deadline_s:.0f}s exceeded after {time.monotonic() - start:.0f}s "
+                    f"(first byte at {first_byte:.1f}s, "
+                    f"{sum(len(c) for c in chunks)} bytes received)"
+                )
+            if sock is not None:
+                try:
+                    sock.settimeout(max(0.5, min(remaining, tick)))
+                except OSError:
+                    pass
+            try:
+                # read1 returns whatever is available instead of blocking until
+                # the full n bytes arrive — that is what lets the loop re-check
+                # the deadline on a trickling response.
+                chunk = resp.read1(65536)
+            except _socket.timeout:
+                continue
+            if not chunk:
+                break
+            chunks.append(chunk)
+
+        body = b"".join(chunks).decode("utf-8", "replace")
+        return status, body, first_byte, time.monotonic() - start
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
 def _call_vlm(system_prompt: str, user_prompt: str, image_path: str,
               max_tokens: int = 2048,
               timeout: int | None = None,
@@ -2474,9 +2633,9 @@ def _call_vlm(system_prompt: str, user_prompt: str, image_path: str,
     actual_retries = retries if retries is not None else cfg.get("vlm_retries", 2)
     thinking_on = bool(cfg.get("thinking")) if thinking is None else bool(thinking)
 
-    b64, norm_w, norm_h = _encode_image(image_path)
+    b64, mime, norm_w, norm_h = _encode_image_payload(image_path)
     t_encode = time.time()
-    data_uri = f"data:image/png;base64,{b64}"
+    data_uri = f"data:{mime};base64,{b64}"
     _trace(f"[vlm] image encode: {time.time() - t_encode:.2f}s  ({len(b64)} chars base64)")
 
     body = {
@@ -2510,69 +2669,80 @@ def _call_vlm(system_prompt: str, user_prompt: str, image_path: str,
     for attempt in range(actual_retries + 1):
         _log(f"[vlm] call attempt {attempt + 1}/{actual_retries + 1} ...")
         try:
-            req = urllib.request.Request(
-                url,
-                data=json.dumps(body).encode("utf-8"),
-                headers=_build_openai_headers(cfg, api_key),
-                method="POST",
-            )
+            payload = json.dumps(body).encode("utf-8")
             t_call = time.time()
-            with urllib.request.urlopen(req, timeout=actual_timeout) as resp:
-                result = json.loads(resp.read().decode("utf-8"))
-                if not result.get("choices"):
-                    raise ValueError("no choices in VLM response")
-                choice = result["choices"][0]
-                message = choice.get("message") or {}
-                finish = choice.get("finish_reason", "unknown")
-                content = message.get("content")
-                # Thinking models (glm / qwen / deepseek-reasoner) occasionally
-                # return content=null and put the answer in reasoning_content
-                # only — crashing on len(None) otherwise.  Some gateways use a
-                # plain ``reasoning`` key instead, so try it too.
-                if content is None:
-                    content = (
-                        message.get("reasoning_content")
-                        or message.get("reasoning")
-                        or ""
-                    )
-                content = str(content)
-                if not content.strip():
-                    # Common with ``thinking`` enabled + a tight max_tokens:
-                    # the model burns the whole budget on reasoning and hits
-                    # finish_reason="length" with no final answer.  Signal the
-                    # caller to retry with thinking disabled and a larger token
-                    # budget for the next attempt.
-                    raise ValueError(
-                        f"empty assistant content (finish_reason={finish})"
-                    )
-                if (
-                    finish == "length"
-                    and body.get("max_tokens", max_tokens) < 4096
-                ):
-                    # A reasoning model can hit the token ceiling before it
-                    # produces the final answer. Retry once with a larger budget
-                    # instead of repeating the same truncated output.
-                    raise ValueError(
-                        f"length-truncated thinking response (finish_reason=length)"
-                    )
-                if (
-                    finish == "length"
-                    and thinking_on
-                    and body.get("thinking") == {"type": "enabled"}
-                ):
-                    # Truncation on a thinking model usually means the budget
-                    # went to hidden reasoning instead of the JSON answer. Drop
-                    # thinking and retry for a parseable response.
-                    raise ValueError(
-                        f"length-truncated thinking response (finish_reason=length)"
-                    )
-                elapsed = time.time() - t_call
-                _trace(f"[vlm] API round-trip: {elapsed:.2f}s  model={model}  tokens={len(content)}")
-                _log(f"[vlm] attempt {attempt + 1} ok in {elapsed:.1f}s (finish={finish})")
-                return content, finish, norm_w, norm_h
+            _log(f"[vlm] upload {len(payload)/1024:.0f} KB (deadline {actual_timeout}s) ...")
+            status, text, first_byte, resp_elapsed = _post_json_with_deadline(
+                url,
+                payload,
+                _build_openai_headers(cfg, api_key),
+                deadline_s=float(actual_timeout),
+            )
+            _log(
+                f"[vlm] http {status} — first byte {first_byte:.1f}s, "
+                f"complete {resp_elapsed:.1f}s (deadline {actual_timeout}s)"
+            )
+            if status >= 400:
+                raise ValueError(f"HTTP {status}: {text[:200]}")
+            result = json.loads(text)
+            if not result.get("choices"):
+                raise ValueError("no choices in VLM response")
+            choice = result["choices"][0]
+            message = choice.get("message") or {}
+            finish = choice.get("finish_reason", "unknown")
+            content = message.get("content")
+            # Thinking models (glm / qwen / deepseek-reasoner) occasionally
+            # return content=null and put the answer in reasoning_content
+            # only — crashing on len(None) otherwise.  Some gateways use a
+            # plain ``reasoning`` key instead, so try it too.
+            if content is None:
+                content = (
+                    message.get("reasoning_content")
+                    or message.get("reasoning")
+                    or ""
+                )
+            content = str(content)
+            if not content.strip():
+                # Common with ``thinking`` enabled + a tight max_tokens:
+                # the model burns the whole budget on reasoning and hits
+                # finish_reason="length" with no final answer.  Signal the
+                # caller to retry with thinking disabled and a larger token
+                # budget for the next attempt.
+                raise ValueError(
+                    f"empty assistant content (finish_reason={finish})"
+                )
+            if finish == "length" and body.get("max_tokens", max_tokens) < 4096:
+                # A reasoning model can hit the token ceiling before it
+                # produces the final answer. Retry once with a larger budget
+                # instead of repeating the same truncated output.
+                raise ValueError(
+                    f"length-truncated thinking response (finish_reason=length)"
+                )
+            if (
+                finish == "length"
+                and thinking_on
+                and body.get("thinking") == {"type": "enabled"}
+            ):
+                # Truncation on a thinking model usually means the budget
+                # went to hidden reasoning instead of the JSON answer. Drop
+                # thinking and retry for a parseable response.
+                raise ValueError(
+                    f"length-truncated thinking response (finish_reason=length)"
+                )
+            _trace(f"[vlm] API round-trip: {resp_elapsed:.2f}s  model={model}  tokens={len(content)}")
+            _log(f"[vlm] attempt {attempt + 1} ok in {resp_elapsed:.1f}s (finish={finish})")
+            return content, finish, norm_w, norm_h
         except (urllib.error.URLError, TimeoutError, ConnectionResetError,
                 OSError, ValueError) as e:
             last_error = str(e)
+            # A deadline overrun is not transient: the gateway is slow or the
+            # uplink is saturated. Retrying the identical (multi-MB) upload just
+            # burns the caller's wall-clock budget again, so fail fast and let
+            # the caller decide (planner budget / operator back-action).
+            if isinstance(e, TimeoutError) and "deadline" in last_error.lower():
+                _log(f"[vlm] DEADLINE hit, not retrying: {last_error[:160]}")
+                _trace(f"[vlm] deadline overrun: {last_error}")
+                return None, "error", 0, 0
             # Retry-once-with-thinking-disabled: when a thinking model returns
             # empty OR length-truncated content, resending the identical body
             # just reproduces it. Drop the thinking envelope so the budget goes
@@ -2900,18 +3070,24 @@ def _call_text_llm(system_prompt: str, user_prompt: str,
     for attempt in range(actual_retries + 1):
         _log(f"[text_llm] call attempt {attempt + 1}/{actual_retries + 1} ...")
         try:
-            req = urllib.request.Request(
+            payload = json.dumps(body).encode("utf-8")
+            status, text, first_byte, resp_elapsed = _post_json_with_deadline(
                 url,
-                data=json.dumps(body).encode("utf-8"),
-                headers=_build_openai_headers(cfg, api_key),
-                method="POST",
+                payload,
+                _build_openai_headers(cfg, api_key),
+                deadline_s=float(actual_timeout),
             )
-            with urllib.request.urlopen(req, timeout=actual_timeout) as resp:
-                result = json.loads(resp.read().decode("utf-8"))
-                choice = result["choices"][0]
-                return choice["message"]["content"], choice.get("finish_reason", "unknown")
+            _log(
+                f"[text_llm] http {status} — first byte {first_byte:.1f}s, "
+                f"complete {resp_elapsed:.1f}s (deadline {actual_timeout}s)"
+            )
+            if status >= 400:
+                raise ValueError(f"HTTP {status}: {text[:200]}")
+            result = json.loads(text)
+            choice = result["choices"][0]
+            return choice["message"]["content"], choice.get("finish_reason", "unknown")
         except (urllib.error.URLError, TimeoutError, ConnectionResetError,
-                OSError) as e:
+                OSError, ValueError) as e:
             last_error = str(e)
             # NOTE: must use ``actual_retries`` — ``retries`` is None when the
             # caller relies on the config default, and ``None < 0`` raises
