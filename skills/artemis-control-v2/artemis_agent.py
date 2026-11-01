@@ -565,9 +565,10 @@ Respond with a single JSON object. No other text.
 Available actions:
   {"action": "open_app", "app_name": "微信"}              — launch an app by name
   {"action": "tap", "target": 3}                          — tap element N by INDEX (REQUIRED if element is indexed)
-  {"action": "tap", "coordinate": [x, y]}                 — tap at pixel (only when element NOT in list)
+  {"action": "tap", "coordinate": [x, y]}                 — tap at 0-1000 coords (only when element NOT in list)
   {"action": "long_press", "target": 3}                   — long-press element N
   {"action": "swipe", "coordinate1": [x1,y1], "coordinate2": [x2,y2], "duration": 300}
+                                                          — BOTH endpoints in 0-1000, must differ by >=100 (never the same point)
   {"action": "type", "text": "hello"}                     — type text into focused field
   {"action": "system_button", "button": "back"}           — back / home / enter / recent_apps
   {"action": "system_button", "button": "volume_up"}      — raise volume (opens the volume panel)
@@ -680,7 +681,7 @@ Android device operator. Output ONLY a JSON object per turn.
 
 ## Actions
 {"action":"tap","target":3}                          — tap element N by INDEX (REQUIRED if element is indexed)
-{"action":"tap","coordinate":[x,y]}                    — tap at pixel (only when element NOT in list)
+{"action":"tap","coordinate":[x,y]}                    — tap at 0-1000 coords (only when element NOT in list)
 {"action":"long_press","target":3}                     — long-press element N
 {"action":"swipe","coordinate1":[x1,y1],"coordinate2":[x2,y2],"duration":300}
 {"action":"type","text":"text to type"}
@@ -2253,6 +2254,32 @@ def _run_plan_guided_fallback(
                 for el in order_elements_for_vlm(elements, 80)
             )
 
+        # Deterministic gesture check BEFORE spending a Validator call: a swipe
+        # whose endpoints collapsed onto the same point cannot do anything, and
+        # the model needs to be told why (coordinate space), not just "invalid".
+        gesture_problem = _degenerate_gesture_reason(action_type, action_args)
+        if gesture_problem:
+            _log(f"[gesture] skipped {action_type}: {gesture_problem}")
+            incident_tracker.add_incident(
+                category="invalid_gesture",
+                reason=gesture_problem,
+                action=action_type, step=step, action_args=action_args,
+                kind="safety_net",
+            )
+            _emit_incident(step, "invalid_gesture", gesture_problem, action_type,
+                           incident_tracker.consecutive_failures)
+            # A rejected gesture still burns this path's step budget, otherwise a
+            # path that only produces bad swipes never falls through to the next.
+            if cur_item is not None:
+                path_steps[cur_item.key] = path_steps.get(cur_item.key, 0) + 1
+            failure_hint = (
+                "YOUR LAST SWIPE WAS REJECTED BEFORE EXECUTION: " + gesture_problem
+                + " Both endpoints must differ by at least "
+                f"{MIN_SWIPE_TRAVEL}px and stay inside the screen."
+            )
+            _maybe_diagnose()
+            continue
+
         validation = call_validator(
             instruction=instruction,
             plan_text=plan_text,
@@ -2276,6 +2303,13 @@ def _run_plan_guided_fallback(
         if verdict == "reject":
             _log(f"Validator REJECTED: {validation.get('reason', '')[:120]}")
             validator_stats["rejected"] += 1
+            # Exhaust this action's replay budget: a rejected gesture/tap must
+            # not be replayed by the memory fastpath on the next step. Swipe
+            # stays a cacheable action — only THIS signature is retired.
+            try:
+                mem.mark_ineffective(action_type, action_args)
+            except Exception as e:
+                _debug(f"memory mark_ineffective error: {e}")
             incident_tracker.add_incident(
                 category="validator_rejected",
                 reason=validation.get("reason", "Validator rejected the action"),
@@ -3259,6 +3293,67 @@ def _call_vlm_simple(system_prompt: str, user_prompt: str, image_path: str,
     return raw, reason
 
 
+def _coerce_coord(value, axis: int) -> int:
+    """Map one VLM coordinate to device pixels, tolerating BOTH spaces.
+
+    The model is told to answer in 0-1000, but in practice it mixes spaces: for
+    ``swipe`` it sometimes emits device pixels (720, 2340 on a 1440x3120 screen —
+    exactly centre/bottom, i.e. a perfectly good upward scroll). Blindly treating
+    those as 0-1000 pushes them through ``n/1000*dev`` and clamps BOTH endpoints
+    onto the same edge (3119), collapsing the gesture into a no-op.
+
+    Disambiguation (a value is unambiguous outside 0..1000):
+      0..1000        → normalized  → scale
+      1001..dev      → already device pixels → use as-is
+      > dev          → out of range → clamp
+
+    Values that are ambiguous (e.g. 827, valid in both readings) are treated as
+    normalized, which is the documented contract.
+    """
+    dev = _DEVICE_RESOLUTION[axis] if _DEVICE_RESOLUTION else None
+    try:
+        v = int(round(float(value)))
+    except (TypeError, ValueError):
+        return 0
+    if not dev:
+        return max(0, v)
+    if 0 <= v <= 1000:
+        return max(0, min(round(v / 1000 * dev), dev - 1))
+    if v <= dev:
+        return v
+    return max(0, min(v, dev - 1))
+
+
+#: A swipe shorter than this (device px, Manhattan) does nothing on Android.
+MIN_SWIPE_TRAVEL = 30
+
+
+def _degenerate_gesture_reason(action_type: str, action_args: dict) -> str:
+    """Why a gesture is a no-op, or "" when the geometry is usable.
+
+    Catches the failure mode produced by coordinate-space confusion: both
+    endpoints clamp to the same screen edge, so the swipe has zero travel. This
+    is checked BEFORE the Validator so no VLM call is spent on a gesture that
+    cannot possibly do anything.
+    """
+    if action_type != "swipe":
+        return ""
+    c1 = action_args.get("coordinate1") or [0, 0]
+    c2 = action_args.get("coordinate2") or [0, 0]
+    try:
+        dx = abs(int(c2[0]) - int(c1[0]))
+        dy = abs(int(c2[1]) - int(c1[1]))
+    except (TypeError, ValueError, IndexError):
+        return "swipe coordinates are not numeric"
+    if dx + dy < MIN_SWIPE_TRAVEL:
+        return (
+            f"zero-travel swipe: {list(c1)}→{list(c2)} moves {dx + dy}px "
+            f"(minimum {MIN_SWIPE_TRAVEL}px). Both endpoints were probably "
+            "clamped to the same screen edge because a coordinate exceeded 1000."
+        )
+    return ""
+
+
 def _scale_coordinate(vlm_x: int, vlm_y: int,
                       norm_w: int = 1000, norm_h: int = 1000) -> tuple[int, int]:
     """Scale a VLM coordinate (0-1000 canonical space) to device pixels.
@@ -3715,7 +3810,9 @@ def _decide_action_fallback(
     )
 
     user_prompt += (
-        "\n\nCOORDINATE SPACE: When using coordinate (fallback only), output [x,y] in 0-1000."
+        "\n\nCOORDINATE SPACE — applies to EVERY coordinate you emit, including"
+        " swipe coordinate1/coordinate2 (NOT device pixels, NOT the screenshot's pixel size):"
+        " output [x,y] in 0-1000."
         " x=0..1000 maps LEFT→RIGHT across the width; y=0..1000 maps TOP→BOTTOM down the"
         " full height (y=500 is the vertical middle, even on tall portrait screens)."
     )
@@ -3789,8 +3886,9 @@ def _decide_action_fallback(
             return ("tap", {"coordinate": [x, y], "target": target_idx}, desc)
         # Fallback to raw coordinate
         coord = parsed.get("coordinate", [0, 0])
-        x, y = int(coord[0]), int(coord[1])
-        x, y = _scale_coordinate(x, y, norm_w, norm_h)
+        # _coerce_coord tolerates a model that answered in device pixels instead
+        # of the documented 0-1000 space.
+        x, y = _coerce_coord(coord[0], 0), _coerce_coord(coord[1], 1)
         desc = target_desc if target_desc else f"tap({x},{y})"
         return ("tap", {"coordinate": [x, y]}, desc)
 
@@ -3801,8 +3899,9 @@ def _decide_action_fallback(
             desc = _desc_with_idx("LONG_PRESS", target_idx, target_desc)
             return ("long_press", {"coordinate": [x, y], "target": target_idx}, desc)
         coord = parsed.get("coordinate", [0, 0])
-        x, y = int(coord[0]), int(coord[1])
-        x, y = _scale_coordinate(x, y, norm_w, norm_h)
+        # _coerce_coord tolerates a model that answered in device pixels instead
+        # of the documented 0-1000 space.
+        x, y = _coerce_coord(coord[0], 0), _coerce_coord(coord[1], 1)
         desc = target_desc if target_desc else f"long_press({x},{y})"
         return ("long_press", {"coordinate": [x, y]}, desc)
 
@@ -3810,9 +3909,13 @@ def _decide_action_fallback(
         c1 = parsed.get("coordinate1", [0, 0])
         c2 = parsed.get("coordinate2", [0, 0])
         dur = parsed.get("duration", 300)
-        x1, y1 = _scale_coordinate(int(c1[0]), int(c1[1]), norm_w, norm_h)
-        x2, y2 = _scale_coordinate(int(c2[0]), int(c2[1]), norm_w, norm_h)
+        # _coerce_coord (not _scale_coordinate): the model mixes 0-1000 and
+        # device-pixel space for swipes, and clamping a mis-read value collapses
+        # the gesture into a zero-travel no-op.
+        x1, y1 = _coerce_coord(c1[0], 0), _coerce_coord(c1[1], 1)
+        x2, y2 = _coerce_coord(c2[0], 0), _coerce_coord(c2[1], 1)
         desc = target_desc if target_desc else f"swipe(({x1},{y1})→({x2},{y2}))"
+        _log(f"[coord] swipe {list(c1)}→{list(c2)} ⇒ DEV ({x1},{y1})→({x2},{y2})")
         return ("swipe", {"coordinate1": [x1, y1], "coordinate2": [x2, y2], "duration": dur}, desc)
 
     elif action == "type":
@@ -4006,7 +4109,9 @@ def _decide_action_plan_guided(
     )
 
     user_prompt += (
-        "\n\nCOORDINATE SPACE: When using coordinate (fallback only), output [x,y] in 0-1000."
+        "\n\nCOORDINATE SPACE — applies to EVERY coordinate you emit, including"
+        " swipe coordinate1/coordinate2 (NOT device pixels, NOT the screenshot's pixel size):"
+        " output [x,y] in 0-1000."
         " x=0..1000 maps LEFT→RIGHT across the width; y=0..1000 maps TOP→BOTTOM down the"
         " full height (y=500 is the vertical middle, even on tall portrait screens)."
     )
@@ -4074,8 +4179,9 @@ def _decide_action_plan_guided(
             desc = _desc_with_idx("TAP", target_idx, target_desc)
             return ("tap", {"coordinate": [x, y], "target": target_idx}, desc, plan_updates, notes_updates)
         coord = parsed.get("coordinate", [0, 0])
-        x, y = int(coord[0]), int(coord[1])
-        x, y = _scale_coordinate(x, y, norm_w, norm_h)
+        # _coerce_coord tolerates a model that answered in device pixels instead
+        # of the documented 0-1000 space.
+        x, y = _coerce_coord(coord[0], 0), _coerce_coord(coord[1], 1)
         desc = target_desc if target_desc else f"tap({x},{y})"
         return ("tap", {"coordinate": [x, y]}, desc, plan_updates, notes_updates)
 
@@ -4086,8 +4192,9 @@ def _decide_action_plan_guided(
             desc = _desc_with_idx("LONG_PRESS", target_idx, target_desc)
             return ("long_press", {"coordinate": [x, y], "target": target_idx}, desc, plan_updates, notes_updates)
         coord = parsed.get("coordinate", [0, 0])
-        x, y = int(coord[0]), int(coord[1])
-        x, y = _scale_coordinate(x, y, norm_w, norm_h)
+        # _coerce_coord tolerates a model that answered in device pixels instead
+        # of the documented 0-1000 space.
+        x, y = _coerce_coord(coord[0], 0), _coerce_coord(coord[1], 1)
         desc = target_desc if target_desc else f"long_press({x},{y})"
         return ("long_press", {"coordinate": [x, y]}, desc, plan_updates, notes_updates)
 
@@ -4095,10 +4202,15 @@ def _decide_action_plan_guided(
         c1 = parsed.get("coordinate1", [0, 0])
         c2 = parsed.get("coordinate2", [0, 0])
         dur = parsed.get("duration", 300)
-        x1, y1 = _scale_coordinate(int(c1[0]), int(c1[1]), norm_w, norm_h)
-        x2, y2 = _scale_coordinate(int(c2[0]), int(c2[1]), norm_w, norm_h)
+        # _coerce_coord (not _scale_coordinate): the model mixes 0-1000 and
+        # device-pixel space for swipes, and clamping a mis-read value collapses
+        # the gesture into a zero-travel no-op.
+        x1, y1 = _coerce_coord(c1[0], 0), _coerce_coord(c1[1], 1)
+        x2, y2 = _coerce_coord(c2[0], 0), _coerce_coord(c2[1], 1)
         desc = target_desc if target_desc else f"swipe(({x1},{y1})→({x2},{y2}))"
-        return ("swipe", {"coordinate1": [x1, y1], "coordinate2": [x2, y2], "duration": dur}, desc, plan_updates, notes_updates)
+        _log(f"[coord] swipe {list(c1)}→{list(c2)} ⇒ DEV ({x1},{y1})→({x2},{y2})")
+        return ("swipe", {"coordinate1": [x1, y1], "coordinate2": [x2, y2],
+                          "duration": dur}, desc, plan_updates, notes_updates)
 
     elif action == "type":
         text = parsed.get("text", "")
