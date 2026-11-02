@@ -550,6 +550,160 @@
         "must_contain_probe": true,
         "min_paths": 2
       }
+    },
+    {
+      "id": "meituan-search",
+      "intent": "用美团搜索商家或点外卖",
+      "aliases": ["美团", "点外卖", "美团搜索", "美团外卖", "meituan"],
+      "device_bucket": "default",
+      "status": "unverified",
+      "verified_on": "",
+      "goal": "Meituan app in the foreground showing results for the requested merchant/food.",
+      "acceptance": "美团已在前台（com.sankuai.meituan）",
+      "probes": ["foreground"],
+      "plan": "- [ ] 打开美团并搜索 {商家或美食}\n  - verify: 美团已在前台 [probe: foreground][app: com.sankuai.meituan]\n  - path 1 [cost=4 kind=primary]: open_app 美团 → 顶部搜索框输入 {商家或美食} → 点搜索 → 等结果列表\n  - path 2 [cost=5 kind=alternative]: open_app 美团 → 首页点搜索框 → 输入 {商家或美食} → 回车",
+      "pitfalls": [
+        "{商家或美食} 由 VLM 从用户指令里填。",
+        "美团启动有定位权限弹窗和红包弹窗——先关掉再点搜索框。",
+        "确认进入结果列表即达成；不用纠结筛选/排序条。"
+      ],
+      "guardrails": {
+        "no_path_first_action_matching": [],
+        "must_contain_probe": true,
+        "min_paths": 2
+      }
+    },
+    {
+      "id": "xiaohongshu-search",
+      "intent": "用小红书搜索指定内容",
+      "aliases": ["小红书", "小红薯", "小红书搜索", "小hong书", "xiaohongshu", "XHS"],
+      "device_bucket": "default",
+      "status": "unverified",
+      "verified_on": "",
+      "goal": "Xiaohongshu app in the foreground showing results for the requested query.",
+      "acceptance": "小红书已在前台（com.xingin.xhs）",
+      "probes": ["foreground"],
+      "plan": "- [ ] 打开小红书并搜索 {关键词}\n  - verify: 小红书已在前台 [probe: foreground][app: com.xingin.xhs]\n  - path 1 [cost=4 kind=primary]: open_app 小红书 → 顶部/底部搜索图标 → 输入 {关键词} → 点搜索\n  - path 2 [cost=5 kind=alternative]: open_app 小红书 → 点搜索框 → 输入 {关键词} → 选联想词",
+      "pitfalls": [
+        "{关键词} 由 VLM 从用户指令里填。",
+        "小红书启动有开屏广告/新用户引导——先关掉。",
+        "搜索入口常见在顶部放大镜或底部「搜索」Tab，逐屏找一次。"
+      ],
+      "guardrails": {
+        "no_path_first_action_matching": [],
+        "must_contain_probe": true,
+        "min_paths": 2
+      }
+    },
+    {
+      "id": "pdd-search",
+      "intent": "用拼多多搜索指定商品",
+      "aliases": ["拼多多", "拼夕夕", "拼多多搜索", "pinduoduo", "pdd"],
+      "device_bucket": "default",
+      "status": "unverified",
+      "verified_on": "",
+      "goal": "Pinduoduo app in the foreground showing results for the requested product.",
+      "acceptance": "拼多多已在前台（com.xunmeng.pinduoduo）",
+      "probes": ["foreground"],
+      "plan": "- [ ] 打开拼多多并搜索 {商品}\n  - verify: 拼多多已在前台 [probe: foreground][app: com.xunmeng.pinduoduo]\n  - path 1 [cost=4 kind=primary]: open_app 拼多多 → 顶部搜索框输入 {商品} → 点搜索 → 等结果\n  - path 2 [cost=5 kind=alternative]: open_app 拼多多 → 点搜索框 → 输入 {商品} → 回车",
+      "pitfalls": [
+        "{商品} 由 VLM 从用户指令里填。",
+        "拼多多有开屏广告和领现金弹窗——先关掉再搜。",
+        "确认进入搜索结果列表即达成，不点任何「拼单/购买」按钮。"
+      ],
+      "guardrails": {
+        "no_path_first_action_matching": [],
+        "must_contain_probe": true,
+        "min_paths": 2
+      }
+    },
+    {
+      "id": "bilibili-search",
+      "intent": "用哔哩哔哩搜索指定视频",
+      "aliases": ["哔哩哔哩", "b站", "bilibili", "B站", "搜索视频"],
+      "device_bucket": "default",
+      "status": "unverified",
+      "verified_on": "",
+      "goal": "Bilibili app in the foreground showing results for the requested video query.",
+      "acceptance": "哔哩哔哩已在前台（tv.danmaku.bili）",
+      "probes": ["foreground"],
+      "plan": "- [ ] 打开哔哩哔哩并搜索 {关键词}\n  - verify: 哔哩哔哩已在前台 [probe: foreground][app: tv.danmaku.bili]\n  - path 1 [cost=4 kind=primary]: open_app 哔哩哔哩 → 顶部搜索框输入 {关键词} → 点搜索 → 等结果\n  - path 2 [cost=5 kind=alternative]: open_app 哔哩哔哩 → 点搜索入口 → 输入 {关键词} → 选联想词",
+      "pitfalls": [
+        "{关键词} 由 VLM 从用户指令里填。",
+        "B站有开屏广告/青少年模式弹窗——先关掉。",
+        "确认进入搜索结果列表即达成，不点进具体视频也算完成搜索任务。"
+      ],
+      "guardrails": {
+        "no_path_first_action_matching": [],
+        "must_contain_probe": true,
+        "min_paths": 2
+      }
+    },
+    {
+      "id": "weibo-search",
+      "intent": "用微博搜索指定内容",
+      "aliases": ["微博", "新浪微博", "微博搜索", "weibo", "sina weibo"],
+      "device_bucket": "default",
+      "status": "unverified",
+      "verified_on": "",
+      "goal": "Weibo app in the foreground showing results for the requested query.",
+      "acceptance": "微博已在前台（com.sina.weibo）",
+      "probes": ["foreground"],
+      "plan": "- [ ] 打开微博并搜索 {关键词}\n  - verify: 微博已在前台 [probe: foreground][app: com.sina.weibo]\n  - path 1 [cost=4 kind=primary]: open_app 微博 → 顶部/发现页搜索框输入 {关键词} → 点搜索\n  - path 2 [cost=5 kind=alternative]: open_app 微博 → 点搜索图标 → 输入 {关键词} → 选热词",
+      "pitfalls": [
+        "{关键词} 由 VLM 从用户指令里填。",
+        "微博搜索入口在首页顶部或「发现」Tab，登录弹窗先关掉。",
+        "确认进入搜索结果列表即达成。"
+      ],
+      "guardrails": {
+        "no_path_first_action_matching": [],
+        "must_contain_probe": true,
+        "min_paths": 2
+      }
+    },
+    {
+      "id": "kuaishou-search",
+      "intent": "用快手搜索指定内容",
+      "aliases": ["快手", "快手搜索", "kuaishou", "kwai"],
+      "device_bucket": "default",
+      "status": "unverified",
+      "verified_on": "",
+      "goal": "Kuaishou app in the foreground showing results for the requested query.",
+      "acceptance": "快手已在前台（com.smile.gifmaker）",
+      "probes": ["foreground"],
+      "plan": "- [ ] 打开快手并搜索 {关键词}\n  - verify: 快手已在前台 [probe: foreground][app: com.smile.gifmaker]\n  - path 1 [cost=4 kind=primary]: open_app 快手 → 顶部搜索图标 → 输入 {关键词} → 点搜索\n  - path 2 [cost=5 kind=alternative]: open_app 快手 → 点搜索入口 → 输入 {关键词} → 选联想词",
+      "pitfalls": [
+        "{关键词} 由 VLM 从用户指令里填。",
+        "快手启动有开屏广告/青少年模式弹窗——先关掉。",
+        "搜索入口是顶部放大镜，进入结果列表即达成。"
+      ],
+      "guardrails": {
+        "no_path_first_action_matching": [],
+        "must_contain_probe": true,
+        "min_paths": 2
+      }
+    },
+    {
+      "id": "iqiyi-search",
+      "intent": "用爱奇艺搜索指定影视",
+      "aliases": ["爱奇艺", "爱奇艺搜索", "iqiyi", "搜索影视"],
+      "device_bucket": "default",
+      "status": "unverified",
+      "verified_on": "",
+      "goal": "iQiyi app in the foreground showing results for the requested title.",
+      "acceptance": "爱奇艺已在前台（com.qiyi.video）",
+      "probes": ["foreground"],
+      "plan": "- [ ] 打开爱奇艺并搜索 {影视名称}\n  - verify: 爱奇艺已在前台 [probe: foreground][app: com.qiyi.video]\n  - path 1 [cost=4 kind=primary]: open_app 爱奇艺 → 顶部搜索框输入 {影视名称} → 点搜索 → 等结果\n  - path 2 [cost=5 kind=alternative]: open_app 爱奇艺 → 点搜索入口 → 输入 {影视名称} → 回车",
+      "pitfalls": [
+        "{影视名称} 由 VLM 从用户指令里填。",
+        "爱奇艺有开屏广告和会员弹窗——先关掉再搜。",
+        "确认进入搜索结果页即达成，不点进正片也算完成搜索任务。"
+      ],
+      "guardrails": {
+        "no_path_first_action_matching": [],
+        "must_contain_probe": true,
+        "min_paths": 2
+      }
     }
   ]
 }
