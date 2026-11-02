@@ -308,6 +308,70 @@
         "must_contain_probe": true,
         "min_paths": 2
       }
+    },
+    {
+      "id": "torch-on",
+      "intent": "打开手电筒",
+      "aliases": ["开启手电筒", "手电筒", "打开闪光灯", "flashlight on", "torch on", "turn on flashlight"],
+      "device_bucket": "default",
+      "status": "unverified",
+      "verified_on": "",
+      "goal": "Phone torch/flashlight switched on.",
+      "acceptance": "torch is on (visible in the status bar torch icon / quick-settings tile lit)",
+      "probes": [],
+      "plan": "- [ ] 打开手电筒\n  - verify: 手电筒已打开（状态栏手电图标或磁贴高亮，背后闪光灯亮起）\n  - path 1 [cost=2 kind=primary]: 顶部下滑展开快捷面板 → 点「手电筒」磁贴\n  - path 2 [cost=3 kind=alternative]: 状态栏/通知栏 → 找手电筒图标 → 点亮",
+      "pitfalls": [
+        "手电筒状态没有可读的设置项或 dump 探针，只能看屏幕（状态栏图标 / 磁贴高亮 / 闪光灯），所以验收由截图判定，不含机器探针。",
+        "部分 ROM 首次打开手电筒会有权限/提示弹窗，先处理弹窗再确认。",
+        "飞行模式不影响手电筒；但相机占用闪光灯时手电筒会失败——失败先退出相机再试。"
+      ],
+      "guardrails": {
+        "no_path_first_action_matching": ["关闭手电", "关掉手电", "turn off torch", "disable flashlight"],
+        "must_contain_probe": false,
+        "min_paths": 2
+      }
+    },
+    {
+      "id": "auto-rotate-on",
+      "intent": "打开自动旋转",
+      "aliases": ["开启自动旋转", "自动旋转", "允许屏幕旋转", "auto rotate on", "enable auto rotate", "rotation on"],
+      "device_bucket": "default",
+      "status": "unverified",
+      "verified_on": "",
+      "goal": "Screen auto-rotation enabled.",
+      "acceptance": "settings get system accelerometer_rotation == 1",
+      "probes": ["setting system accelerometer_rotation"],
+      "plan": "- [ ] 打开自动旋转\n  - verify: 自动旋转已开启（accelerometer_rotation 为 1）[probe: setting system accelerometer_rotation]\n  - path 1 [cost=2 kind=primary]: 顶部下滑展开快捷面板 → 点「自动旋转」磁贴打开\n  - path 2 [cost=3 kind=primary]: 设置 → 显示 → 自动旋转屏幕开关",
+      "pitfalls": [
+        "快捷面板磁贴在某些 ROM 上叫「自动旋转 / 方向锁定」，点一下切换状态，先看当前图标判断。",
+        "验收用 settings get system accelerometer_rotation（1=自动旋转，0=锁定方向），而不是看图标颜色。"
+      ],
+      "guardrails": {
+        "no_path_first_action_matching": ["关闭自动旋转", "锁定方向", "turn off auto rotate", "disable auto rotate"],
+        "must_contain_probe": true,
+        "min_paths": 2
+      }
+    },
+    {
+      "id": "auto-rotate-off",
+      "intent": "关闭自动旋转",
+      "aliases": ["锁定屏幕方向", "方向锁定", "竖屏锁定", "auto rotate off", "disable auto rotate", "lock rotation"],
+      "device_bucket": "default",
+      "status": "unverified",
+      "verified_on": "",
+      "goal": "Screen rotation locked (auto-rotate disabled).",
+      "acceptance": "settings get system accelerometer_rotation == 0",
+      "probes": ["setting system accelerometer_rotation"],
+      "plan": "- [ ] 关闭自动旋转（锁定方向）\n  - verify: 自动旋转已关闭（accelerometer_rotation 为 0）[probe: setting system accelerometer_rotation]\n  - path 1 [cost=2 kind=primary]: 顶部下滑展开快捷面板 → 点「自动旋转/方向锁定」磁贴关闭\n  - path 2 [cost=3 kind=primary]: 设置 → 显示 → 自动旋转屏幕开关关闭",
+      "pitfalls": [
+        "验收用 settings get system accelerometer_rotation（应为 0），而不是看图标颜色。",
+        "锁定方向后屏幕不再随重力旋转——如果任务目标是「横屏看视频」，这是等价而非主路径。"
+      ],
+      "guardrails": {
+        "no_path_first_action_matching": ["打开自动旋转", "开启自动旋转", "turn on auto rotate", "enable auto rotate"],
+        "must_contain_probe": true,
+        "min_paths": 2
+      }
     }
   ]
 }
