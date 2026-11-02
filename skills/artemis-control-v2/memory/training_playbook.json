@@ -5,13 +5,25 @@
     {
       "id": "mute-ringer",
       "intent": "把手机设置成静音",
-      "aliases": ["静音", "手机静音", "mute", "set phone to silent", "silent mode", "mute the ringer", "silence the phone", "铃声静音"],
+      "aliases": [
+        "静音",
+        "手机静音",
+        "mute",
+        "set phone to silent",
+        "silent mode",
+        "mute the ringer",
+        "silence the phone",
+        "铃声静音"
+      ],
       "device_bucket": "default",
       "status": "partial_verified",
       "verified_on": "gm1910_sdk30 (OnePlus 7 Pro, Android 11)",
       "goal": "Ringer stops ringing; alarms keep working unless DND is acceptable.",
       "acceptance": "mRingerMode in {0=SILENT, 1=VIBRATE} OR ring volume == 0",
-      "probes": ["audio", "volume ring"],
+      "probes": [
+        "audio",
+        "volume ring"
+      ],
       "plan": "- [ ] 将手机切换到静音模式（铃声静音）\n  - verify: 响铃音量为 0 或铃声模式为静音 [probe: volume ring]\n  - path 1 [cost=1 kind=primary]:     system_button volume_mute（keyevent 164，直接静音）\n  - path 2 [cost=3 kind=primary]:     连续 system_button volume_down 3~5 次，直到铃声模式变为静音/振动\n  - path 3 [cost=3 kind=primary]:     设置 → 声音与振动 → 静音模式单选\n  - path 4 [cost=5 kind=alternative]: set_slider 把铃声滑条拖到 0（拖过边界）\n  - path 5 [cost=2 kind=equivalent]:  下拉快捷面板 → 点「勿扰」（副作用：通知/闹钟一并静音）",
       "pitfalls": [
         "STREAM_RING 在 NORMAL 模式下被系统钳制为 >= 1，所以『响铃音量 == 0』单独不可满足——验收必须同时接受 ringer mode 变成 SILENT。",
@@ -22,7 +34,13 @@
         "路径的第一个动作绝不能是 volume_up（与目标反向），否则 guardrail 会拒绝整条路径，后面的步骤永远不会执行。"
       ],
       "guardrails": {
-        "no_path_first_action_matching": ["VOLUME_UP", "volume_up", "调大", "增大", "调高音量"],
+        "no_path_first_action_matching": [
+          "VOLUME_UP",
+          "volume_up",
+          "调大",
+          "增大",
+          "调高音量"
+        ],
         "must_contain_probe": true,
         "min_paths": 2
       }
@@ -30,13 +48,22 @@
     {
       "id": "brightness-quick-settings",
       "intent": "把屏幕亮度调低",
-      "aliases": ["调低亮度", "亮度降低", "brightness down", "dim the screen", "lower brightness", "screen darker"],
+      "aliases": [
+        "调低亮度",
+        "亮度降低",
+        "brightness down",
+        "dim the screen",
+        "lower brightness",
+        "screen darker"
+      ],
       "device_bucket": "default",
       "status": "unverified",
       "verified_on": "",
       "goal": "Screen brightness reduced by a visible/measurable amount.",
       "acceptance": "settings get system screen_brightness decreased",
-      "probes": ["setting system screen_brightness"],
+      "probes": [
+        "setting system screen_brightness"
+      ],
       "plan": "- [ ] 降低屏幕亮度\n  - verify: brightness 数值已下降 [probe: setting system screen_brightness]\n  - path 1 [cost=2 kind=primary]: 从屏幕顶部边缘下滑两次展开快捷面板 → 把亮度滑条拖到更低位\n  - path 2 [cost=3 kind=primary]: 设置 → 显示与亮度 → 把亮度滑条拖低\n  - path 3 [cost=1 kind=alternative]: 如果快捷面板有自动亮度开关且已开启，先关闭自动亮度再拖滑条",
       "pitfalls": [
         "展开快捷面板的首次下滑必须从屏幕最顶部边缘开始（y ≈ 0）——这不属于普通手势的 edge-safe 区。",
@@ -52,13 +79,22 @@
     {
       "id": "wifi-toggle",
       "intent": "打开 WiFi",
-      "aliases": ["打开wifi", "开启wifi", "turn on wifi", "enable wifi", "wifi on", "连 wifi"],
+      "aliases": [
+        "打开wifi",
+        "开启wifi",
+        "turn on wifi",
+        "enable wifi",
+        "wifi on",
+        "连 wifi"
+      ],
       "device_bucket": "default",
       "status": "unverified",
       "verified_on": "",
       "goal": "Wi-Fi radio on and (if known) connected.",
       "acceptance": "settings get global wifi_on == 1",
-      "probes": ["setting global wifi_on"],
+      "probes": [
+        "setting global wifi_on"
+      ],
       "plan": "- [ ] 打开 WiFi\n  - verify: wifi_on 为 1 [probe: setting global wifi_on]\n  - path 1 [cost=2 kind=primary]: 顶部下滑展开快捷面板 → 点 WiFi 磁贴\n  - path 2 [cost=3 kind=primary]: 设置 → WiFi → 打开开关",
       "pitfalls": [
         "快捷面板里点 WiFi 磁贴的文字与点图标某系 ROM 行为不同（点文字进设置，点图标才切换）——按屏幕标注点击开关本体。",
@@ -73,13 +109,20 @@
     {
       "id": "airplane-mode",
       "intent": "打开飞行模式",
-      "aliases": ["飞行模式", "开启飞行模式", "airplane mode on", "enable airplane mode"],
+      "aliases": [
+        "飞行模式",
+        "开启飞行模式",
+        "airplane mode on",
+        "enable airplane mode"
+      ],
       "device_bucket": "default",
       "status": "unverified",
       "verified_on": "",
       "goal": "All radios off (airplane mode on).",
       "acceptance": "settings get global airplane_mode_on == 1",
-      "probes": ["setting global airplane_mode_on"],
+      "probes": [
+        "setting global airplane_mode_on"
+      ],
       "plan": "- [ ] 打开飞行模式\n  - verify: airplane_mode_on 为 1 [probe: setting global airplane_mode_on]\n  - path 1 [cost=2 kind=primary]: 顶部下滑展开快捷面板 → 点飞行模式磁贴\n  - path 2 [cost=3 kind=primary]: 设置 → 网络与互联网 → 飞行模式开关",
       "pitfalls": [
         "飞行模式会切断网络——如果任务目标是『离线』这就是主路径，否则是代价最高的等价路径。",
@@ -94,13 +137,22 @@
     {
       "id": "media-volume-up",
       "intent": "把媒体音量调高",
-      "aliases": ["调高媒体音量", "媒体声音调响", "媒体音量大一点", "raise media volume", "music volume up", "louder media"],
+      "aliases": [
+        "调高媒体音量",
+        "媒体声音调响",
+        "媒体音量大一点",
+        "raise media volume",
+        "music volume up",
+        "louder media"
+      ],
       "device_bucket": "default",
       "status": "unverified",
       "verified_on": "",
       "goal": "Media playback stream (STREAM_MUSIC) volume raised above its starting value.",
       "acceptance": "media volume (STREAM_MUSIC) increased vs baseline",
-      "probes": ["volume music"],
+      "probes": [
+        "volume music"
+      ],
       "plan": "- [ ] 调高媒体音量（STREAM_MUSIC）\n  - verify: 调高媒体音量：媒体音量应高于初始值 [probe: volume music]\n  - path 1 [cost=2 kind=primary]:     按一次音量上键调出面板 → 展开媒体音量条 → 把媒体条拖过目标到更高\n  - path 2 [cost=3 kind=primary]:     设置 → 声音与振动 → 把媒体音量滑条拖到更高\n  - path 3 [cost=1 kind=alternative]: system_button volume_up 连续 1~2 次（可能先作用到铃声流）",
       "pitfalls": [
         "音量键默认先改变铃声流；媒体音量必须在音量面板里展开媒体条后再拖，或直接拖面板里的媒体滑条。",
@@ -109,7 +161,15 @@
         "『调高』是相对目标：验收必须拿运行后读到的媒体流数值和运行前测到的媒体基线比较，不能只写一个绝对数值。"
       ],
       "guardrails": {
-        "no_path_first_action_matching": ["VOLUME_DOWN", "volume_down", "调低", "降低", "减小", "减小音量", "调低音量"],
+        "no_path_first_action_matching": [
+          "VOLUME_DOWN",
+          "volume_down",
+          "调低",
+          "降低",
+          "减小",
+          "减小音量",
+          "调低音量"
+        ],
         "must_contain_probe": true,
         "min_paths": 2
       }
@@ -117,13 +177,22 @@
     {
       "id": "media-volume-down",
       "intent": "把媒体音量调低",
-      "aliases": ["调低媒体音量", "媒体声音调低", "媒体音量小一点", "lower media volume", "music volume down", "quieter media"],
+      "aliases": [
+        "调低媒体音量",
+        "媒体声音调低",
+        "媒体音量小一点",
+        "lower media volume",
+        "music volume down",
+        "quieter media"
+      ],
       "device_bucket": "default",
       "status": "unverified",
       "verified_on": "",
       "goal": "Media playback stream (STREAM_MUSIC) volume lowered below its starting value.",
       "acceptance": "media volume (STREAM_MUSIC) decreased vs baseline",
-      "probes": ["volume music"],
+      "probes": [
+        "volume music"
+      ],
       "plan": "- [ ] 调低媒体音量（STREAM_MUSIC）\n  - verify: 调低媒体音量：媒体音量应低于初始值 [probe: volume music]\n  - path 1 [cost=2 kind=primary]:     按一次音量下键调出面板 → 展开媒体音量条 → 把媒体条拖过目标到更低\n  - path 2 [cost=3 kind=primary]:     设置 → 声音与振动 → 把媒体音量滑条拖低\n  - path 3 [cost=1 kind=alternative]: system_button volume_down 连续 1~2 次（可能先作用到铃声流）",
       "pitfalls": [
         "音量键默认先改变铃声流；媒体音量必须在音量面板里展开媒体条后再拖，或直接拖面板里的媒体滑条。",
@@ -131,7 +200,15 @@
         "『调低』是相对目标：验收必须和运行前的媒体基线比较。"
       ],
       "guardrails": {
-        "no_path_first_action_matching": ["VOLUME_UP", "volume_up", "调高", "提高", "增大", "增大音量", "调高音量"],
+        "no_path_first_action_matching": [
+          "VOLUME_UP",
+          "volume_up",
+          "调高",
+          "提高",
+          "增大",
+          "增大音量",
+          "调高音量"
+        ],
         "must_contain_probe": true,
         "min_paths": 2
       }
@@ -139,13 +216,21 @@
     {
       "id": "brightness-up",
       "intent": "把屏幕亮度调高",
-      "aliases": ["调高亮度", "亮度提高", "brightness up", "raise brightness", "screen brighter"],
+      "aliases": [
+        "调高亮度",
+        "亮度提高",
+        "brightness up",
+        "raise brightness",
+        "screen brighter"
+      ],
       "device_bucket": "default",
       "status": "unverified",
       "verified_on": "",
       "goal": "Screen brightness increased above its starting value.",
       "acceptance": "settings get system screen_brightness increased",
-      "probes": ["setting system screen_brightness"],
+      "probes": [
+        "setting system screen_brightness"
+      ],
       "plan": "- [ ] 调高屏幕亮度\n  - verify: 调高亮度：亮度数值已上升 [probe: setting system screen_brightness]\n  - path 1 [cost=2 kind=primary]: 从屏幕顶部边缘下滑两次展开快捷面板 → 把亮度滑条拖过目标到更高\n  - path 2 [cost=3 kind=primary]: 设置 → 显示与亮度 → 把亮度滑条拖到更高\n  - path 3 [cost=1 kind=alternative]: 如果快捷面板有自动亮度开关且已开启，先关闭自动亮度再拖滑条",
       "pitfalls": [
         "展开快捷面板的首次下滑必须从屏幕最顶部边缘开始（y ≈ 0）——这不属于普通手势的 edge-safe 区。",
@@ -154,7 +239,14 @@
         "『调高』是相对目标：验收必须和运行前的亮度基线比较。"
       ],
       "guardrails": {
-        "no_path_first_action_matching": ["调低", "降低", "减小", "dim", "lower brightness", "调低亮度"],
+        "no_path_first_action_matching": [
+          "调低",
+          "降低",
+          "减小",
+          "dim",
+          "lower brightness",
+          "调低亮度"
+        ],
         "must_contain_probe": true,
         "min_paths": 2
       }
@@ -162,20 +254,34 @@
     {
       "id": "wifi-off",
       "intent": "关闭 WiFi",
-      "aliases": ["关闭wifi", "关掉wifi", "turn off wifi", "disable wifi", "wifi off"],
+      "aliases": [
+        "关闭wifi",
+        "关掉wifi",
+        "turn off wifi",
+        "disable wifi",
+        "wifi off"
+      ],
       "device_bucket": "default",
       "status": "unverified",
       "verified_on": "",
       "goal": "Wi-Fi radio off.",
       "acceptance": "settings get global wifi_on == 0",
-      "probes": ["setting global wifi_on"],
+      "probes": [
+        "setting global wifi_on"
+      ],
       "plan": "- [ ] 关闭 WiFi\n  - verify: wifi_on 为 0 [probe: setting global wifi_on]\n  - path 1 [cost=2 kind=primary]: 顶部下滑展开快捷面板 → 点 WiFi 磁贴关闭\n  - path 2 [cost=3 kind=primary]: 设置 → WiFi → 关闭开关",
       "pitfalls": [
         "快捷面板里点 WiFi 磁贴的文字与点图标某些 ROM 行为不同（点文字进设置，点图标才切换）——按屏幕标注点击开关本体。",
         "验收用 settings get global wifi_on（应为 0），而不是截图图标颜色。"
       ],
       "guardrails": {
-        "no_path_first_action_matching": ["打开wifi", "开启wifi", "turn on wifi", "enable wifi", "wifi on"],
+        "no_path_first_action_matching": [
+          "打开wifi",
+          "开启wifi",
+          "turn on wifi",
+          "enable wifi",
+          "wifi on"
+        ],
         "must_contain_probe": true,
         "min_paths": 1
       }
@@ -183,20 +289,33 @@
     {
       "id": "airplane-off",
       "intent": "关闭飞行模式",
-      "aliases": ["关掉飞行模式", "退出飞行模式", "airplane mode off", "turn off airplane mode", "disable airplane mode"],
+      "aliases": [
+        "关掉飞行模式",
+        "退出飞行模式",
+        "airplane mode off",
+        "turn off airplane mode",
+        "disable airplane mode"
+      ],
       "device_bucket": "default",
       "status": "unverified",
       "verified_on": "",
       "goal": "All radios re-enabled (airplane mode off).",
       "acceptance": "settings get global airplane_mode_on == 0",
-      "probes": ["setting global airplane_mode_on"],
+      "probes": [
+        "setting global airplane_mode_on"
+      ],
       "plan": "- [ ] 关闭飞行模式\n  - verify: airplane_mode_on 为 0 [probe: setting global airplane_mode_on]\n  - path 1 [cost=2 kind=primary]: 顶部下滑展开快捷面板 → 点飞行模式磁贴关闭\n  - path 2 [cost=3 kind=primary]: 设置 → 网络与互联网 → 飞行模式开关关掉",
       "pitfalls": [
         "关闭飞行模式后无线信号需要几秒才恢复，验收只读 airplane_mode_on，不要立刻断言 WiFi 已连上。",
         "验收用 settings get global airplane_mode_on（应为 0）。"
       ],
       "guardrails": {
-        "no_path_first_action_matching": ["打开飞行模式", "开启飞行模式", "enable airplane", "airplane mode on"],
+        "no_path_first_action_matching": [
+          "打开飞行模式",
+          "开启飞行模式",
+          "enable airplane",
+          "airplane mode on"
+        ],
         "must_contain_probe": true,
         "min_paths": 1
       }
@@ -204,20 +323,33 @@
     {
       "id": "bluetooth-on",
       "intent": "打开蓝牙",
-      "aliases": ["开启蓝牙", "开蓝牙", "turn on bluetooth", "enable bluetooth", "bluetooth on"],
+      "aliases": [
+        "开启蓝牙",
+        "开蓝牙",
+        "turn on bluetooth",
+        "enable bluetooth",
+        "bluetooth on"
+      ],
       "device_bucket": "default",
       "status": "unverified",
       "verified_on": "",
       "goal": "Bluetooth radio on.",
       "acceptance": "settings get global bluetooth_on == 1",
-      "probes": ["setting global bluetooth_on"],
+      "probes": [
+        "setting global bluetooth_on"
+      ],
       "plan": "- [ ] 打开蓝牙\n  - verify: bluetooth_on 为 1 [probe: setting global bluetooth_on]\n  - path 1 [cost=2 kind=primary]: 顶部下滑展开快捷面板 → 点蓝牙磁贴打开\n  - path 2 [cost=3 kind=primary]: 设置 → 蓝牙 → 打开开关",
       "pitfalls": [
         "快捷面板点蓝牙磁贴文字与点图标行为不同——点开关本体而不是文字。",
         "验收用 settings get global bluetooth_on，而不是截图图标颜色。"
       ],
       "guardrails": {
-        "no_path_first_action_matching": ["关闭蓝牙", "关掉蓝牙", "turn off bluetooth", "disable bluetooth"],
+        "no_path_first_action_matching": [
+          "关闭蓝牙",
+          "关掉蓝牙",
+          "turn off bluetooth",
+          "disable bluetooth"
+        ],
         "must_contain_probe": true,
         "min_paths": 1
       }
@@ -225,13 +357,22 @@
     {
       "id": "bluetooth-connect-device",
       "intent": "用蓝牙连接指定设备",
-      "aliases": ["连接蓝牙设备", "蓝牙连接", "connect bluetooth device", "pair bluetooth device", "connect to bluetooth device"],
+      "aliases": [
+        "连接蓝牙设备",
+        "蓝牙连接",
+        "connect bluetooth device",
+        "pair bluetooth device",
+        "connect to bluetooth device"
+      ],
       "device_bucket": "default",
       "status": "unverified",
       "verified_on": "",
       "goal": "Bluetooth radio on and the requested device is connected.",
       "acceptance": "bluetooth_on == 1 AND target device appears in the connected/paired list",
-      "probes": ["setting global bluetooth_on", "bluetooth"],
+      "probes": [
+        "setting global bluetooth_on",
+        "bluetooth"
+      ],
       "plan": "- [ ] 用蓝牙连接目标设备\n  - verify: 目标蓝牙设备已连接（出现在「已连接」列表）[probe: bluetooth][probe: setting global bluetooth_on]\n  - path 1 [cost=4 kind=primary]: 设置 → 蓝牙 → 打开蓝牙开关 → 在已配对列表里点目标设备名 → 确认已连接\n  - path 2 [cost=4 kind=primary]: 顶部下滑展开快捷面板 → 长按蓝牙磁贴进蓝牙设置 → 点目标设备连接",
       "pitfalls": [
         "设备名来自运行前测到的蓝牙列表（device_profile 的 bt_devices），连接哪个名字由指令指定，不要臆测。",
@@ -240,7 +381,12 @@
         "飞行模式开启时蓝牙会被一起关掉——先确认 airplane_mode_on == 0。"
       ],
       "guardrails": {
-        "no_path_first_action_matching": ["关闭蓝牙", "关掉蓝牙", "turn off bluetooth", "disable bluetooth"],
+        "no_path_first_action_matching": [
+          "关闭蓝牙",
+          "关掉蓝牙",
+          "turn off bluetooth",
+          "disable bluetooth"
+        ],
         "must_contain_probe": true,
         "min_paths": 2
       }
@@ -248,13 +394,25 @@
     {
       "id": "system-info",
       "intent": "打开手机查看系统信息",
-      "aliases": ["查看系统信息", "系统信息", "关于手机", "查看手机型号", "open system info", "about phone", "device info"],
+      "aliases": [
+        "查看系统信息",
+        "系统信息",
+        "关于手机",
+        "查看手机型号",
+        "open system info",
+        "about phone",
+        "device info"
+      ],
       "device_bucket": "default",
       "status": "unverified",
       "verified_on": "",
       "goal": "Open the About-phone / system-info screen and report model + Android version.",
       "acceptance": "Settings About-phone (system info) screen is in the foreground",
-      "probes": ["foreground", "prop ro.product.model", "prop ro.build.version.release"],
+      "probes": [
+        "foreground",
+        "prop ro.product.model",
+        "prop ro.build.version.release"
+      ],
       "plan": "- [ ] 打开系统信息页面并读取型号与 Android 版本\n  - verify: 关于手机/系统信息页面已打开 [probe: foreground]\n  - verify: 已读到设备型号与 Android 版本 [probe: prop ro.product.model][probe: prop ro.build.version.release]\n  - path 1 [cost=3 kind=primary]: 打开设置应用 → 关于手机（或「我的设备」）→ 读取型号、Android 版本\n  - path 2 [cost=4 kind=alternative]: 顶部下滑展开快捷面板 → 点设置齿轮 → 关于手机 → 读取信息",
       "pitfalls": [
         "不同 ROM 的入口名不同（关于手机 / 关于本机 / 关于设备 / 我的设备），先扫一屏找到对应入口。",
@@ -270,20 +428,34 @@
     {
       "id": "dnd-on",
       "intent": "打开勿扰模式",
-      "aliases": ["开启勿扰", "免打扰", "打开免打扰", "do not disturb on", "enable dnd", "dnd on"],
+      "aliases": [
+        "开启勿扰",
+        "免打扰",
+        "打开免打扰",
+        "do not disturb on",
+        "enable dnd",
+        "dnd on"
+      ],
       "device_bucket": "default",
       "status": "unverified",
       "verified_on": "",
       "goal": "Do-not-disturb enabled (notifications/ringer suppressed).",
       "acceptance": "settings get global zen_mode != 0",
-      "probes": ["setting global zen_mode"],
+      "probes": [
+        "setting global zen_mode"
+      ],
       "plan": "- [ ] 打开勿扰模式\n  - verify: 勿扰已开启（zen_mode 非 0）[probe: setting global zen_mode]\n  - path 1 [cost=2 kind=primary]: 顶部下滑展开快捷面板 → 点「勿扰」磁贴\n  - path 2 [cost=3 kind=primary]: 设置 → 声音与振动 → 勿扰模式开关",
       "pitfalls": [
         "勿扰会静音通知与铃声——如果任务目标是「只静音铃声但保留通知」，勿扰是等价而非主路径。",
         "验收用 settings get global zen_mode（非 0 即开启），而不是图标颜色。"
       ],
       "guardrails": {
-        "no_path_first_action_matching": ["关闭勿扰", "取消勿扰", "turn off dnd", "disable dnd"],
+        "no_path_first_action_matching": [
+          "关闭勿扰",
+          "取消勿扰",
+          "turn off dnd",
+          "disable dnd"
+        ],
         "must_contain_probe": true,
         "min_paths": 2
       }
@@ -291,20 +463,35 @@
     {
       "id": "dnd-off",
       "intent": "关闭勿扰模式",
-      "aliases": ["取消勿扰", "关闭免打扰", "退出勿扰", "do not disturb off", "disable dnd", "dnd off"],
+      "aliases": [
+        "取消勿扰",
+        "关闭免打扰",
+        "退出勿扰",
+        "do not disturb off",
+        "disable dnd",
+        "dnd off"
+      ],
       "device_bucket": "default",
       "status": "unverified",
       "verified_on": "",
       "goal": "Do-not-disturb disabled (normal notification/ringer behavior restored).",
       "acceptance": "settings get global zen_mode == 0",
-      "probes": ["setting global zen_mode"],
+      "probes": [
+        "setting global zen_mode"
+      ],
       "plan": "- [ ] 关闭勿扰模式\n  - verify: 勿扰已关闭（zen_mode 为 0）[probe: setting global zen_mode]\n  - path 1 [cost=2 kind=primary]: 顶部下滑展开快捷面板 → 点「勿扰」磁贴以关闭\n  - path 2 [cost=3 kind=primary]: 设置 → 声音与振动 → 勿扰模式开关关闭",
       "pitfalls": [
         "关闭勿扰后铃声/通知恢复——如果之前为了「静音」开了勿扰，关闭勿扰等于撤销静音。",
         "验收用 settings get global zen_mode（应为 0）。"
       ],
       "guardrails": {
-        "no_path_first_action_matching": ["打开勿扰", "开启勿扰", "enable dnd", "turn on dnd", "dnd on"],
+        "no_path_first_action_matching": [
+          "打开勿扰",
+          "开启勿扰",
+          "enable dnd",
+          "turn on dnd",
+          "dnd on"
+        ],
         "must_contain_probe": true,
         "min_paths": 2
       }
@@ -312,7 +499,14 @@
     {
       "id": "torch-on",
       "intent": "打开手电筒",
-      "aliases": ["开启手电筒", "手电筒", "打开闪光灯", "flashlight on", "torch on", "turn on flashlight"],
+      "aliases": [
+        "开启手电筒",
+        "手电筒",
+        "打开闪光灯",
+        "flashlight on",
+        "torch on",
+        "turn on flashlight"
+      ],
       "device_bucket": "default",
       "status": "unverified",
       "verified_on": "",
@@ -326,7 +520,12 @@
         "飞行模式不影响手电筒；但相机占用闪光灯时手电筒会失败——失败先退出相机再试。"
       ],
       "guardrails": {
-        "no_path_first_action_matching": ["关闭手电", "关掉手电", "turn off torch", "disable flashlight"],
+        "no_path_first_action_matching": [
+          "关闭手电",
+          "关掉手电",
+          "turn off torch",
+          "disable flashlight"
+        ],
         "must_contain_probe": false,
         "min_paths": 2
       }
@@ -334,20 +533,34 @@
     {
       "id": "auto-rotate-on",
       "intent": "打开自动旋转",
-      "aliases": ["开启自动旋转", "自动旋转", "允许屏幕旋转", "auto rotate on", "enable auto rotate", "rotation on"],
+      "aliases": [
+        "开启自动旋转",
+        "自动旋转",
+        "允许屏幕旋转",
+        "auto rotate on",
+        "enable auto rotate",
+        "rotation on"
+      ],
       "device_bucket": "default",
       "status": "unverified",
       "verified_on": "",
       "goal": "Screen auto-rotation enabled.",
       "acceptance": "settings get system accelerometer_rotation == 1",
-      "probes": ["setting system accelerometer_rotation"],
+      "probes": [
+        "setting system accelerometer_rotation"
+      ],
       "plan": "- [ ] 打开自动旋转\n  - verify: 自动旋转已开启（accelerometer_rotation 为 1）[probe: setting system accelerometer_rotation]\n  - path 1 [cost=2 kind=primary]: 顶部下滑展开快捷面板 → 点「自动旋转」磁贴打开\n  - path 2 [cost=3 kind=primary]: 设置 → 显示 → 自动旋转屏幕开关",
       "pitfalls": [
         "快捷面板磁贴在某些 ROM 上叫「自动旋转 / 方向锁定」，点一下切换状态，先看当前图标判断。",
         "验收用 settings get system accelerometer_rotation（1=自动旋转，0=锁定方向），而不是看图标颜色。"
       ],
       "guardrails": {
-        "no_path_first_action_matching": ["关闭自动旋转", "锁定方向", "turn off auto rotate", "disable auto rotate"],
+        "no_path_first_action_matching": [
+          "关闭自动旋转",
+          "锁定方向",
+          "turn off auto rotate",
+          "disable auto rotate"
+        ],
         "must_contain_probe": true,
         "min_paths": 2
       }
@@ -355,37 +568,61 @@
     {
       "id": "auto-rotate-off",
       "intent": "关闭自动旋转",
-      "aliases": ["锁定屏幕方向", "方向锁定", "竖屏锁定", "auto rotate off", "disable auto rotate", "lock rotation"],
+      "aliases": [
+        "锁定屏幕方向",
+        "方向锁定",
+        "竖屏锁定",
+        "auto rotate off",
+        "disable auto rotate",
+        "lock rotation"
+      ],
       "device_bucket": "default",
       "status": "unverified",
       "verified_on": "",
       "goal": "Screen rotation locked (auto-rotate disabled).",
       "acceptance": "settings get system accelerometer_rotation == 0",
-      "probes": ["setting system accelerometer_rotation"],
+      "probes": [
+        "setting system accelerometer_rotation"
+      ],
       "plan": "- [ ] 关闭自动旋转（锁定方向）\n  - verify: 自动旋转已关闭（accelerometer_rotation 为 0）[probe: setting system accelerometer_rotation]\n  - path 1 [cost=2 kind=primary]: 顶部下滑展开快捷面板 → 点「自动旋转/方向锁定」磁贴关闭\n  - path 2 [cost=3 kind=primary]: 设置 → 显示 → 自动旋转屏幕开关关闭",
       "pitfalls": [
         "验收用 settings get system accelerometer_rotation（应为 0），而不是看图标颜色。",
         "锁定方向后屏幕不再随重力旋转——如果任务目标是「横屏看视频」，这是等价而非主路径。"
       ],
       "guardrails": {
-        "no_path_first_action_matching": ["打开自动旋转", "开启自动旋转", "turn on auto rotate", "enable auto rotate"],
+        "no_path_first_action_matching": [
+          "打开自动旋转",
+          "开启自动旋转",
+          "turn on auto rotate",
+          "enable auto rotate"
+        ],
         "must_contain_probe": true,
         "min_paths": 2
       }
     },
     {
       "id": "baidu-map-navigate",
-      "intent": "用百度地图导航到指定目的地",
-      "aliases": ["百度地图", "百度导航", "百度地图导航", "导航到", "导航", "baidu map", "baidu navigation"],
+      "intent": "用百度地图导航到天安门广场",
+      "aliases": [
+        "百度地图",
+        "百度导航",
+        "百度地图导航",
+        "导航到",
+        "导航",
+        "baidu map",
+        "baidu navigation"
+      ],
       "device_bucket": "default",
       "status": "unverified",
       "verified_on": "",
       "goal": "Baidu Maps app in the foreground with a route/navigation for the requested destination.",
       "acceptance": "百度地图已在前台（com.baidu.BaiduMap）",
-      "probes": ["foreground"],
-      "plan": "- [ ] 打开百度地图并导航到 {目的地}\n  - verify: 百度地图已在前台 [probe: foreground][app: com.baidu.BaiduMap]\n  - path 1 [cost=5 kind=primary]: open_app 百度地图 → 等首页加载 → 在顶部搜索框输入 {目的地} → 点跳出的第一条地点结果 → 点「路线」→ 选出行方式（驾车/步行/公共交通）→ 点「开始导航」\n  - path 2 [cost=6 kind=alternative]: open_app 百度地图 → 点底部「路线」Tab → 分别输入起点和终点 {目的地} → 选出行方式 → 点「开始导航」",
+      "probes": [
+        "foreground"
+      ],
+      "plan": "- [ ] 打开百度地图并导航到 天安门广场\n  - verify: 百度地图已在前台 [probe: foreground][app: com.baidu.BaiduMap]\n  - path 1 [cost=5 kind=primary]: open_app 百度地图 → 等首页加载 → 在顶部搜索框输入 天安门广场 → 点跳出的第一条地点结果 → 点「路线」→ 选出行方式（驾车/步行/公共交通）→ 点「开始导航」\n  - path 2 [cost=6 kind=alternative]: open_app 百度地图 → 点底部「路线」Tab → 分别输入起点和终点 天安门广场 → 选出行方式 → 点「开始导航」",
       "pitfalls": [
-        "{目的地} 是占位符——由 VLM 从用户真实指令里填（例如「导航到天安门」→ 天安门），不要在计划里写死。",
+        "本 recipe 是具体实例（天安门广场）；真实会话由 VLM 从用户指令里提取目标并替换，不要把示例值照抄进新计划。",
         "首次打开地图会弹定位权限 / 隐私协议 / 广告——先处理弹窗再继续，否则后续点击全部失效。",
         "搜索联想第一条通常就是目的地；不要点「搜索」键盘键后盲目点第一条无关横条，认准地名。",
         "导航是长链路（开 app→搜→选→路线→开始），属于线性流；赶时间用 --profile flash。"
@@ -398,17 +635,26 @@
     },
     {
       "id": "amap-navigate",
-      "intent": "用高德地图导航到指定目的地",
-      "aliases": ["高德地图", "高德导航", "高德地图导航", "高德", "amap", "gaode map"],
+      "intent": "用高德地图导航到杭州西湖",
+      "aliases": [
+        "高德地图",
+        "高德导航",
+        "高德地图导航",
+        "高德",
+        "amap",
+        "gaode map"
+      ],
       "device_bucket": "default",
       "status": "unverified",
       "verified_on": "",
       "goal": "Amap app in the foreground with a route/navigation for the requested destination.",
       "acceptance": "高德地图已在前台（com.autonavi.minimap）",
-      "probes": ["foreground"],
-      "plan": "- [ ] 打开高德地图并导航到 {目的地}\n  - verify: 高德地图已在前台 [probe: foreground][app: com.autonavi.minimap]\n  - path 1 [cost=5 kind=primary]: open_app 高德地图 → 等首页加载 → 搜索框输入 {目的地} → 点第一条地点结果 → 点「路线」→ 选出出行方式 → 点「开始导航」\n  - path 2 [cost=6 kind=alternative]: open_app 高德地图 → 点「路线」入口 → 输入终点 {目的地} → 选出行方式 → 「开始导航」",
+      "probes": [
+        "foreground"
+      ],
+      "plan": "- [ ] 打开高德地图并导航到 杭州西湖\n  - verify: 高德地图已在前台 [probe: foreground][app: com.autonavi.minimap]\n  - path 1 [cost=5 kind=primary]: open_app 高德地图 → 等首页加载 → 搜索框输入 杭州西湖 → 点第一条地点结果 → 点「路线」→ 选出出行方式 → 点「开始导航」\n  - path 2 [cost=6 kind=alternative]: open_app 高德地图 → 点「路线」入口 → 输入终点 杭州西湖 → 选出行方式 → 「开始导航」",
       "pitfalls": [
-        "{目的地} 由 VLM 从用户指令里填。",
+        "本 recipe 是具体实例（杭州西湖）；真实会话由 VLM 从用户指令里提取目标并替换，不要把示例值照抄进新计划。",
         "首次打开可能弹定位权限 / 登录引导 / 广告——先关掉再操作。",
         "高德首页搜索框在顶部，输入后点联想第一条地点（认准地名，不是广告横条）。"
       ],
@@ -420,17 +666,26 @@
     },
     {
       "id": "taobao-search",
-      "intent": "用淘宝搜索指定商品",
-      "aliases": ["淘宝", "上淘宝", "淘宝搜索", "搜索商品", "taobao", "tb search"],
+      "intent": "用淘宝搜索蓝牙耳机",
+      "aliases": [
+        "淘宝",
+        "上淘宝",
+        "淘宝搜索",
+        "搜索商品",
+        "taobao",
+        "tb search"
+      ],
       "device_bucket": "default",
       "status": "unverified",
       "verified_on": "",
       "goal": "Taobao app in the foreground showing search results for the requested product.",
       "acceptance": "淘宝已在前台（com.taobao.taobao）",
-      "probes": ["foreground"],
-      "plan": "- [ ] 打开淘宝并搜索 {商品}\n  - verify: 淘宝已在前台 [probe: foreground][app: com.taobao.taobao]\n  - path 1 [cost=4 kind=primary]: open_app 淘宝 → 顶部搜索框输入 {商品} → 点搜索 → 等待结果列表加载\n  - path 2 [cost=5 kind=alternative]: open_app 淘宝 → 首页点顶部搜索框 → 语音/键盘输入 {商品} → 回车搜索",
+      "probes": [
+        "foreground"
+      ],
+      "plan": "- [ ] 打开淘宝并搜索 蓝牙耳机\n  - verify: 淘宝已在前台 [probe: foreground][app: com.taobao.taobao]\n  - path 1 [cost=4 kind=primary]: open_app 淘宝 → 顶部搜索框输入 蓝牙耳机 → 点搜索 → 等待结果列表加载\n  - path 2 [cost=5 kind=alternative]: open_app 淘宝 → 首页点顶部搜索框 → 语音/键盘输入 蓝牙耳机 → 回车搜索",
       "pitfalls": [
-        "{商品} 由 VLM 从用户指令里填。",
+        "本 recipe 是具体实例（蓝牙耳机）；真实会话由 VLM 从用户指令里提取目标并替换，不要把示例值照抄进新计划。",
         "淘宝启动有开屏广告和首页秒杀弹窗——先关弹窗再点搜索框。",
         "搜索结果页有「综合/销量/价格」筛选条，不用动；确认已进入结果列表即可。"
       ],
@@ -442,17 +697,25 @@
     },
     {
       "id": "jd-search",
-      "intent": "用京东搜索指定商品",
-      "aliases": ["京东", "京东搜索", "京东商城", "jd", "jingdong"],
+      "intent": "用京东搜索机械键盘",
+      "aliases": [
+        "京东",
+        "京东搜索",
+        "京东商城",
+        "jd",
+        "jingdong"
+      ],
       "device_bucket": "default",
       "status": "unverified",
       "verified_on": "",
       "goal": "JD app in the foreground showing search results for the requested product.",
       "acceptance": "京东已在前台（com.jingdong.app.mall）",
-      "probes": ["foreground"],
-      "plan": "- [ ] 打开京东并搜索 {商品}\n  - verify: 京东已在前台 [probe: foreground][app: com.jingdong.app.mall]\n  - path 1 [cost=4 kind=primary]: open_app 京东 → 顶部搜索框输入 {商品} → 点搜索 → 等结果列表\n  - path 2 [cost=5 kind=alternative]: open_app 京东 → 点搜索框 → 输入 {商品} → 回车",
+      "probes": [
+        "foreground"
+      ],
+      "plan": "- [ ] 打开京东并搜索 机械键盘\n  - verify: 京东已在前台 [probe: foreground][app: com.jingdong.app.mall]\n  - path 1 [cost=4 kind=primary]: open_app 京东 → 顶部搜索框输入 机械键盘 → 点搜索 → 等结果列表\n  - path 2 [cost=5 kind=alternative]: open_app 京东 → 点搜索框 → 输入 机械键盘 → 回车",
       "pitfalls": [
-        "{商品} 由 VLM 从用户指令里填。",
+        "本 recipe 是具体实例（机械键盘）；真实会话由 VLM 从用户指令里提取目标并替换，不要把示例值照抄进新计划。",
         "京东有开屏广告和领红包弹窗——先关掉再搜。",
         "确认进入结果列表即达成，不必纠结筛选条。"
       ],
@@ -464,17 +727,27 @@
     },
     {
       "id": "qqmusic-play",
-      "intent": "用QQ音乐播放指定歌曲",
-      "aliases": ["QQ音乐", "qq音乐", "QQ Music", "播放歌曲", "播放", "play song"],
+      "intent": "用QQ音乐播放周深的歌",
+      "aliases": [
+        "QQ音乐",
+        "qq音乐",
+        "QQ Music",
+        "播放歌曲",
+        "播放",
+        "play song"
+      ],
       "device_bucket": "default",
       "status": "unverified",
       "verified_on": "",
       "goal": "QQ Music app in the foreground playing the requested song.",
       "acceptance": "QQ音乐已在前台（com.tencent.qqmusic）且 media_session 正在播放",
-      "probes": ["foreground", "media_session"],
-      "plan": "- [ ] 打开QQ音乐并播放 {歌曲}\n  - verify: QQ音乐已在前台 [probe: foreground][probe: media_session][app: com.tencent.qqmusic]\n  - path 1 [cost=4 kind=primary]: open_app QQ音乐 → 顶部搜索框输入 {歌曲} → 点搜索结果里的歌曲 → 点播放\n  - path 2 [cost=5 kind=alternative]: open_app QQ音乐 → 搜索 {歌曲} → 点「播放全部」或第一首 → 确认正在播放",
+      "probes": [
+        "foreground",
+        "media_session"
+      ],
+      "plan": "- [ ] 打开QQ音乐并播放 周深的歌\n  - verify: QQ音乐已在前台 [probe: foreground][probe: media_session][app: com.tencent.qqmusic]\n  - path 1 [cost=4 kind=primary]: open_app QQ音乐 → 顶部搜索框输入 周深的歌 → 点搜索结果里的歌曲 → 点播放\n  - path 2 [cost=5 kind=alternative]: open_app QQ音乐 → 搜索 周深的歌 → 点「播放全部」或第一首 → 确认正在播放",
       "pitfalls": [
-        "{歌曲} 由 VLM 从用户指令里填（也可能是歌手+歌名的组合）。",
+        "本 recipe 是具体实例（周深的歌）；真实会话由 VLM 从用户指令里提取目标并替换，不要把示例值照抄进新计划。",
         "搜到的是歌曲不是歌单/直播——点带「播放」的结果，不要点进音乐人主页。",
         "先登录引导/续费弹窗要关掉；「播放」后判断依据是 media_session 的 PLAYING 状态 + 前台是 QQ音乐，而不是截图看图标。"
       ],
@@ -486,17 +759,26 @@
     },
     {
       "id": "netease-music-play",
-      "intent": "用网易云音乐播放指定歌曲",
-      "aliases": ["网易云音乐", "网易云", "网易音乐", "netease", "cloud music"],
+      "intent": "用网易云音乐播放晴天",
+      "aliases": [
+        "网易云音乐",
+        "网易云",
+        "网易音乐",
+        "netease",
+        "cloud music"
+      ],
       "device_bucket": "default",
       "status": "unverified",
       "verified_on": "",
       "goal": "NetEase Cloud Music app in the foreground playing the requested song.",
       "acceptance": "网易云音乐已在前台（com.netease.cloudmusic）且 media_session 正在播放",
-      "probes": ["foreground", "media_session"],
-      "plan": "- [ ] 打开网易云音乐并播放 {歌曲}\n  - verify: 网易云音乐已在前台 [probe: foreground][probe: media_session][app: com.netease.cloudmusic]\n  - path 1 [cost=4 kind=primary]: open_app 网易云音乐 → 顶部搜索框输入 {歌曲} → 点歌曲结果 → 点播放\n  - path 2 [cost=5 kind=alternative]: open_app 网易云音乐 → 搜索 {歌曲} → 点「播放入口」或第一首",
+      "probes": [
+        "foreground",
+        "media_session"
+      ],
+      "plan": "- [ ] 打开网易云音乐并播放 晴天\n  - verify: 网易云音乐已在前台 [probe: foreground][probe: media_session][app: com.netease.cloudmusic]\n  - path 1 [cost=4 kind=primary]: open_app 网易云音乐 → 顶部搜索框输入 晴天 → 点歌曲结果 → 点播放\n  - path 2 [cost=5 kind=alternative]: open_app 网易云音乐 → 搜索 晴天 → 点「播放入口」或第一首",
       "pitfalls": [
-        "{歌曲} 由 VLM 从用户指令里填。",
+        "本 recipe 是具体实例（晴天）；真实会话由 VLM 从用户指令里提取目标并替换，不要把示例值照抄进新计划。",
         "网易云搜歌曲需区分音源（有些是 VIP 试听）——点能直接播放的结果。",
         "先关闭登录/会员弹窗；验收看 media_session PLAYING + 前台包名。"
       ],
@@ -508,17 +790,26 @@
     },
     {
       "id": "wechat-message",
-      "intent": "用微信给联系人发消息",
-      "aliases": ["微信", "发微信", "发消息", "发送消息", "wechat", "send message"],
+      "intent": "用微信给妈妈发我到家了",
+      "aliases": [
+        "微信",
+        "发微信",
+        "发消息",
+        "发送消息",
+        "wechat",
+        "send message"
+      ],
       "device_bucket": "default",
       "status": "unverified",
       "verified_on": "",
       "goal": "Message sent to the requested contact in WeChat, confirmation visible.",
       "acceptance": "微信已在前台（com.tencent.mm）且聊天页可见已发送消息",
-      "probes": ["foreground"],
-      "plan": "- [ ] 用微信给 {联系人} 发送 {内容}\n  - verify: 微信已在前台 [probe: foreground][app: com.tencent.mm]\n  - path 1 [cost=5 kind=primary]: open_app 微信 → 顶部搜索框输入 {联系人} → 点进聊天 → 输入 {内容} → 点发送\n  - path 2 [cost=6 kind=alternative]: open_app 微信 → 通讯录找到 {联系人} → 进聊天 → 输入 {内容} → 发送",
+      "probes": [
+        "foreground"
+      ],
+      "plan": "- [ ] 用微信给 妈妈 发送 我到家了\n  - verify: 微信已在前台 [probe: foreground][app: com.tencent.mm]\n  - path 1 [cost=5 kind=primary]: open_app 微信 → 顶部搜索框输入 妈妈 → 点进聊天 → 输入 我到家了 → 点发送\n  - path 2 [cost=6 kind=alternative]: open_app 微信 → 通讯录找到 妈妈 → 进聊天 → 输入 我到家了 → 发送",
       "pitfalls": [
-        "{联系人} 和 {内容} 都由 VLM 从用户指令里填；不要写死。",
+        "本 recipe 是具体实例（给妈妈发『我到家了』）；真实会话由 VLM 从用户指令里提取目标并替换，不要把示例值照抄进新计划。",
         "发送后必须亲眼看到气泡出现在聊天里才算成，而不是只输完文字。",
         "「发送」按钮在输入框旁是按钮不是键盘回车——认准聊天气泡上的发送按钮。",
         "验收是前台包名 + 截图看已发送气泡；没有可读探针判断「消息已发出」。"
@@ -531,17 +822,25 @@
     },
     {
       "id": "douyin-search",
-      "intent": "打开抖音并搜索指定内容",
-      "aliases": ["抖音", "打开抖音", "抖音搜索", "douyin", "tiktok cn"],
+      "intent": "打开抖音搜索美食教程",
+      "aliases": [
+        "抖音",
+        "打开抖音",
+        "抖音搜索",
+        "douyin",
+        "tiktok cn"
+      ],
       "device_bucket": "default",
       "status": "unverified",
       "verified_on": "",
       "goal": "Douyin app in the foreground showing search results for the requested query.",
       "acceptance": "抖音已在前台（com.ss.android.ugc.aweme）",
-      "probes": ["foreground"],
-      "plan": "- [ ] 打开抖音并搜索 {关键词}\n  - verify: 抖音已在前台 [probe: foreground][app: com.ss.android.ugc.aweme]\n  - path 1 [cost=4 kind=primary]: open_app 抖音 → 顶部点搜索图标 → 输入 {关键词} → 点搜索\n  - path 2 [cost=5 kind=alternative]: open_app 抖音 → 底部/顶部搜索入口 → 输入 {关键词} → 选联想词",
+      "probes": [
+        "foreground"
+      ],
+      "plan": "- [ ] 打开抖音并搜索 美食教程\n  - verify: 抖音已在前台 [probe: foreground][app: com.ss.android.ugc.aweme]\n  - path 1 [cost=4 kind=primary]: open_app 抖音 → 顶部点搜索图标 → 输入 美食教程 → 点搜索\n  - path 2 [cost=5 kind=alternative]: open_app 抖音 → 底部/顶部搜索入口 → 输入 美食教程 → 选联想词",
       "pitfalls": [
-        "{关键词} 由 VLM 从用户指令里填。",
+        "本 recipe 是具体实例（美食教程）；真实会话由 VLM 从用户指令里提取目标并替换，不要把示例值照抄进新计划。",
         "抖音启动常有开屏广告/青少年模式弹窗——先关掉。",
         "抖音进入后默认在视频流，搜索入口是右上角放大镜，不是键盘。"
       ],
@@ -553,17 +852,25 @@
     },
     {
       "id": "meituan-search",
-      "intent": "用美团搜索商家或点外卖",
-      "aliases": ["美团", "点外卖", "美团搜索", "美团外卖", "meituan"],
+      "intent": "用美团搜索附近的火锅",
+      "aliases": [
+        "美团",
+        "点外卖",
+        "美团搜索",
+        "美团外卖",
+        "meituan"
+      ],
       "device_bucket": "default",
       "status": "unverified",
       "verified_on": "",
       "goal": "Meituan app in the foreground showing results for the requested merchant/food.",
       "acceptance": "美团已在前台（com.sankuai.meituan）",
-      "probes": ["foreground"],
-      "plan": "- [ ] 打开美团并搜索 {商家或美食}\n  - verify: 美团已在前台 [probe: foreground][app: com.sankuai.meituan]\n  - path 1 [cost=4 kind=primary]: open_app 美团 → 顶部搜索框输入 {商家或美食} → 点搜索 → 等结果列表\n  - path 2 [cost=5 kind=alternative]: open_app 美团 → 首页点搜索框 → 输入 {商家或美食} → 回车",
+      "probes": [
+        "foreground"
+      ],
+      "plan": "- [ ] 打开美团并搜索 附近的火锅\n  - verify: 美团已在前台 [probe: foreground][app: com.sankuai.meituan]\n  - path 1 [cost=4 kind=primary]: open_app 美团 → 顶部搜索框输入 附近的火锅 → 点搜索 → 等结果列表\n  - path 2 [cost=5 kind=alternative]: open_app 美团 → 首页点搜索框 → 输入 附近的火锅 → 回车",
       "pitfalls": [
-        "{商家或美食} 由 VLM 从用户指令里填。",
+        "本 recipe 是具体实例（附近的火锅）；真实会话由 VLM 从用户指令里提取目标并替换，不要把示例值照抄进新计划。",
         "美团启动有定位权限弹窗和红包弹窗——先关掉再点搜索框。",
         "确认进入结果列表即达成；不用纠结筛选/排序条。"
       ],
@@ -575,17 +882,26 @@
     },
     {
       "id": "xiaohongshu-search",
-      "intent": "用小红书搜索指定内容",
-      "aliases": ["小红书", "小红薯", "小红书搜索", "小hong书", "xiaohongshu", "XHS"],
+      "intent": "在小红书搜索露营攻略",
+      "aliases": [
+        "小红书",
+        "小红薯",
+        "小红书搜索",
+        "小hong书",
+        "xiaohongshu",
+        "XHS"
+      ],
       "device_bucket": "default",
       "status": "unverified",
       "verified_on": "",
       "goal": "Xiaohongshu app in the foreground showing results for the requested query.",
       "acceptance": "小红书已在前台（com.xingin.xhs）",
-      "probes": ["foreground"],
-      "plan": "- [ ] 打开小红书并搜索 {关键词}\n  - verify: 小红书已在前台 [probe: foreground][app: com.xingin.xhs]\n  - path 1 [cost=4 kind=primary]: open_app 小红书 → 顶部/底部搜索图标 → 输入 {关键词} → 点搜索\n  - path 2 [cost=5 kind=alternative]: open_app 小红书 → 点搜索框 → 输入 {关键词} → 选联想词",
+      "probes": [
+        "foreground"
+      ],
+      "plan": "- [ ] 打开小红书并搜索 露营攻略\n  - verify: 小红书已在前台 [probe: foreground][app: com.xingin.xhs]\n  - path 1 [cost=4 kind=primary]: open_app 小红书 → 顶部/底部搜索图标 → 输入 露营攻略 → 点搜索\n  - path 2 [cost=5 kind=alternative]: open_app 小红书 → 点搜索框 → 输入 露营攻略 → 选联想词",
       "pitfalls": [
-        "{关键词} 由 VLM 从用户指令里填。",
+        "本 recipe 是具体实例（露营攻略）；真实会话由 VLM 从用户指令里提取目标并替换，不要把示例值照抄进新计划。",
         "小红书启动有开屏广告/新用户引导——先关掉。",
         "搜索入口常见在顶部放大镜或底部「搜索」Tab，逐屏找一次。"
       ],
@@ -597,17 +913,25 @@
     },
     {
       "id": "pdd-search",
-      "intent": "用拼多多搜索指定商品",
-      "aliases": ["拼多多", "拼夕夕", "拼多多搜索", "pinduoduo", "pdd"],
+      "intent": "用拼多多搜索蓝牙音箱",
+      "aliases": [
+        "拼多多",
+        "拼夕夕",
+        "拼多多搜索",
+        "pinduoduo",
+        "pdd"
+      ],
       "device_bucket": "default",
       "status": "unverified",
       "verified_on": "",
       "goal": "Pinduoduo app in the foreground showing results for the requested product.",
       "acceptance": "拼多多已在前台（com.xunmeng.pinduoduo）",
-      "probes": ["foreground"],
-      "plan": "- [ ] 打开拼多多并搜索 {商品}\n  - verify: 拼多多已在前台 [probe: foreground][app: com.xunmeng.pinduoduo]\n  - path 1 [cost=4 kind=primary]: open_app 拼多多 → 顶部搜索框输入 {商品} → 点搜索 → 等结果\n  - path 2 [cost=5 kind=alternative]: open_app 拼多多 → 点搜索框 → 输入 {商品} → 回车",
+      "probes": [
+        "foreground"
+      ],
+      "plan": "- [ ] 打开拼多多并搜索 蓝牙音箱\n  - verify: 拼多多已在前台 [probe: foreground][app: com.xunmeng.pinduoduo]\n  - path 1 [cost=4 kind=primary]: open_app 拼多多 → 顶部搜索框输入 蓝牙音箱 → 点搜索 → 等结果\n  - path 2 [cost=5 kind=alternative]: open_app 拼多多 → 点搜索框 → 输入 蓝牙音箱 → 回车",
       "pitfalls": [
-        "{商品} 由 VLM 从用户指令里填。",
+        "本 recipe 是具体实例（蓝牙音箱）；真实会话由 VLM 从用户指令里提取目标并替换，不要把示例值照抄进新计划。",
         "拼多多有开屏广告和领现金弹窗——先关掉再搜。",
         "确认进入搜索结果列表即达成，不点任何「拼单/购买」按钮。"
       ],
@@ -619,17 +943,25 @@
     },
     {
       "id": "bilibili-search",
-      "intent": "用哔哩哔哩搜索指定视频",
-      "aliases": ["哔哩哔哩", "b站", "bilibili", "B站", "搜索视频"],
+      "intent": "用哔哩哔哩搜索琅琊榜",
+      "aliases": [
+        "哔哩哔哩",
+        "b站",
+        "bilibili",
+        "B站",
+        "搜索视频"
+      ],
       "device_bucket": "default",
       "status": "unverified",
       "verified_on": "",
       "goal": "Bilibili app in the foreground showing results for the requested video query.",
       "acceptance": "哔哩哔哩已在前台（tv.danmaku.bili）",
-      "probes": ["foreground"],
-      "plan": "- [ ] 打开哔哩哔哩并搜索 {关键词}\n  - verify: 哔哩哔哩已在前台 [probe: foreground][app: tv.danmaku.bili]\n  - path 1 [cost=4 kind=primary]: open_app 哔哩哔哩 → 顶部搜索框输入 {关键词} → 点搜索 → 等结果\n  - path 2 [cost=5 kind=alternative]: open_app 哔哩哔哩 → 点搜索入口 → 输入 {关键词} → 选联想词",
+      "probes": [
+        "foreground"
+      ],
+      "plan": "- [ ] 打开哔哩哔哩并搜索 琅琊榜\n  - verify: 哔哩哔哩已在前台 [probe: foreground][app: tv.danmaku.bili]\n  - path 1 [cost=4 kind=primary]: open_app 哔哩哔哩 → 顶部搜索框输入 琅琊榜 → 点搜索 → 等结果\n  - path 2 [cost=5 kind=alternative]: open_app 哔哩哔哩 → 点搜索入口 → 输入 琅琊榜 → 选联想词",
       "pitfalls": [
-        "{关键词} 由 VLM 从用户指令里填。",
+        "本 recipe 是具体实例（琅琊榜）；真实会话由 VLM 从用户指令里提取目标并替换，不要把示例值照抄进新计划。",
         "B站有开屏广告/青少年模式弹窗——先关掉。",
         "确认进入搜索结果列表即达成，不点进具体视频也算完成搜索任务。"
       ],
@@ -641,17 +973,25 @@
     },
     {
       "id": "weibo-search",
-      "intent": "用微博搜索指定内容",
-      "aliases": ["微博", "新浪微博", "微博搜索", "weibo", "sina weibo"],
+      "intent": "用微博搜索演唱会",
+      "aliases": [
+        "微博",
+        "新浪微博",
+        "微博搜索",
+        "weibo",
+        "sina weibo"
+      ],
       "device_bucket": "default",
       "status": "unverified",
       "verified_on": "",
       "goal": "Weibo app in the foreground showing results for the requested query.",
       "acceptance": "微博已在前台（com.sina.weibo）",
-      "probes": ["foreground"],
-      "plan": "- [ ] 打开微博并搜索 {关键词}\n  - verify: 微博已在前台 [probe: foreground][app: com.sina.weibo]\n  - path 1 [cost=4 kind=primary]: open_app 微博 → 顶部/发现页搜索框输入 {关键词} → 点搜索\n  - path 2 [cost=5 kind=alternative]: open_app 微博 → 点搜索图标 → 输入 {关键词} → 选热词",
+      "probes": [
+        "foreground"
+      ],
+      "plan": "- [ ] 打开微博并搜索 演唱会\n  - verify: 微博已在前台 [probe: foreground][app: com.sina.weibo]\n  - path 1 [cost=4 kind=primary]: open_app 微博 → 顶部/发现页搜索框输入 演唱会 → 点搜索\n  - path 2 [cost=5 kind=alternative]: open_app 微博 → 点搜索图标 → 输入 演唱会 → 选热词",
       "pitfalls": [
-        "{关键词} 由 VLM 从用户指令里填。",
+        "本 recipe 是具体实例（演唱会）；真实会话由 VLM 从用户指令里提取目标并替换，不要把示例值照抄进新计划。",
         "微博搜索入口在首页顶部或「发现」Tab，登录弹窗先关掉。",
         "确认进入搜索结果列表即达成。"
       ],
@@ -663,17 +1003,24 @@
     },
     {
       "id": "kuaishou-search",
-      "intent": "用快手搜索指定内容",
-      "aliases": ["快手", "快手搜索", "kuaishou", "kwai"],
+      "intent": "用快手搜索农村美食",
+      "aliases": [
+        "快手",
+        "快手搜索",
+        "kuaishou",
+        "kwai"
+      ],
       "device_bucket": "default",
       "status": "unverified",
       "verified_on": "",
       "goal": "Kuaishou app in the foreground showing results for the requested query.",
       "acceptance": "快手已在前台（com.smile.gifmaker）",
-      "probes": ["foreground"],
-      "plan": "- [ ] 打开快手并搜索 {关键词}\n  - verify: 快手已在前台 [probe: foreground][app: com.smile.gifmaker]\n  - path 1 [cost=4 kind=primary]: open_app 快手 → 顶部搜索图标 → 输入 {关键词} → 点搜索\n  - path 2 [cost=5 kind=alternative]: open_app 快手 → 点搜索入口 → 输入 {关键词} → 选联想词",
+      "probes": [
+        "foreground"
+      ],
+      "plan": "- [ ] 打开快手并搜索 农村美食\n  - verify: 快手已在前台 [probe: foreground][app: com.smile.gifmaker]\n  - path 1 [cost=4 kind=primary]: open_app 快手 → 顶部搜索图标 → 输入 农村美食 → 点搜索\n  - path 2 [cost=5 kind=alternative]: open_app 快手 → 点搜索入口 → 输入 农村美食 → 选联想词",
       "pitfalls": [
-        "{关键词} 由 VLM 从用户指令里填。",
+        "本 recipe 是具体实例（农村美食）；真实会话由 VLM 从用户指令里提取目标并替换，不要把示例值照抄进新计划。",
         "快手启动有开屏广告/青少年模式弹窗——先关掉。",
         "搜索入口是顶部放大镜，进入结果列表即达成。"
       ],
@@ -685,17 +1032,24 @@
     },
     {
       "id": "iqiyi-search",
-      "intent": "用爱奇艺搜索指定影视",
-      "aliases": ["爱奇艺", "爱奇艺搜索", "iqiyi", "搜索影视"],
+      "intent": "用爱奇艺搜索琅琊榜",
+      "aliases": [
+        "爱奇艺",
+        "爱奇艺搜索",
+        "iqiyi",
+        "搜索影视"
+      ],
       "device_bucket": "default",
       "status": "unverified",
       "verified_on": "",
       "goal": "iQiyi app in the foreground showing results for the requested title.",
       "acceptance": "爱奇艺已在前台（com.qiyi.video）",
-      "probes": ["foreground"],
-      "plan": "- [ ] 打开爱奇艺并搜索 {影视名称}\n  - verify: 爱奇艺已在前台 [probe: foreground][app: com.qiyi.video]\n  - path 1 [cost=4 kind=primary]: open_app 爱奇艺 → 顶部搜索框输入 {影视名称} → 点搜索 → 等结果\n  - path 2 [cost=5 kind=alternative]: open_app 爱奇艺 → 点搜索入口 → 输入 {影视名称} → 回车",
+      "probes": [
+        "foreground"
+      ],
+      "plan": "- [ ] 打开爱奇艺并搜索 琅琊榜\n  - verify: 爱奇艺已在前台 [probe: foreground][app: com.qiyi.video]\n  - path 1 [cost=4 kind=primary]: open_app 爱奇艺 → 顶部搜索框输入 琅琊榜 → 点搜索 → 等结果\n  - path 2 [cost=5 kind=alternative]: open_app 爱奇艺 → 点搜索入口 → 输入 琅琊榜 → 回车",
       "pitfalls": [
-        "{影视名称} 由 VLM 从用户指令里填。",
+        "本 recipe 是具体实例（琅琊榜）；真实会话由 VLM 从用户指令里提取目标并替换，不要把示例值照抄进新计划。",
         "爱奇艺有开屏广告和会员弹窗——先关掉再搜。",
         "确认进入搜索结果页即达成，不点进正片也算完成搜索任务。"
       ],
