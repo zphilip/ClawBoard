@@ -446,3 +446,254 @@ and **real LangGraph runtime** (out of scope by design).
 
 Still open (unchanged): Phase 3 async+visual summaries; checker skip-on-replay;
 plan-grammar completeness; doc/config drift; Tier 2/3 matching escalation.
+
+---
+
+## 9. Gap report — status as of 2026-11-01 (post probe_device + check-item port)
+
+### 9.1 Closed since §8
+
+- **`probe_device` (read-only enumerated probes)** — `runner/probes.py` mirrors
+  upstream `agents/checker/checker.py`: `PROBES` table (`alarms/battery/
+  foreground/notifications/audio/setting/content/packages/prop`), regex-validated
+  `build_probe_argv` (shell injection structurally impossible), `derive_probes`
+  (`[probe: …]` hints + keyword rules), `summarize_probe_output` (decisive-lines
+  filter + truncation). Added `audio` probe (`dumpsys audio`) that upstream lacks
+  as the canonical mute signal.
+- **Check-item grammar** — `runner/planner.py` now parses `- verify:` /
+  `- assert:` / `- verify@end:` into `CheckItem(kind, when, text, parent_key)`,
+  anchors to milestones, and teaches the grammar + a `[probe: audio]` state-change
+  example in `_PLAN_GRAMMAR_BASE`.
+- **Checker threads check-items + probes** — `call_checker(..., check_items,
+  probe_results)`; `artemis_agent.py` `_snapshot_check_items` + `_run_check_probes`
+  + `_call_checker_with_probes` wired into the final Checker and all 4 arbitration
+  sites. `_unjudged_check_items` backfills verdicts on LLM/parse failure.
+
+### 9.2 Remaining gap vs upstream Checker architecture
+
+The probe tool itself is ported, but the **verification architecture around it**
+is still a simplified single-shot audit. These are `probe_device`-class gaps —
+state/evidence mechanisms, not cosmetics:
+
+| # | Upstream mechanism (`agents/checker/checker.py`, `utils/plan_grammar.py`) | v2 today | Impact |
+|---|---|---|---|
+| 1 | **Checkpoint audit** — `run_checkpoint_check` at each milestone completion; evidence **anchored** (anchor step pre-action shot + previous post state + persistent probes); checkpoint deliberately has **no live-screen access** | One `call_checker` at task exit; `on_complete` + `@end` collapse into a single audit against the **final** screenshot | Transient states (toasts, dialogs, ordering) can't be judged after the device moved on |
+| 2 | **`verify` repair loop** — failed `on_complete` verify sends its milestone back for re-execution | Prompt/SKILL *say* this, but no re-execution exists; a failed verify only flips final status to `checker_failed` | The agent can't self-correct a missed state change |
+| 3 | **Agentic Checker tool loop** — Checker iterates (`CHECKER_MAX_ITERATIONS`) and calls `search_history`/`replay_steps`/`get_step_screenshot`/`read_note`/`probe_device` itself | Single-shot LLM call; probes pre-run by `_run_check_probes` and passed as static text | Can't issue a follow-up probe when the first is indecisive (needs both `audio` **and** `setting global zen_mode`); can't query step history/screenshots |
+| 4 | **Node-side verdict hygiene + fail-open release** — `verdicts_allow_release` (release computed outside the model), `_normalize_report` (evidence-less `failed` → `inconclusive`; every item gets a verdict), `unmet_subgoals` list | Outcome keys on model `goal_achieved`; vague `failed` **not** downgraded; no `unmet_subgoals` | A hallucinated failure wrongly sets `status=checker_failed` |
+| 5 | **Finding-line projection** — `FINDING_LINE_RE` + `strip/apply_finding_lines` re-project unresolved verify findings into the plan (single-direction, idempotent) | Absent | Failed verify has no persistent "what's still wrong" line for the operator |
+| 6 | **Check-item mutation guards** — `missing_check_items`/`check_items_changed`/`restore_missing_check_items` prevent plan rewrites from silently deleting/rewriting declared check lines | Absent | A plan regeneration silently drops the acceptance contract |
+| 7 | **`disable_device_probes` config toggle** — upstream `probes_enabled` / `execution_setup.disable_device_probes` | Always probes when check items exist | Can't skip probes on devices lacking `dumpsys` privilege |
+| 8 | **Conditional prompt segment assembly + assert semantics** — verify/assert/anchor/final/probe segments assembled conditionally; `assert` taught precondition-first (never `failed` for missing evidence; device-defect attribution) | Monolithic system prompt; `assert` ≈ `verify`; no precondition-in-history rule | Mis-judged `assert` as execution failure vs. device defect |
+
+Minor (non-blocking): `PlanSnapshot` lacks `has_top_level`/`continuous_top_level`/
+`first_active`/`last_active`/`parent_of`/`active_leaf`; `PlanItem.key` imports
+`hashlib` inside the property (hot path); `probe_results` is keyed by check-item
+**text**, so two identical texts collide.
+
+### 9.3 Priority order for the next round (same logic as always: value ÷ complexity)
+
+1. **Gap 1 + 2 (checkpoint audit + verify repair loop)** — this is the actual fix
+   for "mute took several rounds to find the setting"; judging at completion with
+   anchored evidence and repairing a failed milestone is the whole point of
+   `on_complete`. Highest value; medium complexity (needs per-milestone hook +
+   re-open-milestone logic).
+2. **Gap 4 (verdict hygiene + fail-open release + `unmet_subgoals`)** — cheap,
+   pure-function change; closes the hallucinated-failure false-negative.
+3. **Gap 6 + 5 (mutation guards + finding lines)** — cheap grammar helpers;
+   make the acceptance contract un-deletable and visible.
+4. **Gap 3 (agentic Checker loop)** — biggest complexity, smaller marginal value
+   given probes are pre-derived; do only if the pre-run probes prove insufficient.
+5. **Gap 7 + 8 (config toggle + prompt segments/assert semantics)** — trivial
+   hygiene, bundle with any touching of `checker.py`/`config.json`.
+
+---
+
+## 10. Implementation plans for gaps 1–4 (deep-dive, 2026-11-01)
+
+Authority: `artemis/agents/checker/{checker.py,checker.json}`,
+`artemis/graph/checkpoints.py`, `artemis/graph/graph.py`
+(exit-settlement), `artemis/utils/plan_grammar.py`. All plans keep v2
+stdlib-only + synchronous; "concurrent checkpoints" collapse to in-line calls
+because ADB is serial anyway.
+
+---
+
+### Gap 1 — Checkpoint audit at milestone completion (anchored evidence, no live screen)
+
+**Upstream mechanism (ground truth):**
+- `queue_checkpoints()` runs at plan-write time. For every top-level subgoal that
+  just flipped to `[x]` *and* carries `on_complete` check items, it enqueues a
+  `PendingCheckpoint(checkpoint_id=subgoal_hash, subgoal_text, check_items,
+  plan_text, trigger_ts)`.
+- Spawning is **deferred** to after the turn's step is recorded, so the
+  `EvidenceAnchor(anchor_step_id, trigger_ts, plan_text)` points at the right
+  step (not the previous turn).
+- `run_checkpoint_check` audits the milestone with the tool table + prompt
+  **denying live-screen access** — evidence is the anchored history (anchor
+  step's pre screenshot + preceding step's post state) + persistent probes.
+  The `anchor_guide` prompt segment codifies: transient states MUST be read from
+  history, never from the current screen.
+
+**v2 adaptation:**
+
+1. New `runner/checkpoints.py` (stdlib): `EvidenceAnchor`, `PendingCheckpoint`,
+   `CheckpointRun` dataclasses; JSONL ledger `memory/check_ledger.jsonl`
+   (`append_ledger_record`/`read_ledger` — append-only, mirror upstream);
+   config accessors (`midway_checks_enabled`, `checkpoint_max_repairs`,
+   `checkpoint_timeout`).
+2. New `call_checkpoint_check(...)` in `runner/checker.py` (or a thin wrapper in
+   `checkpoints.py`): same engine as `call_checker` but
+   - `screenshot_path=""` (no live screen),
+   - `check_items=` **only** the milestone's `on_complete` items
+     (`snapshot.check_items_of(item)`),
+   - `probe_results=_run_check_probes(on_complete items)`,
+   - prompt gains the `anchor_guide` / `verify_semantics` segments (Gap 8).
+3. Hook in the pro loop right after `apply_plan_updates(...)`:
+   diff `parse_plan(before)` vs `parse_plan(after)`; for each top-level milestone
+   that flipped `[/]→[x]` with `check_items_of(item)` non-empty, run
+   `call_checkpoint_check` **inline** and append verdicts to the ledger.
+   Anchor = current `step` count + the action description just executed (v2 has
+   no per-step screenshot ledger; a `step_index` anchor is the cheap first cut).
+4. Config: `checks.midway_enabled` (default `true` in `pro`, `false` in `flash`).
+
+**Acceptance:** a `pro` run whose plan carries `- verify: 铃声已静音 [probe: audio]`
+under the mute milestone fires one checkpoint audit at the moment that milestone
+is marked `[x]`, with no live screenshot, judged by `dumpsys audio`.
+
+---
+
+### Gap 2 — `verify` repair loop (re-open failed milestones; bounded retries)
+
+**Upstream mechanism:**
+- `harvest_run` computes `verify_failures`; if any and the subgoal is still
+  current and the run isn't user-stopped, and `repairs < checkpoint_max_repairs`
+  (default **2**): `revert_subgoal_status()` flips `[x]→[/]`, registers a
+  standing `- finding:` headline, writes the `checker-<id>` repair-log note, and
+  injects `operator_feedback` findings (+ the failed verdict's `suggestion`).
+  Quota exhausted → leave `[x]`, stop repairing.
+- Final check (`exit_settlement_node`): `passed = verdicts_allow_release(report)
+  and not report.unmet_subgoals`. If not passed and attempts <
+  `final_check_max_attempts` (3) and no stop/halt latched: `revert_subgoal_status`
+  every `unmet_subgoals` entry + inject findings, route **continue** (re-enter
+  the loop). Else: BLOCKED outcome with the last findings.
+- `resolve_item_status`: verify = **latest substantive verdict wins**
+  (repaired-then-passed ⇒ passed); assert = first failure is permanent.
+
+**v2 adaptation:**
+
+1. `revert_subgoal_status(plan_text, subgoal_key) -> tuple[str,bool]` pure
+   function in `runner/planner.py` (regex-flip top-level `[x]→[/]` whose
+   `subgoal_hash` matches).
+2. In the checkpoint hook (Gap 1): on any `failed` verify with non-empty
+   evidence, and `repairs_used[milestone_key] < checkpoint_max_repairs`:
+   - `plan_text = revert_subgoal_status(...)`,
+   - append `[verify failed] <criterion>: <evidence> Suggestion: <suggestion>` to
+     the next Operator prompt as recovery feedback,
+   - record `repairs_used += 1` + ledger record.
+   The existing `while` loop then re-runs the milestone.
+3. In the final Checker path (`~artemis_agent.py:2238`): replace the raw
+   `checker_result["goal_achieved"]` decision with `verdicts_allow_release` (Gap
+   4); on unmet verify criteria with attempts `< final_check_max_attempts`:
+   revert unmet subgoals + set `end_reason` so the loop continues; else
+   `checker_failed`/`blocked`.
+4. Fold `resolve_item_status` + a `TestSummary` (passed/failed/inconclusive/
+   unchecked + failed_items) into `post_run_report.py` from the ledger, so a
+   repaired-then-passed item reads `passed`.
+
+**Acceptance:** when a checkpoint verify fails with evidence, the milestone is
+set back to `[/]`, the finding + suggestion reach the operator, and the
+milestone is re-attempted (max 2 repairs) before the run is allowed to settle.
+
+---
+
+### Gap 3 — Agentic Checker tool loop (probe/history tools the Checker drives)
+
+**Upstream mechanism:**
+- `_run_check_loop` iterates to `CHECKER_MAX_ITERATIONS`: `llm.bind_tools(tools)`;
+  if a turn has no tool calls → emit the structured `CheckReport`; else execute
+  each tool call and feed `ToolMessage`s back; final iteration forces a verdict;
+  `_normalize_report` sanitises after the loop.
+- `build_checker_tools(ctx, entry)` assembles a **read-only** table:
+  `search_history`, `replay_steps`, `get_step_screenshot`, `read_note` +
+  `probe_device` (registration is gated by `probes_enabled`).
+- Structured output via pydantic `CheckVerdict`/`CheckReport`.
+
+**v2 adaptation (stage-gated; stdlib only, no pydantic):**
+
+*Stage 3a — bounded re-probe (do first, small):*
+1. Extend `_run_check_probes` to run **every** derived probe candidate per item
+   (union of `[probe:]` hints + keyword matches), not just the first — e.g. mute
+   yields both `dumpsys audio` and `settings get global zen_mode` evidence.
+2. Add an optional `"probe_more": [{"kind","params"},...]` field to the Checker
+   JSON schema; after a first `call_checker`, if the response requests more
+   probes, run them via `build_probe_argv` (still enumerated/safe) and re-invoke
+   the checker once with the extra evidence. Cap at `checker_max_rounds` (2).
+
+*Stage 3b — full loop (later, only if 3a insufficient):*
+3. New `runner/checker_loop.py` mirroring `_run_check_loop`: loop with tool
+   functions `probe_device` (enum via `build_probe_argv`), `read_note`
+   (`runner/notes.py`), `search_history` (over `actions[]` + ledger),
+   `get_step_screenshot` (from `screenshots_dir`). Tool calls are plain-JSON
+   (not actual langchain tools); each returns one string; iterations capped;
+   final turn forced to a verdict dict.
+4. Reuse the ledger + `_normalize_checker_result` (Gap 4) as the structured
+   `CheckReport` equivalent.
+
+**Acceptance:** a checkpoint whose first probe is indecisive can follow up (e.g.
+`dumpsys audio` truncated → `settings get global zen_mode`) and converge, instead
+of guessing. The 0-tool-call fast path remains for simple items.
+
+---
+
+### Gap 4 — Node-side verdict hygiene + fail-open release separation
+
+**Upstream mechanism:**
+- `verdicts_allow_release(report)`: `all(v.status ∈ {passed,inconclusive} for
+  verify items)` — computed **outside** the model; releasing never rewrites a
+  verdict value. Assert failures never block release.
+- `_normalize_report`: a `failed` verdict with blank evidence → downgraded to
+  `inconclusive` ("failed verdict lacked concrete evidence; downgraded"); every
+  declared item is guaranteed a verdict (missing → `inconclusive`).
+- `CheckReport.unmet_subgoals` (final only): plan subgoals marked `[x]` whose
+  verify criteria are demonstrably unmet.
+- `resolve_item_status` + `TestSummary`/`RunOutcome` (machine-readable outcome).
+
+**v2 adaptation (cheap, pure functions in `runner/checker.py`):**
+
+1. `normalize_checker_result(parsed, check_items)`: downgrade evidence-less
+   `failed` to `inconclusive`; backfill missing per-item verdicts; drop duplicate
+   verdicts.
+2. `verdicts_allow_release(check_items, verdicts)`: returns
+   `all(v.status in {"passed","inconclusive"} for verify items)`.
+3. Add `unmet_subgoals: []` to the Checker JSON schema and thread it through
+   `call_checker`'s parsed dict.
+4. Change every release decision (`_call_checker_with_probes` arbitration + pro
+   final Checker) from `parsed["goal_achieved"]` to
+   `verdicts_allow_release(parsed["check_items"])`; keep `goal_achieved` purely
+   as a human-facing summary. This is what stops a single hallucinated failure
+   from flipping `status=checker_failed`.
+5. Add `resolve_item_status(kind, records)` + `TestSummary` to
+   `runner/post_run_report.py` fed from `memory/check_ledger.jsonl`.
+
+**Acceptance:** unit tests (mirror upstream `test_checker.py`
+`test_verdicts_allow_release_semantics`): a report with a blank-evidence
+`failed` verify is released (fail-open) but recorded `inconclusive`; a failed
+assert never blocks release; every declared item resolves to a status.
+
+---
+
+### Suggested build order & effort
+
+| Step | Gaps | Effort | Depends on |
+|---|---|---|---|
+| A. `runner/plan_grammar` helpers: `revert_subgoal_status`, finding lines, mutation guards | 2,§9.2(5,6) | small | — |
+| B. `normalize_checker_result` + `verdicts_allow_release` + `unmet_subgoals` | **4** | small | — |
+| C. `runner/checkpoints.py` (ledger, anchor) + `call_checkpoint_check` | **1** | medium | B |
+| D. Checkpoint-hook repair loop in the pro loop | **2** | medium | A,C |
+| E. Stage-3a bounded re-probe | **3** | medium | C |
+| F. Final-check re-entry loop (`route=continue`) | 2 | medium | A,B |
+
+A+B ship independently and immediately remove the false-negative class; C+D
+deliver the actual "state-at-completion" fix; E is a follow-on only if pre-run
+probes prove insufficient.

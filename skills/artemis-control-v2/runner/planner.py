@@ -734,6 +734,54 @@ def build_planner_system_prompt() -> str:
 
 
 # ---------------------------------------------------------------------------
+# Training playbook injection
+# ---------------------------------------------------------------------------
+
+def build_playbook_block(instruction: str) -> str:
+    """Render a curated training-playbook recipe for a matching goal, if any.
+
+    Returns ``""`` when there is no match or the playbook can't be loaded. The
+    recipe is injected as *reference material*, never as an order: the planner
+    must still emit its own ``- path`` lines, and a generated plan that drifts
+    into a banned first action is rejected by ``memory.playbook.validate_plan``.
+    """
+    try:
+        from memory.playbook import find_task, load_playbook
+
+        tasks = load_playbook()
+    except Exception:
+        return ""
+    task = find_task(tasks, instruction)
+    if not task:
+        return ""
+
+    status = task.status or "unverified"
+    trust = "device-verified" if status == "verified" else "reference (NOT device-verified)"
+    lines = [
+        "",
+        "## Training playbook reference",
+        f"Matched recipe `{task.id}` (status={status}, {trust})." if task.id else "Matched recipe (status=unknown).",
+    ]
+    if task.id:
+        lines[-1] = f"Matched recipe `{task.id}` (status={status}, {trust})."
+    if task.goal:
+        lines.append(f"- goal: {task.goal}")
+    if task.acceptance:
+        lines.append(f"- acceptance: {task.acceptance}")
+    if task.probes:
+        lines.append(f"- probes: {'; '.join(task.probes)}")
+    if task.plan:
+        lines.append("Recipe plan:")
+        lines.append(task.plan.strip())
+    if task.pitfalls:
+        lines.append("Pitfalls (from prior device runs):")
+        lines.extend(f"- {p}" for p in task.pitfalls)
+    if task.guardrails:
+        lines.append(f"Guardrails (enforced): {task.guardrails}")
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
 # Plan generation
 # ---------------------------------------------------------------------------
 
@@ -790,14 +838,35 @@ def generate_plan(
     started = _time.monotonic()
     deadline = started + max(1.0, float(total_budget))
     system_prompt = build_planner_system_prompt()
-    user_prompt = f"Goal: {instruction}\n\nGenerate a task plan for this Android automation goal based on the screenshot showing the current device state."
+    playbook_block = build_playbook_block(instruction)
+    base_prompt = (
+        f"Goal: {instruction}\n\n"
+        "Generate a task plan for this Android automation goal based on the screenshot showing the current device state."
+    )
+    user_prompt = base_prompt + playbook_block
 
     last_error = ""
-    corrective = False  # the one-shot strategy-ladder re-ask has not fired yet
+    corrective = ""  # "" = none; "ladder"/"guardrail" = which one-shot re-ask fired
 
     def _budget_spent() -> bool:
         """True when less than a couple of seconds remain in the total budget."""
         return (deadline - _time.monotonic()) <= 2.0
+
+    def _playbook_guardrail_violations(plan_text: str) -> list[str]:
+        """Guardrail violations for the playbook recipe matching ``instruction``.
+
+        Returns ``[]`` when no recipe matches or the playbook is unavailable, so
+        unmatched goals are unaffected.
+        """
+        try:
+            from memory.playbook import find_task, load_playbook, validate_plan
+
+            task = find_task(load_playbook(), instruction)
+        except Exception:
+            return []
+        if not task:
+            return []
+        return validate_plan(task, plan_text)
 
     def _call(prompt_timeout: float) -> tuple[Optional[str], str]:
         """Call the VLM, passing the optional knobs only if it accepts them.
@@ -849,6 +918,29 @@ def generate_plan(
         is_valid, error_msg = validate_plan_format(plan_text)
         if is_valid:
             snapshot = parse_plan(plan_text)
+            # Machine-checked playbook guardrails are ENFORCED — a plan that
+            # copies a banned first action (e.g. VOLUME_UP when the goal is to
+            # mute) is rejected, not executed. Re-ask ONCE.
+            guardrail_hits = [] if corrective else _playbook_guardrail_violations(plan_text)
+            if guardrail_hits and attempt < max(1, max_retries) and not _budget_spent():
+                details = "\n".join(f"- {v}" for v in guardrail_hits)
+                _log(
+                    f"[planner] plan violates training-playbook guardrails —"
+                    " re-asking once"
+                )
+                corrective = "guardrail"
+                last_error = "plan violated the training playbook guardrails"
+                user_prompt = (
+                    base_prompt
+                    + playbook_block
+                    + "\n\nYour previous plan was REJECTED by machine-checked"
+                    " guardrails:\n"
+                    + details
+                    + "\n\nRewrite the WHOLE plan so every `- path` complies with"
+                    " the guardrails above and keeps a `- verify:` line tagged"
+                    " `[probe: ...]`. Output ONLY the corrected plan."
+                )
+                continue
             # A state-change milestone without a strategy ladder means the
             # executor has no fallback when the chosen UI control does not exist
             # on this skin. Re-ask ONCE (asking twice is what made planning slow
@@ -860,17 +952,18 @@ def generate_plan(
                     f"[planner] {len(missing)} state milestone(s) lack a strategy"
                     " ladder — re-asking once with a corrective instruction"
                 )
-                corrective = True
+                corrective = "ladder"
                 last_error = "plan lacked a strategy ladder for state milestones"
                 user_prompt = (
-                    f"Goal: {instruction}\n\n"
-                    "Your previous plan was rejected: the milestones below change "
-                    "device state but declare fewer than two `- path` lines, so the "
-                    "executor has no fallback if this device skin lacks that "
-                    "control. Rewrite the WHOLE plan, adding an ordered "
-                    "`- path N [cost=K]:` ladder (cheapest first, 2–5 paths, "
-                    "including a settings-radio path and a semantically equivalent "
-                    "fallback) as siblings of each milestone below:\n"
+                    base_prompt
+                    + playbook_block
+                    + "\n\nYour previous plan was rejected: the milestones below"
+                    " change device state but declare fewer than two `- path`"
+                    " lines, so the executor has no fallback if this device skin"
+                    " lacks that control. Rewrite the WHOLE plan, adding an ordered"
+                    " `- path N [cost=K]:` ladder (cheapest first, 2–5 paths,"
+                    " including a settings-radio path and a semantically equivalent"
+                    " fallback) as siblings of each milestone below:\n"
                     f"{titles}\n\n"
                     "Keep the existing `- verify:` acceptance line as the shared "
                     "test for every path. Output ONLY the corrected plan."
