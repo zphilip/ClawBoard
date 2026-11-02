@@ -8,7 +8,7 @@
       "aliases": ["静音", "手机静音", "mute", "set phone to silent", "silent mode", "mute the ringer", "silence the phone", "铃声静音"],
       "device_bucket": "default",
       "status": "partial_verified",
-      "verified_on": "ColorOS-like (radxa-cubie-a7a)",
+      "verified_on": "gm1910_sdk30 (OnePlus 7 Pro, Android 11)",
       "goal": "Ringer stops ringing; alarms keep working unless DND is acceptable.",
       "acceptance": "mRingerMode in {0=SILENT, 1=VIBRATE} OR ring volume == 0",
       "probes": ["audio", "volume ring"],

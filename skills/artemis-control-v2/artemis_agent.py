@@ -1147,16 +1147,18 @@ def _capture_device_baseline(adb_path: str, device: Optional[str]):
         _debug(f"[baseline] device snapshot skipped: {e}")
         return None
 
-    flat = []
-    if prof.ring_value is not None:
-        flat.append(f"ring={prof.ring_value}/{prof.ring_max if hasattr(prof, 'ring_max') else '?'}")
+    flat = [f"ring={prof.ring_range}"]
     if prof.ringer_mode is not None:
         flat.append(f"ringer={prof.ringer_mode}")
     if prof.zen_mode is not None:
         flat.append(f"zen={prof.zen_mode}")
     if prof.settings.get("system.screen_brightness") is not None:
         flat.append(f"brightness={prof.settings['system.screen_brightness']}")
-    _log(f"[baseline] {prof.fingerprint}: " + (", ".join(flat) or "no readings"))
+    for name in ("music", "alarm", "notification"):
+        v = prof.volumes.get(name) or {}
+        if v.get("value") is not None:
+            flat.append(f"{name}={v['value']}")
+    _log(f"[baseline] {prof.fingerprint}: " + ", ".join(flat))
     if prof.ring_is_at_minimum:
         _log(
             "[baseline] ring stream is already at its lower bound — a "

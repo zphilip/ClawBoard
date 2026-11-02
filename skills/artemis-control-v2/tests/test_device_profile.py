@@ -65,6 +65,20 @@ class TestAudioParsing(unittest.TestCase):
         self.assertEqual(ringer, 0)
         self.assertEqual(zen, 0)
 
+    def test_word_forms(self):
+        for word, want in (("silent", 0), ("vibrate", 1), ("normal", 2)):
+            ringer, _ = DP._parse_audio(f"  Ringer mode: {word}")
+            self.assertEqual(ringer, want, word)
+
+    def test_bare_numeric_ringer_mode(self):
+        ringer, _ = DP._parse_audio("  Ringer mode: 2")
+        self.assertEqual(ringer, 2)
+
+    def test_empty_value_is_none_not_normal(self):
+        # Reporting a made-up NORMAL would contradict the device's real state.
+        ringer, _ = DP._parse_audio("  Ringer mode: \n")
+        self.assertIsNone(ringer)
+
 
 class TestCapture(unittest.TestCase):
     def test_capture_reads_state_and_flags_minimum(self):
@@ -107,6 +121,47 @@ class TestCapture(unittest.TestCase):
         self.assertIn("ring volume: 1 of range [1..7]", text)
         self.assertIn("ACTIVE", text)
         self.assertIn("ALREADY at its lower bound", text)
+
+    def test_ring_range_includes_bounds(self):
+        run = _fake_run({
+            ("getprop", "ro.product.model"): "gm1910",
+            ("--stream", "2"): "[v] volume is 1 in range [0..7]",
+        })
+        prof = DP.capture(run)
+        self.assertEqual(prof.ring_range, "1 of [0..7]")
+        self.assertEqual(prof.fingerprint, "gm1910")
+
+    def test_ringer_mode_falls_back_to_setting(self):
+        # ``dumpsys audio`` returns an empty value on several ROMs; the setting
+        # is the writable mirror of the same state.
+        run = _fake_run({
+            ("getprop", "ro.product.model"): "gm1910",
+            ("dumpsys", "audio"): "  Ringer mode: \n",
+            ("settings", "get", "global", "mode_ringer"): "1",
+        })
+        prof = DP.capture(run)
+        self.assertEqual(prof.ringer_mode, 1)
+
+    def test_zen_zero_is_kept_not_dropped_as_falsy(self):
+        # zen_mode == 0 means DND is OFF — a real, meaningful state. Using
+        # `a or b` would discard it and report "unknown".
+        run = _fake_run({
+            ("getprop", "ro.product.model"): "gm1910",
+            ("settings", "get", "global", "zen_mode"): "0",
+            ("dumpsys", "audio"): "  Ringer mode: normal\n",
+        })
+        prof = DP.capture(run)
+        self.assertEqual(prof.zen_mode, 0)
+        self.assertIsNotNone(prof.zen_mode)
+
+    def test_prompt_block_reports_dnd_off(self):
+        run = _fake_run({
+            ("getprop", "ro.product.model"): "gm1910",
+            ("--stream", "2"): "[v] volume is 1 in range [0..7]",
+            ("settings", "get", "global", "zen_mode"): "0",
+        })
+        text = DP.capture(run).describe_for_prompt()
+        self.assertIn("zen_mode: 0 (OFF)", text)
 
 
 class TestRelativeAcceptance(unittest.TestCase):

@@ -78,6 +78,21 @@ class DeviceProfile:
         return v.get("min")
 
     @property
+    def ring_max(self) -> Optional[int]:
+        v = self.volumes.get("ring") or {}
+        return v.get("max")
+
+    @property
+    def ring_range(self) -> str:
+        """``"1 of [0..7]"`` — the denominator matters as much as the value."""
+        val, lo, hi = self.ring_value, self.ring_min, self.ring_max
+        if val is None:
+            return "?"
+        if lo is None or hi is None:
+            return f"{val} of [?..?]"
+        return f"{val} of [{lo}..{hi}]"
+
+    @property
     def ring_is_at_minimum(self) -> bool:
         """True when the ring stream already sits on its lower bound.
 
@@ -203,7 +218,23 @@ def capture(
     if rc == 0:
         prof.ringer_mode, prof.zen_mode = _parse_audio(out)
 
-    prof.zen_mode = _as_int(prof.settings.get("global.zen_mode")) or prof.zen_mode
+    # ``dumpsys audio`` spells the ringer mode in ways that vary by ROM — some
+    # print nothing at all after the colon. The setting is the documented
+    # writable mirror of the same state, so use it as a fallback.
+    if prof.ringer_mode is None:
+        for ns in ("global", "system", "secure"):
+            rc, out, _ = run(["shell", "settings", "get", ns, "mode_ringer"])
+            if rc == 0:
+                num = _as_int(out)
+                if num is not None and 0 <= num <= 2:
+                    prof.ringer_mode = num
+                    break
+
+    # ``0`` is a MEANINGFUL zen value (DND off), so it must be assigned
+    # explicitly — `a or b` silently discards it and reports "unknown".
+    zen_setting = _as_int(prof.settings.get("global.zen_mode"))
+    if zen_setting is not None:
+        prof.zen_mode = zen_setting
     return prof
 
 
@@ -213,7 +244,16 @@ def _fingerprint(model: str, sdk: Optional[int]) -> str:
 
 
 def _parse_audio(out: str):
-    """Ringer mode + zen mode from ``dumpsys audio`` (numeric AND word form)."""
+    """Ringer mode + zen mode from ``dumpsys audio`` (numeric AND word form).
+
+    Four shapes are seen in the field, so all four are parsed:
+      ``mRingerMode=2``            (AOSP dump)
+      ``Ringer mode: normal``      (word form)
+      ``Ringer mode: 2``           (numeric, other dumps)
+      ``Ringer mode:``             (EMPTY value — several ColorOS builds)
+    The last one is why an empty match must yield ``None`` rather than a default:
+    reporting a made-up NORMAL would silently contradict the real state.
+    """
     import re
 
     ringer = None
@@ -223,7 +263,15 @@ def _parse_audio(out: str):
     else:
         m = re.search(r"ringer\s*mode\s*[:=]\s*([a-z_]+)", out, re.IGNORECASE)
         if m:
-            ringer = {"silent": 0, "vibrate": 1, "normal": 2}.get(m.group(1).lower())
+            ringer = {
+                "silent": 0, "vibrate": 1, "normal": 2,
+                "ringer_mode_silent": 0, "ringer_mode_vibrate": 1,
+                "ringer_mode_normal": 2,
+            }.get(m.group(1).lower())
+        else:
+            m = re.search(r"ringer\s*mode\s*[:=]\s*([0-2])\b", out, re.IGNORECASE)
+            if m:
+                ringer = int(m.group(1))
 
     zen = None
     m = re.search(r"zen[ _]mode\s*[:=]\s*(zen_mode_[a-z_]+)", out, re.IGNORECASE)
