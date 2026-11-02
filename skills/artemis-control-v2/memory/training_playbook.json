@@ -372,6 +372,184 @@
         "must_contain_probe": true,
         "min_paths": 2
       }
+    },
+    {
+      "id": "baidu-map-navigate",
+      "intent": "用百度地图导航到指定目的地",
+      "aliases": ["百度地图", "百度导航", "百度地图导航", "导航到", "导航", "baidu map", "baidu navigation"],
+      "device_bucket": "default",
+      "status": "unverified",
+      "verified_on": "",
+      "goal": "Baidu Maps app in the foreground with a route/navigation for the requested destination.",
+      "acceptance": "百度地图已在前台（com.baidu.BaiduMap）",
+      "probes": ["foreground"],
+      "plan": "- [ ] 打开百度地图并导航到 {目的地}\n  - verify: 百度地图已在前台 [probe: foreground][app: com.baidu.BaiduMap]\n  - path 1 [cost=5 kind=primary]: open_app 百度地图 → 等首页加载 → 在顶部搜索框输入 {目的地} → 点跳出的第一条地点结果 → 点「路线」→ 选出行方式（驾车/步行/公共交通）→ 点「开始导航」\n  - path 2 [cost=6 kind=alternative]: open_app 百度地图 → 点底部「路线」Tab → 分别输入起点和终点 {目的地} → 选出行方式 → 点「开始导航」",
+      "pitfalls": [
+        "{目的地} 是占位符——由 VLM 从用户真实指令里填（例如「导航到天安门」→ 天安门），不要在计划里写死。",
+        "首次打开地图会弹定位权限 / 隐私协议 / 广告——先处理弹窗再继续，否则后续点击全部失效。",
+        "搜索联想第一条通常就是目的地；不要点「搜索」键盘键后盲目点第一条无关横条，认准地名。",
+        "导航是长链路（开 app→搜→选→路线→开始），属于线性流；赶时间用 --profile flash。"
+      ],
+      "guardrails": {
+        "no_path_first_action_matching": [],
+        "must_contain_probe": true,
+        "min_paths": 2
+      }
+    },
+    {
+      "id": "amap-navigate",
+      "intent": "用高德地图导航到指定目的地",
+      "aliases": ["高德地图", "高德导航", "高德地图导航", "高德", "amap", "gaode map"],
+      "device_bucket": "default",
+      "status": "unverified",
+      "verified_on": "",
+      "goal": "Amap app in the foreground with a route/navigation for the requested destination.",
+      "acceptance": "高德地图已在前台（com.autonavi.minimap）",
+      "probes": ["foreground"],
+      "plan": "- [ ] 打开高德地图并导航到 {目的地}\n  - verify: 高德地图已在前台 [probe: foreground][app: com.autonavi.minimap]\n  - path 1 [cost=5 kind=primary]: open_app 高德地图 → 等首页加载 → 搜索框输入 {目的地} → 点第一条地点结果 → 点「路线」→ 选出出行方式 → 点「开始导航」\n  - path 2 [cost=6 kind=alternative]: open_app 高德地图 → 点「路线」入口 → 输入终点 {目的地} → 选出行方式 → 「开始导航」",
+      "pitfalls": [
+        "{目的地} 由 VLM 从用户指令里填。",
+        "首次打开可能弹定位权限 / 登录引导 / 广告——先关掉再操作。",
+        "高德首页搜索框在顶部，输入后点联想第一条地点（认准地名，不是广告横条）。"
+      ],
+      "guardrails": {
+        "no_path_first_action_matching": [],
+        "must_contain_probe": true,
+        "min_paths": 2
+      }
+    },
+    {
+      "id": "taobao-search",
+      "intent": "用淘宝搜索指定商品",
+      "aliases": ["淘宝", "上淘宝", "淘宝搜索", "搜索商品", "taobao", "tb search"],
+      "device_bucket": "default",
+      "status": "unverified",
+      "verified_on": "",
+      "goal": "Taobao app in the foreground showing search results for the requested product.",
+      "acceptance": "淘宝已在前台（com.taobao.taobao）",
+      "probes": ["foreground"],
+      "plan": "- [ ] 打开淘宝并搜索 {商品}\n  - verify: 淘宝已在前台 [probe: foreground][app: com.taobao.taobao]\n  - path 1 [cost=4 kind=primary]: open_app 淘宝 → 顶部搜索框输入 {商品} → 点搜索 → 等待结果列表加载\n  - path 2 [cost=5 kind=alternative]: open_app 淘宝 → 首页点顶部搜索框 → 语音/键盘输入 {商品} → 回车搜索",
+      "pitfalls": [
+        "{商品} 由 VLM 从用户指令里填。",
+        "淘宝启动有开屏广告和首页秒杀弹窗——先关弹窗再点搜索框。",
+        "搜索结果页有「综合/销量/价格」筛选条，不用动；确认已进入结果列表即可。"
+      ],
+      "guardrails": {
+        "no_path_first_action_matching": [],
+        "must_contain_probe": true,
+        "min_paths": 2
+      }
+    },
+    {
+      "id": "jd-search",
+      "intent": "用京东搜索指定商品",
+      "aliases": ["京东", "京东搜索", "京东商城", "jd", "jingdong"],
+      "device_bucket": "default",
+      "status": "unverified",
+      "verified_on": "",
+      "goal": "JD app in the foreground showing search results for the requested product.",
+      "acceptance": "京东已在前台（com.jingdong.app.mall）",
+      "probes": ["foreground"],
+      "plan": "- [ ] 打开京东并搜索 {商品}\n  - verify: 京东已在前台 [probe: foreground][app: com.jingdong.app.mall]\n  - path 1 [cost=4 kind=primary]: open_app 京东 → 顶部搜索框输入 {商品} → 点搜索 → 等结果列表\n  - path 2 [cost=5 kind=alternative]: open_app 京东 → 点搜索框 → 输入 {商品} → 回车",
+      "pitfalls": [
+        "{商品} 由 VLM 从用户指令里填。",
+        "京东有开屏广告和领红包弹窗——先关掉再搜。",
+        "确认进入结果列表即达成，不必纠结筛选条。"
+      ],
+      "guardrails": {
+        "no_path_first_action_matching": [],
+        "must_contain_probe": true,
+        "min_paths": 2
+      }
+    },
+    {
+      "id": "qqmusic-play",
+      "intent": "用QQ音乐播放指定歌曲",
+      "aliases": ["QQ音乐", "qq音乐", "QQ Music", "播放歌曲", "播放", "play song"],
+      "device_bucket": "default",
+      "status": "unverified",
+      "verified_on": "",
+      "goal": "QQ Music app in the foreground playing the requested song.",
+      "acceptance": "QQ音乐已在前台（com.tencent.qqmusic）且 media_session 正在播放",
+      "probes": ["foreground", "media_session"],
+      "plan": "- [ ] 打开QQ音乐并播放 {歌曲}\n  - verify: QQ音乐已在前台 [probe: foreground][probe: media_session][app: com.tencent.qqmusic]\n  - path 1 [cost=4 kind=primary]: open_app QQ音乐 → 顶部搜索框输入 {歌曲} → 点搜索结果里的歌曲 → 点播放\n  - path 2 [cost=5 kind=alternative]: open_app QQ音乐 → 搜索 {歌曲} → 点「播放全部」或第一首 → 确认正在播放",
+      "pitfalls": [
+        "{歌曲} 由 VLM 从用户指令里填（也可能是歌手+歌名的组合）。",
+        "搜到的是歌曲不是歌单/直播——点带「播放」的结果，不要点进音乐人主页。",
+        "先登录引导/续费弹窗要关掉；「播放」后判断依据是 media_session 的 PLAYING 状态 + 前台是 QQ音乐，而不是截图看图标。"
+      ],
+      "guardrails": {
+        "no_path_first_action_matching": [],
+        "must_contain_probe": true,
+        "min_paths": 2
+      }
+    },
+    {
+      "id": "netease-music-play",
+      "intent": "用网易云音乐播放指定歌曲",
+      "aliases": ["网易云音乐", "网易云", "网易音乐", "netease", "cloud music"],
+      "device_bucket": "default",
+      "status": "unverified",
+      "verified_on": "",
+      "goal": "NetEase Cloud Music app in the foreground playing the requested song.",
+      "acceptance": "网易云音乐已在前台（com.netease.cloudmusic）且 media_session 正在播放",
+      "probes": ["foreground", "media_session"],
+      "plan": "- [ ] 打开网易云音乐并播放 {歌曲}\n  - verify: 网易云音乐已在前台 [probe: foreground][probe: media_session][app: com.netease.cloudmusic]\n  - path 1 [cost=4 kind=primary]: open_app 网易云音乐 → 顶部搜索框输入 {歌曲} → 点歌曲结果 → 点播放\n  - path 2 [cost=5 kind=alternative]: open_app 网易云音乐 → 搜索 {歌曲} → 点「播放入口」或第一首",
+      "pitfalls": [
+        "{歌曲} 由 VLM 从用户指令里填。",
+        "网易云搜歌曲需区分音源（有些是 VIP 试听）——点能直接播放的结果。",
+        "先关闭登录/会员弹窗；验收看 media_session PLAYING + 前台包名。"
+      ],
+      "guardrails": {
+        "no_path_first_action_matching": [],
+        "must_contain_probe": true,
+        "min_paths": 2
+      }
+    },
+    {
+      "id": "wechat-message",
+      "intent": "用微信给联系人发消息",
+      "aliases": ["微信", "发微信", "发消息", "发送消息", "wechat", "send message"],
+      "device_bucket": "default",
+      "status": "unverified",
+      "verified_on": "",
+      "goal": "Message sent to the requested contact in WeChat, confirmation visible.",
+      "acceptance": "微信已在前台（com.tencent.mm）且聊天页可见已发送消息",
+      "probes": ["foreground"],
+      "plan": "- [ ] 用微信给 {联系人} 发送 {内容}\n  - verify: 微信已在前台 [probe: foreground][app: com.tencent.mm]\n  - path 1 [cost=5 kind=primary]: open_app 微信 → 顶部搜索框输入 {联系人} → 点进聊天 → 输入 {内容} → 点发送\n  - path 2 [cost=6 kind=alternative]: open_app 微信 → 通讯录找到 {联系人} → 进聊天 → 输入 {内容} → 发送",
+      "pitfalls": [
+        "{联系人} 和 {内容} 都由 VLM 从用户指令里填；不要写死。",
+        "发送后必须亲眼看到气泡出现在聊天里才算成，而不是只输完文字。",
+        "「发送」按钮在输入框旁是按钮不是键盘回车——认准聊天气泡上的发送按钮。",
+        "验收是前台包名 + 截图看已发送气泡；没有可读探针判断「消息已发出」。"
+      ],
+      "guardrails": {
+        "no_path_first_action_matching": [],
+        "must_contain_probe": true,
+        "min_paths": 2
+      }
+    },
+    {
+      "id": "douyin-search",
+      "intent": "打开抖音并搜索指定内容",
+      "aliases": ["抖音", "打开抖音", "抖音搜索", "douyin", "tiktok cn"],
+      "device_bucket": "default",
+      "status": "unverified",
+      "verified_on": "",
+      "goal": "Douyin app in the foreground showing search results for the requested query.",
+      "acceptance": "抖音已在前台（com.ss.android.ugc.aweme）",
+      "probes": ["foreground"],
+      "plan": "- [ ] 打开抖音并搜索 {关键词}\n  - verify: 抖音已在前台 [probe: foreground][app: com.ss.android.ugc.aweme]\n  - path 1 [cost=4 kind=primary]: open_app 抖音 → 顶部点搜索图标 → 输入 {关键词} → 点搜索\n  - path 2 [cost=5 kind=alternative]: open_app 抖音 → 底部/顶部搜索入口 → 输入 {关键词} → 选联想词",
+      "pitfalls": [
+        "{关键词} 由 VLM 从用户指令里填。",
+        "抖音启动常有开屏广告/青少年模式弹窗——先关掉。",
+        "抖音进入后默认在视频流，搜索入口是右上角放大镜，不是键盘。"
+      ],
+      "guardrails": {
+        "no_path_first_action_matching": [],
+        "must_contain_probe": true,
+        "min_paths": 2
+      }
     }
   ]
 }

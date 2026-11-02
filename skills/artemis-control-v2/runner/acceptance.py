@@ -74,6 +74,11 @@ _SUBJECT_TOKENS: list[tuple[str, tuple[str, ...]]] = [
 ]
 
 _WANT_HINT_RE = re.compile(r"[\[(]\s*want\s*:\s*([^\]\)]+)[\])]", re.IGNORECASE)
+#: App-presence hint: ``[app: com.baidu.BaiduMap]`` on a ``- verify:`` line names the
+#: package that must be in the foreground. This is how open-app / navigate /
+#: search / play tasks are judged from the ``probe foreground`` evidence without
+#: a numeric setting.
+_APP_HINT_RE = re.compile(r"[\[(]\s*app\s*:\s*([A-Za-z0-9._]+)\s*[\])]", re.IGNORECASE)
 _COMPARATOR_RE = re.compile(r"^\s*(<=|>=|==|!=|<|>|=)\s*(-?\d+)\s*$")
 
 
@@ -85,6 +90,7 @@ class Goal:
     polarity: str = POL_NUMERIC
     comparator: str = ""
     target: Optional[int] = None
+    target_pkg: str = ""
 
 
 def _earliest(text: str, tokens: tuple[str, ...]) -> tuple[int, str]:
@@ -111,16 +117,22 @@ def parse_goal(text: str) -> Goal:
     raw = text or ""
     lowered = raw.lower()
 
+    app_pkg = ""
+    am = _APP_HINT_RE.search(raw)
+    if am:
+        app_pkg = am.group(1)
+
     m = _WANT_HINT_RE.search(raw)
     if m:
         cm = _COMPARATOR_RE.match(m.group(1))
         if cm:
             op = cm.group(1)
             return Goal(
-                subject=_subject_of(lowered),
+                subject="app" if app_pkg else _subject_of(lowered),
                 polarity=POL_NUMERIC,
                 comparator="==" if op == "=" else op,
                 target=int(cm.group(2)),
+                target_pkg=app_pkg,
             )
 
     polarity = POL_NUMERIC
@@ -130,7 +142,11 @@ def parse_goal(text: str) -> Goal:
         if pos >= 0 and (best_pos < 0 or pos < best_pos):
             best_pos, polarity = pos, pol
 
-    return Goal(subject=_subject_of(lowered), polarity=polarity)
+    return Goal(
+        subject="app" if app_pkg else _subject_of(lowered),
+        polarity=polarity,
+        target_pkg=app_pkg,
+    )
 
 
 def _subject_of(lowered: str) -> str:
@@ -172,6 +188,14 @@ _ZEN_WORD_VALUES = {
 
 _RINGER_WORD_VALUES = {"silent": 0, "vibrate": 1, "normal": 2}
 
+#: Foreground package from the ``probe foreground`` evidence: the RESUMED activity
+#: (or the focused window) name is the thing that identifies which app is on screen.
+#: ``ActivityRecord{… u0 com.baidu.BaiduMap/.maps…}`` / ``Window{… u0 com.pkg/.Act}``.
+_FOREGROUND_RE = re.compile(
+    r"(?:mResumedActivity|mFocusedApp|mCurrentFocus)[^\n]*?[\s{]([A-Za-z0-9._]+)/",
+    re.IGNORECASE,
+)
+
 
 @dataclass
 class Facts:
@@ -180,6 +204,7 @@ class Facts:
     ring_volume: Optional[int] = None
     media_volume: Optional[int] = None
     ringer_mode: Optional[int] = None
+    foreground_pkg: Optional[str] = None
     settings: dict[str, int] = field(default_factory=dict)
 
     def get(self, key: str) -> Optional[int]:
@@ -208,6 +233,11 @@ def parse_evidence(evidence: str) -> Facts:
                 if word in raw_val.lower().replace(" ", "_"):
                     facts.settings.setdefault("zen_mode", val)
             continue
+
+        if facts.foreground_pkg is None:
+            fm = _FOREGROUND_RE.search(line)
+            if fm:
+                facts.foreground_pkg = fm.group(1)
 
         m = _VOLUME_RE.search(line)
         if m:
@@ -258,6 +288,8 @@ def evaluate_goal(goal: Goal, facts: Facts, baseline=None) -> Optional[bool]:
     """
     if goal.polarity == POL_SILENT:
         return _eval_silent(facts)
+    if goal.subject == "app":
+        return _eval_app(goal, facts)
     if goal.polarity in (POL_ON, POL_OFF):
         return _eval_switch(goal, facts)
     if goal.polarity == POL_NUMERIC:
@@ -265,6 +297,18 @@ def evaluate_goal(goal: Goal, facts: Facts, baseline=None) -> Optional[bool]:
     if goal.polarity in (POL_DOWN, POL_UP):
         return _eval_relative(goal, facts, baseline)
     return None
+
+
+def _eval_app(goal: Goal, facts: Facts) -> Optional[bool]:
+    """Judge "the named app is in the foreground".
+
+    The package comes from the ``[app: com.pkg]`` hint on the criterion; the
+    evidence comes from the resumed/focused activity in ``probe foreground``.
+    Inconclusive (None) when either side is missing — never guessed.
+    """
+    if not goal.target_pkg or facts.foreground_pkg is None:
+        return None
+    return facts.foreground_pkg == goal.target_pkg
 
 
 def _baseline_lookup(baseline, key: str) -> Optional[int]:

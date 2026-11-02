@@ -74,6 +74,9 @@ PROBES: dict[str, ProbeSpec] = {
     # ``dumpsys bluetooth_manager`` carries the connection/bonding state and the
     # connected device name — the evidence needed to judge "connect to device X".
     "bluetooth": ProbeSpec(argv=("dumpsys", "bluetooth_manager")),
+    # ``dumpsys media_session`` reports the ACTIVE media playback: package, state
+    # (PLAYING/PAUSED), title/artist metadata — the evidence for "播放歌曲 xxx".
+    "media_session": ProbeSpec(argv=("dumpsys", "media_session")),
     "setting": ProbeSpec(
         argv=("settings", "get", "<namespace>", "<key>"),
         params=(
@@ -254,6 +257,7 @@ _KEEP_LINES: dict[str, re.Pattern] = {
     "foreground": re.compile(r"mResumedActivity|mFocusedApp|mCurrentFocus|topResumedActivity|ResumedActivity", re.IGNORECASE),
     "battery": re.compile(r"level|status|present|charged|AC powered|USB powered", re.IGNORECASE),
     "bluetooth": re.compile(r"enabled|address|name|bond|connected|paired|profile|headset|a2dp|hfp", re.IGNORECASE),
+    "media_session": re.compile(r"state|package|title|artist|description|metadata|\.song|\.album", re.IGNORECASE),
     # ``media volume --get`` prints just the integer; keep any digit line.
     "volume": re.compile(r"\d", re.IGNORECASE),
 }
