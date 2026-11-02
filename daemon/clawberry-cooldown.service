@@ -1,0 +1,19 @@
+[Unit]
+Description=ClawBerry Cooldown — switch NPU/DDR devfreq off `performance` (Cubie A7Z overheating fix)
+# The image pins NPU (3600000.npu) and DDR (a020000.dmcfreq) to the
+# `performance` governor at boot. With nothing running, that alone holds all
+# die zones at 85-90 C. Switching to simple_ondemand fixes it.
+# Runs before the desktop target so it is applied before anything heats up.
+Documentation=file:/opt/clawboard/scripts/clawberry-cooldown.sh
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+ExecStart=/opt/clawboard/scripts/clawberry-cooldown.sh
+RemainAfterExit=yes
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

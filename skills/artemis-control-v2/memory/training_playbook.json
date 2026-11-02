@@ -90,6 +90,224 @@
         "must_contain_probe": true,
         "min_paths": 1
       }
+    },
+    {
+      "id": "media-volume-up",
+      "intent": "把媒体音量调高",
+      "aliases": ["调高媒体音量", "媒体声音调响", "媒体音量大一点", "raise media volume", "music volume up", "louder media"],
+      "device_bucket": "default",
+      "status": "unverified",
+      "verified_on": "",
+      "goal": "Media playback stream (STREAM_MUSIC) volume raised above its starting value.",
+      "acceptance": "media volume (STREAM_MUSIC) increased vs baseline",
+      "probes": ["volume music"],
+      "plan": "- [ ] 调高媒体音量（STREAM_MUSIC）\n  - verify: 调高媒体音量：媒体音量应高于初始值 [probe: volume music]\n  - path 1 [cost=2 kind=primary]:     按一次音量上键调出面板 → 展开媒体音量条 → 把媒体条拖过目标到更高\n  - path 2 [cost=3 kind=primary]:     设置 → 声音与振动 → 把媒体音量滑条拖到更高\n  - path 3 [cost=1 kind=alternative]: system_button volume_up 连续 1~2 次（可能先作用到铃声流）",
+      "pitfalls": [
+        "音量键默认先改变铃声流；媒体音量必须在音量面板里展开媒体条后再拖，或直接拖面板里的媒体滑条。",
+        "滑条必须『拖过目标』，tap 不会生效。",
+        "DND 开启时音量流会被系统钳制——先确认 zen_mode 没有在强制静音。",
+        "『调高』是相对目标：验收必须拿运行后读到的媒体流数值和运行前测到的媒体基线比较，不能只写一个绝对数值。"
+      ],
+      "guardrails": {
+        "no_path_first_action_matching": ["VOLUME_DOWN", "volume_down", "调低", "降低", "减小", "减小音量", "调低音量"],
+        "must_contain_probe": true,
+        "min_paths": 2
+      }
+    },
+    {
+      "id": "media-volume-down",
+      "intent": "把媒体音量调低",
+      "aliases": ["调低媒体音量", "媒体声音调低", "媒体音量小一点", "lower media volume", "music volume down", "quieter media"],
+      "device_bucket": "default",
+      "status": "unverified",
+      "verified_on": "",
+      "goal": "Media playback stream (STREAM_MUSIC) volume lowered below its starting value.",
+      "acceptance": "media volume (STREAM_MUSIC) decreased vs baseline",
+      "probes": ["volume music"],
+      "plan": "- [ ] 调低媒体音量（STREAM_MUSIC）\n  - verify: 调低媒体音量：媒体音量应低于初始值 [probe: volume music]\n  - path 1 [cost=2 kind=primary]:     按一次音量下键调出面板 → 展开媒体音量条 → 把媒体条拖过目标到更低\n  - path 2 [cost=3 kind=primary]:     设置 → 声音与振动 → 把媒体音量滑条拖低\n  - path 3 [cost=1 kind=alternative]: system_button volume_down 连续 1~2 次（可能先作用到铃声流）",
+      "pitfalls": [
+        "音量键默认先改变铃声流；媒体音量必须在音量面板里展开媒体条后再拖，或直接拖面板里的媒体滑条。",
+        "滑条必须『拖过目标』，tap 不会生效。",
+        "『调低』是相对目标：验收必须和运行前的媒体基线比较。"
+      ],
+      "guardrails": {
+        "no_path_first_action_matching": ["VOLUME_UP", "volume_up", "调高", "提高", "增大", "增大音量", "调高音量"],
+        "must_contain_probe": true,
+        "min_paths": 2
+      }
+    },
+    {
+      "id": "brightness-up",
+      "intent": "把屏幕亮度调高",
+      "aliases": ["调高亮度", "亮度提高", "brightness up", "raise brightness", "screen brighter"],
+      "device_bucket": "default",
+      "status": "unverified",
+      "verified_on": "",
+      "goal": "Screen brightness increased above its starting value.",
+      "acceptance": "settings get system screen_brightness increased",
+      "probes": ["setting system screen_brightness"],
+      "plan": "- [ ] 调高屏幕亮度\n  - verify: 调高亮度：亮度数值已上升 [probe: setting system screen_brightness]\n  - path 1 [cost=2 kind=primary]: 从屏幕顶部边缘下滑两次展开快捷面板 → 把亮度滑条拖过目标到更高\n  - path 2 [cost=3 kind=primary]: 设置 → 显示与亮度 → 把亮度滑条拖到更高\n  - path 3 [cost=1 kind=alternative]: 如果快捷面板有自动亮度开关且已开启，先关闭自动亮度再拖滑条",
+      "pitfalls": [
+        "展开快捷面板的首次下滑必须从屏幕最顶部边缘开始（y ≈ 0）——这不属于普通手势的 edge-safe 区。",
+        "亮度滑条需要『拖过目标』，tap 无效。",
+        "自动亮度开启时手动滑条会立即被覆盖——先关自动亮度。",
+        "『调高』是相对目标：验收必须和运行前的亮度基线比较。"
+      ],
+      "guardrails": {
+        "no_path_first_action_matching": ["调低", "降低", "减小", "dim", "lower brightness", "调低亮度"],
+        "must_contain_probe": true,
+        "min_paths": 2
+      }
+    },
+    {
+      "id": "wifi-off",
+      "intent": "关闭 WiFi",
+      "aliases": ["关闭wifi", "关掉wifi", "turn off wifi", "disable wifi", "wifi off"],
+      "device_bucket": "default",
+      "status": "unverified",
+      "verified_on": "",
+      "goal": "Wi-Fi radio off.",
+      "acceptance": "settings get global wifi_on == 0",
+      "probes": ["setting global wifi_on"],
+      "plan": "- [ ] 关闭 WiFi\n  - verify: wifi_on 为 0 [probe: setting global wifi_on]\n  - path 1 [cost=2 kind=primary]: 顶部下滑展开快捷面板 → 点 WiFi 磁贴关闭\n  - path 2 [cost=3 kind=primary]: 设置 → WiFi → 关闭开关",
+      "pitfalls": [
+        "快捷面板里点 WiFi 磁贴的文字与点图标某些 ROM 行为不同（点文字进设置，点图标才切换）——按屏幕标注点击开关本体。",
+        "验收用 settings get global wifi_on（应为 0），而不是截图图标颜色。"
+      ],
+      "guardrails": {
+        "no_path_first_action_matching": ["打开wifi", "开启wifi", "turn on wifi", "enable wifi", "wifi on"],
+        "must_contain_probe": true,
+        "min_paths": 1
+      }
+    },
+    {
+      "id": "airplane-off",
+      "intent": "关闭飞行模式",
+      "aliases": ["关掉飞行模式", "退出飞行模式", "airplane mode off", "turn off airplane mode", "disable airplane mode"],
+      "device_bucket": "default",
+      "status": "unverified",
+      "verified_on": "",
+      "goal": "All radios re-enabled (airplane mode off).",
+      "acceptance": "settings get global airplane_mode_on == 0",
+      "probes": ["setting global airplane_mode_on"],
+      "plan": "- [ ] 关闭飞行模式\n  - verify: airplane_mode_on 为 0 [probe: setting global airplane_mode_on]\n  - path 1 [cost=2 kind=primary]: 顶部下滑展开快捷面板 → 点飞行模式磁贴关闭\n  - path 2 [cost=3 kind=primary]: 设置 → 网络与互联网 → 飞行模式开关关掉",
+      "pitfalls": [
+        "关闭飞行模式后无线信号需要几秒才恢复，验收只读 airplane_mode_on，不要立刻断言 WiFi 已连上。",
+        "验收用 settings get global airplane_mode_on（应为 0）。"
+      ],
+      "guardrails": {
+        "no_path_first_action_matching": ["打开飞行模式", "开启飞行模式", "enable airplane", "airplane mode on"],
+        "must_contain_probe": true,
+        "min_paths": 1
+      }
+    },
+    {
+      "id": "bluetooth-on",
+      "intent": "打开蓝牙",
+      "aliases": ["开启蓝牙", "开蓝牙", "turn on bluetooth", "enable bluetooth", "bluetooth on"],
+      "device_bucket": "default",
+      "status": "unverified",
+      "verified_on": "",
+      "goal": "Bluetooth radio on.",
+      "acceptance": "settings get global bluetooth_on == 1",
+      "probes": ["setting global bluetooth_on"],
+      "plan": "- [ ] 打开蓝牙\n  - verify: bluetooth_on 为 1 [probe: setting global bluetooth_on]\n  - path 1 [cost=2 kind=primary]: 顶部下滑展开快捷面板 → 点蓝牙磁贴打开\n  - path 2 [cost=3 kind=primary]: 设置 → 蓝牙 → 打开开关",
+      "pitfalls": [
+        "快捷面板点蓝牙磁贴文字与点图标行为不同——点开关本体而不是文字。",
+        "验收用 settings get global bluetooth_on，而不是截图图标颜色。"
+      ],
+      "guardrails": {
+        "no_path_first_action_matching": ["关闭蓝牙", "关掉蓝牙", "turn off bluetooth", "disable bluetooth"],
+        "must_contain_probe": true,
+        "min_paths": 1
+      }
+    },
+    {
+      "id": "bluetooth-connect-device",
+      "intent": "用蓝牙连接指定设备",
+      "aliases": ["连接蓝牙设备", "蓝牙连接", "connect bluetooth device", "pair bluetooth device", "connect to bluetooth device"],
+      "device_bucket": "default",
+      "status": "unverified",
+      "verified_on": "",
+      "goal": "Bluetooth radio on and the requested device is connected.",
+      "acceptance": "bluetooth_on == 1 AND target device appears in the connected/paired list",
+      "probes": ["setting global bluetooth_on", "bluetooth"],
+      "plan": "- [ ] 用蓝牙连接目标设备\n  - verify: 目标蓝牙设备已连接（出现在「已连接」列表）[probe: bluetooth][probe: setting global bluetooth_on]\n  - path 1 [cost=4 kind=primary]: 设置 → 蓝牙 → 打开蓝牙开关 → 在已配对列表里点目标设备名 → 确认已连接\n  - path 2 [cost=4 kind=primary]: 顶部下滑展开快捷面板 → 长按蓝牙磁贴进蓝牙设置 → 点目标设备连接",
+      "pitfalls": [
+        "设备名来自运行前测到的蓝牙列表（device_profile 的 bt_devices），连接哪个名字由指令指定，不要臆测。",
+        "『已连接』和『已配对』是两回事：配对过的不一定已连接——验收看「已连接」/connected，而不是已配对。",
+        "连接失败时先确认设备在配对列表里；不在则需要先配对（点设备名触发配对，再确认配对框）。",
+        "飞行模式开启时蓝牙会被一起关掉——先确认 airplane_mode_on == 0。"
+      ],
+      "guardrails": {
+        "no_path_first_action_matching": ["关闭蓝牙", "关掉蓝牙", "turn off bluetooth", "disable bluetooth"],
+        "must_contain_probe": true,
+        "min_paths": 2
+      }
+    },
+    {
+      "id": "system-info",
+      "intent": "打开手机查看系统信息",
+      "aliases": ["查看系统信息", "系统信息", "关于手机", "查看手机型号", "open system info", "about phone", "device info"],
+      "device_bucket": "default",
+      "status": "unverified",
+      "verified_on": "",
+      "goal": "Open the About-phone / system-info screen and report model + Android version.",
+      "acceptance": "Settings About-phone (system info) screen is in the foreground",
+      "probes": ["foreground", "prop ro.product.model", "prop ro.build.version.release"],
+      "plan": "- [ ] 打开系统信息页面并读取型号与 Android 版本\n  - verify: 关于手机/系统信息页面已打开 [probe: foreground]\n  - verify: 已读到设备型号与 Android 版本 [probe: prop ro.product.model][probe: prop ro.build.version.release]\n  - path 1 [cost=3 kind=primary]: 打开设置应用 → 关于手机（或「我的设备」）→ 读取型号、Android 版本\n  - path 2 [cost=4 kind=alternative]: 顶部下滑展开快捷面板 → 点设置齿轮 → 关于手机 → 读取信息",
+      "pitfalls": [
+        "不同 ROM 的入口名不同（关于手机 / 关于本机 / 关于设备 / 我的设备），先扫一屏找到对应入口。",
+        "型号与 Android 版本是只读事实：优先读设备事实块（device_facts），不要凭截图猜。",
+        "这个任务是「打开并查看」，不说要改动任何设置——不要顺手去开/关别的开关。"
+      ],
+      "guardrails": {
+        "no_path_first_action_matching": [],
+        "must_contain_probe": true,
+        "min_paths": 2
+      }
+    },
+    {
+      "id": "dnd-on",
+      "intent": "打开勿扰模式",
+      "aliases": ["开启勿扰", "免打扰", "打开免打扰", "do not disturb on", "enable dnd", "dnd on"],
+      "device_bucket": "default",
+      "status": "unverified",
+      "verified_on": "",
+      "goal": "Do-not-disturb enabled (notifications/ringer suppressed).",
+      "acceptance": "settings get global zen_mode != 0",
+      "probes": ["setting global zen_mode"],
+      "plan": "- [ ] 打开勿扰模式\n  - verify: 勿扰已开启（zen_mode 非 0）[probe: setting global zen_mode]\n  - path 1 [cost=2 kind=primary]: 顶部下滑展开快捷面板 → 点「勿扰」磁贴\n  - path 2 [cost=3 kind=primary]: 设置 → 声音与振动 → 勿扰模式开关",
+      "pitfalls": [
+        "勿扰会静音通知与铃声——如果任务目标是「只静音铃声但保留通知」，勿扰是等价而非主路径。",
+        "验收用 settings get global zen_mode（非 0 即开启），而不是图标颜色。"
+      ],
+      "guardrails": {
+        "no_path_first_action_matching": ["关闭勿扰", "取消勿扰", "turn off dnd", "disable dnd"],
+        "must_contain_probe": true,
+        "min_paths": 2
+      }
+    },
+    {
+      "id": "dnd-off",
+      "intent": "关闭勿扰模式",
+      "aliases": ["取消勿扰", "关闭免打扰", "退出勿扰", "do not disturb off", "disable dnd", "dnd off"],
+      "device_bucket": "default",
+      "status": "unverified",
+      "verified_on": "",
+      "goal": "Do-not-disturb disabled (normal notification/ringer behavior restored).",
+      "acceptance": "settings get global zen_mode == 0",
+      "probes": ["setting global zen_mode"],
+      "plan": "- [ ] 关闭勿扰模式\n  - verify: 勿扰已关闭（zen_mode 为 0）[probe: setting global zen_mode]\n  - path 1 [cost=2 kind=primary]: 顶部下滑展开快捷面板 → 点「勿扰」磁贴以关闭\n  - path 2 [cost=3 kind=primary]: 设置 → 声音与振动 → 勿扰模式开关关闭",
+      "pitfalls": [
+        "关闭勿扰后铃声/通知恢复——如果之前为了「静音」开了勿扰，关闭勿扰等于撤销静音。",
+        "验收用 settings get global zen_mode（应为 0）。"
+      ],
+      "guardrails": {
+        "no_path_first_action_matching": ["打开勿扰", "开启勿扰", "enable dnd", "turn on dnd", "dnd on"],
+        "must_contain_probe": true,
+        "min_paths": 2
+      }
     }
   ]
 }

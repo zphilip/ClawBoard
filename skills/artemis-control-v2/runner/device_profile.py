@@ -183,6 +183,9 @@ class DeviceProfile:
         """Numeric baseline for a subject key (see ``runner.acceptance``)."""
         if key in ("ring_volume", "volume"):
             return self.ring_value
+        if key == "media_volume":
+            v = self.volumes.get("music") or {}
+            return v.get("value")
         if key == "zen_mode":
             return self.zen_mode
         if key == "ringer_mode":

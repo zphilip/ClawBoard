@@ -9,8 +9,8 @@
   "agents": {
     "defaults": {
       "workspace": "/var/lib/picoclaw/.picoclaw/workspace",
-      "restrict_to_workspace": false,
-      "allow_read_outside_workspace": true,
+      "restrict_to_workspace": true,
+      "allow_read_outside_workspace": false,
       "provider": "",
       "model_name": "MiniMax-M2.7",
       "max_tokens": 32768,

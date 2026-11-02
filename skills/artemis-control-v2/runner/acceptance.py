@@ -65,6 +65,7 @@ _POLARITY_TOKENS: list[tuple[str, tuple[str, ...]]] = [
 _SUBJECT_TOKENS: list[tuple[str, tuple[str, ...]]] = [
     ("zen", ("勿扰", "免打扰", "dnd", "do not disturb", "zen")),
     ("ringer", ("铃声", "响铃", "ringer", "ringtone", "响铃模式", "铃声模式")),
+    ("media", ("媒体", "music", "media volume", "音乐")),
     ("volume", ("音量", "volume")),
     ("wifi", ("wifi", "wlan", "无线")),
     ("airplane", ("飞行", "airplane", "flight mode")),
@@ -145,6 +146,11 @@ def _subject_of(lowered: str) -> str:
 # ---------------------------------------------------------------------------
 
 _VOLUME_RE = re.compile(r"volume is (-?\d+)", re.IGNORECASE)
+_VOLUME_LABEL_RE = re.compile(r"probe\s+volume\s+([A-Za-z0-9_]+)\s*:", re.IGNORECASE)
+#: Volume probe stream aliases that mean the MEDIA stream (music == 3), as emitted
+#: in the probe label ``probe volume music:`` — a ring/top-level reading must not
+#: be counted as the media stream and vice versa.
+_MEDIA_STREAMS = frozenset({"music", "media", "3"})
 _RINGER_EQ_RE = re.compile(r"mringermode\s*=\s*(\d+)", re.IGNORECASE)
 _RINGER_WORD_RE = re.compile(r"ringer\s*mode\s*[:=]\s*([a-z_]+)", re.IGNORECASE)
 _ZEN_WORD_RE = re.compile(r"zen[ _]mode\s*[:=]\s*(zen_mode_[a-z_]+)", re.IGNORECASE)
@@ -172,6 +178,7 @@ class Facts:
     """Typed facts extracted from one criterion's probe evidence."""
 
     ring_volume: Optional[int] = None
+    media_volume: Optional[int] = None
     ringer_mode: Optional[int] = None
     settings: dict[str, int] = field(default_factory=dict)
 
@@ -204,7 +211,13 @@ def parse_evidence(evidence: str) -> Facts:
 
         m = _VOLUME_RE.search(line)
         if m:
-            facts.ring_volume = int(m.group(1))
+            val = int(m.group(1))
+            lbl = _VOLUME_LABEL_RE.search(line)
+            stream = lbl.group(1).lower() if lbl else ""
+            if stream in _MEDIA_STREAMS:
+                facts.media_volume = val
+            else:
+                facts.ring_volume = val
         m = _RINGER_EQ_RE.search(line)
         if m:
             facts.ringer_mode = int(m.group(1))
@@ -278,6 +291,8 @@ def _subject_values(goal: Goal, facts: Facts) -> list[int]:
     if goal.subject == "brightness":
         v = facts.settings.get("screen_brightness")
         return [v] if v is not None else []
+    if goal.subject == "media":
+        return [facts.media_volume] if facts.media_volume is not None else []
     if goal.subject in ("ringer", "volume"):
         return [facts.ring_volume] if facts.ring_volume is not None else []
     if goal.subject == "zen":
@@ -298,6 +313,7 @@ def _eval_relative(goal: Goal, facts: Facts, baseline) -> Optional[bool]:
         "brightness": "screen_brightness",
         "ringer": "ring_volume",
         "volume": "ring_volume",
+        "media": "media_volume",
         "zen": "zen_mode",
     }
     key = keys.get(goal.subject)
