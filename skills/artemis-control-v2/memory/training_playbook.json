@@ -602,7 +602,7 @@
     },
     {
       "id": "baidu-map-navigate",
-      "intent": "用百度地图导航到天安门广场",
+      "intent": "用百度地图导航到武林门广场",
       "aliases": [
         "百度地图",
         "百度导航",
