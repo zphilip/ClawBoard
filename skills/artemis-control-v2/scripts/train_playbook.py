@@ -59,6 +59,7 @@ from memory.playbook import load_playbook  # noqa: E402
 
 PLAYBOOK_PATH = SKILL_ROOT / "memory" / "training_playbook.json"
 RUNS_PATH = SKILL_ROOT / "memory" / "data" / "training_runs.jsonl"
+REPORT_PATH = SKILL_ROOT / "memory" / "data" / "training_report.md"
 
 
 # ---------------------------------------------------------------------------
@@ -311,6 +312,83 @@ def _promote_verified(task_id: str, min_successes: int, label: str) -> tuple[boo
     return True, f"promoted {task_id} → verified on {label}"
 
 
+def _task_stats(task_id: str, runs: list[dict]) -> dict:
+    own = [r for r in runs if r.get("task_id") == task_id]
+    return {
+        "total": len(own),
+        "passes": sum(1 for r in own if r.get("status") == "pass"),
+        "fails": sum(1 for r in own if r.get("status") == "fail"),
+        "last": own[-1] if own else None,
+    }
+
+
+def _build_report(selected: list, session_results: list[tuple[str, bool]],
+                  session_elapsed: float, device: str) -> str:
+    """Render a markdown training report: session summary + per-task history."""
+    runs = _load_runs()
+    lines: list[str] = []
+    lines.append("# Artemis training report")
+    lines.append("")
+    lines.append(f"- date: {datetime.now().isoformat(timespec='seconds')}")
+    lines.append(f"- device: {device}")
+    lines.append("- session elapsed: {:.1f}s".format(session_elapsed))
+
+    n = len(session_results)
+    n_pass = sum(1 for _, ok in session_results if ok)
+    n_fail = n - n_pass
+    lines.append(f"- session: {n} ran — {n_pass} passed / {n_fail} failed "
+                 f"({100 * n_pass / n:.0f}%)" if n else "- session: nothing ran")
+    lines.append("")
+
+    # cumulative totals across ALL recorded runs
+    total = sum(1 for r in runs)
+    total_pass = sum(1 for r in runs if r.get("status") == "pass")
+    lines.append(f"## Cumulative (all recorded runs: {total})")
+    lines.append(f"- {total_pass} passed / {total - total_pass} failed")
+
+    # auto-verify progress
+    verified_ids = {t.id for t in selected
+                    if t.status == "verified" and t.verified_on}
+    if verified_ids:
+        lines.append("- verified tasks: " + ", ".join(sorted(verified_ids)))
+    lines.append("")
+
+    lines.append("## Per task")
+    lines.append("")
+    outcome_by_id = dict(session_results)
+    for t in selected:
+        st = _task_stats(t.id, runs)
+        outcome = outcome_by_id.get(t.id)
+        session_mark = "−" if outcome is None else ("PASS" if outcome else "FAIL")
+        last = st["last"]
+        last_r = ""
+        if last:
+            last_r = f" (last: {last.get('status')} @ {last.get('timestamp', '')[:16]})"
+        verified = " ✓verified" if (t.status == "verified") else ""
+        lines.append(
+            f"- **{t.id}**{verified} — {t.intent}"
+            f"\n    session: {session_mark} | cumulative: {st['passes']}P/{st['fails']}F"
+            f" | playbook status: {t.status}{last_r}"
+        )
+    lines.append("")
+    return "\n".join(lines)
+
+
+def _emit_report(selected: list, session_results: list[tuple[str, bool]],
+                 session_elapsed: float, device: str) -> None:
+    """Write the report next to the run log and print it to the console."""
+    report = _build_report(selected, session_results, session_elapsed, device)
+    try:
+        REPORT_PATH.parent.mkdir(parents=True, exist_ok=True)
+        REPORT_PATH.write_text(report + "\n", encoding="utf-8")
+        print(f"\n📄 report → {REPORT_PATH}")
+    except Exception as e:  # pragma: no cover
+        print(f"  (report write failed: {e})")
+    print("\n" + "=" * 60)
+    print(report)
+    print("=" * 60)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--task", action="append", default=[],
@@ -360,6 +438,7 @@ def main() -> int:
 
     RUNS_PATH.parent.mkdir(parents=True, exist_ok=True)
     results: list[tuple[str, bool]] = []
+    session_started = time.time()
     for t in selected:
         print(f"\n▶ training {t.id}: {t.intent}")
         baseline = None
@@ -401,7 +480,8 @@ def main() -> int:
                 print(f"  ♻ {msg}")
 
     failures = [tid for tid, ok in results if not ok]
-    print(f"\nDone: {len(results) - len(failures)}/{len(results)} passed")
+    _emit_report(selected, results, time.time() - session_started, device)
+    print(f"Done: {len(results) - len(failures)}/{len(results)} passed")
     return 1 if failures else 0
 
 
