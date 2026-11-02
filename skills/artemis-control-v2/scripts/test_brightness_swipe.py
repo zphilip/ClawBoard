@@ -43,6 +43,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import artemis_agent  # noqa: E402
 from artemis_agent import (  # noqa: E402
     _adb,
+    _clip_point,
+    _coerce_coord,
+    _degenerate_gesture_reason,
     _edge_safe_rect,
     _is_slider_element,
     _slider_gesture,
@@ -234,15 +237,77 @@ def _geometry_only(target: float) -> int:
     return 0
 
 
+def _swipe_action_geometry(w: int, h: int) -> int:
+    """Verify the AGENT's ``swipe`` ACTION coordinate path (the one the fixed
+    slider geometry does NOT exercise): VLM 0-1000 coords -> ``_coerce_coord``
+    -> ``_clip_point`` -> non-degenerate, which is exactly what _decide_action
+    / the plan-guided operator run before ``adb shell input swipe``."""
+    artemis_agent._DEVICE_RESOLUTION = (w, h)
+    x0, y0, x1, y1 = _edge_safe_rect()
+    problems: list[str] = []
+
+    # 1. canonical 0-1000 swipe maps to device px and the start lands inside
+    #    the edge-safe zone (so the OS won't steal it as a BACK gesture).
+    sx, sy = _coerce_coord(500, 0), _coerce_coord(300, 1)
+    ex, ey = _coerce_coord(500, 0), _coerce_coord(700, 1)
+    csx, csy = _clip_point(sx, sy)
+    cex, cey = _clip_point(ex, ey)
+    start_ok = x0 <= csx <= x1 and y0 <= csy <= y1
+
+    if _degenerate_gesture_reason(
+        "swipe", {"coordinate1": [csx, csy], "coordinate2": [cex, cey]}
+    ):
+        problems.append("canonical swipe was flagged as a degenerate/no-op gesture")
+
+    # 2. a VLM swipe STARTING in the left edge-back strip must be clipped into
+    #    the safe zone, not executed as-is (otherwise the app sees a tap+back).
+    lx, ly = _coerce_coord(0, 0), _coerce_coord(500, 1)
+    clx, cly = _clip_point(lx, ly)
+    left_clipped = clx >= x0
+    if not left_clipped:
+        problems.append(f"left-edge swipe start ({clx},{cly}) not clipped into safe zone (x0={x0})")
+
+    # 3. a value ABOVE the 0-1000 space but within the device (e.g. 1200 on a
+    #    1440 wide screen) must survive _coerce_coord un-scaled — that branch is
+    #    what stops a device-pixel swipe from being `n/1000*dev`-scaled so both
+    #    endpoints clamp onto one edge and the swipe collapses into zero travel.
+    #    Values <=1000 are the documented normalized space (ambiguous readings
+    #    resolve to normalized), so only >1000..<=dev is treated as pixels.
+    if w == 1440:
+        raw = _coerce_coord(1200, 0)
+        clamped = _coerce_coord(9999, 0)
+        if raw != 1200:
+            problems.append(f"device-pixel coord 1200 (w={w}) should stay 1200, got {raw}")
+        if clamped != w - 1:
+            problems.append(f"out-of-range coord 9999 should clamp to {w - 1}, got {clamped}")
+
+    print(
+        f"[swipe-action] VLM(500,300)->(500,700) => DEV ({csx},{csy})->({cex},{cey})"
+        f"  start-in-safe:{start_ok}"
+    )
+    print(f"              left-edge start VLM(0,500)->({clx},{cly})  clipped-into-safe:{left_clipped}")
+
+    for p in problems:
+        print(f"FAIL: {p}")
+    if problems:
+        return 1
+    print("PASS: swipe-action coordinate path correct (0-1000 + edge-safe + no-degenerate)")
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--device", "-s", default=None, help="adb serial (default: first device)")
     ap.add_argument("--target", type=float, default=0.35, help="brightness fraction 0..1")
     ap.add_argument("--no-execute", action="store_true", help="print the plan, do not touch the device")
     ap.add_argument("--geometry-only", action="store_true", help="run geometry checks only (no device)")
+    ap.add_argument("--swipe-action", action="store_true",
+                    help="verify the agent's swipe ACTION coordinate path (0-1000 + edge-safe)")
     args = ap.parse_args()
 
     target = max(0.0, min(1.0, args.target))
+    if args.swipe_action:
+        return _swipe_action_geometry(1440, 3120)
     if args.geometry_only:
         return _geometry_only(target)
 
