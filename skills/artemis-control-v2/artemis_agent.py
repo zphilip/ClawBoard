@@ -2649,7 +2649,12 @@ def _run_plan_guided_fallback(
         # Did the gesture actually move the screen? A scroll/swipe that leaves the
         # pixels identical is either past the end of the list or landing on a
         # non-scrollable region — either way repeating it wastes the path budget.
-        if action_type == "swipe":
+        # EXCEPTION: a slider drag (``kind == "slider"``) changes STATE, not
+        # pixels — dragging the volume bar to zero leaves the screenshot almost
+        # identical, so pixel-diff here wrongly marks it "no effect" and the hint
+        # tells the Operator to stop scrolling. Sliders are judged by their own
+        # acceptance probe below, never by pixel diff.
+        if action_type == "swipe" and action_args.get("kind") != "slider":
             _move_px = screenshot_diff_count(str(shot_path), str(vshot_path))
             if _move_px <= 3:
                 ineffective_scrolls += 1
@@ -4414,6 +4419,7 @@ def _decide_action_fallback(
         gesture = _scroll_gesture(elements, parsed.get("target"), direction)
         if gesture is None:
             return ("system_button", {"button": "back"}, "scroll failed: no scrollable region", None, None)
+        gesture["kind"] = "scroll"
         desc = target_desc or f"scroll {direction} in #{parsed.get('target')}"
         _log(f"[gesture] scroll {direction} ⇒ {gesture['coordinate1']}→{gesture['coordinate2']}")
         return ("swipe", gesture, desc)
@@ -4423,6 +4429,7 @@ def _decide_action_fallback(
         gesture = _slider_gesture(elements, parsed.get("target"), frac)
         if gesture is None:
             return ("system_button", {"button": "back"}, "set_slider failed: target has no bounds", None, None)
+        gesture["kind"] = "slider"
         desc = target_desc or f"set_slider #{parsed.get('target')} → {frac}"
         _log(f"[gesture] set_slider frac={frac} ⇒ {gesture['coordinate1']}→{gesture['coordinate2']}")
         return ("swipe", gesture, desc)
@@ -4741,6 +4748,7 @@ def _decide_action_plan_guided(
         if gesture is None:
             return ("system_button", {"button": "back"},
                     "scroll failed: no scrollable region", plan_updates, notes_updates)
+        gesture["kind"] = "scroll"
         desc = target_desc or f"scroll {direction} in #{parsed.get('target')}"
         _log(f"[gesture] scroll {direction} ⇒ {gesture['coordinate1']}→{gesture['coordinate2']}")
         return ("swipe", gesture, desc, plan_updates, notes_updates)
@@ -4751,6 +4759,7 @@ def _decide_action_plan_guided(
         if gesture is None:
             return ("system_button", {"button": "back"},
                     "set_slider failed: target has no bounds", plan_updates, notes_updates)
+        gesture["kind"] = "slider"
         desc = target_desc or f"set_slider #{parsed.get('target')} → {frac}"
         _log(f"[gesture] set_slider frac={frac} ⇒ {gesture['coordinate1']}→{gesture['coordinate2']}")
         return ("swipe", gesture, desc, plan_updates, notes_updates)
