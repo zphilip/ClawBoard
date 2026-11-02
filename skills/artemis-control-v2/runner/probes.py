@@ -205,15 +205,19 @@ def derive_probes(check_text: str) -> list[tuple[str, dict]]:
     explicit = _parse_probe_hint(check_text)
     if explicit:
         lowered = check_text.lower()
-        # An explicit ``[probe: volume ring]`` on a "silent" criterion must still
-        # bring the ringer-mode probe along: Android clamps STREAM_RING to >= 1
-        # while the ringer mode is NORMAL, so volume alone may be unsatisfiable.
-        if (
-            any(kind == "volume" for kind, _ in explicit)
-            and not any(kind == "audio" for kind, _ in explicit)
-            and any(k in lowered for k in ("静音", "mute", "silent", "铃声模式", "ringer"))
-        ):
-            explicit = explicit + [("audio", {})]
+        # A "silent" criterion must carry EVERY signal that could satisfy it:
+        # Android clamps STREAM_RING to >= 1 while the ringer mode is NORMAL (so
+        # volume alone is unsatisfiable), and DND (zen_mode) is the mode this
+        # family of ROMs actually uses to mute. If we don't probe ringer mode AND
+        # zen, a phone that IS silent still reads "not done" and the agent loops.
+        if any(k in lowered for k in ("静音", "mute", "silent", "铃声模式", "ringer", "勿扰", "dnd")):
+            if not any(kind == "audio" for kind, _ in explicit):
+                explicit.append(("audio", {}))
+            if not any(
+                kind == "setting" and pa.get("key") == "zen_mode"
+                for kind, pa in explicit
+            ):
+                explicit.append(("setting", {"namespace": "global", "key": "zen_mode"}))
         return explicit
 
     lowered = check_text.lower()
@@ -230,6 +234,7 @@ def derive_probes(check_text: str) -> list[tuple[str, dict]]:
                     k in lowered for k in ("静音", "mute", "silent", "铃声模式", "ringer")
                 ):
                     probes.append(("audio", {}))
+                    probes.append(("setting", {"namespace": "global", "key": "zen_mode"}))
                 return probes
     return []
 
@@ -242,7 +247,7 @@ _PROBE_OUTPUT_LIMIT = 4000
 #: For verbose dumps (audio, activities), keep only lines matching these
 #: patterns so the Checker sees the decisive state without a wall of text.
 _KEEP_LINES: dict[str, re.Pattern] = {
-    "audio": re.compile(r"ring(er)?[_-]?mode|stream|volume|mode|audio_mode|state", re.IGNORECASE),
+    "audio": re.compile(r"ring(er)?[_-]?mode|ringer\s*mode|stream|volume|mode|audio_mode|state|zen", re.IGNORECASE),
     "foreground": re.compile(r"mResumedActivity|mFocusedApp|mCurrentFocus|topResumedActivity|ResumedActivity", re.IGNORECASE),
     "battery": re.compile(r"level|status|present|charged|AC powered|USB powered", re.IGNORECASE),
     # ``media volume --get`` prints just the integer; keep any digit line.

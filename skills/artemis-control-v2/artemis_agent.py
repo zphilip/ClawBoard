@@ -383,7 +383,14 @@ def _acceptance_from_probes(verify_texts: list[str], probe_results: dict):
             m = re.search(r"mringermode\s*=\s*(\d+)", low)
             if m:
                 decisive = True
-                if int(m.group(1)) == 0:  # 0 = SILENT
+                if int(m.group(1)) in (0, 1):  # 0 = SILENT, 1 = VIBRATE
+                    satisfied = True
+                continue
+            # ``dumpsys audio`` spells it in words, not as mRingerMode=N.
+            m = re.search(r"ringer\s*mode\s*[:=]\s*([a-z]+)", low)
+            if m:
+                decisive = True
+                if m.group(1).lower() in ("silent", "vibrate"):
                     satisfied = True
                 continue
             if "zen_mode" in low:
