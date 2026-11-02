@@ -201,16 +201,23 @@ def derive_probes(check_text: str) -> list[tuple[str, dict]]:
 
     Explicit ``[probe: ...]`` hints win; otherwise keyword matching maps common
     state intents to read-only probes.  Empty list means "no probe derivable".
+
+    The set is widened only for a SILENT goal, and that decision comes from the
+    criterion's own polarity (``runner.acceptance.parse_goal``) rather than from
+    a hard-coded keyword list: a silent state is reachable via ring volume 0, via
+    ringer mode SILENT/VIBRATE, or via DND, so all three signals must be read, or
+    a phone that IS silent keeps reading as "not done".
     """
+    try:
+        from runner.acceptance import POL_SILENT, parse_goal
+
+        wants_silent = parse_goal(check_text).polarity == POL_SILENT
+    except Exception:  # pragma: no cover - acceptance module unavailable
+        wants_silent = False
+
     explicit = _parse_probe_hint(check_text)
     if explicit:
-        lowered = check_text.lower()
-        # A "silent" criterion must carry EVERY signal that could satisfy it:
-        # Android clamps STREAM_RING to >= 1 while the ringer mode is NORMAL (so
-        # volume alone is unsatisfiable), and DND (zen_mode) is the mode this
-        # family of ROMs actually uses to mute. If we don't probe ringer mode AND
-        # zen, a phone that IS silent still reads "not done" and the agent loops.
-        if any(k in lowered for k in ("静音", "mute", "silent", "铃声模式", "ringer", "勿扰", "dnd")):
+        if wants_silent:
             if not any(kind == "audio" for kind, _ in explicit):
                 explicit.append(("audio", {}))
             if not any(
@@ -225,14 +232,7 @@ def derive_probes(check_text: str) -> list[tuple[str, dict]]:
         for kw in keywords:
             if kw in lowered:
                 probes: list[tuple[str, dict]] = [(kind, dict(params))]
-                # A "silent" goal can be satisfied EITHER by the ring stream
-                # reaching 0 OR by the ringer mode becoming SILENT — and Android
-                # clamps STREAM_RING to >= 1 while the ringer mode is NORMAL, so
-                # the volume probe alone can never reach 0 on such ROMs. Emit
-                # both so acceptance is actually reachable.
-                if kind == "volume" and any(
-                    k in lowered for k in ("静音", "mute", "silent", "铃声模式", "ringer")
-                ):
+                if kind == "volume" and wants_silent:
                     probes.append(("audio", {}))
                     probes.append(("setting", {"namespace": "global", "key": "zen_mode"}))
                 return probes

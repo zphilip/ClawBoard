@@ -353,60 +353,18 @@ def _acceptance_from_probes(verify_texts: list[str], probe_results: dict):
     Returns True (satisfied), False (contradicted) or None (cannot tell — the
     final Checker decides).
 
-    Parses the probes' ACTUAL output shapes rather than assuming:
-      ``media volume --stream 2 --get`` prints
-          ``[v] will control stream=2 (STREAM_RING)``
-          ``[v] volume is 1 in range [0..7]``      ← the number is HERE
-      ``dumpsys audio`` carries ``mRingerMode=0``.
-
-    A "silent" goal is satisfied by EITHER ring volume 0 OR ringer mode SILENT:
-    Android clamps STREAM_RING to >= 1 while the ringer mode is NORMAL, so a
-    volume-only predicate can never be met on such a ROM.
+    The predicate's DIRECTION comes from the criterion text, not from a
+    hard-coded assumption: "静音" wants the ring volume down / DND on, whereas
+    "关闭勿扰" wants ``zen_mode == 0`` and "打开 WiFi" wants ``wifi_on == 1``.
+    The old implementation returned "satisfied" for ``zen_mode != 0`` and for
+    ``volume == 0`` unconditionally, which silently inverted every reverse task.
+    See :mod:`runner.acceptance` for the parser and the fact extraction.
     """
-    satisfied = False
-    decisive = False
-    for text in verify_texts:
-        evidence = probe_results.get(text, "")
-        if not evidence:
-            continue
-        for line in evidence.splitlines():
-            low = line.lower()
-            # NOTE: match the VALUE lines, not the ``probe <kind>:`` prefix. In a
-            # multi-line probe summary only the first line carries the prefix, so
-            # keying on "probe volume" made the actual reading unreachable.
-            m = re.search(r"volume is (-?\d+)", low)
-            if m:
-                decisive = True
-                if int(m.group(1)) == 0:
-                    satisfied = True
-                continue
-            m = re.search(r"mringermode\s*=\s*(\d+)", low)
-            if m:
-                decisive = True
-                if int(m.group(1)) in (0, 1):  # 0 = SILENT, 1 = VIBRATE
-                    satisfied = True
-                continue
-            # ``dumpsys audio`` spells it in words, not as mRingerMode=N.
-            m = re.search(r"ringer\s*mode\s*[:=]\s*([a-z]+)", low)
-            if m:
-                decisive = True
-                if m.group(1).lower() in ("silent", "vibrate"):
-                    satisfied = True
-                continue
-            if "zen_mode" in low:
-                m = re.search(r"zen_mode.*?(-?\d+)\s*$", low) or re.search(
-                    r"(-?\d+)", low
-                )
-                if m:
-                    decisive = True
-                    if int(m.group(1)) != 0:  # any DND mode suppresses sound
-                        satisfied = True
-    if satisfied:
-        return True
-    return False if decisive else None
-    if saw_volume:
+    try:
+        from runner.acceptance import evaluate_acceptance
+    except Exception:  # pragma: no cover - only when the module is unavailable
         return None
-    return None
+    return evaluate_acceptance(verify_texts, probe_results)
 
 
 def _advance_path(item, ladder, path_cursor: dict, path_steps: dict,

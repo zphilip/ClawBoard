@@ -127,6 +127,29 @@ Enumerated probes the Checker may run (no free-form commands): `alarms`,
 `volume` (`media volume --stream N --get`; `ring`/`music`/`alarm` aliases),
 `setting` (`<namespace> <key>`), `content` (`<uri>`), `packages`, `prop`.
 
+#### Acceptance has a DIRECTION — state it
+
+A criterion is a predicate on device state, and the evaluator reads its
+direction from the criterion text. The verb decides:
+
+| verb in the criterion | required state | example |
+|---|---|---|
+| 静音 / mute / silent | volume `0`, ringer SILENT/VIBRATE, **or** any DND | `- verify: 铃声静音 [probe: volume ring]` |
+| 打开 / 开启 / on / enable | the named setting `!= 0` | `- verify: WiFi 已打开 [probe: setting global wifi_on]` |
+| 关闭 / 取消 / off / disable | the named setting `== 0` | `- verify: 勿扰已关闭 [probe: setting global zen_mode]` |
+| 调低 / 调高 / lower / raise | **needs a baseline** — not judgeable from one reading | see `[want: …]` below |
+
+Because of the last row, a "make it bigger/smaller" goal must be pinned to an
+absolute value or it stays `inconclusive`. Use the explicit hint:
+
+```markdown
+- verify: 亮度已降低 [probe: setting system screen_brightness] [want: <40]
+```
+
+`[want: <op> <n>]` accepts `<`, `<=`, `>`, `>=`, `==`, `!=`. Write the verb and
+the subject explicitly — "勿扰已关闭" and "勿扰已打开" are opposite predicates on
+the same probe, and only the verb tells them apart.
+
 ### Strategy ladder — several ways to reach the same milestone
 
 For a state change, the Planner emits an ordered ladder of `- path N [cost=K
@@ -174,6 +197,9 @@ Two rules that matter when the milestone changes device state:
 - **An acceptance test must be satisfiable by the device.** The OS may clamp a
   value or expose the same end state two different ways; when it does, name every
   probe that could confirm it, otherwise a correct run reports `inconclusive`.
+  A silent state, for instance, is confirmed by ring volume 0 **or** ringer mode
+  SILENT/VIBRATE **or** DND — name all three, or a phone that is genuinely silent
+  keeps reading "not done" and the ladder is walked to exhaustion.
 - **A path's first action must move toward the goal.** If it moves the state the
   other way, the guardrail rejects the step and the rest of that path is never
   reached — a path that can never run.

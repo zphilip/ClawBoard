@@ -377,8 +377,11 @@ class MemoryRuntime:
         """
         norm: dict[str, Any] = {}
         for k, v in args.items():
-            if k == "target":
-                continue  # element index is unstable across screenshots
+            if k in ("target", "kind"):
+                # element index is unstable across screenshots; ``kind`` is
+                # gesture-source metadata (slider/scroll/raw swipe), not the
+                # physical target — neither should split the replay bucket.
+                continue
             if (
                 k in ("coordinate", "coordinate1", "coordinate2")
                 and isinstance(v, (list, tuple))

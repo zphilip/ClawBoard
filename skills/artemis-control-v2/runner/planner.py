@@ -846,7 +846,8 @@ def generate_plan(
     user_prompt = base_prompt + playbook_block
 
     last_error = ""
-    corrective = ""  # "" = none; "ladder"/"guardrail" = which one-shot re-ask fired
+    ladder_asked = False   # whether the one-shot ladder re-ask already fired
+    guardrail_asks = 0     # number of guardrail re-asks already fired
 
     def _budget_spent() -> bool:
         """True when less than a couple of seconds remain in the total budget."""
@@ -920,39 +921,48 @@ def generate_plan(
             snapshot = parse_plan(plan_text)
             # Machine-checked playbook guardrails are ENFORCED — a plan that
             # copies a banned first action (e.g. VOLUME_UP when the goal is to
-            # mute) is rejected, not executed. Re-ask ONCE.
-            guardrail_hits = [] if corrective else _playbook_guardrail_violations(plan_text)
-            if guardrail_hits and attempt < max(1, max_retries) and not _budget_spent():
-                details = "\n".join(f"- {v}" for v in guardrail_hits)
-                _log(
-                    f"[planner] plan violates training-playbook guardrails —"
-                    " re-asking once"
+            # mute) is rejected, not executed. Guardrails are checked on EVERY
+            # attempt (including the corrective re-ask), so a re-asked plan that
+            # still violates them can never be silently executed.
+            guardrail_hits = _playbook_guardrail_violations(plan_text)
+            if guardrail_hits:
+                if guardrail_asks < 1 and attempt < max(1, max_retries) and not _budget_spent():
+                    guardrail_asks += 1
+                    details = "\n".join(f"- {v}" for v in guardrail_hits)
+                    _log(
+                        f"[planner] plan violates training-playbook guardrails —"
+                        " re-asking once"
+                    )
+                    last_error = "plan violated the training playbook guardrails"
+                    user_prompt = (
+                        base_prompt
+                        + playbook_block
+                        + "\n\nYour previous plan was REJECTED by machine-checked"
+                        " guardrails:\n"
+                        + details
+                        + "\n\nRewrite the WHOLE plan so every `- path` complies with"
+                        " the guardrails above and keeps a `- verify:` line tagged"
+                        " `[probe: ...]`. Output ONLY the corrected plan."
+                    )
+                    continue
+                last_error = (
+                    "plan still violates training-playbook guardrails after re-ask: "
+                    + "; ".join(guardrail_hits)
                 )
-                corrective = "guardrail"
-                last_error = "plan violated the training playbook guardrails"
-                user_prompt = (
-                    base_prompt
-                    + playbook_block
-                    + "\n\nYour previous plan was REJECTED by machine-checked"
-                    " guardrails:\n"
-                    + details
-                    + "\n\nRewrite the WHOLE plan so every `- path` complies with"
-                    " the guardrails above and keeps a `- verify:` line tagged"
-                    " `[probe: ...]`. Output ONLY the corrected plan."
-                )
+                _log(f"[planner] {last_error}")
                 continue
             # A state-change milestone without a strategy ladder means the
             # executor has no fallback when the chosen UI control does not exist
             # on this skin. Re-ask ONCE (asking twice is what made planning slow
             # before); the wall-clock budget still applies.
-            missing = [] if corrective else missing_ladder_milestones(snapshot)
+            missing = [] if ladder_asked else missing_ladder_milestones(snapshot)
             if missing and attempt < max(1, max_retries) and not _budget_spent():
                 titles = "\n".join(f'- "{i.text}"' for i in missing)
                 _log(
                     f"[planner] {len(missing)} state milestone(s) lack a strategy"
                     " ladder — re-asking once with a corrective instruction"
                 )
-                corrective = "ladder"
+                ladder_asked = True
                 last_error = "plan lacked a strategy ladder for state milestones"
                 user_prompt = (
                     base_prompt
