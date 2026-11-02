@@ -58,10 +58,13 @@ class _El:
         self.scrollable = scrollable
         self.display_text = cls
         self.resource_id = ""
+        self.text = ""
 
 
 _BOUNDS_RE = re.compile(r'bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"')
 _CLASS_RE = re.compile(r'class="([^"]+)"')
+_RID_RE = re.compile(r'resource-id="([^"]*)"')
+_TEXT_RE = re.compile(r'text="([^"]*)"')
 
 
 def _parse_elements(xml: str) -> list[_El]:
@@ -73,22 +76,36 @@ def _parse_elements(xml: str) -> list[_El]:
         if not bm:
             continue
         cm = _CLASS_RE.search(chunk)
+        rm = _RID_RE.search(chunk)
+        tm = _TEXT_RE.search(chunk)
         cls = cm.group(1) if cm else ""
-        out.append(_El(idx, cls, [int(bm.group(i)) for i in range(1, 5)]))
+        el = _El(idx, cls, [int(bm.group(i)) for i in range(1, 5)])
+        el.resource_id = rm.group(1) if rm else ""
+        el.text = tm.group(1) if tm else ""
+        out.append(el)
         idx += 1
     return out
 
 
 def _find_brightness_slider(elements: list[_El]) -> _El | None:
-    """The largest SeekBar/ProgressBar, falling back to the widest horizontal
-    bar-like element (brightness bars are nearly full-width)."""
+    """The brightness SeekBar specifically, then any slider, then the widest
+    bar-like element. Adaptive-brightness ROMs often render extra progress bars
+    in the shade (media, short video), so a bare \"largest SeekBar\" can pick the
+    wrong control — demand a brightness-ish resource-id or text when present."""
     sliders = [e for e in elements if _is_slider_element(e)]
+
+    # 1. explicit brightness identity
+    for e in sliders:
+        hint = (e.resource_id + " " + e.text).lower()
+        if "brightness" in hint or "亮度" in hint or "adaptive" in hint:
+            return e
+
+    # 2. any slider that is nearly full-width and in the shade region
     if sliders:
-        largest = max(
+        return max(
             sliders,
             key=lambda e: (e.bounds[2] - e.bounds[0]) * (e.bounds[3] - e.bounds[1]),
         )
-        return largest
 
     bars = [e for e in elements if (e.bounds[3] - e.bounds[1]) <= 80]
     if not bars:
@@ -121,6 +138,53 @@ def _brightness_now(device: str | None) -> int | None:
         if code == 0 and txt and txt.lstrip("-").isdigit():
             return int(txt)
     return None
+
+
+def _mode_now(device: str | None) -> tuple[str | None, str | None]:
+    """Return (namespace, value) of the screen_brightness_mode setting."""
+    for ns in ("system", "global"):
+        code, out, _ = _adb(
+            ["shell", "settings", "get", ns, "screen_brightness_mode"], device=device
+        )
+        txt = out.strip()
+        if code == 0 and txt:
+            return ns, txt
+    return None, None
+
+
+def _put_mode(device: str | None, value: str) -> None:
+    """Set screen_brightness_mode in BOTH namespaces (the location varies by ROM)."""
+    for ns in ("system", "global"):
+        _adb(
+            ["shell", "settings", "put", ns, "screen_brightness_mode", value],
+            device=device,
+        )
+
+
+def _auto_brightness_off(device: str | None) -> tuple[bool, str | None]:
+    """Disable adaptive brightness for the test. Returns (was_on, namespace).
+
+    With adaptive brightness ON, dragging the manual slider only nudges an
+    offset that the light sensor immediately overwrites, so
+    ``screen_brightness`` never moves and the drag looks like a no-op — the
+    exact failure this test reports. Disable it, then restore afterwards.
+    """
+    ns, val = _mode_now(device)
+    was_on = bool(val and val.strip() == "1")
+    if was_on:
+        _put_mode(device, "0")
+        time.sleep(0.5)
+    return was_on, ns
+
+
+def _auto_brightness_on(device: str | None, ns: str | None) -> None:
+    """Best-effort restore of adaptive brightness."""
+    if not ns:
+        return
+    _adb(
+        ["shell", "settings", "put", ns, "screen_brightness_mode", "1"],
+        device=device,
+    )
 
 
 def _geometry_only(target: float) -> int:
@@ -197,70 +261,90 @@ def main() -> int:
         print("FAIL: could not read `wm size`")
         return 1
     w, h = size
+    # Make the production edge-safe geometry see the REAL screen — otherwise it
+    # falls back to the unbounded (0,0,10^6,10^6) sentinel and the printed rect
+    # (and any start-point clipping) is meaningless.
+    artemis_agent._DEVICE_RESOLUTION = (w, h)
     sx0, sy0, sx1, sy1 = _edge_safe_rect()
     print(f"[screen] {w}x{h}   edge-safe rect x:[{sx0},{sx1}] y:[{sy0},{sy1}]")
 
     before = _brightness_now(device)
     print(f"[brightness] before = {before}")
 
-    # Step 1: open the notification shade. This swipe MUST start at the top
-    # edge (y ≈ 1%), outside the safe rect — by design, for this one gesture.
-    print("[step1] swipe down from the top edge (notification shade)")
-    if not args.no_execute:
-        _swipe(device, w // 2, max(1, int(h * 0.01)), w // 2, int(h * 0.55), ms=350)
-        time.sleep(1.0)
+    # Adaptive brightness must be OFF or the sensor instantly overwrites any
+    # manual drag — the most common reason for a "delta = 0" here.
+    was_auto, auto_ns = _auto_brightness_off(device)
+    if was_auto:
+        print("[auto-brightness] was ON — disabled for the test (restored at exit)")
+        before = _brightness_now(device)
+        print(f"[brightness] re-baseline (auto off) = {before}")
 
-    # Step 2: expand to full Quick Settings so the brightness bar is visible.
-    print("[step2] swipe down again (full Quick Settings)")
-    if not args.no_execute:
-        _swipe(device, w // 2, int(h * 0.30), w // 2, int(h * 0.75), ms=350)
-        time.sleep(1.0)
+    try:
+        # Step 1: open the notification shade. This swipe MUST start at the top
+        # edge (y ≈ 1%), outside the safe rect — by design, for this one gesture.
+        print("[step1] swipe down from the top edge (notification shade)")
+        if not args.no_execute:
+            _swipe(device, w // 2, max(1, int(h * 0.01)), w // 2, int(h * 0.55), ms=350)
+            time.sleep(1.0)
 
-    # Step 3: dump the UI and find the brightness slider.
-    print("[step3] locating brightness SeekBar")
-    if args.no_execute:
-        print("        (dry run — no dump)")
-        return 0
-    code, out, err = _adb(["shell", "uiautomator", "dump", "/sdcard/win.xml"], device=device)
-    if code != 0:
-        code, out, err = _adb(["shell", "uiautomator", "dump"], device=device)
-    code, xml, _ = _adb(["shell", "cat", "/sdcard/win.xml"], device=device)
-    if code != 0 or not xml.strip():
-        print("FAIL: uiautomator dump empty (is the shade fully expanded?)")
-        return 1
+        # Step 2: expand to full Quick Settings so the brightness bar is visible.
+        print("[step2] swipe down again (full Quick Settings)")
+        if not args.no_execute:
+            _swipe(device, w // 2, int(h * 0.30), w // 2, int(h * 0.75), ms=350)
+            time.sleep(1.0)
 
-    elements = _parse_elements(xml)
-    slider = _find_brightness_slider(elements)
-    if slider is None:
-        print("FAIL: no SeekBar/bar element found in the dump")
-        return 1
-
-    b = slider.bounds
-    print(f"[slider] element #{slider.index} {slider.class_name} bounds={b}")
-
-    # Step 4: compute the drag with the production geometry and execute it.
-    gesture = _slider_gesture(elements, slider.index, target)
-    if gesture is None:
-        print("FAIL: _slider_gesture returned None (track too narrow inside safe rect?)")
-        return 1
-    (ax, ay), (bx, by) = gesture["coordinate1"], gesture["coordinate2"]
-    print(f"[step4] drag {gesture['coordinate1']} -> {gesture['coordinate2']} "
-          f"({gesture['duration']}ms)   target={target:.2f}")
-    _swipe(device, ax, ay, bx, by, ms=gesture["duration"])
-    time.sleep(1.0)
-
-    # Step 5: verify.
-    after = _brightness_now(device)
-    print(f"[brightness] after = {after}")
-    if before is not None and after is not None:
-        moved = abs(after - before)
-        print(f"[verify] brightness delta = {moved}")
-        if moved == 0:
-            print("FAIL: brightness unchanged — the drag was not delivered "
-                  "(drag it fully to 0.0/1.0 and re-run to rule out touch slop)")
+        # Step 3: dump the UI and find the brightness slider.
+        print("[step3] locating brightness SeekBar")
+        if args.no_execute:
+            print("        (dry run — no dump)")
+            return 0
+        code, out, err = _adb(["shell", "uiautomator", "dump", "/sdcard/win.xml"], device=device)
+        if code != 0:
+            code, out, err = _adb(["shell", "uiautomator", "dump"], device=device)
+        code, xml, _ = _adb(["shell", "cat", "/sdcard/win.xml"], device=device)
+        if code != 0 or not xml.strip():
+            print("FAIL: uiautomator dump empty (is the shade fully expanded?)")
             return 1
-    print("PASS: swipe + slider drag executed")
-    return 0
+
+        elements = _parse_elements(xml)
+        slider = _find_brightness_slider(elements)
+        if slider is None:
+            print("FAIL: no SeekBar/bar element found in the dump")
+            return 1
+
+        b = slider.bounds
+        rid = f"  resource-id={slider.resource_id!r}" if slider.resource_id else ""
+        print(f"[slider] element #{slider.index} {slider.class_name} bounds={b}{rid}")
+
+        # Step 4: compute the drag with the production geometry and execute it.
+        gesture = _slider_gesture(elements, slider.index, target)
+        if gesture is None:
+            print("FAIL: _slider_gesture returned None (track too narrow inside safe rect?)")
+            return 1
+        (ax, ay), (bx, by) = gesture["coordinate1"], gesture["coordinate2"]
+        print(f"[step4] drag {gesture['coordinate1']} -> {gesture['coordinate2']} "
+              f"({gesture['duration']}ms)   target={target:.2f}")
+        _swipe(device, ax, ay, bx, by, ms=gesture["duration"])
+        time.sleep(1.0)
+
+        # Step 5: verify.
+        after = _brightness_now(device)
+        print(f"[brightness] after = {after}")
+        if before is not None and after is not None:
+            moved = abs(after - before)
+            print(f"[verify] brightness delta = {moved}")
+            if moved == 0:
+                print("FAIL: brightness unchanged (0x delta). Causes, in order: "
+                      "adaptive brightness still on; shade not fully expanded; "
+                      "wrong slider picked. Re-run with `--target 0.0` to drag "
+                      "to the extreme and rule out a too-small target delta.")
+                return 1
+        print("PASS: swipe + slider drag executed")
+        return 0
+    finally:
+        if was_auto:
+            _auto_brightness_on(device, auto_ns)
+            print("[auto-brightness] restored (ON)")
 
 
 if __name__ == "__main__":
