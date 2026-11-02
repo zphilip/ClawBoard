@@ -226,10 +226,47 @@ class TestConnectivity(unittest.TestCase):
         enabled, _ssid, _ip = DP._parse_wifi("Wifi is disabled")
         self.assertFalse(enabled)
 
-    def test_wifi_ip_from_ip_addr_fallback(self):
-        out = "2: wlan0: <BROADCAST> mtu 1500\n    inet 10.0.0.7/24 brd 10.0.0.255 scope global wlan0"
-        _e, _s, ip = DP._parse_wifi(out)
-        self.assertEqual(ip, "10.0.0.7")
+    def test_device_ip_comes_from_the_interface_not_the_dump(self):
+        # ``ip addr show wlan0`` on the phone is authoritative; the dump is not.
+        iface = (
+            "4: wlan0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 state UP\n"
+            "    link/ether 9c:04:b6:84:3c:e2 brd ff:ff:ff:ff:ff:ff\n"
+            "    inet 192.168.1.47/24 brd 192.168.1.255 scope global dynamic wlan0\n"
+        )
+        self.assertEqual(DP._parse_iface_ip(iface), "192.168.1.47")
+        # only IPv6 present → no IPv4 address invented
+        self.assertEqual(DP._parse_iface_ip("    inet6 fe80::1/64 scope link\n"), "")
+        # busybox/older ifconfig shape
+        self.assertEqual(
+            DP._parse_iface_ip("  inet addr:10.1.2.3  Bcast:10.1.2.255  Mask:255.255.255.0"),
+            "10.1.2.3",
+        )
+
+    def test_unquoted_ssid_is_recovered(self):
+        # OnePlus/OxygenOS prints ``mWifiInfo SSID: MyNet,`` with no quotes —
+        # the quoted-only patterns reported a connected phone as "no-network".
+        out = (
+            "Wifi is enabled\n"
+            "mWifiInfo SSID: MyHome-5G, BSSID: aa:bb, MAC: cc, IP: /192.168.1.42, "
+            "Supplicant state: COMPLETED\n"
+        )
+        enabled, ssid, ip = DP._parse_wifi(out)
+        self.assertTrue(enabled)
+        self.assertEqual(ssid, "MyHome-5G")
+        self.assertEqual(ip, "192.168.1.42")
+
+    def test_gateway_ip_is_not_mistaken_for_device_ip(self):
+        # ``dumpsys wifi`` carries DHCP/gateway addresses in other fields; only
+        # the mWifiInfo line may be believed.
+        out = (
+            "Wifi is enabled\n"
+            "DhcpResults IP address: 192.168.1.2, Gateway: 192.168.1.2\n"
+            "mWifiInfo SSID: <unknown ssid>, BSSID: 02:00:00:00:00:00, "
+            "IP: /0.0.0.0, Supplicant state: DISCONNECTED\n"
+        )
+        _e, ssid, ip = DP._parse_wifi(out)
+        self.assertEqual(ssid, "")   # not associated
+        self.assertEqual(ip, "")     # neither the gateway nor 0.0.0.0
 
     def test_bluetooth_with_paired_devices(self):
         out = (
@@ -243,6 +280,17 @@ class TestConnectivity(unittest.TestCase):
         enabled, devices = DP._parse_bluetooth(out)
         self.assertTrue(enabled)
         self.assertEqual(devices, "Galaxy Buds2, Car Audio")
+
+    def test_bluetooth_transport_prefix_is_stripped(self):
+        # OxygenOS prefixes each device with its transport type.
+        out = (
+            "  enabled: true\n"
+            "Bonded devices:\n"
+            "  AC:12:34:56:78:90  [  LE  ] MJ_HT_V1\n"
+            "  BC:AA:11:22:33:44  [BR/EDR] PHILIPS SWR3115A\n"
+        )
+        _enabled, devices = DP._parse_bluetooth(out)
+        self.assertEqual(devices, "MJ_HT_V1, PHILIPS SWR3115A")
 
     def test_bluetooth_enabled_no_devices(self):
         enabled, devices = DP._parse_bluetooth("  enabled: true\n")

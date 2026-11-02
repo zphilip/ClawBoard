@@ -488,13 +488,32 @@ def capture(
     if rc != 0 or not (wifi_out or "").strip():
         rc, wifi_out, _ = run(["shell", "dumpsys", "wifi"])
     if rc == 0:
-        prof.wifi_enabled, prof.wifi_ssid, prof.wifi_ip = _parse_wifi(wifi_out)
-    if not prof.wifi_ip:
-        rc, ip_out, _ = run(["shell", "ip", "addr", "show", "wlan0"])
-        if rc == 0:
-            m = re.search(r"inet\s+(\d+\.\d+\.\d+\.\d+)", ip_out)
-            if m:
-                prof.wifi_ip = m.group(1)
+        prof.wifi_enabled, prof.wifi_ssid, _dump_ip = _parse_wifi(wifi_out)
+    else:
+        _dump_ip = ""
+
+    # The IP comes from the INTERFACE, not from a dump. ``dumpsys wifi`` carries
+    # several ``IP:`` fields (mWifiInfo, DHCP results, gateway) and the first
+    # match is often the ROUTER's address — which is how a phone "connected to"
+    # 192.168.1.2 reported an IP it never had.
+    for argv in (
+        ["shell", "ip", "-f", "inet", "addr", "show", "wlan0"],
+        ["shell", "ip", "addr", "show", "wlan0"],
+        ["shell", "ifconfig", "wlan0"],
+    ):
+        rc, ip_out, _ = run(argv)
+        if rc != 0:
+            continue
+        prof.wifi_ip = _parse_iface_ip(ip_out)
+        if prof.wifi_ip:
+            break
+
+    # A disconnected phone has no lease: never pair an "unknown SSID" with an
+    # address, and fall back to the dump only when the interface gave nothing.
+    if not prof.wifi_ssid and _dump_ip and not prof.wifi_ip:
+        prof.wifi_ip = ""
+    if not prof.wifi_ip and _dump_ip and prof.wifi_ssid:
+        prof.wifi_ip = _dump_ip
 
     rc, bt_out, _ = run(["shell", "dumpsys", "bluetooth_manager"])
     if rc == 0:
@@ -506,8 +525,14 @@ def capture(
     ):
         rc, val, _ = run(["shell", "getprop", prop])
         text = (val or "").strip().strip(",")
-        if rc == 0 and text and text != "unknown":
-            setattr(prof, field, text.split(",")[0])
+        if rc != 0 or not text:
+            continue
+        text = text.split(",")[0].strip()
+        # "Unknown"/"unknown"/"" all mean "not reported" — case-insensitively,
+        # which the previous exact-lowercase compare missed.
+        if text.lower() in ("unknown", "null", "none"):
+            continue
+        setattr(prof, field, text)
     return prof
 
 
@@ -606,11 +631,31 @@ def _parse_bluetooth(out: str) -> tuple[Optional[bool], str]:
             )
             if m:
                 name = m.group(1).strip()
+                # OxygenOS prefixes the transport: ``[BR/EDR] PHILIPS SWR3115A``.
+                name = re.sub(r"^\[\s*[A-Za-z/_ ,]+\]\s*", "", name).strip()
                 if name and name not in names:
                     names.append(name)
             elif len(names) >= 2:
                 break
     return enabled, ", ".join(names[:2])
+
+
+def _parse_iface_ip(out: str) -> str:
+    """IPv4 address from ``ip addr show wlan0`` / ``ifconfig wlan0``.
+
+    This is the authoritative source for the PHONE's own address. A dump is not:
+    ``dumpsys wifi`` contains DHCP server and gateway addresses too, and taking
+    the first ``IP:`` match there reported the router (192.168.1.2) as the
+    device's address.
+    """
+    for pat in (
+        r"\binet\s+(?:addr:)?\s*(\d+\.\d+\.\d+\.\d+)",
+        r"\binet\s+addr:(\d+\.\d+\.\d+\.\d+)",
+    ):
+        m = re.search(pat, out)
+        if m and m.group(1) != "0.0.0.0":
+            return m.group(1)
+    return ""
 
 
 def _parse_wifi(out: str) -> tuple[Optional[bool], str, str]:
@@ -631,28 +676,37 @@ def _parse_wifi(out: str) -> tuple[Optional[bool], str, str]:
             enabled = m.group(1).lower() == "true"
 
     ssid = ""
-    # ``Wifi connected to "X"`` (cmd wifi status) / ``SSID: "X"`` / ``mWifiInfo SSID: "X"``
+    # Four shapes are seen in the field:
+    #   ``Wifi connected to "X"``   (cmd wifi status)
+    #   ``SSID: "X"``                (quoted)
+    #   ``mWifiInfo SSID: X,``       (UNQUOTED — OnePlus/OxygenOS)
+    # The unquoted form is why a connected phone reported "no-network" before.
     for pat in (
         r'wifi connected to "([^"]+)"',
+        r'mWifiInfo SSID:\s*"([^"]+)"',
         r'\bSSID:\s*"([^"]+)"',
+        r'mWifiInfo SSID:\s*([^,\n]+)',
         r'\bSSID=\\?"([^"\\]+)',
     ):
         m = re.search(pat, out, re.IGNORECASE)
-        if m:
-            candidate = m.group(1).strip()
-            # ``<unknown ssid>`` / ``0x`` are "not associated" sentinels.
-            if candidate and not candidate.startswith("<") and not candidate.startswith("0x"):
-                ssid = candidate
-                break
+        if not m:
+            continue
+        candidate = m.group(1).strip().strip('"')
+        # ``<unknown ssid>`` / ``0x…`` are "not associated" sentinels, not names.
+        if candidate and not candidate.startswith("<") and not candidate.startswith("0x"):
+            ssid = candidate
+            break
 
     ip = ""
+    # Only the ``mWifiInfo`` line is safe: other ``IP:`` fields in the same dump
+    # are the DHCP server / gateway, which is how a phone "connected to"
+    # 192.168.1.2 reported an address it never had.
     for pat in (
-        r"\bIP:\s*/?(\d+\.\d+\.\d+\.\d+)",
+        r"mWifiInfo[^\n]*?\bIP:\s*/?(\d+\.\d+\.\d+\.\d+)",
         r"\bIpAddress:\s*/?(\d+\.\d+\.\d+\.\d+)",
-        r"\binet\s+(\d+\.\d+\.\d+\.\d+)",
     ):
         m = re.search(pat, out)
-        if m:
+        if m and m.group(1) != "0.0.0.0":
             ip = m.group(1)
             break
     return enabled, ssid, ip
