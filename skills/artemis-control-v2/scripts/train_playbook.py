@@ -47,6 +47,7 @@ sys.path.insert(0, str(SKILL_ROOT))
 import artemis_agent  # noqa: E402
 from artemis_agent import (  # noqa: E402
     _acceptance_from_probes,
+    _adb,
     _capture_device_baseline,
     _run_check_probes,
     check_adb_device,
@@ -115,10 +116,101 @@ def _baseline_summary(baseline) -> dict:
     return out
 
 
+def _shell(device: str, *argv: str, timeout: int = 10) -> tuple[int, str]:
+    """Run an ``adb shell`` argv; returns (rc, stdout)."""
+    rc, out, _ = _adb(["shell", *argv], device=device, timeout=timeout)
+    return rc, (out or "").strip()
+
+
+def _restore_baseline(device: str, baseline) -> list[str]:
+    """Best-effort reset of the phone to the pre-run baseline after each item.
+
+    The agent mutates device state while training a task (mute silences it,
+    brightness moves it, dnd toggles it…). The next training item must start
+    from the SAME state the previous one did, or relative acceptance and the
+    planner's pre-check both fire on a polluted state. So between items we
+    restore everything the baseline measured.
+
+    Returns a list of human-readable notes about what was restored.
+    """
+    notes: list[str] = []
+    if baseline is None:
+        return ["no baseline to restore"]
+
+    ensure_screen_on("adb", device)
+
+    # 1. ringer mode — restore FIRST: DND/ringer state locks the stream volumes,
+    #    so streams are set afterwards and zen is applied last. ``mode_ringer``
+    #    lives in a ROM-dependent namespace; write to all candidates.
+    if baseline.ringer_mode is not None:
+        for ns in ("global", "system", "secure"):
+            _shell(device, "settings", "put", ns, "mode_ringer", str(baseline.ringer_mode))
+        notes.append(f"ringer_mode={baseline.ringer_mode}")
+
+    # 2. volume streams.
+    _STREAMS = (("ring", "2"), ("music", "3"), ("alarm", "4"), ("notification", "5"))
+    for name, stream in _STREAMS:
+        info = (baseline.volumes or {}).get(name)
+        if info is None or info.get("value") is None:
+            continue
+        _shell(device, "media", "volume", "--stream", stream, "--set", str(info["value"]))
+        notes.append(f"{name}={info['value']}")
+
+    # 3. radios through their dedicated toggles (settings put alone does not
+    #    flip the radio service; svc/cmd actually toggles it).
+    wifi = (baseline.wifi_enabled
+            if baseline.wifi_enabled is not None
+            else baseline.setting("wifi_on"))
+    if wifi is not None:
+        _shell(device, "svc", "wifi", "enable" if wifi else "disable")
+        notes.append("wifi=" + ("on" if wifi else "off"))
+
+    bt = (baseline.bt_enabled
+          if baseline.bt_enabled is not None
+          else baseline.setting("bluetooth_on"))
+    if bt is not None:
+        _shell(device, "svc", "bluetooth", "enable" if bt else "disable")
+        notes.append("bluetooth=" + ("on" if bt else "off"))
+
+    airplane = baseline.setting("airplane_mode_on")
+    if airplane is not None:
+        _shell(device, "cmd", "connectivity", "airplane-mode",
+               "enable" if airplane else "disable")
+        notes.append("airplane=" + ("on" if airplane else "off"))
+
+    # 4. everything else as a numeric setting (brightness, auto-brightness,
+    #    auto-rotate, screen timeout, mobile data, vibrate, navigation mode…).
+    #    The radio keys are skipped because svc/cmd already handled them.
+    for full, val in (baseline.settings or {}).items():
+        if "." not in full:
+            continue
+        ns, key = full.split(".", 1)
+        if key in ("wifi_on", "bluetooth_on", "airplane_mode_on"):
+            continue
+        sval = str(int(val)) if isinstance(val, int) else str(val)
+        _shell(device, "settings", "put", ns, key, sval)
+        notes.append(f"{full}={sval}")
+
+    # 5. zen_mode LAST: it is what actually silences this ROM (locks all the
+    #    streams we just set), and it must be the final state to match.
+    zen = baseline.zen_mode
+    if zen is None:
+        zen = baseline.setting("zen_mode")
+    if zen is not None:
+        _shell(device, "settings", "put", "global", "zen_mode", str(zen))
+        notes.append(f"zen_mode={zen}")
+
+    return notes
+
+
 def _score_run(task, instruction: str, adb_path: str, device: str,
-               max_steps: int, timeout: int, verification: str) -> dict:
-    """Run one task and judge it. Returns the run record (dict)."""
-    baseline = _capture_device_baseline(adb_path, device)
+               max_steps: int, timeout: int, verification: str,
+               baseline) -> dict:
+    """Run one task and judge it. Returns the run record (dict).
+
+    ``baseline`` is the pre-run snapshot captured by the caller (so the same
+    snapshot can also drive the post-run restore).
+    """
     label = _fingerprint_label(baseline)
 
     verify_items = _task_verify_items(task)
@@ -270,9 +362,12 @@ def main() -> int:
     results: list[tuple[str, bool]] = []
     for t in selected:
         print(f"\n▶ training {t.id}: {t.intent}")
+        baseline = None
         try:
+            baseline = _capture_device_baseline("adb", device)
             rec = _score_run(t, t.intent, "adb", device,
-                             args.max_steps, args.timeout, args.verification)
+                             args.max_steps, args.timeout, args.verification,
+                             baseline=baseline)
         except Exception as e:  # pragma: no cover - keep the loop alive
             print(f"  ✗ crashed: {e}")
             rec = {
@@ -280,6 +375,12 @@ def main() -> int:
                 "device": device, "timestamp": datetime.now().isoformat(timespec="seconds"),
                 "status": "fail", "score": 0.0, "reason": f"harness crash: {e}",
             }
+        finally:
+            try:
+                notes = _restore_baseline(device, baseline)
+                print(f"  ↺ restored to baseline: {', '.join(notes[:12])}{'…' if len(notes) > 12 else ''}")
+            except Exception as e:  # pragma: no cover
+                print(f"  ↺ restore failed: {e}")
 
         with RUNS_PATH.open("a", encoding="utf-8") as f:
             f.write(json.dumps(rec, ensure_ascii=False) + "\n")
