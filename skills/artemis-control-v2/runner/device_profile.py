@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -123,6 +124,14 @@ class DeviceProfile:
     screen_state: str = ""
     keyguard_locked: Optional[bool] = None
     foreground: str = ""
+    #: connectivity detail — on/off alone does not say whether a radio is USABLE
+    wifi_enabled: Optional[bool] = None
+    wifi_ssid: str = ""
+    wifi_ip: str = ""
+    bt_enabled: Optional[bool] = None
+    bt_devices: str = ""
+    mobile_network: str = ""
+    sim_operator: str = ""
 
     # ── derived, task-agnostic consequences ────────────────────────────
     @property
@@ -239,6 +248,42 @@ class DeviceProfile:
         if power:
             lines.append("- " + ", ".join(power))
 
+        # radios — with the detail that decides whether they are usable
+        wifi = self.wifi_enabled
+        if wifi is None:
+            wifi = self.setting("wifi_on")
+        if wifi is not None:
+            line = f"- wifi: {'ON' if wifi else 'OFF'}"
+            if wifi:
+                if self.wifi_ssid:
+                    line += f', connected to "{self.wifi_ssid}"'
+                else:
+                    line += ", not connected to any network"
+                if self.wifi_ip:
+                    line += f" ({self.wifi_ip})"
+            lines.append(line)
+
+        bt = self.bt_enabled
+        if bt is None:
+            bt = self.setting("bluetooth_on")
+        if bt is not None:
+            line = f"- bluetooth: {'ON' if bt else 'OFF'}"
+            if bt and self.bt_devices:
+                line += f", connected/paired: {self.bt_devices}"
+            elif bt:
+                line += ", no connected device"
+            lines.append(line)
+
+        mob = []
+        if self.mobile_network:
+            mob.append(self.mobile_network)
+        if self.sim_operator:
+            mob.append(self.sim_operator)
+        if self.setting("mobile_data") is not None:
+            mob.append("data " + ("ON" if self.setting("mobile_data") else "OFF"))
+        if mob:
+            lines.append("- mobile: " + ", ".join(mob))
+
         # everything else that was measured, with readable labels
         for key, val in self.settings.items():
             if key in (
@@ -246,6 +291,9 @@ class DeviceProfile:
                 "system.mode_ringer",         # rendered as ringer mode above
                 "system.screen_brightness",   # rendered above
                 "system.screen_brightness_mode",
+                "global.wifi_on",             # rendered above
+                "global.bluetooth_on",        # rendered above
+                "global.mobile_data",         # rendered above
             ):
                 continue
             label = _SETTING_LABELS.get(key, key)
@@ -430,6 +478,36 @@ def capture(
     rc, act, _ = run(["shell", "dumpsys", "activity", "activities"])
     if rc == 0:
         prof.foreground = _parse_foreground(act)
+
+    # ── connectivity detail ──────────────────────────────────────
+    # "wifi_on = 1" only says the radio is enabled; it does not say whether it is
+    # CONNECTED, nor to what. Both matter before an action that needs the
+    # network, and the SSID is also the only way to tell "online" from
+    # "associated to a dead hotspot".
+    rc, wifi_out, _ = run(["shell", "cmd", "wifi", "status"])
+    if rc != 0 or not (wifi_out or "").strip():
+        rc, wifi_out, _ = run(["shell", "dumpsys", "wifi"])
+    if rc == 0:
+        prof.wifi_enabled, prof.wifi_ssid, prof.wifi_ip = _parse_wifi(wifi_out)
+    if not prof.wifi_ip:
+        rc, ip_out, _ = run(["shell", "ip", "addr", "show", "wlan0"])
+        if rc == 0:
+            m = re.search(r"inet\s+(\d+\.\d+\.\d+\.\d+)", ip_out)
+            if m:
+                prof.wifi_ip = m.group(1)
+
+    rc, bt_out, _ = run(["shell", "dumpsys", "bluetooth_manager"])
+    if rc == 0:
+        prof.bt_enabled, prof.bt_devices = _parse_bluetooth(bt_out)
+
+    for prop, field in (
+        ("gsm.network.type", "mobile_network"),
+        ("gsm.operator.alpha", "sim_operator"),
+    ):
+        rc, val, _ = run(["shell", "getprop", prop])
+        text = (val or "").strip().strip(",")
+        if rc == 0 and text and text != "unknown":
+            setattr(prof, field, text.split(",")[0])
     return prof
 
 
@@ -491,6 +569,93 @@ def _parse_keyguard(out: str) -> Optional[bool]:
         if m:
             return m.group(1).lower() == "true"
     return None
+
+
+def _parse_bluetooth(out: str) -> tuple[Optional[bool], str]:
+    """(enabled, connected/paired device names) from ``dumpsys bluetooth_manager``."""
+    import re
+
+    enabled = None
+    m = re.search(r"\benabled:\s*(true|false)", out, re.IGNORECASE)
+    if m:
+        enabled = m.group(1).lower() == "true"
+    else:
+        m = re.search(r"\bstate:\s*(ON|OFF|TURNING_\w+)\b", out)
+        if m:
+            enabled = m.group(1).upper() == "ON"
+        elif "Bluetooth is enabled" in out:
+            enabled = True
+        elif "Bluetooth is disabled" in out:
+            enabled = False
+
+    names: list[str] = []
+    # Device lines look like ``  AC:12:34:56:78:90  My Buds`` inside a
+    # Bonded/Connected-Devices section. Keep it short: 2 names, truncated.
+    section = False
+    for line in out.splitlines():
+        low = line.strip().lower()
+        if low.startswith("bonded devices") or low.startswith("connected devices"):
+            section = True
+            continue
+        if section:
+            if not line.strip():
+                section = False
+                continue
+            m = re.match(
+                r"\s*[0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){5}\s+(.+?)\s*$", line
+            )
+            if m:
+                name = m.group(1).strip()
+                if name and name not in names:
+                    names.append(name)
+            elif len(names) >= 2:
+                break
+    return enabled, ", ".join(names[:2])
+
+
+def _parse_wifi(out: str) -> tuple[Optional[bool], str, str]:
+    """(enabled, ssid, ip) from ``cmd wifi status`` OR ``dumpsys wifi``.
+
+    ``wifi_on = 1`` means the radio is on; it does NOT mean a network is
+    associated. The SSID is what distinguishes "online" from "attached to a dead
+    hotspot", and the IP confirms the association actually got a lease.
+    """
+    import re
+
+    enabled = None
+    if re.search(r"\bwifi is (enabled|disabled)\b", out, re.IGNORECASE):
+        enabled = bool(re.search(r"\bwifi is enabled\b", out, re.IGNORECASE))
+    else:
+        m = re.search(r"mWifiEnabled\s*=\s*(true|false)", out, re.IGNORECASE)
+        if m:
+            enabled = m.group(1).lower() == "true"
+
+    ssid = ""
+    # ``Wifi connected to "X"`` (cmd wifi status) / ``SSID: "X"`` / ``mWifiInfo SSID: "X"``
+    for pat in (
+        r'wifi connected to "([^"]+)"',
+        r'\bSSID:\s*"([^"]+)"',
+        r'\bSSID=\\?"([^"\\]+)',
+    ):
+        m = re.search(pat, out, re.IGNORECASE)
+        if m:
+            candidate = m.group(1).strip()
+            # ``<unknown ssid>`` / ``0x`` are "not associated" sentinels.
+            if candidate and not candidate.startswith("<") and not candidate.startswith("0x"):
+                ssid = candidate
+                break
+
+    ip = ""
+    for pat in (
+        r"\bIP:\s*/?(\d+\.\d+\.\d+\.\d+)",
+        r"\bIpAddress:\s*/?(\d+\.\d+\.\d+\.\d+)",
+        r"\binet\s+(\d+\.\d+\.\d+\.\d+)",
+    ):
+        m = re.search(pat, out)
+        if m:
+            ip = m.group(1)
+            break
+    return enabled, ssid, ip
 
 
 def _parse_foreground(out: str) -> str:

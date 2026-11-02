@@ -200,6 +200,60 @@ class TestRelativeAcceptance(unittest.TestCase):
         self.assertIsNone(evaluate_acceptance([crit], ev, None))
 
 
+class TestConnectivity(unittest.TestCase):
+    """on/off is not enough: which network, and what is paired."""
+
+    def test_wifi_connected_with_ssid_and_ip(self):
+        out = (
+            'Wifi is enabled\n'
+            'Wifi connected to "MyHome-5G"\n'
+            'mWifiInfo SSID: "MyHome-5G", BSSID: aa:bb:cc:dd:ee:ff, '
+            'IP: /192.168.1.42, Supplicant state: COMPLETED\n'
+        )
+        enabled, ssid, ip = DP._parse_wifi(out)
+        self.assertTrue(enabled)
+        self.assertEqual(ssid, "MyHome-5G")
+        self.assertEqual(ip, "192.168.1.42")
+
+    def test_wifi_enabled_but_not_associated(self):
+        out = 'Wifi is enabled\nmWifiInfo SSID: <unknown ssid>, Supplicant state: DISCONNECTED\n'
+        enabled, ssid, ip = DP._parse_wifi(out)
+        self.assertTrue(enabled)
+        self.assertEqual(ssid, "")   # sentinel must not become a fake SSID
+        self.assertEqual(ip, "")
+
+    def test_wifi_disabled(self):
+        enabled, _ssid, _ip = DP._parse_wifi("Wifi is disabled")
+        self.assertFalse(enabled)
+
+    def test_wifi_ip_from_ip_addr_fallback(self):
+        out = "2: wlan0: <BROADCAST> mtu 1500\n    inet 10.0.0.7/24 brd 10.0.0.255 scope global wlan0"
+        _e, _s, ip = DP._parse_wifi(out)
+        self.assertEqual(ip, "10.0.0.7")
+
+    def test_bluetooth_with_paired_devices(self):
+        out = (
+            "Bluetooth Status\n"
+            "  enabled: true\n"
+            "  state: ON\n"
+            "Bonded devices:\n"
+            "  AC:12:34:56:78:90  Galaxy Buds2\n"
+            "  BC:AA:11:22:33:44  Car Audio\n"
+        )
+        enabled, devices = DP._parse_bluetooth(out)
+        self.assertTrue(enabled)
+        self.assertEqual(devices, "Galaxy Buds2, Car Audio")
+
+    def test_bluetooth_enabled_no_devices(self):
+        enabled, devices = DP._parse_bluetooth("  enabled: true\n")
+        self.assertTrue(enabled)
+        self.assertEqual(devices, "")
+
+    def test_bluetooth_disabled(self):
+        enabled, _ = DP._parse_bluetooth("  state: OFF")
+        self.assertFalse(enabled)
+
+
 class TestBasicStatus(unittest.TestCase):
     """The baseline must cover basic phone state, not just audio/display."""
 
@@ -272,7 +326,7 @@ class TestBasicStatus(unittest.TestCase):
     def test_prompt_renders_flags_as_words(self):
         text = self._profile().describe_for_prompt()
         self.assertIn("usb debugging (adb_enabled): 1 (ON)", text)
-        self.assertIn("wifi: 1 (ON)", text)
+        self.assertIn("wifi: ON, not connected to any network", text)
         self.assertIn("airplane mode: 0 (OFF)", text)
         self.assertIn("auto-brightness ON", text)
         self.assertIn("battery 85%", text)

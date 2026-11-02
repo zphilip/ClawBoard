@@ -1160,15 +1160,25 @@ def _capture_device_baseline(adb_path: str, device: Optional[str]):
         )
     # basic phone status: the switches that decide whether an action is even
     # possible (airplane kills Wi-Fi; a locked screen eats every gesture)
-    for name, label in (
-        ("wifi_on", "wifi"),
-        ("airplane_mode_on", "airplane"),
-        ("bluetooth_on", "bt"),
-        ("adb_enabled", "usb-debug"),
-    ):
-        val = prof.setting(name)
-        if val is not None:
-            flat.append(f"{label}={'on' if val else 'off'}")
+    wifi = prof.wifi_enabled if prof.wifi_enabled is not None else prof.setting("wifi_on")
+    if wifi is not None:
+        detail = ""
+        if wifi:
+            detail = f"({prof.wifi_ssid or 'no-network'}" + (
+                f" {prof.wifi_ip})" if prof.wifi_ip else ")"
+            )
+        flat.append(f"wifi={'on' if wifi else 'off'}{detail}")
+    if prof.setting("airplane_mode_on") is not None:
+        flat.append(f"airplane={'on' if prof.setting('airplane_mode_on') else 'off'}")
+    bt = prof.bt_enabled if prof.bt_enabled is not None else prof.setting("bluetooth_on")
+    if bt is not None:
+        flat.append(
+            f"bt={'on' if bt else 'off'}" + (f"({prof.bt_devices})" if bt and prof.bt_devices else "")
+        )
+    if prof.mobile_network or prof.sim_operator:
+        flat.append("mobile=" + "/".join(x for x in (prof.mobile_network, prof.sim_operator) if x))
+    if prof.setting("adb_enabled") is not None:
+        flat.append(f"usb-debug={'on' if prof.setting('adb_enabled') else 'off'}")
     if prof.battery_level is not None:
         flat.append(f"battery={prof.battery_level}%")
     if prof.screen_state:
@@ -1177,6 +1187,9 @@ def _capture_device_baseline(adb_path: str, device: Optional[str]):
         flat.append("locked" if prof.keyguard_locked else "unlocked")
     if prof.foreground:
         flat.append(f"fg={prof.foreground}")
+    android = prof.release or ""
+    if android or prof.sdk:
+        flat.append(f"android={android or '?'}(sdk{prof.sdk or '?'})")
     _log(f"[baseline] {prof.fingerprint}: " + ", ".join(flat))
     if prof.ring_is_at_minimum:
         _log(
