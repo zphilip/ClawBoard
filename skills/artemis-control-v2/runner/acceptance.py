@@ -56,10 +56,10 @@ _POLARITY_TOKENS: list[tuple[str, tuple[str, ...]]] = [
                "disable", "deactivate")),
     (POL_ON, ("打开", "开启", "启用", "开", "turn on", "switch on", "enable",
               "activate")),
-    (POL_DOWN, ("调低", "降低", "减小", "下调", "减少", "lower", "decrease",
-                "reduce", "dim")),
-    (POL_UP, ("调高", "提高", "增大", "上调", "增加", "raise", "increase",
-              "louder", "brighter")),
+    (POL_DOWN, ("调低", "降低", "减小", "下调", "减少", "调暗", "变暗", "下降",
+                "lower", "decrease", "reduce", "dim", "darken")),
+    (POL_UP, ("调高", "提高", "增大", "上调", "增加", "调亮", "变亮", "上升",
+              "raise", "increase", "louder", "brighter", "brighten")),
 ]
 
 _SUBJECT_TOKENS: list[tuple[str, tuple[str, ...]]] = [

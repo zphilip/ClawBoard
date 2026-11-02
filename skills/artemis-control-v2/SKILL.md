@@ -137,16 +137,26 @@ direction from the criterion text. The verb decides:
 | 静音 / mute / silent | volume `0`, ringer SILENT/VIBRATE, **or** any DND | `- verify: 铃声静音 [probe: volume ring]` |
 | 打开 / 开启 / on / enable | the named setting `!= 0` | `- verify: WiFi 已打开 [probe: setting global wifi_on]` |
 | 关闭 / 取消 / off / disable | the named setting `== 0` | `- verify: 勿扰已关闭 [probe: setting global zen_mode]` |
-| 调低 / 调高 / lower / raise | **needs a baseline** — not judgeable from one reading | see `[want: …]` below |
+| 调低 / 调暗 / 调高 / 调亮 / lower / raise | **needs the pre-run baseline** — judged relative to it | `- verify: 调低屏幕亮度：屏幕亮度低于运行前基线 [probe: setting system screen_brightness]` |
 
-Because of the last row, a "make it bigger/smaller" goal must be pinned to an
-absolute value or it stays `inconclusive`. Use the explicit hint:
+The last row is a RELATIVE goal: it is judged against the measured pre-run
+baseline (the value read BEFORE any action), never against an absolute floor.
+Write the direction verb explicitly (`调低`/`调暗`/`调高`/`调亮`) and name the
+subject — the evaluator compares the post-run reading to the baseline:
 
 ```markdown
-- verify: 亮度已降低 [probe: setting system screen_brightness] [want: <40]
+- verify: 调低屏幕亮度：屏幕亮度低于运行前基线 [probe: setting system screen_brightness]
 ```
 
-`[want: <op> <n>]` accepts `<`, `<=`, `>`, `>=`, `==`, `!=`. Write the verb and
+Do **NOT** turn a relative goal into an absolute target like `亮度 < 40` — that
+tells the Operator "lower is always better", so it drags the slider all the way
+to the minimum. **`调暗` means "dimmer than now", not "as dark as possible".**
+Make a moderate change (drag the slider a small fraction, ~¼ of the track),
+re-read the probe, and stop the moment the direction is correct.
+
+`[want: <op> <n>]` (accepts `<`, `<=`, `>`, `>=`, `==`, `!=`) is ONLY for when the
+user names an explicit numeric target ("调到 40% 以下" → `[want: <40]`). If no
+number was given, keep the criterion relative to the baseline. Write the verb and
 the subject explicitly — "勿扰已关闭" and "勿扰已打开" are opposite predicates on
 the same probe, and only the verb tells them apart.
 

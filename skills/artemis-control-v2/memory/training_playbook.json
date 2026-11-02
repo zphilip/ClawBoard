@@ -64,8 +64,10 @@
       "probes": [
         "setting system screen_brightness"
       ],
-      "plan": "- [ ] 降低屏幕亮度\n  - verify: brightness 数值已下降 [probe: setting system screen_brightness]\n  - path 1 [cost=2 kind=primary]: 从屏幕顶部边缘下滑两次展开快捷面板 → 把亮度滑条拖到更低位\n  - path 2 [cost=3 kind=primary]: 设置 → 显示与亮度 → 把亮度滑条拖低\n  - path 3 [cost=1 kind=alternative]: 如果快捷面板有自动亮度开关且已开启，先关闭自动亮度再拖滑条",
+      "plan": "- [ ] 调低屏幕亮度（适度调暗，不要拖到最暗）\n  - verify: 调低屏幕亮度：屏幕亮度低于运行前基线 [probe: setting system screen_brightness]\n  - path 1 [cost=2 kind=primary]: 从屏幕顶部边缘下滑两次展开快捷面板 → 亮度滑条向左拖一小段（约¼轨道）后停手\n  - path 2 [cost=3 kind=primary]: 设置 → 显示与亮度 → 亮度滑条向左拖一小段\n  - path 3 [cost=1 kind=alternative]: 如果快捷面板有自动亮度开关且已开启，先关闭自动亮度再拖滑条",
       "pitfalls": [
+        "『调暗』是相对目标：只要低于运行前基线（比如 255→170）即可判定达成；不要写成 [want: <40] 这种绝对下限——那会诱导拖到最低亮度，而用户只要『比现在暗一点』。",
+        "滑条向左拖一小段（约四分之一轨道）就停手并读探针确认方向，不要一次甩到最左端。",
         "展开快捷面板的首次下滑必须从屏幕最顶部边缘开始（y ≈ 0）——这不属于普通手势的 edge-safe 区。",
         "亮度滑条同样需要『拖过目标』，tap 无效。",
         "自动亮度开启时手动滑条会立即被覆盖——先关自动亮度。"
@@ -231,12 +233,13 @@
       "probes": [
         "setting system screen_brightness"
       ],
-      "plan": "- [ ] 调高屏幕亮度\n  - verify: 调高亮度：亮度数值已上升 [probe: setting system screen_brightness]\n  - path 1 [cost=2 kind=primary]: 从屏幕顶部边缘下滑两次展开快捷面板 → 把亮度滑条拖过目标到更高\n  - path 2 [cost=3 kind=primary]: 设置 → 显示与亮度 → 把亮度滑条拖到更高\n  - path 3 [cost=1 kind=alternative]: 如果快捷面板有自动亮度开关且已开启，先关闭自动亮度再拖滑条",
+      "plan": "- [ ] 调高屏幕亮度（适度调亮，不要拖到最亮）\n  - verify: 调高屏幕亮度：屏幕亮度高于运行前基线 [probe: setting system screen_brightness]\n  - path 1 [cost=2 kind=primary]: 从屏幕顶部边缘下滑两次展开快捷面板 → 亮度滑条向右拖一小段（约¼轨道）后停手\n  - path 2 [cost=3 kind=primary]: 设置 → 显示与亮度 → 亮度滑条向右拖一小段\n  - path 3 [cost=1 kind=alternative]: 如果快捷面板有自动亮度开关且已开启，先关闭自动亮度再拖滑条",
       "pitfalls": [
+        "『调高』是相对目标：只要高于运行前基线即可判定达成；不要写成绝对上限（如 > 250）诱导拖到最亮。",
+        "滑条向右拖一小段（约四分之一轨道）就停手并读探针确认方向，不要一次甩到最右端。",
         "展开快捷面板的首次下滑必须从屏幕最顶部边缘开始（y ≈ 0）——这不属于普通手势的 edge-safe 区。",
         "亮度滑条需要『拖过目标』，tap 无效。",
-        "自动亮度开启时手动滑条会立即被覆盖——先关自动亮度。",
-        "『调高』是相对目标：验收必须和运行前的亮度基线比较。"
+        "自动亮度开启时手动滑条会立即被覆盖——先关自动亮度。"
       ],
       "guardrails": {
         "no_path_first_action_matching": [
