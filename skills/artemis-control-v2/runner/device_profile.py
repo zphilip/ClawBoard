@@ -28,16 +28,32 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable, Optional
 
-#: (namespace, key) pairs that describe muting / audio / display state.
+#: (namespace, key) pairs that describe basic phone state. Read individually
+#: only when the bulk ``settings list <ns>`` call did not return them.
 _SETTING_KEYS: tuple[tuple[str, str], ...] = (
+    # audio / muting
     ("global", "zen_mode"),
     ("system", "mode_ringer"),
     ("system", "vibrate_when_ringing"),
+    # radios
     ("global", "wifi_on"),
     ("global", "airplane_mode_on"),
     ("global", "bluetooth_on"),
+    ("global", "mobile_data"),
+    # display
     ("system", "screen_brightness"),
     ("system", "screen_brightness_mode"),
+    ("system", "screen_off_timeout"),
+    ("system", "accelerometer_rotation"),
+    # developer / debug
+    ("global", "adb_enabled"),
+    ("global", "development_settings_enabled"),
+    ("global", "stay_on_while_plugged_in"),
+    # power
+    ("global", "low_power"),
+    # navigation mode (gestures vs buttons): decides how wide the edge-back
+    # strips are, which is exactly the geometry a swipe depends on
+    ("secure", "navigation_mode"),
 )
 
 #: (label, stream id) for the audio streams worth baselining.
@@ -48,7 +64,39 @@ _VOLUME_STREAMS: tuple[tuple[str, str], ...] = (
     ("notification", "5"),
 )
 
+#: Human labels for the settings rendered into the planner prompt.
+_SETTING_LABELS: dict[str, str] = {
+    "global.adb_enabled": "usb debugging (adb_enabled)",
+    "global.development_settings_enabled": "developer options",
+    "global.stay_on_while_plugged_in": "stay awake while plugged in",
+    "global.low_power": "battery saver",
+    "global.wifi_on": "wifi",
+    "global.airplane_mode_on": "airplane mode",
+    "global.bluetooth_on": "bluetooth",
+    "global.mobile_data": "mobile data",
+    "system.screen_brightness_mode": "auto-brightness",
+    "system.screen_off_timeout": "screen timeout (ms)",
+    "system.accelerometer_rotation": "auto-rotate",
+    "system.vibrate_when_ringing": "vibrate when ringing",
+    "secure.navigation_mode": "navigation mode (0=buttons 1=2-button 2=gestures)",
+    "system.mode_ringer": "ringer mode setting",
+}
+
 _PROFILE_DIR = Path(__file__).resolve().parent.parent / "memory" / "data" / "device_profiles"
+
+#: Settings whose numeric value is really a boolean; rendered as ``1 (ON)``.
+_BOOLEAN_SETTINGS = frozenset({
+    "system.screen_brightness_mode",
+    "system.accelerometer_rotation",
+    "system.vibrate_when_ringing",
+    "global.adb_enabled",
+    "global.development_settings_enabled",
+    "global.wifi_on",
+    "global.airplane_mode_on",
+    "global.bluetooth_on",
+    "global.mobile_data",
+    "global.low_power",
+})
 
 
 @dataclass
@@ -58,6 +106,10 @@ class DeviceProfile:
     fingerprint: str = "default"
     model: str = ""
     sdk: Optional[int] = None
+    release: str = ""
+    locale: str = ""
+    resolution: str = ""
+    density: Optional[int] = None
     captured_at: str = ""
     #: stream name → {"value": int, "min": int, "max": int}
     volumes: dict[str, dict[str, int]] = field(default_factory=dict)
@@ -65,6 +117,12 @@ class DeviceProfile:
     settings: dict[str, object] = field(default_factory=dict)
     ringer_mode: Optional[int] = None
     zen_mode: Optional[int] = None
+    #: power / screen facts
+    battery_level: Optional[int] = None
+    battery_status: str = ""
+    screen_state: str = ""
+    keyguard_locked: Optional[bool] = None
+    foreground: str = ""
 
     # ── derived, task-agnostic consequences ────────────────────────────
     @property
@@ -103,26 +161,53 @@ class DeviceProfile:
         val, lo = self.ring_value, self.ring_min
         return val is not None and lo is not None and val <= lo
 
+    def setting(self, key: str) -> Optional[int]:
+        """Read a setting by short name (``wifi_on``) or full (``global.wifi_on``)."""
+        if key in self.settings:
+            return _as_int(self.settings[key])
+        for full, val in self.settings.items():
+            if full.endswith("." + key):
+                return _as_int(val)
+        return None
+
     def baseline_for(self, key: str) -> Optional[int]:
         """Numeric baseline for a subject key (see ``runner.acceptance``)."""
-        if key == "screen_brightness":
-            return _as_int(self.settings.get("system.screen_brightness"))
         if key in ("ring_volume", "volume"):
             return self.ring_value
         if key == "zen_mode":
             return self.zen_mode
-        return _as_int(self.settings.get(key) if "." not in key else self.settings.get(key))
+        if key == "ringer_mode":
+            return self.ringer_mode
+        return self.setting(key)
 
     def describe_for_prompt(self) -> str:
         """Compact, factual block for the planner — measured, not remembered."""
         lines = ["## Device facts (measured read-only before planning)"]
+
+        # identity
+        ident = []
         if self.model:
-            lines.append(f"- model: {self.model}" + (f" (sdk {self.sdk})" if self.sdk else ""))
+            ident.append(self.model)
+        if self.release or self.sdk:
+            ident.append("Android " + (self.release or "?") + (f" (sdk {self.sdk})" if self.sdk else ""))
+        if ident:
+            lines.append("- device: " + " · ".join(ident))
+        env = []
+        if self.locale:
+            env.append(f"locale {self.locale}")
+        if self.resolution:
+            env.append(f"screen {self.resolution}" + (f" @{self.density}dpi" if self.density else ""))
+        if env:
+            lines.append("- " + ", ".join(env))
+        if self.foreground:
+            lines.append(f"- foreground app: {self.foreground}")
+
+        # audio + muting (the acceptance-relevant block)
+        vol_bits = []
         for name, v in self.volumes.items():
-            lines.append(
-                f"- {name} volume: {v.get('value')} of range "
-                f"[{v.get('min')}..{v.get('max')}]"
-            )
+            vol_bits.append(f"{name} {v.get('value')}/{v.get('max')}")
+        if vol_bits:
+            lines.append("- volumes (name value/max): " + ", ".join(vol_bits))
         if self.ringer_mode is not None:
             mode_name = {0: "SILENT", 1: "VIBRATE", 2: "NORMAL"}.get(self.ringer_mode, "?")
             lines.append(f"- ringer mode: {self.ringer_mode} ({mode_name})")
@@ -131,10 +216,41 @@ class DeviceProfile:
                 f"- do-not-disturb zen_mode: {self.zen_mode}"
                 + (" (OFF)" if self.zen_mode == 0 else " (ACTIVE — silences sound)")
             )
+
+        # display
+        bright = self.setting("screen_brightness")
+        if bright is not None:
+            auto = self.setting("screen_brightness_mode")
+            auto_s = "" if auto is None else (
+                " (auto-brightness ON)" if auto else " (auto-brightness OFF)"
+            )
+            lines.append(f"- brightness: {bright}{auto_s}")
+
+        # power / screen
+        power = []
+        if self.battery_level is not None:
+            power.append(f"battery {self.battery_level}%")
+        if self.battery_status:
+            power.append(self.battery_status)
+        if self.screen_state:
+            power.append(f"screen {self.screen_state}")
+        if self.keyguard_locked is not None:
+            power.append("locked" if self.keyguard_locked else "unlocked")
+        if power:
+            lines.append("- " + ", ".join(power))
+
+        # everything else that was measured, with readable labels
         for key, val in self.settings.items():
-            if key in ("global.zen_mode",):
+            if key in (
+                "global.zen_mode",            # rendered above
+                "system.mode_ringer",         # rendered as ringer mode above
+                "system.screen_brightness",   # rendered above
+                "system.screen_brightness_mode",
+            ):
                 continue
-            lines.append(f"- {key}: {val}")
+            label = _SETTING_LABELS.get(key, key)
+            lines.append(f"- {label}: {_render_flag(key, val)}")
+
         if self.ring_is_at_minimum:
             lines.append(
                 "- NOTE: the ring stream is ALREADY at its lower bound. A "
@@ -150,10 +266,45 @@ class DeviceProfile:
 
 
 def _as_int(value) -> Optional[int]:
+    """Integer view of a setting/probe value, or None when it is not numeric."""
     try:
         return int(str(value).strip())
     except (TypeError, ValueError):
         return None
+
+
+def _render_flag(key: str, val) -> str:
+    """Render a boolean-ish setting as a word so the model cannot misread it."""
+    num = _as_int(val)
+    if num is None:
+        return str(val)
+    if key in _BOOLEAN_SETTINGS:
+        return f"{num} ({'ON' if num else 'OFF'})"
+    return str(num)
+
+
+def _bulk_settings(run) -> dict[str, object]:
+    """Read all settings of a namespace in ONE call (``settings list <ns>``).
+
+    One adb round trip per namespace instead of one per key: the baseline covers
+    basic phone state (radio switches, USB debugging, developer options,
+    navigation mode, screen timeout…) and must still stay cheap.
+    """
+    out: dict[str, object] = {}
+    for ns in ("system", "secure", "global"):
+        rc, text, _ = run(["shell", "settings", "list", ns])
+        if rc != 0 or not (text or "").strip():
+            continue
+        for line in text.splitlines():
+            if "=" not in line:
+                continue
+            key, raw = line.split("=", 1)
+            key, raw = key.strip(), raw.strip()
+            if not key:
+                continue
+            num = _as_int(raw)
+            out[f"{ns}.{key}"] = num if num is not None else raw
+    return out
 
 
 def _parse_volume(out: str) -> dict[str, int]:
@@ -189,6 +340,7 @@ def capture(
     """
     prof = DeviceProfile(captured_at=datetime.now().isoformat(timespec="seconds"))
 
+    # ── identity ──────────────────────────────────────────────────
     rc, model, _ = run(["shell", "getprop", "ro.product.model"])
     if rc == 0:
         prof.model = model.strip()
@@ -196,8 +348,31 @@ def capture(
     num = _as_int(sdk)
     if rc == 0 and num is not None:
         prof.sdk = num
+    rc, rel, _ = run(["shell", "getprop", "ro.build.version.release"])
+    if rc == 0:
+        prof.release = rel.strip()
+    for prop in ("persist.sys.locale", "ro.product.locale", "persist.sys.language"):
+        rc, loc, _ = run(["shell", "getprop", prop])
+        if rc == 0 and loc.strip():
+            prof.locale = loc.strip()
+            break
     prof.fingerprint = _fingerprint(prof.model, prof.sdk)
 
+    # ── environment (affects coordinates and UI language) ─────────────
+    rc, size, _ = run(["shell", "wm", "size"])
+    if rc == 0:
+        import re as _re
+        m = _re.search(r"(\d{3,5})x(\d{3,5})", size)
+        if m:
+            prof.resolution = f"{m.group(1)}x{m.group(2)}"
+    rc, dens, _ = run(["shell", "wm", "density"])
+    if rc == 0:
+        import re as _re
+        m = _re.search(r"(\d{2,4})", dens)
+        if m:
+            prof.density = int(m.group(1))
+
+    # ── volumes ─────────────────────────────────────────────────
     for name, stream in _VOLUME_STREAMS:
         rc, out, _ = run(["shell", "media", "volume", "--stream", stream, "--get"])
         if rc == 0:
@@ -205,15 +380,21 @@ def capture(
             if info:
                 prof.volumes[name] = info
 
+    # ── settings: bulk first (3 calls), per-key only for gaps ────────
+    prof.settings.update(_bulk_settings(run))
     for ns, key in _SETTING_KEYS:
+        full = f"{ns}.{key}"
+        if full in prof.settings:
+            continue
         rc, out, _ = run(["shell", "settings", "get", ns, key])
         if rc != 0:
             continue
         raw = (out or "").strip()
         if not raw or raw == "null":
             continue
-        prof.settings[f"{ns}.{key}"] = _as_int(raw) if _as_int(raw) is not None else raw
+        prof.settings[full] = _as_int(raw) if _as_int(raw) is not None else raw
 
+    # ── audio / ringer / DND ────────────────────────────────────
     rc, out, _ = run(["shell", "dumpsys", "audio"])
     if rc == 0:
         prof.ringer_mode, prof.zen_mode = _parse_audio(out)
@@ -235,7 +416,96 @@ def capture(
     zen_setting = _as_int(prof.settings.get("global.zen_mode"))
     if zen_setting is not None:
         prof.zen_mode = zen_setting
+
+    # ── power / screen / foreground ─────────────────────────────
+    rc, bat, _ = run(["shell", "dumpsys", "battery"])
+    if rc == 0:
+        prof.battery_level, prof.battery_status = _parse_battery(bat)
+    rc, pw, _ = run(["shell", "dumpsys", "power"])
+    if rc == 0:
+        prof.screen_state = _parse_screen_state(pw)
+    rc, win, _ = run(["shell", "dumpsys", "window"])
+    if rc == 0:
+        prof.keyguard_locked = _parse_keyguard(win)
+    rc, act, _ = run(["shell", "dumpsys", "activity", "activities"])
+    if rc == 0:
+        prof.foreground = _parse_foreground(act)
     return prof
+
+
+def _parse_battery(out: str) -> tuple[Optional[int], str]:
+    """(level %, human status) from ``dumpsys battery``."""
+    import re
+
+    level = None
+    m = re.search(r"level:\s*(\d+)", out)
+    if m:
+        level = int(m.group(1))
+    # status: 2=charging 3=discharging 4=not charging 5=full; powered flags win
+    status = ""
+    if "AC powered: true" in out:
+        status = "AC charging"
+    elif "USB powered: true" in out:
+        status = "USB charging"
+    elif "Wireless powered: true" in out:
+        status = "wireless charging"
+    else:
+        m = re.search(r"status:\s*(\d+)", out)
+        if m:
+            status = {1: "unknown", 2: "charging", 3: "discharging",
+                      4: "not charging", 5: "full"}.get(int(m.group(1)), "")
+    return level, status
+
+
+def _parse_screen_state(out: str) -> str:
+    """``awake``/``asleep``/``dozing`` from ``dumpsys power``."""
+    import re
+
+    m = re.search(r"mWakefulness\s*=\s*(\w+)", out)
+    if m:
+        return m.group(1).lower()
+    if "mScreenOn=true" in out:
+        return "on"
+    if "mScreenOn=false" in out:
+        return "off"
+    return ""
+
+
+def _parse_keyguard(out: str) -> Optional[bool]:
+    """True when the keyguard (lock screen) is showing.
+
+    Field names vary by Android version — ``keyguardShowing``,
+    ``mDreamingLockscreen``, ``isStatusBarKeyguard``, ``mShowingLockscreen`` — so
+    match the boolean rather than one exact spelling. A locked screen swallows
+    every gesture, which makes this worth knowing before the first step.
+    """
+    import re
+
+    for pat in (
+        r"keyguardShowing\s*=\s*(true|false)",
+        r"mDreamingLockscreen\s*=\s*(true|false)",
+        r"isStatusBarKeyguard\s*=\s*(true|false)",
+        r"mShowingLockscreen\s*=\s*(true|false)",
+    ):
+        m = re.search(pat, out, re.IGNORECASE)
+        if m:
+            return m.group(1).lower() == "true"
+    return None
+
+
+def _parse_foreground(out: str) -> str:
+    """The resumed/top activity's package — the app the next action lands in."""
+    import re
+
+    for pat in (
+        r"mResumedActivity:.*?u\d+\s+([A-Za-z0-9_.]+)/",
+        r"topResumedActivity=ActivityRecord\{\S+\s+u\d+\s+([A-Za-z0-9_.]+)/",
+        r"mFocusedApp=.*?u\d+\s+([A-Za-z0-9_.]+)/",
+    ):
+        m = re.search(pat, out)
+        if m:
+            return m.group(1)
+    return ""
 
 
 def _fingerprint(model: str, sdk: Optional[int]) -> str:

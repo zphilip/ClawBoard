@@ -1151,13 +1151,32 @@ def _capture_device_baseline(adb_path: str, device: Optional[str]):
     if prof.ringer_mode is not None:
         flat.append(f"ringer={prof.ringer_mode}")
     if prof.zen_mode is not None:
-        flat.append(f"zen={prof.zen_mode}")
-    if prof.settings.get("system.screen_brightness") is not None:
-        flat.append(f"brightness={prof.settings['system.screen_brightness']}")
-    for name in ("music", "alarm", "notification"):
-        v = prof.volumes.get(name) or {}
-        if v.get("value") is not None:
-            flat.append(f"{name}={v['value']}")
+        flat.append(f"dnd/zen={prof.zen_mode}")
+    if prof.setting("screen_brightness") is not None:
+        auto = prof.setting("screen_brightness_mode")
+        flat.append(
+            f"brightness={prof.setting('screen_brightness')}"
+            + ("" if auto is None else f"(auto={'on' if auto else 'off'})")
+        )
+    # basic phone status: the switches that decide whether an action is even
+    # possible (airplane kills Wi-Fi; a locked screen eats every gesture)
+    for name, label in (
+        ("wifi_on", "wifi"),
+        ("airplane_mode_on", "airplane"),
+        ("bluetooth_on", "bt"),
+        ("adb_enabled", "usb-debug"),
+    ):
+        val = prof.setting(name)
+        if val is not None:
+            flat.append(f"{label}={'on' if val else 'off'}")
+    if prof.battery_level is not None:
+        flat.append(f"battery={prof.battery_level}%")
+    if prof.screen_state:
+        flat.append(f"screen={prof.screen_state}")
+    if prof.keyguard_locked is not None:
+        flat.append("locked" if prof.keyguard_locked else "unlocked")
+    if prof.foreground:
+        flat.append(f"fg={prof.foreground}")
     _log(f"[baseline] {prof.fingerprint}: " + ", ".join(flat))
     if prof.ring_is_at_minimum:
         _log(

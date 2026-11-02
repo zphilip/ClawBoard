@@ -118,7 +118,7 @@ class TestCapture(unittest.TestCase):
             ("dumpsys", "audio"): AUDIO,
         })
         text = DP.capture(run).describe_for_prompt()
-        self.assertIn("ring volume: 1 of range [1..7]", text)
+        self.assertIn("volumes (name value/max): ring 1/7", text)
         self.assertIn("ACTIVE", text)
         self.assertIn("ALREADY at its lower bound", text)
 
@@ -198,6 +198,94 @@ class TestRelativeAcceptance(unittest.TestCase):
         crit = "调高音量"
         ev = {crit: "probe volume ring: [v] volume is 5 in range [0..7]"}
         self.assertIsNone(evaluate_acceptance([crit], ev, None))
+
+
+class TestBasicStatus(unittest.TestCase):
+    """The baseline must cover basic phone state, not just audio/display."""
+
+    def _profile(self):
+        global_settings = (
+            "zen_mode=0\nwifi_on=1\nairplane_mode_on=0\nbluetooth_on=1\n"
+            "mobile_data=1\nadb_enabled=1\ndevelopment_settings_enabled=1\n"
+            "stay_on_while_plugged_in=3\nlow_power=0"
+        )
+        system_settings = (
+            "screen_brightness=47\nscreen_brightness_mode=1\n"
+            "screen_off_timeout=60000\naccelerometer_rotation=1\n"
+            "mode_ringer=2\nvibrate_when_ringing=1"
+        )
+        battery = (
+            "  AC powered: false\n  USB powered: true\n"
+            "  Wireless powered: false\n  status: 2\n  level: 85"
+        )
+        run = _fake_run({
+            ("getprop", "ro.product.model"): "gm1910",
+            ("getprop", "ro.build.version.sdk"): "30",
+            ("getprop", "ro.build.version.release"): "11",
+            ("getprop", "persist.sys.locale"): "zh-CN",
+            ("wm", "size"): "Physical size: 1440x3120",
+            ("wm", "density"): "Physical density: 560",
+            ("--stream", "2"): "[v] volume is 1 in range [0..7]",
+            ("settings", "list", "global"): global_settings,
+            ("settings", "list", "system"): system_settings,
+            ("settings", "list", "secure"): "navigation_mode=2",
+            ("dumpsys", "audio"): "  Ringer mode: normal\n  - zen mode:ZEN_MODE_OFF",
+            ("dumpsys", "battery"): battery,
+            ("dumpsys", "power"): "  mWakefulness=Awake",
+            ("dumpsys", "window"): "  keyguardShowing=false",
+            ("dumpsys", "activity"): (
+                "  mResumedActivity: ActivityRecord{abc u0 com.android.settings/.Settings t42}"
+            ),
+        })
+        return DP.capture(run)
+
+    def test_identity_and_environment(self):
+        p = self._profile()
+        self.assertEqual(p.fingerprint, "gm1910_sdk30")
+        self.assertEqual(p.release, "11")
+        self.assertEqual(p.locale, "zh-CN")
+        self.assertEqual(p.resolution, "1440x3120")
+        self.assertEqual(p.density, 560)
+
+    def test_basic_switches(self):
+        p = self._profile()
+        self.assertEqual(p.setting("wifi_on"), 1)
+        self.assertEqual(p.setting("airplane_mode_on"), 0)
+        self.assertEqual(p.setting("adb_enabled"), 1)
+        self.assertEqual(p.setting("navigation_mode"), 2)
+        # short name and fully-qualified name both resolve
+        self.assertEqual(p.setting("global.wifi_on"), 1)
+
+    def test_power_screen_foreground(self):
+        p = self._profile()
+        self.assertEqual(p.battery_level, 85)
+        self.assertEqual(p.battery_status, "USB charging")
+        self.assertEqual(p.screen_state, "awake")
+        self.assertIs(p.keyguard_locked, False)
+        self.assertEqual(p.foreground, "com.android.settings")
+
+    def test_zen_off_survives_bulk_read(self):
+        p = self._profile()
+        self.assertEqual(p.zen_mode, 0)
+        self.assertEqual(p.ringer_mode, 2)
+
+    def test_prompt_renders_flags_as_words(self):
+        text = self._profile().describe_for_prompt()
+        self.assertIn("usb debugging (adb_enabled): 1 (ON)", text)
+        self.assertIn("wifi: 1 (ON)", text)
+        self.assertIn("airplane mode: 0 (OFF)", text)
+        self.assertIn("auto-brightness ON", text)
+        self.assertIn("battery 85%", text)
+        self.assertIn("USB charging", text)
+        self.assertIn("foreground app: com.android.settings", text)
+        self.assertNotIn("ringer mode setting", text)  # no duplicate ringer line
+
+    def test_battery_and_screen_parsers_tolerate_noise(self):
+        self.assertEqual(DP._parse_battery("level: 12\nstatus: 3"), (12, "discharging"))
+        self.assertEqual(DP._parse_battery("nonsense"), (None, ""))
+        self.assertEqual(DP._parse_screen_state("mScreenOn=false"), "off")
+        self.assertIsNone(DP._parse_keyguard("nothing here"))
+        self.assertEqual(DP._parse_foreground("mFocusedApp=x u0 com.foo/.Bar"), "com.foo")
 
 
 if __name__ == "__main__":
