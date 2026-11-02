@@ -244,6 +244,21 @@ therefore clipped into an edge-safe rect (`x ∈ [7 %W, 93 %W]`,
 rect first. Raw swipes are clipped the same way and logged as
 `[gesture] swipe clipped to edge-safe zone …`.
 
+**`set_slider` resolves by identity, not blind index.** A screen can carry
+several `SeekBar`s (brightness, media progress, volume). The runtime now scans
+every slider and prefers the one whose `resource-id`/`text`/`content-desc`
+contains the goal's keyword (`brightness`/`亮度`/`adaptive`/`automatic`, or
+`volume`/`音量`/`ring`/`media`/`audio`) — over the Operator's `target`, and logs
+`rid=`/`text=`/`content_desc=` for every candidate. So a media progress bar the
+VLM mislabels 亮度滑条 is no longer dragged. Two Operator rules still matter:
+(1) **fully expand the screen the control lives on before drafting it** — a
+brightness bar in a *half-open* quick setting reports its full-expanded bounds,
+so the drag lands on empty shade and the probe never moves (the classic
+`diff=0px + brightness unchanged` loop); when in doubt, swipe the shade down a
+second time first. (2) For a *relative* dim/brighten goal, use a moderate
+`fraction` (e.g. 0.4 for "dimmer than now", 0.7 for "brighter than now") — do
+not pin it to 0.0/1.0, which over-drives the value to the extreme.
+
 The executor runs **one path at a time** (`max_steps_per_path`, default 6), then
 falls back to the next. After every step it reads the acceptance probe; the
 moment the probe shows the target state the milestone is **completed by device

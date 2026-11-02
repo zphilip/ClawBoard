@@ -3747,12 +3747,82 @@ def _scroll_gesture(elements, target_idx, direction: str) -> dict | None:
     }
 
 
-def _resolve_slider_element(elements, target_idx):
-    """The element whose bounds are a real draggable track (or None)."""
+def _slider_identity_hints(context: str) -> list[str] | None:
+    """Keywords that identify the RIGHT slider for this instruction/plan.
+
+    The instruction ("把手机屏幕调暗") only names the GOAL, not the element, but
+    the plan's verify line names the probe subject (``screen_brightness``). Map
+    that subject to the identity substrings the slider carries in its
+    resource-id/text/content-desc, so ``set_slider`` drags the brightness bar
+    and not a media/volume progress bar the VLM happened to label 亮度滑条.
+    """
+    ctx = (context or "").lower()
+    if any(k in ctx for k in ("screen_brightness", "brightness", "亮度", "调暗",
+                              "调亮", "屏幕亮度", "adaptive")):
+        return ["brightness", "亮度", "adaptive", "automatic"]
+    if any(k in ctx for k in ("volume", "音量", "ring", "ringer", "media_volume",
+                              "静音", "声音", "响铃", "铃声")):
+        return ["volume", "音量", "ring", "media", "audio"]
+    return None
+
+
+def _slider_label(el) -> str:
+    """Compact identity of a slider element for diagnosis and identity-matching."""
+    if el is None:
+        return "rid=? text=? content_desc=?"
+    rid = getattr(el, "resource_id", "") or ""
+    text = getattr(el, "text", "") or ""
+    cd = getattr(el, "content_desc", "") or ""
+    return f"rid={rid!r} text={text!r} content_desc={cd!r}"
+
+
+def _slider_matches(el, hints) -> bool:
+    """True when a slider's identity matches any of the hint keywords."""
+    if not hints or el is None:
+        return False
+    hay = " ".join([
+        getattr(el, "resource_id", "") or "",
+        getattr(el, "text", "") or "",
+        getattr(el, "content_desc", "") or "",
+    ]).lower()
+    return any(h.lower() in hay for h in hints)
+
+
+def _resolve_slider_element(elements, target_idx, hints=None):
+    """The element whose bounds are a real draggable track (or None).
+
+    When ``hints`` are given (brightness/adaptive keywords derived from the
+    instruction), a slider whose resource-id/text/content-desc matches one of
+    them wins over the blind VLM ``target=N`` guess — the same identity-first
+    resolution the brightness test uses. Without it, the agent drags whatever
+    SeekBar the VLM labelled (often a media progress bar or a not-yet-
+    interactive peeked slider) and the swipe lands on empty space.
+    """
     el = _element_by_index(elements, target_idx)
     _log(f"[slider-resolve] target={target_idx!r} → element "
          f"#{getattr(el, 'index', '?')} class={getattr(el, 'class_name', '?')!r} "
-         f"bounds={getattr(el, 'bounds', None)} is_slider={bool(el is not None and _is_slider_element(el))}")
+         f"bounds={getattr(el, 'bounds', None)} "
+         f"is_slider={bool(el is not None and _is_slider_element(el))} "
+         f"{_slider_label(el)}")
+
+    if hints:
+        sliders = [
+            e for e in (elements or [])
+            if _is_slider_element(e) and getattr(e, "bounds", None)
+        ]
+        matched = [e for e in sliders if _slider_matches(e, hints)]
+        if matched:
+            if el is not None and _is_slider_element(el) and _slider_matches(el, hints):
+                best = el
+            else:
+                def _area(e):
+                    b = getattr(e, "bounds", None) or [0, 0, 0, 0]
+                    return max(0, b[2] - b[0]) * max(0, b[3] - b[1])
+                best = max(matched, key=_area)
+                _log(f"[slider-resolve] identity match ({hints}) → element "
+                     f"#{getattr(best, 'index', '?')} {_slider_label(best)} "
+                     f"(overriding target #{target_idx})")
+                return best
 
     if el is not None and _is_slider_element(el):
         _log(f"[slider-resolve] direct hit: using element #{target_idx} as the SeekBar")
@@ -3799,7 +3869,7 @@ def _resolve_slider_element(elements, target_idx):
     return el
 
 
-def _slider_gesture(elements, target_idx, fraction: float) -> dict | None:
+def _slider_gesture(elements, target_idx, fraction: float, hints=None) -> dict | None:
     """Drag a slider/seekbar to ``fraction`` (0..1) of its track.
 
     Emits a SWIPE whose end lands PAST the target in the travel direction, and
@@ -3810,12 +3880,13 @@ def _slider_gesture(elements, target_idx, fraction: float) -> dict | None:
     what the field logs showed for the volume slider, and why the upstream rule is
     "swipe fully to the extreme boundary, drag slightly past the target".
     """
-    el = _resolve_slider_element(elements, target_idx)
+    el = _resolve_slider_element(elements, target_idx, hints)
     if el is None or not getattr(el, "bounds", None):
         _log(f"[gesture] set_slider: no element with bounds for target={target_idx!r}")
         return None
     _log(f"[gesture] set_slider resolved element #{getattr(el, 'index', '?')} "
-         f"class={getattr(el, 'class_name', '?')!r} bounds={getattr(el, 'bounds', None)}")
+         f"class={getattr(el, 'class_name', '?')!r} bounds={getattr(el, 'bounds', None)} "
+         f"{_slider_label(el)}")
     if not _is_slider_element(el):
         _log(
             f"[gesture] set_slider: no SeekBar found for "
@@ -4521,7 +4592,8 @@ def _decide_action_fallback(
 
     elif action == "set_slider":
         frac = parsed.get("fraction", 0.0)
-        gesture = _slider_gesture(elements, parsed.get("target"), frac)
+        gesture = _slider_gesture(elements, parsed.get("target"), frac,
+                                  hints=_slider_identity_hints(instruction))
         if gesture is None:
             return ("system_button", {"button": "back"}, "set_slider failed: target has no bounds", None, None)
         gesture["kind"] = "slider"
@@ -4850,7 +4922,9 @@ def _decide_action_plan_guided(
 
     elif action == "set_slider":
         frac = parsed.get("fraction", 0.0)
-        gesture = _slider_gesture(elements, parsed.get("target"), frac)
+        gesture = _slider_gesture(elements, parsed.get("target"), frac,
+                                  hints=_slider_identity_hints(
+                                      f"{instruction} {plan_text}"))
         if gesture is None:
             return ("system_button", {"button": "back"},
                     "set_slider failed: target has no bounds", plan_updates, notes_updates)
