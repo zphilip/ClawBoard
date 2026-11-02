@@ -795,6 +795,7 @@ def generate_plan(
     timeout: float = 90.0,
     total_budget: float = 150.0,
     thinking: bool = False,
+    device_facts: str = "",
 ) -> dict:
     """Generate a milestone plan for the given instruction.
 
@@ -823,6 +824,10 @@ def generate_plan(
         timeout: Per-call socket timeout in seconds.
         total_budget: Wall-clock budget for the whole planning step.
         thinking: Whether to let the model reason before answering.
+        device_facts: Read-only measured device state (baseline snapshot). A VLM
+            cannot know per-device quirks (a clamped stream, which mode actually
+            silences the phone), so the caller measures them and hands them over
+            as facts instead of expecting the model to recall them.
 
     Returns:
         dict with keys:
@@ -839,11 +844,12 @@ def generate_plan(
     deadline = started + max(1.0, float(total_budget))
     system_prompt = build_planner_system_prompt()
     playbook_block = build_playbook_block(instruction)
+    facts_block = ("\n\n" + device_facts.strip()) if device_facts.strip() else ""
     base_prompt = (
         f"Goal: {instruction}\n\n"
         "Generate a task plan for this Android automation goal based on the screenshot showing the current device state."
     )
-    user_prompt = base_prompt + playbook_block
+    user_prompt = base_prompt + facts_block + playbook_block
 
     last_error = ""
     ladder_asked = False   # whether the one-shot ladder re-ask already fired
@@ -936,6 +942,7 @@ def generate_plan(
                     last_error = "plan violated the training playbook guardrails"
                     user_prompt = (
                         base_prompt
+                        + facts_block
                         + playbook_block
                         + "\n\nYour previous plan was REJECTED by machine-checked"
                         " guardrails:\n"
@@ -966,6 +973,7 @@ def generate_plan(
                 last_error = "plan lacked a strategy ladder for state milestones"
                 user_prompt = (
                     base_prompt
+                    + facts_block
                     + playbook_block
                     + "\n\nYour previous plan was rejected: the milestones below"
                     " change device state but declare fewer than two `- path`"

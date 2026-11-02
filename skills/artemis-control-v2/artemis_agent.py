@@ -347,7 +347,8 @@ def _render_path_directive(item, path, idx: int, total: int) -> str:
     )
 
 
-def _acceptance_from_probes(verify_texts: list[str], probe_results: dict):
+def _acceptance_from_probes(verify_texts: list[str], probe_results: dict,
+                            baseline=None):
     """Deterministic acceptance check from read-only probe output.
 
     Returns True (satisfied), False (contradicted) or None (cannot tell — the
@@ -358,13 +359,18 @@ def _acceptance_from_probes(verify_texts: list[str], probe_results: dict):
     "关闭勿扰" wants ``zen_mode == 0`` and "打开 WiFi" wants ``wifi_on == 1``.
     The old implementation returned "satisfied" for ``zen_mode != 0`` and for
     ``volume == 0`` unconditionally, which silently inverted every reverse task.
+
+    ``baseline`` is the pre-run device snapshot (``runner.device_profile``); it
+    makes RELATIVE criteria ("调低亮度") judgeable by comparison, which a single
+    reading cannot do.
+
     See :mod:`runner.acceptance` for the parser and the fact extraction.
     """
     try:
         from runner.acceptance import evaluate_acceptance
     except Exception:  # pragma: no cover - only when the module is unavailable
         return None
-    return evaluate_acceptance(verify_texts, probe_results)
+    return evaluate_acceptance(verify_texts, probe_results, baseline)
 
 
 def _advance_path(item, ladder, path_cursor: dict, path_steps: dict,
@@ -387,7 +393,8 @@ def _advance_path(item, ladder, path_cursor: dict, path_steps: dict,
 
 
 def _self_declared_done_rejected(plan_updates: dict, new_plan_text: str,
-                                probe_results: dict | None) -> str:
+                                probe_results: dict | None,
+                                baseline=None) -> str:
     """The milestone the Operator claimed done but the probes contradict.
 
     Returns the milestone text when the claim must be rejected, "" otherwise.
@@ -409,7 +416,7 @@ def _self_declared_done_rejected(plan_updates: dict, new_plan_text: str,
                           if ci.kind == "verify"]
                 if not checks:
                     return ""
-                if _acceptance_from_probes(checks, probe_results or {}) is False:
+                if _acceptance_from_probes(checks, probe_results or {}, baseline) is False:
                     return item.text
                 return ""
     except Exception as e:
@@ -1121,6 +1128,42 @@ def _make_run_screenshots_dir() -> Path:
     run_dir = SCREENSHOTS_ROOT / f"run_{_ts}_{_pid}"
     run_dir.mkdir(parents=True, exist_ok=True)
     return run_dir
+
+def _capture_device_baseline(adb_path: str, device: Optional[str]):
+    """Read-only pre-run snapshot of the device's relevant state.
+
+    Best-effort: any failure (missing ``dumpsys`` privilege, odd ROM) returns
+    ``None`` and the run proceeds exactly as before. Never mutates the device —
+    it only reads the enumerated settings/streams a probe may read.
+    """
+    try:
+        from runner import device_profile
+
+        def _run(argv: list[str]) -> tuple[int, str, str]:
+            return _adb(argv, adb_path=adb_path, device=device, timeout=12)
+
+        prof = device_profile.load_or_capture(_run, adb_path=adb_path, device=device)
+    except Exception as e:
+        _debug(f"[baseline] device snapshot skipped: {e}")
+        return None
+
+    flat = []
+    if prof.ring_value is not None:
+        flat.append(f"ring={prof.ring_value}/{prof.ring_max if hasattr(prof, 'ring_max') else '?'}")
+    if prof.ringer_mode is not None:
+        flat.append(f"ringer={prof.ringer_mode}")
+    if prof.zen_mode is not None:
+        flat.append(f"zen={prof.zen_mode}")
+    if prof.settings.get("system.screen_brightness") is not None:
+        flat.append(f"brightness={prof.settings['system.screen_brightness']}")
+    _log(f"[baseline] {prof.fingerprint}: " + (", ".join(flat) or "no readings"))
+    if prof.ring_is_at_minimum:
+        _log(
+            "[baseline] ring stream is already at its lower bound — a "
+            "volume==0 criterion may be unreachable on this ROM"
+        )
+    return prof
+
 
 def _take_screenshot(adb_path: str, device: Optional[str], dest: Path,
                      max_age_seconds: int = 30) -> bool:
@@ -1989,6 +2032,14 @@ def _run_plan_guided_fallback(
     _emit_progress(0, "planning", "Pro: Planner node — generating task plan...")
     _log("Pro Phase 1: Planner node")
 
+    # Read-only baseline BEFORE planning. Two uses, both general:
+    #   1. it makes RELATIVE criteria judgeable ("调低亮度" = lower than this),
+    #   2. it tells the Planner what the device's state actually IS.
+    # A VLM cannot know a device-specific quirk (e.g. this ROM clamps the ring
+    # stream to >= 1 in NORMAL mode, and DND is what really silences it); that
+    # is measured state, not general knowledge, so measure it instead of asking.
+    baseline = _capture_device_baseline(adb_path, device)
+
     plan_shot = screenshots_dir / "pro_plan_initial.png"
     t_plan = time.time()
     if _take_screenshot(adb_path, device, plan_shot):
@@ -1997,6 +2048,7 @@ def _run_plan_guided_fallback(
             instruction=instruction,
             screenshot_path=str(plan_shot),
             vlm_caller=_call_vlm_simple,
+            device_facts=baseline.describe_for_prompt() if baseline else "",
             **_planner_options(),
         )
         _log(
@@ -2020,6 +2072,23 @@ def _run_plan_guided_fallback(
         )
         _emit_progress(0, "plan_ready",
                        f"Pro task plan: {snapshot.total_count} milestones")
+
+        # Goal-already-satisfied pre-check. The device state was measured before
+        # planning, so if the acceptance is ALREADY true there is nothing to do —
+        # spending steps on a phone that is already in the requested state is
+        # pure waste (the field run burned 20+ steps re-silencing a phone that
+        # was already silenced by DND).
+        _pre = _probe_state_mid_run(plan_text, adb_path, device, 0)
+        if _acceptance_from_probes(
+            [ci["text"] for ci in _snapshot_check_items(plan_text) if ci.get("kind") == "verify"],
+            _pre,
+            baseline,
+        ) is True:
+            _log("[precheck] acceptance already satisfied by the measured device "
+                 "state — no action needed")
+            plan_text = _force_complete_plan(plan_text)
+            status = "success"
+            end_reason = "already_satisfied"
     else:
         error_msg = plan_result.get("error", "unknown")
         _log(f"Pro plan generation failed: {error_msg} — falling back to flash loop")
@@ -2075,7 +2144,7 @@ def _run_plan_guided_fallback(
     # ── Phase 2: Operator → Validator → SafetyNet → Execute ─────────────
     _log("Pro Phase 2: Operator → Validator → SafetyNet → Execute loop")
 
-    while step < max_steps and (time.time() - start) < timeout:
+    while status != "success" and step < max_steps and (time.time() - start) < timeout:
         step += 1
         t_step = time.time()
         _debug(f"Pro Step {step}/{max_steps}")
@@ -2220,7 +2289,7 @@ def _run_plan_guided_fallback(
                 # Without this, "finish + mark_done" ended the run as a success
                 # even though the phone had done nothing.
                 contradicted = _self_declared_done_rejected(
-                    plan_updates, new_plan_text, step_probes
+                    plan_updates, new_plan_text, step_probes, baseline
                 )
                 if contradicted:
                     _log(
@@ -2283,7 +2352,9 @@ def _run_plan_guided_fallback(
                     for _it in snapshot.top_level:
                         _checks = [ci.text for ci in snapshot.check_items_of(_it)
                                    if ci.kind == "verify"]
-                        if _checks and _acceptance_from_probes(_checks, step_probes) is False:
+                        if _checks and _acceptance_from_probes(
+                            _checks, step_probes, baseline
+                        ) is False:
                             _blocked = _it.text
                             break
                     if _blocked:
@@ -2661,7 +2732,7 @@ def _run_plan_guided_fallback(
                     ci.text for ci in _snap_acc.check_items_of(cur_item)
                     if ci.kind == "verify"
                 ]
-                verdict = _acceptance_from_probes(verify_texts, step_probes)
+                verdict = _acceptance_from_probes(verify_texts, step_probes, baseline)
             except Exception as e:
                 _debug(f"[path] acceptance eval skipped: {e}")
                 verdict = None

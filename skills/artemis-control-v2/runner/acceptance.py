@@ -235,17 +235,84 @@ def _first_int(text: str) -> Optional[int]:
 # Evaluation
 # ---------------------------------------------------------------------------
 
-def evaluate_goal(goal: Goal, facts: Facts) -> Optional[bool]:
-    """Compare facts against the goal. True / False (decisive) / None (unknown)."""
+def evaluate_goal(goal: Goal, facts: Facts, baseline=None) -> Optional[bool]:
+    """Compare facts against the goal. True / False (decisive) / None (unknown).
+
+    ``baseline`` (optional) is the pre-run snapshot — a :class:`DeviceProfile`,
+    any object exposing ``baseline_for(key)``, or a plain ``{key: value}`` map.
+    It is what makes a RELATIVE criterion judgeable: "调低亮度" means "lower than
+    the value measured before we started", which a single reading cannot express.
+    """
     if goal.polarity == POL_SILENT:
         return _eval_silent(facts)
     if goal.polarity in (POL_ON, POL_OFF):
         return _eval_switch(goal, facts)
     if goal.polarity == POL_NUMERIC:
         return _eval_numeric(goal, facts)
-    # down / up: a single reading cannot tell whether it moved in that
-    # direction; defer to the Checker rather than guessing.
+    if goal.polarity in (POL_DOWN, POL_UP):
+        return _eval_relative(goal, facts, baseline)
     return None
+
+
+def _baseline_lookup(baseline, key: str) -> Optional[int]:
+    """Read one numeric baseline value from any of the supported shapes."""
+    if baseline is None:
+        return None
+    getter = getattr(baseline, "baseline_for", None)
+    if callable(getter):
+        try:
+            return getter(key)
+        except Exception:  # pragma: no cover - defensive
+            return None
+    if isinstance(baseline, dict):
+        val = baseline.get(key)
+        try:
+            return int(val) if val is not None else None
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def _subject_values(goal: Goal, facts: Facts) -> list[int]:
+    """The numeric reading(s) the subject refers to, most specific first."""
+    if goal.subject == "brightness":
+        v = facts.settings.get("screen_brightness")
+        return [v] if v is not None else []
+    if goal.subject in ("ringer", "volume"):
+        return [facts.ring_volume] if facts.ring_volume is not None else []
+    if goal.subject == "zen":
+        v = facts.settings.get("zen_mode")
+        return [v] if v is not None else []
+    return []
+
+
+def _eval_relative(goal: Goal, facts: Facts, baseline) -> Optional[bool]:
+    """Judge a "lower it / raise it" goal against the pre-run baseline.
+
+    Without a baseline there is nothing to compare to, so the verdict stays
+    inconclusive rather than being guessed.
+    """
+    if baseline is None:
+        return None
+    keys = {
+        "brightness": "screen_brightness",
+        "ringer": "ring_volume",
+        "volume": "ring_volume",
+        "zen": "zen_mode",
+    }
+    key = keys.get(goal.subject)
+    if not key:
+        return None
+    base = _baseline_lookup(baseline, key)
+    if base is None:
+        return None
+    values = _subject_values(goal, facts)
+    if not values:
+        return None
+    current = values[0]
+    if goal.polarity == POL_DOWN:
+        return current < base
+    return current > base
 
 
 def _eval_silent(facts: Facts) -> Optional[bool]:
@@ -320,15 +387,21 @@ def _eval_numeric(goal: Goal, facts: Facts) -> Optional[bool]:
     }.get(op, None)
 
 
-def evaluate_acceptance(verify_texts: list[str], probe_results: dict) -> Optional[bool]:
+def evaluate_acceptance(
+    verify_texts: list[str], probe_results: dict, baseline=None
+) -> Optional[bool]:
     """Combine every verify criterion: True if any is satisfied, False if all
-    are decisively contradicted, None when nothing was decidable."""
+    are decisively contradicted, None when nothing was decidable.
+
+    ``baseline`` (pre-run snapshot) enables relative criteria; pass the object
+    returned by ``runner.device_profile.capture``.
+    """
     decisive_any = False
     for text in verify_texts or []:
         evidence = probe_results.get(text, "")
         if not evidence:
             continue
-        verdict = evaluate_goal(parse_goal(text), parse_evidence(evidence))
+        verdict = evaluate_goal(parse_goal(text), parse_evidence(evidence), baseline)
         if verdict is True:
             return True
         if verdict is False:
