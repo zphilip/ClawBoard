@@ -3687,9 +3687,18 @@ def _scroll_gesture(elements, target_idx, direction: str) -> dict | None:
 def _resolve_slider_element(elements, target_idx):
     """The element whose bounds are a real draggable track (or None)."""
     el = _element_by_index(elements, target_idx)
+    _log(f"[slider-resolve] target={target_idx!r} → element "
+         f"#{getattr(el, 'index', '?')} class={getattr(el, 'class_name', '?')!r} "
+         f"bounds={getattr(el, 'bounds', None)} is_slider={bool(el is not None and _is_slider_element(el))}")
+
     if el is not None and _is_slider_element(el):
+        _log(f"[slider-resolve] direct hit: using element #{target_idx} as the SeekBar")
         return el
+
     holder = getattr(el, "bounds", None) if el is not None else None
+    if holder is not None:
+        _log(f"[slider-resolve] element #{target_idx} is NOT a SeekBar — looking for a slider inside its bounds {holder}")
+
     best, best_area = None, 0
     for e in elements or []:
         if not _is_slider_element(e) or not getattr(e, "bounds", None):
@@ -3703,15 +3712,28 @@ def _resolve_slider_element(elements, target_idx):
         area = max(0, right - left) * max(0, bottom - top)
         if area > best_area:
             best, best_area = e, area
-    if best is None:
-        # Any slider on screen beats a text row.
-        for e in elements or []:
-            if _is_slider_element(e) and getattr(e, "bounds", None):
-                left, top, right, bottom = e.bounds
-                area = max(0, right - left) * max(0, bottom - top)
-                if area > best_area:
-                    best, best_area = e, area
-    return best if best is not None else el
+    if best is not None:
+        _log(f"[slider-resolve] fallback hit: using element "
+             f"#{getattr(best, 'index', '?')} class={getattr(best, 'class_name', '?')!r} "
+             f"bounds={getattr(best, 'bounds', None)}")
+        return best
+
+    # Any slider on screen beats a text row.
+    for e in elements or []:
+        if _is_slider_element(e) and getattr(e, "bounds", None):
+            left, top, right, bottom = e.bounds
+            area = max(0, right - left) * max(0, bottom - top)
+            if area > best_area:
+                best, best_area = e, area
+    if best is not None:
+        _log(f"[slider-resolve] any-slider hit: using element "
+             f"#{getattr(best, 'index', '?')} class={getattr(best, 'class_name', '?')!r} "
+             f"bounds={getattr(best, 'bounds', None)}")
+        return best
+
+    _log(f"[slider-resolve] NO SeekBar found anywhere — falling back to element "
+         f"#{getattr(el, 'index', '?')} ({getattr(el, 'class_name', '?')}) whose bounds may not be a track")
+    return el
 
 
 def _slider_gesture(elements, target_idx, fraction: float) -> dict | None:
@@ -3727,7 +3749,10 @@ def _slider_gesture(elements, target_idx, fraction: float) -> dict | None:
     """
     el = _resolve_slider_element(elements, target_idx)
     if el is None or not getattr(el, "bounds", None):
+        _log(f"[gesture] set_slider: no element with bounds for target={target_idx!r}")
         return None
+    _log(f"[gesture] set_slider resolved element #{getattr(el, 'index', '?')} "
+         f"class={getattr(el, 'class_name', '?')!r} bounds={getattr(el, 'bounds', None)}")
     if not _is_slider_element(el):
         _log(
             f"[gesture] set_slider: no SeekBar found for "
