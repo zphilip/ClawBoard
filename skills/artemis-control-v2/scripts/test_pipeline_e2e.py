@@ -362,15 +362,24 @@ def main() -> int:
         print("[5/5] verify effect …")
 
         if brightness_task:
-            # Plain sleep with NO adb calls in this window. The earlier rapid
-            # settings-get polling + screencap + uiautomator re-dump kept the
-            # device busy, so the slider's commit/animation was starved and only
-            # played out after the program exited — the exact "the bar starts
-            # changing after the run finishes" symptom. Let the commit land
-            # undisturbed, then read everything once.
-            time.sleep(2.5)
+            # ── Commit the slider value to Android Settings ─────────────────
+            # On this ROM the slider value is buffered in SystemUI's internal
+            # state and only flushed to ``screen_brightness`` when the shade
+            # closes or the brightness mode changes.  The drag moved the knob
+            # (confirmed by the manual read of 62 after exit), but
+            # ``settings get`` sees the old value until the commit fires.
+            # Close the shade FIRST, then read — no amount of sleeping helps
+            # while the shade stays open.
+            time.sleep(0.5)  # brief settle for swipe gesture
+            artemis_agent._adb(
+                ["shell", "input", "keyevent", "KEYCODE_BACK"],
+                device=device,
+            )
+            time.sleep(0.8)  # shade-close animation + Settings commit
             state_after = _brightness_now(device)
             backlight_after = _backlight_now(device)
+            # Slider text: re-open the shade so the post-drag SeekBar is visible
+            _ensure_full_quick_settings(device)
             after_elements = indexer.build_index(Path(before))
             slider_text_after, _ = _slider_text(after_elements)
 
