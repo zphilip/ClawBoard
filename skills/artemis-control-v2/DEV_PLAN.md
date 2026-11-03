@@ -697,3 +697,88 @@ assert never blocks release; every declared item resolves to a status.
 A+B ship independently and immediately remove the false-negative class; C+D
 deliver the actual "state-at-completion" fix; E is a follow-on only if pre-run
 probes prove insufficient.
+
+---
+
+## 11. Gap report — status as of 2026-11-03 (post brightness-refactor; §9.2 gaps still open)
+
+### 11.1 What changed since §9 (2026-11-01)
+
+The past two days of work were coordination/robustness, not checker architecture:
+
+- **Brightness slider fix** — SystemUI buffers the brightness value; `_flush_brightness_slider_commit`
+  toggles `screen_brightness_mode` 0→1→0 after a drag to force a Settings write
+  (commits `612b3c2`, `55f4071`, `8f32354`).
+- **Slider architecture refactor** — merged `_slider_identity_hints` +
+  `_wants_brightness_control` into a single `_slider_profile()` that returns
+  `{hints, pre_drag, post_drag}` in one call; execution path now calls hooks
+  generically instead of checking a `disable_auto_brightness` flag (commit
+  `87df71f`).
+- **Validator JSON fix** — `_profile` dict with function references stripped
+  before `json.dumps` in `build_validator_user_prompt` (commit `dbc4900`).
+- **Playbook promotion sync** — `_promote_verified` updated to sync in-memory
+  `Task.status` after writing "verified" to disk, fixing the stale "unverified"
+  display in the post-run report (commit `c159972`).
+
+**None of the DEV_PLAN §9.2 checker-architecture gaps were touched.**
+
+### 11.2 §9.2 gaps — verified still open (2026-11-03)
+
+Every gap listed in §9.2 is confirmed still open by direct code inspection:
+
+| # | Gap | v2 today | Upstream reference |
+|---|---|---|---|
+| 1 | **Checkpoint audit** at milestone completion | ❌ `runner/checkpoints.py` does not exist. No `EvidenceAnchor`, no `PendingCheckpoint`, no ledger. | `artemis/graph/checkpoints.py` (597 lines) |
+| 2 | **Verify repair loop** | ❌ No `revert_subgoal_status`, no milestone re-execution. A failed verify only flips `status=checker_failed`. | `artemis/graph/graph.py` `exit_settlement_node`, `harvest_run` |
+| 3 | **Agentic Checker tool loop** | ❌ `call_checker` is single-shot (295 lines, 4 functions). No tool iteration, no history/screenshot tools for the checker. | `artemis/agents/checker/checker.py` `_run_check_loop` (859 lines, 28 functions) |
+| 4 | **Verdict hygiene + fail-open release** | ❌ No `verdicts_allow_release`, no `normalize_checker_result`. Decision keys on `goal_achieved` — a hallucinated failure flips `status=checker_failed`. | `artemis/agents/checker/checker.py` `verdicts_allow_release`, `_normalize_report` |
+| 5 | **Finding-line projection** | ❌ No `FINDING_LINE_RE`, no `apply_finding_lines`, no system-authored finding lines in the plan. | `artemis/utils/plan_grammar.py` |
+| 6 | **Check-item mutation guards** | ❌ No `missing_check_items`, no `restore_missing_check_items`. Plan regeneration silently drops declared check lines. | `artemis/utils/plan_grammar.py` |
+| 7 | **`disable_device_probes` config toggle** | ❌ No config key. Probes always run when check items exist. | `artemis/config/agent.py` `ExecutionSetup` |
+| 8 | **Conditional prompt segments + assert semantics** | ❌ Monolithic system prompt in `build_checker_system_prompt`. No `assemble_checker_prompt_segments`. Assert ≈ verify in behavior. | `artemis/agents/checker/checker.py` `assemble_checker_prompt_segments` |
+
+### 11.3 Additional gaps discovered via upstream audit (not in §9.2)
+
+These are downstream of the 8 gaps above — implementing Gap 1 would introduce
+most of them naturally — but they're worth documenting as design targets:
+
+| # | Mechanism | Upstream location | v2 today |
+|---|---|---|---|
+| 9 | **Append-only check ledger** (`check_ledger.jsonl`) | `artemis/graph/checkpoints.py` `append_ledger_record`/`read_ledger` | ❌ No ledger; verdict exists only in the checker's return dict |
+| 10 | **Stream transcripts** (`check_streams.jsonl`) | `artemis/agents/checker/checker.py` `CheckerStreamCapture`, `_persist_stream` | ❌ No stream capture; checker reasoning not observable |
+| 11 | **Evidence anchoring** (`EvidenceAnchor`) | `artemis/graph/checkpoints.py` | ❌ Checker always audits against the current live screenshot |
+| 12 | **Checkpoint queue → spawn → harvest** | `artemis/graph/checkpoints.py` `queue_checkpoints`, `spawn_pending_checkpoints`, `harvest_run` | ❌ None of this pipeline exists |
+| 13 | **Continuous-loop protection** | `artemis/graph/graph.py` `check_plan_mutation_rejections` | ❌ `[Loop:continuous]` milestones can be silently deleted/completed |
+| 14 | **Machine-readable `RunOutcome`** (+ `TestSummary`) | `artemis/graph/checkpoints.py` `compute_run_outcome` | ❌ Outcome is a loose dict; no test counts |
+| 15 | **User-guidance retirement** | `artemis/graph/checkpoints.py` `retire_check_items`/`reinstate_check_items` | ❌ No mechanism to drop a check requirement |
+| 16 | **Plan-write interception pipeline** | `artemis/graph/graph.py` `_process_plan_write` | ❌ Plan writes go directly to notes without guardrails |
+
+### 11.4 What IS ported (confirmed)
+
+| Subsystem | v2 location | Status |
+|---|---|---|
+| Cross-run memory kernel (Phase 0) | `memory/` + `runner/memory_runtime.py` + Tier-1 fuzzy matching | ✅ production |
+| Persistent notes (Phase 1) | `runner/notes.py` — `memory/notes/` | ✅ production |
+| Lazy Diagnoser (Phase 2a) | `runner/diagnoser.py` — fires on ≥2 consecutive failures | ✅ production |
+| Checker + supervisor provider (Phase 2b) | `runner/checker.py` — `call_checker` wired in Pro; `supervisor_provider` config | ✅ production (single-shot only) |
+| Deterministic post-run report (Phase 2c) | `runner/post_run_report.py` — Markdown, no LLM | ✅ production |
+| Probe device | `runner/probes.py` — `PROBES` table, `build_probe_argv`, `derive_probes`, `summarize_probe_output` | ✅ production |
+| Check-item grammar | `runner/planner.py` — `CheckItem`, parse `- verify:`/`- assert:` lines, `check_items_of(item)` | ✅ production |
+| Slider gesture with identity matching | `artemis_agent.py` — `_slider_profile`, `_slider_gesture`, `_resolve_slider_element` | ✅ production (refactored today) |
+| Brightness slider pre/post-drag hooks | `artemis_agent.py` — `_ensure_brightness_manual`, `_flush_brightness_slider_commit` | ✅ production (today) |
+
+### 11.5 Revised build order (unchanged logic, updated status markers)
+
+The build order from §10 remains correct. All steps are still ❌ not started:
+
+| Step | Gaps | Effort | Status |
+|---|---|---|---|
+| A. `revert_subgoal_status`, finding lines, mutation guards | 2,5,6 | small | ❌ |
+| B. `normalize_checker_result` + `verdicts_allow_release` + `unmet_subgoals` | 4 | small | ❌ |
+| C. `runner/checkpoints.py` (ledger, anchor) + `call_checkpoint_check` | 1 | medium | ❌ |
+| D. Checkpoint-hook repair loop in the pro loop | 2 | medium | ❌ |
+| E. Stage-3a bounded re-probe | 3 | medium | ❌ |
+| F. Final-check re-entry loop (`route=continue`) | 2 | medium | ❌ |
+
+**Steps A+B remain the highest-ROI starting point**: pure functions, zero new
+dependencies, immediately eliminate the hallucinated-failure false-negative class.
