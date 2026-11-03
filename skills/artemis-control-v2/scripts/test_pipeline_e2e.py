@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import sys
 import tempfile
 import time
@@ -127,6 +128,42 @@ def _is_brightness_instruction(instruction: str) -> bool:
     return any(k in instruction.lower() for k in ("亮度", "brightness", "调暗", "调亮"))
 
 
+def _wm_size(device: str | None) -> tuple[int, int] | None:
+    code, out, _ = artemis_agent._adb(["shell", "wm", "size"], device=device)
+    if code != 0:
+        return None
+    m = re.search(r"(\d{3,5})x(\d{3,5})", out)
+    return (int(m.group(1)), int(m.group(2))) if m else None
+
+
+def _ensure_full_quick_settings(device: str | None) -> None:
+    """Open the shade, then expand to FULL Quick Settings.
+
+    On this ROM the brightness slider in the half-open (peeked) shade is a
+    NON-interactive preview: it renders as a real SeekBar with a live value
+    text, so the VLM targets it and the drag animates the knob, but the result
+    is discarded on release and ``screen_brightness`` never moves. Only the
+    fully-expanded shade commits the drag. Mirrors test_brightness_swipe.py
+    steps 1-2 (the top-edge swipe is the ONE gesture exempt from the
+    edge-safe rect by design).
+    """
+    w, h = _wm_size(device) or (1440, 3120)
+    artemis_agent._adb(
+        ["shell", "input", "swipe",
+         str(w // 2), str(max(1, int(h * 0.01))),
+         str(w // 2), str(int(h * 0.55)), "350"],
+        device=device,
+    )
+    time.sleep(0.8)
+    artemis_agent._adb(
+        ["shell", "input", "swipe",
+         str(w // 2), str(int(h * 0.30)),
+         str(w // 2), str(int(h * 0.75)), "350"],
+        device=device,
+    )
+    time.sleep(0.8)
+
+
 def _wait_brightness_settle(device: str | None, before: int | None,
                             timeout: float = 6.0, interval: float = 0.5) -> int | None:
     """Poll ``screen_brightness`` until it moves off ``before``.
@@ -181,6 +218,19 @@ def main() -> int:
         return 2
     print(f"[device] {device}")
     ensure_screen_on("adb", device)
+
+    # Precondition for a brightness task: adaptive brightness OFF first (so the
+    # shade reads mode=0 when it opens) and the FULL Quick Settings expanded —
+    # the peeked brightness bar is a non-interactive preview and its drag does
+    # not commit, which is exactly the "knob moved, screen_brightness stuck"
+    # signature the earlier runs showed.
+    brightness_task = _is_brightness_instruction(args.instruction)
+    was_auto, auto_ns = (False, None)
+    if brightness_task:
+        was_auto, auto_ns = _auto_brightness_off(device)
+        if was_auto:
+            print("      [state] adaptive/auto brightness was ON — disabled for the test")
+        _ensure_full_quick_settings(device)
 
     shots = tempfile.mkdtemp(prefix="e2e_shots_")
     before = os.path.join(shots, "before.png")
@@ -237,14 +287,9 @@ def main() -> int:
         print("PASS: screenshot + index + VLM pipeline works; execution skipped.")
         return 0
 
-    brightness_task = _is_brightness_instruction(args.instruction)
     state_before = _brightness_now(device) if brightness_task else None
     if brightness_task:
         print(f"      [state] screen_brightness before = {state_before}")
-        was_auto, auto_ns = _auto_brightness_off(device)
-        if was_auto:
-            print("      [state] adaptive/auto brightness was ON — disabled for the test")
-            state_before = _brightness_now(device)
 
     print(f"[4/5] execute {action_type} …")
     err = _execute_action_adb("adb", device, action_type, action_args, elements)
