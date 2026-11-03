@@ -215,6 +215,34 @@ def _as_float(text: str | None) -> float | None:
         return None
 
 
+def _backlight_now(device: str | None) -> int | None:
+    """The ACTUAL applied backlight from ``dumpsys power``.
+
+    Neither the screenshot nor ``settings get screen_brightness`` sees the real
+    panel backlight: ``screencap`` captures the composited framebuffer (no
+    backlight), and the Settings.System write is asynchronous. ``dumpsys power``
+    reports the brightness the power controller is actually driving, so it is
+    the only reading that crosses the "the screen really got dimmer" line at
+    verify time.
+    """
+    code, out, _ = artemis_agent._adb(
+        ["shell", "dumpsys", "power"], device=device, timeout=15
+    )
+    if code != 0:
+        return None
+    for pat in (r"mScreenBrightness=(\d+)",
+                r"sScreenBrightness=(\d+)",
+                r"mBrightness=(\d+)",
+                r"screenBrightness=(\d+)"):
+        m = re.search(pat, out)
+        if m:
+            v = int(m.group(1))
+            # -1 / 0 usually mean "no override", not the driven value
+            if v > 0:
+                return v
+    return None
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--device", "-s", default=None, help="adb serial (default: first device)")
@@ -317,10 +345,13 @@ def main() -> int:
 
     state_before = _brightness_now(device) if brightness_task else None
     slider_text_before = None
+    backlight_before = None
     if brightness_task:
         slider_text_before, _ = _slider_text(elements)
+        backlight_before = _backlight_now(device)
         print(f"      [state] screen_brightness before = {state_before}   "
-              f"slider text before = {slider_text_before!r}")
+              f"slider text before = {slider_text_before!r}   "
+              f"backlight before = {backlight_before}")
 
     print(f"[4/5] execute {action_type} …")
     err = _execute_action_adb("adb", device, action_type, action_args, elements)
@@ -356,13 +387,14 @@ def main() -> int:
         if brightness_task:
             if state_after is None:
                 state_after = _brightness_now(device)
+            backlight_after = _backlight_now(device)
             print(f"      [state] screen_brightness after = {state_after} "
-                  f"(delta = {state_after - state_before if state_after is not None and state_before is not None else '?'})")
+                  f"(delta = {state_after - state_before if state_after is not None and state_before is not None else '?'})   "
+                  f"backlight after = {backlight_after}")
 
-            # Ground truth: the slider's own value label, re-read from a FRESH
-            # dump. The settings table can lag; the knob's committed value
-            # cannot. This is exactly the signal the user reports as "the
-            # slider moves, it just shows up a moment later".
+            # Ground truth #1: the slider's own value label, re-read from a
+            # FRESH dump. The settings table can lag; the knob's committed
+            # value cannot.
             after_elements = indexer.build_index(Path(after))
             slider_text_after, _ = _slider_text(after_elements)
             print(f"      [slider] slider text before = {slider_text_before!r}   "
@@ -372,36 +404,46 @@ def main() -> int:
             v_before = _as_float(slider_text_before)
             v_after = _as_float(slider_text_after)
 
-            # Decide direction from whichever signal actually moved.
-            s_before_n, s_after_n = state_before, state_after
             moved = False
             wrong_way = False
-            if v_before is not None and v_after is not None:
-                if v_after != v_before:
-                    moved = True
-                    wrong_way = (v_after > v_before) if want_down else (v_after < v_before)
-            if s_before_n is not None and s_after_n is not None and s_after_n != s_before_n:
+            # Slider knob value (most direct "did the drag commit" signal).
+            if v_before is not None and v_after is not None and v_after != v_before:
                 moved = True
-                # setting delta confirms/overrides the slider direction
-                if s_after_n > s_before_n and want_down:
+                wrong_way = (v_after > v_before) if want_down else (v_after < v_before)
+            # Applied backlight (ground truth #2 — the real panel brightness).
+            if backlight_before is not None and backlight_after is not None \
+                    and backlight_after != backlight_before:
+                moved = True
+                if backlight_after > backlight_before and want_down:
                     wrong_way = True
-                if s_after_n < s_before_n and not want_down:
+                if backlight_after < backlight_before and not want_down:
+                    wrong_way = True
+            # Settings table (slow/cached on this ROM — last resort).
+            if state_before is not None and state_after is not None and state_after != state_before:
+                moved = True
+                if state_after > state_before and want_down:
+                    wrong_way = True
+                if state_after < state_before and not want_down:
                     wrong_way = True
 
             if wrong_way:
-                print(f"FAIL: instruction asked to LOWER brightness, but the value INCREASED "
-                      f"(setting {state_before} → {state_after}; slider {slider_text_before} → {slider_text_after}). "
-                      "The wrong direction/slider was applied.")
+                print(f"FAIL: asked to LOWER brightness, but a value INCREASED "
+                      f"(setting {state_before} → {state_after}; slider {slider_text_before} → {slider_text_after}; "
+                      f"backlight {backlight_before} → {backlight_after}). Wrong direction/slider.")
                 return 1
             if not moved:
-                print("FAIL: brightness task ran, but NEITHER screen_brightness nor the "
-                      "slider's own value moved. The drag was not delivered (half-open "
+                print("FAIL: brightness task ran, but the setting, the slider value AND the "
+                      "backlight are all unchanged. The drag was not delivered (half-open "
                       "shade preview / auto-brightness / wrong control).")
                 return 1
         print("PASS: full pipeline (screenshot → index → VLM → execute → effect) works.")
         return 0
     finally:
         if brightness_task:
+            if was_auto:
+                print("      [state] restoring adaptive brightness (was ON) — the screen may "
+                      "re-adjust right after this program exits; THAT change is the light "
+                      "sensor re-engaging, not the slider result.")
             _auto_brightness_on(device, auto_ns)
 
 
