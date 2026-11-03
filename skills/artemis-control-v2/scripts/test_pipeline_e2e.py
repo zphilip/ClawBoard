@@ -364,21 +364,28 @@ def main() -> int:
         if brightness_task:
             # ── Commit the slider value to Android Settings ─────────────────
             # On this ROM the slider value is buffered in SystemUI's internal
-            # state and only flushed to ``screen_brightness`` when the shade
-            # closes or the brightness mode changes.  The drag moved the knob
-            # (confirmed by the manual read of 62 after exit), but
-            # ``settings get`` sees the old value until the commit fires.
-            # Close the shade FIRST, then read — no amount of sleeping helps
-            # while the shade stays open.
+            # state and only flushed to ``screen_brightness`` when the
+            # brightness MODE changes (closing the shade is not enough).
+            # The drag moves the knob correctly (manual read after exit
+            # proves it: 195 → 60 at fraction 0.2), but ``settings get``
+            # sees the old value until a mode transition triggers the
+            # commit.  Toggle mode 0→1→0 in both namespaces to flush.
             time.sleep(0.5)  # brief settle for swipe gesture
-            artemis_agent._adb(
-                ["shell", "input", "keyevent", "KEYCODE_BACK"],
-                device=device,
-            )
-            time.sleep(0.8)  # shade-close animation + Settings commit
+            for ns in ("system", "global"):
+                artemis_agent._adb(
+                    ["shell", "settings", "put", ns, "screen_brightness_mode", "1"],
+                    device=device, timeout=5,
+                )
+            time.sleep(0.3)
+            for ns in ("system", "global"):
+                artemis_agent._adb(
+                    ["shell", "settings", "put", ns, "screen_brightness_mode", "0"],
+                    device=device, timeout=5,
+                )
+            time.sleep(0.3)
             state_after = _brightness_now(device)
             backlight_after = _backlight_now(device)
-            # Slider text: re-open the shade so the post-drag SeekBar is visible
+            # Slider text: re-open shade so post-drag SeekBar is visible
             _ensure_full_quick_settings(device)
             after_elements = indexer.build_index(Path(before))
             slider_text_after, _ = _slider_text(after_elements)
