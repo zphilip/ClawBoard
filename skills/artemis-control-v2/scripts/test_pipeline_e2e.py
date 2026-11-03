@@ -71,6 +71,62 @@ def _pixel_diff(path_a: str, path_b: str, threshold: int = 12):
         return None
 
 
+# ── real device state (what the pixel diff cannot tell you) ────────────────
+def _brightness_now(device: str | None) -> int | None:
+    for ns in ("system", "global"):
+        code, out, _ = artemis_agent._adb(
+            ["shell", "settings", "get", ns, "screen_brightness"], device=device
+        )
+        txt = out.strip()
+        if code == 0 and txt and txt.lstrip("-").isdigit():
+            return int(txt)
+    return None
+
+
+def _brightness_mode(device: str | None) -> tuple[str | None, str | None]:
+    """(namespace, value) of ``screen_brightness_mode`` (1 = adaptive/auto)."""
+    for ns in ("system", "global"):
+        code, out, _ = artemis_agent._adb(
+            ["shell", "settings", "get", ns, "screen_brightness_mode"], device=device
+        )
+        txt = out.strip()
+        if code == 0 and txt:
+            return ns, txt
+    return None, None
+
+
+def _auto_brightness_off(device: str | None) -> tuple[bool, str | None]:
+    """Disable adaptive brightness; returns (was_on, namespace) to restore later.
+
+    With adaptive brightness ON, dragging the manual slider only moves the knob
+    while the light sensor keeps the real brightness in place — the palette's
+    pixel diff then shows a tiny wiggle but the screen never dims. This is the
+    QS-slider equivalent of the check ``test_brightness_swipe.py`` already does.
+    """
+    ns, val = _brightness_mode(device)
+    was_on = bool(val and val.strip() == "1")
+    if was_on:
+        for put_ns in ("system", "global"):
+            artemis_agent._adb(
+                ["shell", "settings", "put", put_ns, "screen_brightness_mode", "0"],
+                device=device,
+            )
+        time.sleep(0.5)
+    return was_on, ns
+
+
+def _auto_brightness_on(device: str | None, ns: str | None) -> None:
+    if not ns:
+        return
+    artemis_agent._adb(
+        ["shell", "settings", "put", ns, "screen_brightness_mode", "1"], device=device
+    )
+
+
+def _is_brightness_instruction(instruction: str) -> bool:
+    return any(k in instruction.lower() for k in ("亮度", "brightness", "调暗", "调亮"))
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--device", "-s", default=None, help="adb serial (default: first device)")
@@ -157,29 +213,61 @@ def main() -> int:
         print("[4/5] execute (DRY RUN — not executed)")
         print("PASS: screenshot + index + VLM pipeline works; execution skipped.")
         return 0
+
+    brightness_task = _is_brightness_instruction(args.instruction)
+    state_before = _brightness_now(device) if brightness_task else None
+    if brightness_task:
+        print(f"      [state] screen_brightness before = {state_before}")
+        was_auto, auto_ns = _auto_brightness_off(device)
+        if was_auto:
+            print("      [state] adaptive/auto brightness was ON — disabled for the test")
+            state_before = _brightness_now(device)
+
     print(f"[4/5] execute {action_type} …")
     err = _execute_action_adb("adb", device, action_type, action_args, elements)
     if err:
         print(f"      execute returned error: {err!r}")
     time.sleep(1.2)
 
-    # 5. verify effect by pixel diff
-    print("[5/5] verify effect …")
-    if not _take_screenshot("adb", device, Path(after)):
-        print("FAIL: post-action screenshot failed.")
-        return 1
-    d = _pixel_diff(before, after)
-    if d is None:
-        print("FAIL: could not compute pixel diff.")
-        return 1
-    changed, pct = d
-    print(f"      screen changed {changed} px ({pct}%)")
-    if action_type in _EXECUTABLE_ACTIONS and changed == 0:
-        print("FAIL: action executed but the screen did not change a single pixel — "
-              "the gesture was not delivered (touch slop / wrong control / auto-brightness).")
-        return 1
-    print("PASS: full pipeline (screenshot → index → VLM → execute → effect) works.")
-    return 0
+    try:
+        # 5. verify effect by pixel diff AND by real device state
+        print("[5/5] verify effect …")
+        if not _take_screenshot("adb", device, Path(after)):
+            print("FAIL: post-action screenshot failed.")
+            return 1
+        d = _pixel_diff(before, after)
+        if d is None:
+            print("FAIL: could not compute pixel diff.")
+            return 1
+        changed, pct = d
+        print(f"      screen changed {changed} px ({pct}%)")
+
+        if action_type in _EXECUTABLE_ACTIONS and changed == 0:
+            print("FAIL: action executed but the screen did not change a single pixel — "
+                  "the gesture was not delivered (touch slop / wrong control / auto-brightness).")
+            return 1
+
+        if brightness_task:
+            state_after = _brightness_now(device)
+            print(f"      [state] screen_brightness after = {state_after} "
+                  f"(delta = {state_after - state_before if state_after is not None and state_before is not None else '?'})")
+            if state_before is not None and state_after is not None:
+                if state_after == state_before:
+                    print("FAIL: brightness task ran, but screen_brightness did NOT move — "
+                          "the knob was dragged yet the real brightness is unchanged. "
+                          "This is the adaptive-brightness / wrong-slider case the pixel "
+                          "diff (a tiny knob wiggle) cannot detect.")
+                    return 1
+                want_down = any(k in args.instruction for k in ("调低", "调暗", "lower", "dim", "降低"))
+                if want_down and state_after > state_before:
+                    print("FAIL: instruction asked to LOWER brightness, but it INCREASED "
+                          f"({state_before} → {state_after}). The wrong slider was dragged.")
+                    return 1
+        print("PASS: full pipeline (screenshot → index → VLM → execute → effect) works.")
+        return 0
+    finally:
+        if brightness_task:
+            _auto_brightness_on(device, auto_ns)
 
 
 if __name__ == "__main__":

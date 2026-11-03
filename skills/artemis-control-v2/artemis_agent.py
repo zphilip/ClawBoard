@@ -3766,6 +3766,32 @@ def _slider_identity_hints(context: str) -> list[str] | None:
     return None
 
 
+def _wants_brightness_control(context: str) -> bool:
+    """True when the instruction/plan targets the BRIGHTNESS slider.
+
+    Adaptive/auto brightness (``screen_brightness_mode=1``) makes a manual drag
+    move the knob while the light sensor keeps the real brightness in place — the
+    classic "the slider moved but the screen did not dim" failure. When this
+    returns True the executor disables auto-brightness before the drag, so the
+    acceptance probe (``screen_brightness``) actually moves.
+    """
+    hints = _slider_identity_hints(context) or []
+    return any(h in ("brightness", "亮度", "adaptive", "automatic") for h in hints)
+
+
+def _ensure_brightness_manual(adb_path: str, device: str) -> None:
+    """Best-effort ``screen_brightness_mode=0`` in BOTH namespaces.
+
+    The authoritative namespace varies by ROM (system on AOSP, global on some
+    OEMs); writing both is harmless and makes a manual slider drag actually
+    change ``screen_brightness`` instead of only the adaptive offset.
+    """
+    for ns in ("system", "global"):
+        _adb(["shell", "settings", "put", ns, "screen_brightness_mode", "0"],
+             adb_path=adb_path, device=device, timeout=8)
+    _log("[gesture] auto-brightness disabled (mode=0) for a manual brightness drag")
+
+
 def _slider_label(el) -> str:
     """Compact identity of a slider element for diagnosis and identity-matching."""
     if el is None:
@@ -4597,6 +4623,8 @@ def _decide_action_fallback(
         if gesture is None:
             return ("system_button", {"button": "back"}, "set_slider failed: target has no bounds", None, None)
         gesture["kind"] = "slider"
+        if _wants_brightness_control(instruction):
+            gesture["disable_auto_brightness"] = True
         desc = target_desc or f"set_slider #{parsed.get('target')} → {frac}"
         _log(f"[gesture] set_slider frac={frac} ⇒ {gesture['coordinate1']}→{gesture['coordinate2']}")
         return ("swipe", gesture, desc)
@@ -4929,6 +4957,8 @@ def _decide_action_plan_guided(
             return ("system_button", {"button": "back"},
                     "set_slider failed: target has no bounds", plan_updates, notes_updates)
         gesture["kind"] = "slider"
+        if _wants_brightness_control(f"{instruction} {plan_text}"):
+            gesture["disable_auto_brightness"] = True
         desc = target_desc or f"set_slider #{parsed.get('target')} → {frac}"
         _log(f"[gesture] set_slider frac={frac} ⇒ {gesture['coordinate1']}→{gesture['coordinate2']}")
         return ("swipe", gesture, desc, plan_updates, notes_updates)
@@ -5027,6 +5057,8 @@ def _execute_action_adb(
         _adb(["shell", "input", "tap", str(coord[0]), str(coord[1])],
              adb_path=adb_path, device=device)
     elif action_type == "swipe":
+        if action_args.get("disable_auto_brightness"):
+            _ensure_brightness_manual(adb_path, device)
         c1 = action_args.get("coordinate1", [0, 0])
         c2 = action_args.get("coordinate2", [0, 0])
         dur = action_args.get("duration", 300)
