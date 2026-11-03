@@ -358,45 +358,25 @@ def main() -> int:
     if err:
         print(f"      execute returned error: {err!r}")
 
-    # Let a slider/brightness change settle before verifying. `input swipe`
-    # returns once the gesture is dispatched; the SeekBar commits on release and
-    # SystemUI ramps the new brightness, so the value needs a beat to land.
-    if brightness_task:
-        state_after = _wait_brightness_settle(device, state_before)
-    else:
-        time.sleep(1.2)
-
     try:
-        # 5. verify effect by pixel diff AND by real device state
         print("[5/5] verify effect …")
-        if not _take_screenshot("adb", device, Path(after)):
-            print("FAIL: post-action screenshot failed.")
-            return 1
-        d = _pixel_diff(before, after)
-        if d is None:
-            print("FAIL: could not compute pixel diff.")
-            return 1
-        changed, pct = d
-        print(f"      screen changed {changed} px ({pct}%)")
-
-        if action_type in _EXECUTABLE_ACTIONS and changed == 0:
-            print("FAIL: action executed but the screen did not change a single pixel — "
-                  "the gesture was not delivered (touch slop / wrong control / auto-brightness).")
-            return 1
 
         if brightness_task:
-            if state_after is None:
-                state_after = _brightness_now(device)
+            # Plain sleep with NO adb calls in this window. The earlier rapid
+            # settings-get polling + screencap + uiautomator re-dump kept the
+            # device busy, so the slider's commit/animation was starved and only
+            # played out after the program exited — the exact "the bar starts
+            # changing after the run finishes" symptom. Let the commit land
+            # undisturbed, then read everything once.
+            time.sleep(2.5)
+            state_after = _brightness_now(device)
             backlight_after = _backlight_now(device)
+            after_elements = indexer.build_index(Path(before))
+            slider_text_after, _ = _slider_text(after_elements)
+
             print(f"      [state] screen_brightness after = {state_after} "
                   f"(delta = {state_after - state_before if state_after is not None and state_before is not None else '?'})   "
                   f"backlight after = {backlight_after}")
-
-            # Ground truth #1: the slider's own value label, re-read from a
-            # FRESH dump. The settings table can lag; the knob's committed
-            # value cannot.
-            after_elements = indexer.build_index(Path(after))
-            slider_text_after, _ = _slider_text(after_elements)
             print(f"      [slider] slider text before = {slider_text_before!r}   "
                   f"after = {slider_text_after!r}")
 
@@ -406,11 +386,11 @@ def main() -> int:
 
             moved = False
             wrong_way = False
-            # Slider knob value (most direct "did the drag commit" signal).
+            # The slider's own value label — the most direct "did the knob move"
             if v_before is not None and v_after is not None and v_after != v_before:
                 moved = True
                 wrong_way = (v_after > v_before) if want_down else (v_after < v_before)
-            # Applied backlight (ground truth #2 — the real panel brightness).
+            # Applied backlight (the real panel brightness).
             if backlight_before is not None and backlight_after is not None \
                     and backlight_after != backlight_before:
                 moved = True
@@ -433,9 +413,25 @@ def main() -> int:
                 return 1
             if not moved:
                 print("FAIL: brightness task ran, but the setting, the slider value AND the "
-                      "backlight are all unchanged. The drag was not delivered (half-open "
-                      "shade preview / auto-brightness / wrong control).")
+                      "backlight are all unchanged after a 2.5s settle. The drag was not "
+                      "delivered (half-open shade preview / auto-brightness / wrong control).")
                 return 1
+        else:
+            time.sleep(1.2)
+            if not _take_screenshot("adb", device, Path(after)):
+                print("FAIL: post-action screenshot failed.")
+                return 1
+            d = _pixel_diff(before, after)
+            if d is None:
+                print("FAIL: could not compute pixel diff.")
+                return 1
+            changed, pct = d
+            print(f"      screen changed {changed} px ({pct}%)")
+            if action_type in _EXECUTABLE_ACTIONS and changed == 0:
+                print("FAIL: action executed but the screen did not change a single pixel — "
+                      "the gesture was not delivered (touch slop / wrong control / auto-brightness).")
+                return 1
+
         print("PASS: full pipeline (screenshot → index → VLM → execute → effect) works.")
         return 0
     finally:
