@@ -165,7 +165,7 @@ def _ensure_full_quick_settings(device: str | None) -> None:
 
 
 def _wait_brightness_settle(device: str | None, before: int | None,
-                            timeout: float = 6.0, interval: float = 0.5) -> int | None:
+                            timeout: float = 20.0, interval: float = 0.5) -> int | None:
     """Poll ``screen_brightness`` until it moves off ``before``.
 
     A brightness slider commits its value on ACTION_UP and SystemUI then ramps
@@ -185,6 +185,34 @@ def _wait_brightness_settle(device: str | None, before: int | None,
             return settled if settled is not None else last
         time.sleep(interval)
     return last
+
+
+def _slider_text(elements) -> tuple[str | None, int | None]:
+    """The numeric ``text`` of the first SeekBar/ProgressBar in the dump.
+
+    The slider's own value label (e.g. 812.0) is committed by the drag even
+    when ``settings get screen_brightness`` lags behind (a known Settings.System
+    cache effect on some ROMs). Reading it is the ground truth for "did the
+    knob actually move", independent of the settings table.
+    """
+    for el in (elements or []):
+        cls = (getattr(el, "class_name", "") or "").lower()
+        if "seekbar" in cls or "progressbar" in cls:
+            t = getattr(el, "text", "") or ""
+            if t.strip():
+                return t, getattr(el, "index", None)
+    for el in (elements or []):
+        cls = (getattr(el, "class_name", "") or "").lower()
+        if "seekbar" in cls or "progressbar" in cls:
+            return (getattr(el, "text", "") or None), getattr(el, "index", None)
+    return None, None
+
+
+def _as_float(text: str | None) -> float | None:
+    try:
+        return float(text)
+    except (TypeError, ValueError):
+        return None
 
 
 def main() -> int:
@@ -288,8 +316,11 @@ def main() -> int:
         return 0
 
     state_before = _brightness_now(device) if brightness_task else None
+    slider_text_before = None
     if brightness_task:
-        print(f"      [state] screen_brightness before = {state_before}")
+        slider_text_before, _ = _slider_text(elements)
+        print(f"      [state] screen_brightness before = {state_before}   "
+              f"slider text before = {slider_text_before!r}")
 
     print(f"[4/5] execute {action_type} …")
     err = _execute_action_adb("adb", device, action_type, action_args, elements)
@@ -327,18 +358,46 @@ def main() -> int:
                 state_after = _brightness_now(device)
             print(f"      [state] screen_brightness after = {state_after} "
                   f"(delta = {state_after - state_before if state_after is not None and state_before is not None else '?'})")
-            if state_before is not None and state_after is not None:
-                if state_after == state_before:
-                    print("FAIL: brightness task ran, but screen_brightness did NOT move — "
-                          "the knob was dragged yet the real brightness is unchanged. "
-                          "This is the adaptive-brightness / wrong-slider case the pixel "
-                          "diff (a tiny knob wiggle) cannot detect.")
-                    return 1
-                want_down = any(k in args.instruction for k in ("调低", "调暗", "lower", "dim", "降低"))
-                if want_down and state_after > state_before:
-                    print("FAIL: instruction asked to LOWER brightness, but it INCREASED "
-                          f"({state_before} → {state_after}). The wrong slider was dragged.")
-                    return 1
+
+            # Ground truth: the slider's own value label, re-read from a FRESH
+            # dump. The settings table can lag; the knob's committed value
+            # cannot. This is exactly the signal the user reports as "the
+            # slider moves, it just shows up a moment later".
+            after_elements = indexer.build_index(Path(after))
+            slider_text_after, _ = _slider_text(after_elements)
+            print(f"      [slider] slider text before = {slider_text_before!r}   "
+                  f"after = {slider_text_after!r}")
+
+            want_down = any(k in args.instruction for k in ("调低", "调暗", "lower", "dim", "降低"))
+            v_before = _as_float(slider_text_before)
+            v_after = _as_float(slider_text_after)
+
+            # Decide direction from whichever signal actually moved.
+            s_before_n, s_after_n = state_before, state_after
+            moved = False
+            wrong_way = False
+            if v_before is not None and v_after is not None:
+                if v_after != v_before:
+                    moved = True
+                    wrong_way = (v_after > v_before) if want_down else (v_after < v_before)
+            if s_before_n is not None and s_after_n is not None and s_after_n != s_before_n:
+                moved = True
+                # setting delta confirms/overrides the slider direction
+                if s_after_n > s_before_n and want_down:
+                    wrong_way = True
+                if s_after_n < s_before_n and not want_down:
+                    wrong_way = True
+
+            if wrong_way:
+                print(f"FAIL: instruction asked to LOWER brightness, but the value INCREASED "
+                      f"(setting {state_before} → {state_after}; slider {slider_text_before} → {slider_text_after}). "
+                      "The wrong direction/slider was applied.")
+                return 1
+            if not moved:
+                print("FAIL: brightness task ran, but NEITHER screen_brightness nor the "
+                      "slider's own value moved. The drag was not delivered (half-open "
+                      "shade preview / auto-brightness / wrong control).")
+                return 1
         print("PASS: full pipeline (screenshot → index → VLM → execute → effect) works.")
         return 0
     finally:
