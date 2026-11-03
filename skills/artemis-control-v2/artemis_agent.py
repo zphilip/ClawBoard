@@ -3747,36 +3747,35 @@ def _scroll_gesture(elements, target_idx, direction: str) -> dict | None:
     }
 
 
-def _slider_identity_hints(context: str) -> list[str] | None:
-    """Keywords that identify the RIGHT slider for this instruction/plan.
+def _slider_profile(context: str) -> dict | None:
+    """Slider identity hints + any needed pre/post-drag hooks, from context.
 
-    The instruction ("把手机屏幕调暗") only names the GOAL, not the element, but
-    the plan's verify line names the probe subject (``screen_brightness``). Map
-    that subject to the identity substrings the slider carries in its
-    resource-id/text/content-desc, so ``set_slider`` drags the brightness bar
-    and not a media/volume progress bar the VLM happened to label 亮度滑条.
+    Returns a dict with:
+      hints: identity substrings for slider matching (list[str])
+      pre_drag: optional (adb_path, device) callable to run BEFORE the swipe
+      post_drag: optional (adb_path, device) callable to run AFTER the swipe
+
+    Returns None when the instruction doesn't target a known slider type — the
+    VLM's ``target=N`` guess is used directly and no hooks apply.
+
+    Brightness needs pre/post-drag hooks because:
+      1. adaptive mode (screen_brightness_mode=1) blocks manual drags → disable
+      2. SystemUI buffers the slider value → toggle mode to flush to Settings
+    No other Android slider (volume, media, timeout) has these properties, so
+    they get no hooks.
     """
     ctx = (context or "").lower()
     if any(k in ctx for k in ("screen_brightness", "brightness", "亮度", "调暗",
                               "调亮", "屏幕亮度", "adaptive")):
-        return ["brightness", "亮度", "adaptive", "automatic"]
+        return {
+            "hints": ["brightness", "亮度", "adaptive", "automatic"],
+            "pre_drag": _ensure_brightness_manual,
+            "post_drag": _flush_brightness_slider_commit,
+        }
     if any(k in ctx for k in ("volume", "音量", "ring", "ringer", "media_volume",
                               "静音", "声音", "响铃", "铃声")):
-        return ["volume", "音量", "ring", "media", "audio"]
+        return {"hints": ["volume", "音量", "ring", "media", "audio"]}
     return None
-
-
-def _wants_brightness_control(context: str) -> bool:
-    """True when the instruction/plan targets the BRIGHTNESS slider.
-
-    Adaptive/auto brightness (``screen_brightness_mode=1``) makes a manual drag
-    move the knob while the light sensor keeps the real brightness in place — the
-    classic "the slider moved but the screen did not dim" failure. When this
-    returns True the executor disables auto-brightness before the drag, so the
-    acceptance probe (``screen_brightness``) actually moves.
-    """
-    hints = _slider_identity_hints(context) or []
-    return any(h in ("brightness", "亮度", "adaptive", "automatic") for h in hints)
 
 
 def _ensure_brightness_manual(adb_path: str, device: str) -> None:
@@ -4638,13 +4637,14 @@ def _decide_action_fallback(
 
     elif action == "set_slider":
         frac = parsed.get("fraction", 0.0)
+        profile = _slider_profile(instruction)
         gesture = _slider_gesture(elements, parsed.get("target"), frac,
-                                  hints=_slider_identity_hints(instruction))
+                                  hints=profile["hints"] if profile else None)
         if gesture is None:
             return ("system_button", {"button": "back"}, "set_slider failed: target has no bounds", None, None)
         gesture["kind"] = "slider"
-        if _wants_brightness_control(instruction):
-            gesture["disable_auto_brightness"] = True
+        if profile:
+            gesture["_profile"] = profile
         desc = target_desc or f"set_slider #{parsed.get('target')} → {frac}"
         _log(f"[gesture] set_slider frac={frac} ⇒ {gesture['coordinate1']}→{gesture['coordinate2']}")
         return ("swipe", gesture, desc)
@@ -4970,15 +4970,15 @@ def _decide_action_plan_guided(
 
     elif action == "set_slider":
         frac = parsed.get("fraction", 0.0)
+        profile = _slider_profile(f"{instruction} {plan_text}")
         gesture = _slider_gesture(elements, parsed.get("target"), frac,
-                                  hints=_slider_identity_hints(
-                                      f"{instruction} {plan_text}"))
+                                  hints=profile["hints"] if profile else None)
         if gesture is None:
             return ("system_button", {"button": "back"},
                     "set_slider failed: target has no bounds", plan_updates, notes_updates)
         gesture["kind"] = "slider"
-        if _wants_brightness_control(f"{instruction} {plan_text}"):
-            gesture["disable_auto_brightness"] = True
+        if profile:
+            gesture["_profile"] = profile
         desc = target_desc or f"set_slider #{parsed.get('target')} → {frac}"
         _log(f"[gesture] set_slider frac={frac} ⇒ {gesture['coordinate1']}→{gesture['coordinate2']}")
         return ("swipe", gesture, desc, plan_updates, notes_updates)
@@ -5077,12 +5077,13 @@ def _execute_action_adb(
         _adb(["shell", "input", "tap", str(coord[0]), str(coord[1])],
              adb_path=adb_path, device=device)
     elif action_type == "swipe":
-        is_brightness_slider = bool(
-            action_args.get("disable_auto_brightness")
-            and action_args.get("kind") == "slider"
-        )
-        if is_brightness_slider:
-            _ensure_brightness_manual(adb_path, device)
+        # ── Pre-drag hooks (if any) ────────────────────────────────────────
+        # Sliders that need setup before a drag (e.g. brightness must disable
+        # adaptive mode so the manual swipe actually moves screen_brightness).
+        profile = action_args.get("_profile") if action_args.get("kind") == "slider" else None
+        pre_drag = profile.get("pre_drag") if profile else None
+        if pre_drag:
+            pre_drag(adb_path, device)
         c1 = action_args.get("coordinate1", [0, 0])
         c2 = action_args.get("coordinate2", [0, 0])
         dur = action_args.get("duration", 300)
@@ -5098,17 +5099,14 @@ def _execute_action_adb(
             _adb(["shell", "input", "swipe",
                   str(c1[0]), str(c1[1]), str(c2[0]), str(c2[1]), str(dur)],
                  adb_path=adb_path, device=device)
-        # ── Commit brightness slider value to Android Settings ───────────
-        # On this ROM SystemUI buffers the slider value internally while the
-        # Quick Settings shade is open; the drag moves the knob but
-        # ``screen_brightness`` is only written to the Settings provider on
-        # a brightness-mode transition (0→1 or 1→0).  Without this toggle
-        # the agent's next verification step reads the OLD value and
-        # believes the slider had no effect — exactly the symptom the e2e
-        # test was hitting.  Other actions (tap, type, scroll) write
-        # immediately inside the target app and do not need this.
-        if is_brightness_slider:
-            _flush_brightness_slider_commit(adb_path, device)
+        # ── Post-drag hooks (if any) ───────────────────────────────────────
+        # Sliders that need a commit trigger after the drag (e.g. brightness
+        # is buffered by SystemUI and only written to Android Settings on a
+        # brightness-mode transition — toggle 0→1→0 to flush the value so the
+        # agent's next verification step sees the new screen_brightness).
+        post_drag = profile.get("post_drag") if profile else None
+        if post_drag:
+            post_drag(adb_path, device)
     elif action_type == "type":
         text = action_args.get("text", "")
         _adb_type_text(adb_path, device, text, elements=elements)
