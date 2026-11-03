@@ -477,6 +477,8 @@ def main() -> int:
                 t.id, args.min_successes, rec.get("fingerprint", "")
             )
             if changed:
+                t.status = "verified"
+                t.verified_on = rec.get("fingerprint", "")
                 print(f"  ♻ {msg}")
 
     failures = [tid for tid, ok in results if not ok]
