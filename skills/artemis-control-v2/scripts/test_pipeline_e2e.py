@@ -127,6 +127,29 @@ def _is_brightness_instruction(instruction: str) -> bool:
     return any(k in instruction.lower() for k in ("亮度", "brightness", "调暗", "调亮"))
 
 
+def _wait_brightness_settle(device: str | None, before: int | None,
+                            timeout: float = 6.0, interval: float = 0.5) -> int | None:
+    """Poll ``screen_brightness`` until it moves off ``before``.
+
+    A brightness slider commits its value on ACTION_UP and SystemUI then ramps
+    the change with a smooth animation; reading the setting immediately after
+    ``input swipe`` returns (it blocks roughly the gesture duration) keeps
+    seeing the old value, which the first field run showed as a false
+    "delta = 0". Poll briefly so the settled value is what gets asserted.
+    """
+    deadline = time.time() + timeout
+    last = None
+    while time.time() < deadline:
+        last = _brightness_now(device)
+        if last is not None and last != before:
+            # one more read after a beat, to catch the ramp's final value
+            time.sleep(interval)
+            settled = _brightness_now(device)
+            return settled if settled is not None else last
+        time.sleep(interval)
+    return last
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--device", "-s", default=None, help="adb serial (default: first device)")
@@ -227,7 +250,14 @@ def main() -> int:
     err = _execute_action_adb("adb", device, action_type, action_args, elements)
     if err:
         print(f"      execute returned error: {err!r}")
-    time.sleep(1.2)
+
+    # Let a slider/brightness change settle before verifying. `input swipe`
+    # returns once the gesture is dispatched; the SeekBar commits on release and
+    # SystemUI ramps the new brightness, so the value needs a beat to land.
+    if brightness_task:
+        state_after = _wait_brightness_settle(device, state_before)
+    else:
+        time.sleep(1.2)
 
     try:
         # 5. verify effect by pixel diff AND by real device state
@@ -248,7 +278,8 @@ def main() -> int:
             return 1
 
         if brightness_task:
-            state_after = _brightness_now(device)
+            if state_after is None:
+                state_after = _brightness_now(device)
             print(f"      [state] screen_brightness after = {state_after} "
                   f"(delta = {state_after - state_before if state_after is not None and state_before is not None else '?'})")
             if state_before is not None and state_after is not None:
