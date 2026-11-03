@@ -5062,9 +5062,18 @@ def _execute_action_adb(
         c1 = action_args.get("coordinate1", [0, 0])
         c2 = action_args.get("coordinate2", [0, 0])
         dur = action_args.get("duration", 300)
-        _adb(["shell", "input", "swipe",
-              str(c1[0]), str(c1[1]), str(c2[0]), str(c2[1]), str(dur)],
-             adb_path=adb_path, device=device)
+        # uiautomator2 swipe: uses accessibility-service touch injection, which
+        # the system treats as real user input and dispatches immediately.  On
+        # some ROMs ``adb shell input swipe`` buffers injected events until the
+        # ADB session closes — the swipe only takes effect after the program
+        # exits.  Tap is not affected (single-shot event, no session tying).
+        if _u2_swipe(device, int(c1[0]), int(c1[1]), int(c2[0]), int(c2[1]),
+                     duration=dur / 1000.0):
+            pass  # uiautomator2 handled it
+        else:
+            _adb(["shell", "input", "swipe",
+                  str(c1[0]), str(c1[1]), str(c2[0]), str(c2[1]), str(dur)],
+                 adb_path=adb_path, device=device)
     elif action_type == "type":
         text = action_args.get("text", "")
         _adb_type_text(adb_path, device, text, elements=elements)
@@ -5167,6 +5176,34 @@ def _resolve_package(adb_path: str, device: str, app_name: str) -> str | None:
 
 
 # ── uiautomator2 helpers (optional — primary text input method) ──────────
+
+def _u2_swipe(device: str | None, x1: int, y1: int, x2: int, y2: int,
+              duration: float = 0.6) -> bool:
+    """Inject a swipe via uiautomator2 (accessibility-service touch injection).
+
+    On some ROMs ``adb shell input swipe`` injects events that are flagged as
+    non-hardware and buffered by SystemUI until the ADB session closes — the
+    swipe only takes effect *after* the program exits.  uiautomator2's
+    ``d.swipe()`` uses UiAutomation, which the system treats as a real user
+    touch and dispatches immediately.  Returns True on success.
+    """
+    try:
+        d = _u2_connect(device)
+        _u2_disable_fast_ime(d)
+        # uiautomator2 v3 uses fractional coords by default (percent=True);
+        # v2 uses pixel coords.  Try v3+ API first, fall back to v2.
+        try:
+            d.swipe(x1, y1, x2, y2, duration=duration, percent=False)
+        except TypeError:
+            d.swipe(x1, y1, x2, y2, duration=duration)
+        _log(f"[gesture] uiautomator2 swipe ({x1},{y1})→({x2},{y2}) dur={duration}s ok")
+        return True
+    except ImportError:
+        _log("[gesture] uiautomator2 not installed — falling back to input swipe")
+    except Exception as e:
+        _log(f"[gesture] uiautomator2 swipe failed: {e}")
+    return False
+
 
 def _u2_connect(device: str | None = None):
     """Connect to a device via uiautomator2, backward-compatibly.

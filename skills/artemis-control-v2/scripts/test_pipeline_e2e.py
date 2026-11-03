@@ -314,34 +314,6 @@ def main() -> int:
         except Exception:
             print("        " + str(el))
 
-    # ── Release UiAutomationService after element indexing ────────────────
-    # build_index() above calls get_ui_dump() which starts an Android
-    # UiAutomationService from EITHER tier:
-    #   Tier 1 (uiautomator2):  com.github.uiautomator APK's accessibility svc
-    #   Tier 2 (ADB uiautomator): /system/bin/uiautomator dump process
-    # That service intercepts/holds touch events in the input pipeline: the
-    # input swipe injected by step 4 is queued but never dispatched to the
-    # SeekBar until the service disconnects at process exit.  Observed
-    # symptom: slider text AND screen_brightness both unchanged during
-    # verification (even after 12 s sleep), then brightness ramps to the
-    # target *after* the program finishes.
-    #
-    # _kill_stale_uiautomation_service() (explorer.py:207) handles Tier-2
-    # dumps but is only called on retry errors.  For Tier-1 we also need to
-    # stop the uiautomator2 APK's accessibility service.  Do both now so
-    # step 4 lands on a free input pipeline.
-    try:
-        indexer._kill_stale_uiautomation_service()
-    except Exception:
-        pass
-    # Tier-1 safeguard: stop uiautomator2 APK (am force-stop is a no-op if
-    # it isn't installed / wasn't the tier that ran).
-    artemis_agent._adb(
-        ["shell", "am", "force-stop", "com.github.uiautomator"],
-        device=device, timeout=5,
-    )
-    time.sleep(0.8)  # let the UiAutomationService fully release
-
     # 3. VLM decision (screenshot + element index -> one action)
     print(f"[3/5] VLM decision for: {args.instruction!r} …")
     decision = _decide_action_fallback(
