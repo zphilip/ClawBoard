@@ -3792,6 +3792,26 @@ def _ensure_brightness_manual(adb_path: str, device: str) -> None:
     _log("[gesture] auto-brightness disabled (mode=0) for a manual brightness drag")
 
 
+def _flush_brightness_slider_commit(adb_path: str, device: str) -> None:
+    """Force SystemUI to write the pending brightness-slider value to Settings.
+
+    On this ROM the Quick Settings brightness slider buffers its value
+    internally; ``screen_brightness`` is only updated on a brightness-mode
+    transition.  Toggle mode 0→1→0 in both namespaces — the brief mode-1
+    dwell is too short for adaptive brightness to ramp the panel, but long
+    enough for the Settings provider to accept the write.
+    """
+    for ns in ("system", "global"):
+        _adb(["shell", "settings", "put", ns, "screen_brightness_mode", "1"],
+             adb_path=adb_path, device=device, timeout=5)
+    time.sleep(0.3)
+    for ns in ("system", "global"):
+        _adb(["shell", "settings", "put", ns, "screen_brightness_mode", "0"],
+             adb_path=adb_path, device=device, timeout=5)
+    time.sleep(0.3)
+    _log("[gesture] brightness slider value committed via mode toggle")
+
+
 def _slider_label(el) -> str:
     """Compact identity of a slider element for diagnosis and identity-matching."""
     if el is None:
@@ -5057,7 +5077,11 @@ def _execute_action_adb(
         _adb(["shell", "input", "tap", str(coord[0]), str(coord[1])],
              adb_path=adb_path, device=device)
     elif action_type == "swipe":
-        if action_args.get("disable_auto_brightness"):
+        is_brightness_slider = bool(
+            action_args.get("disable_auto_brightness")
+            and action_args.get("kind") == "slider"
+        )
+        if is_brightness_slider:
             _ensure_brightness_manual(adb_path, device)
         c1 = action_args.get("coordinate1", [0, 0])
         c2 = action_args.get("coordinate2", [0, 0])
@@ -5074,6 +5098,17 @@ def _execute_action_adb(
             _adb(["shell", "input", "swipe",
                   str(c1[0]), str(c1[1]), str(c2[0]), str(c2[1]), str(dur)],
                  adb_path=adb_path, device=device)
+        # ── Commit brightness slider value to Android Settings ───────────
+        # On this ROM SystemUI buffers the slider value internally while the
+        # Quick Settings shade is open; the drag moves the knob but
+        # ``screen_brightness`` is only written to the Settings provider on
+        # a brightness-mode transition (0→1 or 1→0).  Without this toggle
+        # the agent's next verification step reads the OLD value and
+        # believes the slider had no effect — exactly the symptom the e2e
+        # test was hitting.  Other actions (tap, type, scroll) write
+        # immediately inside the target app and do not need this.
+        if is_brightness_slider:
+            _flush_brightness_slider_commit(adb_path, device)
     elif action_type == "type":
         text = action_args.get("text", "")
         _adb_type_text(adb_path, device, text, elements=elements)

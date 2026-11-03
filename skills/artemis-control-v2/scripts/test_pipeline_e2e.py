@@ -362,27 +362,12 @@ def main() -> int:
         print("[5/5] verify effect …")
 
         if brightness_task:
-            # ── Commit the slider value to Android Settings ─────────────────
-            # On this ROM the slider value is buffered in SystemUI's internal
-            # state and only flushed to ``screen_brightness`` when the
-            # brightness MODE changes (closing the shade is not enough).
-            # The drag moves the knob correctly (manual read after exit
-            # proves it: 195 → 60 at fraction 0.2), but ``settings get``
-            # sees the old value until a mode transition triggers the
-            # commit.  Toggle mode 0→1→0 in both namespaces to flush.
-            time.sleep(0.5)  # brief settle for swipe gesture
-            for ns in ("system", "global"):
-                artemis_agent._adb(
-                    ["shell", "settings", "put", ns, "screen_brightness_mode", "1"],
-                    device=device, timeout=5,
-                )
-            time.sleep(0.3)
-            for ns in ("system", "global"):
-                artemis_agent._adb(
-                    ["shell", "settings", "put", ns, "screen_brightness_mode", "0"],
-                    device=device, timeout=5,
-                )
-            time.sleep(0.3)
+            # ── Commit already handled by _execute_action_adb ──────────────
+            # ``_flush_brightness_slider_commit()`` in the agent toggles
+            # brightness mode 0→1→0 after the swipe, which forces SystemUI
+            # to write the buffered slider value to Settings.  Just wait
+            # briefly for the commit to propagate, then read.
+            time.sleep(1.0)
             state_after = _brightness_now(device)
             backlight_after = _backlight_now(device)
             # Slider text: re-open shade so post-drag SeekBar is visible
