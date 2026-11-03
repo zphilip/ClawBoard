@@ -131,7 +131,12 @@ def build_validator_user_prompt(
             action will land. Removes the need for the model to do the
             coordinate math that produced false "off-target" rejections.
     """
-    args_str = json.dumps(action_args or {}, ensure_ascii=False)
+    # Strip internal keys (prefixed with _) before serialization — these
+    # carry runtime-only data (e.g. function references in _profile) that
+    # are not meaningful to the validator VLM and are not JSON-serializable.
+    args_clean = {k: v for k, v in (action_args or {}).items()
+                  if not k.startswith("_")}
+    args_str = json.dumps(args_clean, ensure_ascii=False)
 
     snapshot = parse_plan(plan_text) if plan_text else None
     current_milestone = ""
