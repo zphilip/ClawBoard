@@ -623,9 +623,9 @@
       "probes": [
         "foreground"
       ],
-      "plan": "- [ ] 打开百度地图并导航到武林门\n  - verify: 百度地图已在前台且已开始前往武林门的导航 [probe: foreground][app: com.baidu.BaiduMap]\n  - path 1 [cost=5 kind=primary]: open_app 百度地图 → 等首页加载 → 在顶部搜索框输入 武林门 → 点跳出的第一条地点结果 → 点「路线」→ 选出行方式（驾车/步行/公共交通）→ 点「开始导航」\n  - path 2 [cost=6 kind=alternative]: open_app 百度地图 → 点底部「路线」Tab → 分别输入起点和终点 武林门 → 选出行方式 → 点「开始导航」",
+      "plan": "- [ ] 打开百度地图并导航到武林门广场\n  - verify: 百度地图已在前台且已开始前往武林门广场的导航 [probe: foreground][app: com.baidu.BaiduMap]\n  - path 1 [cost=5 kind=primary]: open_app 百度地图 → 等首页加载 → 在顶部搜索框输入 武林门广场 → 点跳出的第一条地点结果 → 点「路线」→ 选出行方式（驾车/步行/公共交通）→ 点「开始导航」\n  - path 2 [cost=6 kind=alternative]: open_app 百度地图 → 点底部「路线」Tab → 分别输入起点和终点 武林门广场 → 选出行方式 → 点「开始导航」",
       "pitfalls": [
-        "本 recipe 是具体实例（武林门）；真实会话由 VLM 从用户指令里提取目标并替换，不要把示例值照抄进新计划。",
+        "本 recipe 是具体实例（武林门广场）；真实会话由 VLM 从用户指令里提取目标并替换，不要把示例值照抄进新计划。",
         "首次打开地图会弹定位权限 / 隐私协议 / 广告——先处理弹窗再继续，否则后续点击全部失效。",
         "搜索联想第一条通常就是目的地；不要点「搜索」键盘键后盲目点第一条无关横条，认准地名。",
         "导航是长链路（开 app→搜→选→路线→开始），属于线性流；赶时间用 --profile flash。"

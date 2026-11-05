@@ -1211,27 +1211,38 @@ def _take_screenshot(adb_path: str, device: Optional[str], dest: Path,
                      max_age_seconds: int = 30) -> bool:
     """Capture a screenshot from the device via ADB and save to dest.
 
-    If the first capture fails (commonly because the screen turned off mid-run
-    during a long automation session), wake the screen once and retry.
+    Tries ``exec-out screencap -p`` first (raw transport, preferred for
+    speed).  If that returns empty stdout — a known quirk on some devices
+    where exec-out mangles the binary PNG stream — falls back to ``shell
+    screencap -p`` which uses the interactive-shell transport.
     """
     dest.parent.mkdir(parents=True, exist_ok=True)
     if dest.exists():
         dest.unlink()
     import subprocess as _sp
-    cmd = [adb_path]
-    if device:
-        cmd += ["-s", device]
-    cmd += ["exec-out", "screencap", "-p"]
 
-    for attempt in (1, 2):
-        result = None
+    # Three capture strategies, attempted in order:
+    #   1. exec-out (raw transport)
+    #   2. shell (interactive-shell transport — fallback for broken exec-out)
+    #   3. exec-out again after waking the screen
+    STRATEGIES = [
+        ("exec-out", ["exec-out", "screencap", "-p"]),
+        ("shell", ["shell", "screencap", "-p"]),
+    ]
+
+    def _try_capture(strategy_name: str, extra_args: list) -> tuple:
+        """Run one screencap attempt.  Returns (success: bool, result)."""
+        cmd = [adb_path]
+        if device:
+            cmd += ["-s", device]
+        cmd += extra_args
         try:
-            result = _sp.run(cmd, capture_output=True, timeout=15)
+            r = _sp.run(cmd, capture_output=True, timeout=15)
         except Exception as e:
-            _log(f"Screenshot attempt {attempt} error: {e}")
-
-        if result is not None and result.returncode == 0 and result.stdout:
-            dest.write_bytes(result.stdout)
+            _log(f"Screenshot {strategy_name} attempt error: {e}")
+            return False, None
+        if r.returncode == 0 and r.stdout:
+            dest.write_bytes(r.stdout)
 
             # Cache device resolution from the screenshot (first capture only)
             global _DEVICE_RESOLUTION
@@ -1247,21 +1258,40 @@ def _take_screenshot(adb_path: str, device: Optional[str], dest: Path,
             if age > max_age_seconds:
                 _log(f"Screenshot {dest.name} is {age:.1f}s old; discarding")
                 dest.unlink(missing_ok=True)
-                return False
+                return False, r
+            return True, r
+        return False, r
+
+    # ── attempt 1: try both exec-out and shell, no wake ──
+    for s_name, s_args in STRATEGIES:
+        ok, result = _try_capture(s_name, s_args)
+        if ok:
             return True
+        _log(f"Screenshot {s_name} failed" + (
+            f" (rc={result.returncode})" if result and result.returncode != 0
+            else " (stdout empty)" if result and not result.stdout
+            else ""
+        ))
 
-        if attempt == 1:
-            _log("Screenshot capture failed — waking screen and retrying")
-            try:
-                ensure_screen_on(adb_path, device)
-                # The device may need a moment after waking before it can
-                # accept a screenshot command. Without this settle delay
-                # the retry often fails too, producing a tight failure loop.
-                time.sleep(1.0)
-            except Exception as e:
-                _log(f"Screen wake failed: {e}")
+    # ── attempt 2: wake screen, settle, then try both strategies again ──
+    _log("Screenshot: waking screen and retrying")
+    try:
+        ensure_screen_on(adb_path, device)
+        time.sleep(1.0)
+    except Exception as e:
+        _log(f"Screen wake failed: {e}")
 
-    # Both attempts failed. Log diagnostic detail from the last result.
+    for s_name, s_args in STRATEGIES:
+        ok, result = _try_capture(s_name, s_args)
+        if ok:
+            return True
+        _log(f"Screenshot {s_name} failed after wake" + (
+            f" (rc={result.returncode})" if result and result.returncode != 0
+            else " (stdout empty)" if result and not result.stdout
+            else ""
+        ))
+
+    # All strategies exhausted — log diagnostics from the last result
     _detail = ""
     if result is not None:
         if result.returncode != 0:
@@ -1275,7 +1305,7 @@ def _take_screenshot(adb_path: str, device: Optional[str], dest: Path,
             _detail += ")"
         elif not result.stdout:
             _detail = " (stdout empty)"
-    _log(f"Screenshot capture failed after 2 attempts{_detail}")
+    _log(f"Screenshot capture failed after all attempts{_detail}")
     return False
 
 # ---------------------------------------------------------------------------
