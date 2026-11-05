@@ -1293,6 +1293,7 @@ def run_artemis_agent(
     timeout: int,
     verification: str,
     explorer_tier: str,
+    disable_replay: bool = False,
 ) -> dict:
     """Run the Artemis mobile agent and emit progress events.
 
@@ -1303,6 +1304,11 @@ def run_artemis_agent(
       - ``flash``: Plan-guided reactive loop (planner + memory, no safety net)
       - ``pro``:   Full multi-agent graph (planner → operator → validator →
                    safety net → execute → checker)
+
+    When ``disable_replay`` is True, both plan replay (``try_plan_replay``)
+    and per-step memory fastpath are suppressed — every action goes through
+    the VLM.  This is set by the training playbook so each training run is
+    a genuine fresh attempt.
     """
     _log(f"Running {profile} fallback loop v1.1.0 — model={load_skill_config().get('model', '?')}")
 
@@ -1310,8 +1316,10 @@ def run_artemis_agent(
         return _run_plan_guided_fallback(
             instruction, adb_path, device, max_steps, timeout,
             verification=verification, explorer_tier=explorer_tier,
+            disable_replay=disable_replay,
         )
-    return _run_reactive_fallback(instruction, adb_path, device, max_steps, timeout, profile=profile)
+    return _run_reactive_fallback(instruction, adb_path, device, max_steps, timeout,
+                                  profile=profile, disable_replay=disable_replay)
 
 
 def _finalize_run(
@@ -1422,6 +1430,7 @@ def _run_reactive_fallback(
     max_steps: int,
     timeout: int,
     profile: str = "flash",
+    disable_replay: bool = False,
 ) -> dict:
     """
     Fallback reactive observe→think→act loop when Artemis SDK is not available.
@@ -1437,6 +1446,7 @@ def _run_reactive_fallback(
             device=device,
             max_steps=max_steps,
             timeout=timeout,
+            disable_replay=disable_replay,
         )
     # (runner imports are now module-level — no local duplication)
 
@@ -1486,7 +1496,7 @@ def _run_reactive_fallback(
     mem.setup()
 
     # Replay a stored task plan before spending any VLM budget.
-    if mem.enforce:
+    if mem.enforce and not disable_replay:
         replay = mem.try_plan_replay(
             emit_fn=lambda i, act, msg: _emit_progress(i, act, msg)
         )
@@ -1646,6 +1656,8 @@ def _run_reactive_fallback(
         fast = None
         if loop_signal:
             _log("[memory] loop/stale-screen signal active — skipping fastpath, VLM will decide")
+        elif disable_replay:
+            pass  # training mode: every action goes through VLM
         else:
             fast = mem.fastpath(mem_state, elements)
         from_memory = bool(fast)
@@ -1980,6 +1992,7 @@ def _run_plan_guided_fallback(
     timeout: int,
     verification: str = "final",
     explorer_tier: str = "pro",
+    disable_replay: bool = False,
 ) -> dict:
     """Pro profile fallback: full multi-agent graph with separate VLM calls per node.
 
@@ -2098,7 +2111,7 @@ def _run_plan_guided_fallback(
 
     # Replay a stored task plan before spending any VLM budget
     # (skips Planner → Operator → Validator → Checker on a clean replay).
-    if mem.enforce:
+    if mem.enforce and not disable_replay:
         replay = mem.try_plan_replay(
             emit_fn=lambda i, act, msg: _emit_progress(i, act, msg)
         )
@@ -2320,6 +2333,8 @@ def _run_plan_guided_fallback(
             fast = None
             if loop_signal:
                 _log("[memory] loop/stale-screen signal active — skipping fastpath, VLM will decide")
+            elif disable_replay:
+                pass  # training mode: every action goes through VLM
             else:
                 fast = mem.fastpath(mem_state, elements)
             # ── Strategy ladder: decide which path this step belongs to ──────

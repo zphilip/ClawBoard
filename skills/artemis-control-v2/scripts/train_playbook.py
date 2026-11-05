@@ -227,6 +227,7 @@ def _score_run(task, instruction: str, adb_path: str, device: str,
         timeout=timeout,
         verification=verification,
         explorer_tier="pro",
+        disable_replay=True,
     )
     elapsed = time.time() - t0
 
