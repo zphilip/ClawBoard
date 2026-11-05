@@ -91,6 +91,7 @@ class Goal:
     comparator: str = ""
     target: Optional[int] = None
     target_pkg: str = ""
+    criterion_text: str = ""  # raw verify-line text, kept for compound-condition checks
 
 
 def _earliest(text: str, tokens: tuple[str, ...]) -> tuple[int, str]:
@@ -133,6 +134,7 @@ def parse_goal(text: str) -> Goal:
                 comparator="==" if op == "=" else op,
                 target=int(cm.group(2)),
                 target_pkg=app_pkg,
+                criterion_text=raw,
             )
 
     polarity = POL_NUMERIC
@@ -146,6 +148,7 @@ def parse_goal(text: str) -> Goal:
         subject="app" if app_pkg else _subject_of(lowered),
         polarity=polarity,
         target_pkg=app_pkg,
+        criterion_text=raw,
     )
 
 
@@ -274,6 +277,39 @@ def _first_int(text: str) -> Optional[int]:
     return int(m.group(0)) if m else None
 
 
+# Compound-connector words that signal a criterion has conditions beyond
+# simple foreground presence. When any appear in the verify text alongside
+# an [app: …] hint, the deterministic acceptance probe cannot confirm the
+# full criterion — the final Checker must judge.
+_COMPOUND_CONNECTORS = re.compile(
+    r"\b(?:且|并(?!非)|并且|同时|以及|然后|之后|随后|还要|and|also|then|after|subsequently)\b",
+    re.IGNORECASE,
+)
+
+
+def _has_compound_conditions(criterion_text: str, target_pkg: str) -> bool:
+    """True when the criterion has conditions beyond simple foreground presence."""
+    if not criterion_text:
+        return False
+    # Strip [app: …] and [probe: …] hints — those are machine annotations
+    text = _APP_HINT_RE.sub("", criterion_text)
+    text = re.sub(r"\[\s*probe\s*:\s*[^\]]+\]", "", text, flags=re.IGNORECASE)
+    # Strip common foreground boilerplate
+    text = re.sub(r"\b(?:已在前台|is in (?:the )?foreground|在前台|已(?:被打)?开|已在|前台|in foreground|is open)\b", "", text, flags=re.IGNORECASE)
+    # Strip brackets, extra whitespace, punctuation-only residue
+    text = re.sub(r"[\[\]()（）]", "", text)
+    text = re.sub(r"\s+", " ", text).strip(" ,.，。、；;：:\n\t")
+    # If virtually nothing remains, the criterion was pure foreground
+    if len(text) <= 4:
+        return False
+    # Look for explicit compound connectors
+    if _COMPOUND_CONNECTORS.search(text):
+        return True
+    # Additional heuristic: if the text still has substantial content after
+    # stripping boilerplate, treat it as compound (e.g. "导航到武林门广场")
+    return len(text) >= 6
+
+
 # ---------------------------------------------------------------------------
 # Evaluation
 # ---------------------------------------------------------------------------
@@ -304,11 +340,26 @@ def _eval_app(goal: Goal, facts: Facts) -> Optional[bool]:
 
     The package comes from the ``[app: com.pkg]`` hint on the criterion; the
     evidence comes from the resumed/focused activity in ``probe foreground``.
+
+    Returns True ONLY when the criterion is a simple foreground check. When the
+    text contains compound connectors ("且", "并", "and", …) the criterion has
+    additional conditions beyond foreground presence, so a foreground match is
+    inconclusive (None) — the final Checker must judge the rest.
+
     Inconclusive (None) when either side is missing — never guessed.
     """
     if not goal.target_pkg or facts.foreground_pkg is None:
         return None
-    return facts.foreground_pkg == goal.target_pkg
+    if facts.foreground_pkg != goal.target_pkg:
+        return False  # wrong app → decisive contradiction
+
+    # App IS in foreground. If the criterion has compound conditions beyond
+    # simple foreground, we can only say "app is open", not "task is done".
+    compound = _has_compound_conditions(goal.criterion_text, goal.target_pkg)
+    if compound:
+        return None
+
+    return True
 
 
 def _baseline_lookup(baseline, key: str) -> Optional[int]:

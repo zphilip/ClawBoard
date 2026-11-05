@@ -2997,6 +2997,26 @@ def _run_plan_guided_fallback(
                 if reverted:
                     plan_text = new_plan
                     _log(f"[re-entry]   reverted: {sg_key}")
+        # When the checker didn't name specific subgoals but found failed
+        # verify items, revert ALL completed ([x]) milestones so the
+        # operator actually re-enters Phase 2 instead of hitting
+        # ``is_task_complete`` immediately.
+        if not unmet and plan_text:
+            reverted_any = False
+            for ci in (checker_result.get("check_items") or []):
+                if str(ci.get("status", "")).lower() == "failed":
+                    _snap = parse_plan(plan_text)
+                    for mi in _snap.top_level:
+                        if mi.is_done:
+                            new_plan, changed = revert_subgoal_status(
+                                plan_text, mi.text
+                            )
+                            if changed:
+                                plan_text = new_plan
+                                reverted_any = True
+                                _log(f"[re-entry]   blanket-reverted [x]: {mi.text[:50]}")
+                    if reverted_any:
+                        break  # one pass is enough
         # Inject checker findings as plan annotations so the Operator sees them
         concerns = checker_result.get("concerns") or []
         if concerns and plan_text:
@@ -3009,7 +3029,8 @@ def _run_plan_guided_fallback(
             failure_hint = "Checker audit found issues:\n" + "\n".join(f"- {c}" for c in concerns[-5:])
         _emit_progress(step, "recovering",
                        f"Checker re-entry {checker_attempts}/{_final_check_max_attempts}: "
-                       f"{len(unmet)} subgoals reverted, {len(concerns)} concerns injected")
+                       f"{len(unmet) or ('all-done' if not unmet else '0')} subgoals reverted, "
+                       f"{len(concerns)} concerns injected")
         continue
 
     # ── Finalize (outside re-entry loop — runs exactly once) ─────────────────

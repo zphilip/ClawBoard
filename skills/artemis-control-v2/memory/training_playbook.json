@@ -410,13 +410,13 @@
       "status": "unverified",
       "verified_on": "",
       "goal": "Open the About-phone / system-info screen and report model + Android version.",
-      "acceptance": "Settings About-phone (system info) screen is in the foreground",
+      "acceptance": "Settings About-phone (system info) screen is in the foreground with model + Android version read",
       "probes": [
         "foreground",
         "prop ro.product.model",
         "prop ro.build.version.release"
       ],
-      "plan": "- [ ] 打开系统信息页面并读取型号与 Android 版本\n  - verify: 关于手机/系统信息页面已打开 [probe: foreground]\n  - verify: 已读到设备型号与 Android 版本 [probe: prop ro.product.model][probe: prop ro.build.version.release]\n  - path 1 [cost=3 kind=primary]: 打开设置应用 → 关于手机（或「我的设备」）→ 读取型号、Android 版本\n  - path 2 [cost=4 kind=alternative]: 顶部下滑展开快捷面板 → 点设置齿轮 → 关于手机 → 读取信息",
+      "plan": "- [ ] 打开系统信息页面并读取型号与 Android 版本\n  - verify: 关于手机/系统信息页面已打开且已读到型号与版本 [probe: foreground]\n  - verify: 已读到设备型号与 Android 版本 [probe: prop ro.product.model][probe: prop ro.build.version.release]\n  - path 1 [cost=3 kind=primary]: 打开设置应用 → 关于手机（或「我的设备」）→ 读取型号、Android 版本\n  - path 2 [cost=4 kind=alternative]: 顶部下滑展开快捷面板 → 点设置齿轮 → 关于手机 → 读取信息",
       "pitfalls": [
         "不同 ROM 的入口名不同（关于手机 / 关于本机 / 关于设备 / 我的设备），先扫一屏找到对应入口。",
         "型号与 Android 版本是只读事实：优先读设备事实块（device_facts），不要凭截图猜。",
@@ -619,13 +619,13 @@
       "status": "unverified",
       "verified_on": "",
       "goal": "Baidu Maps app in the foreground with a route/navigation for the requested destination.",
-      "acceptance": "百度地图已在前台（com.baidu.BaiduMap）",
+      "acceptance": "百度地图已在前台（com.baidu.BaiduMap）且已开始导航",
       "probes": [
         "foreground"
       ],
-      "plan": "- [ ] 打开百度地图并导航到 天安门广场\n  - verify: 百度地图已在前台 [probe: foreground][app: com.baidu.BaiduMap]\n  - path 1 [cost=5 kind=primary]: open_app 百度地图 → 等首页加载 → 在顶部搜索框输入 天安门广场 → 点跳出的第一条地点结果 → 点「路线」→ 选出行方式（驾车/步行/公共交通）→ 点「开始导航」\n  - path 2 [cost=6 kind=alternative]: open_app 百度地图 → 点底部「路线」Tab → 分别输入起点和终点 天安门广场 → 选出行方式 → 点「开始导航」",
+      "plan": "- [ ] 打开百度地图并导航到武林门\n  - verify: 百度地图已在前台且已开始前往武林门的导航 [probe: foreground][app: com.baidu.BaiduMap]\n  - path 1 [cost=5 kind=primary]: open_app 百度地图 → 等首页加载 → 在顶部搜索框输入 武林门 → 点跳出的第一条地点结果 → 点「路线」→ 选出行方式（驾车/步行/公共交通）→ 点「开始导航」\n  - path 2 [cost=6 kind=alternative]: open_app 百度地图 → 点底部「路线」Tab → 分别输入起点和终点 武林门 → 选出行方式 → 点「开始导航」",
       "pitfalls": [
-        "本 recipe 是具体实例（天安门广场）；真实会话由 VLM 从用户指令里提取目标并替换，不要把示例值照抄进新计划。",
+        "本 recipe 是具体实例（武林门）；真实会话由 VLM 从用户指令里提取目标并替换，不要把示例值照抄进新计划。",
         "首次打开地图会弹定位权限 / 隐私协议 / 广告——先处理弹窗再继续，否则后续点击全部失效。",
         "搜索联想第一条通常就是目的地；不要点「搜索」键盘键后盲目点第一条无关横条，认准地名。",
         "导航是长链路（开 app→搜→选→路线→开始），属于线性流；赶时间用 --profile flash。"
@@ -651,11 +651,11 @@
       "status": "unverified",
       "verified_on": "",
       "goal": "Amap app in the foreground with a route/navigation for the requested destination.",
-      "acceptance": "高德地图已在前台（com.autonavi.minimap）",
+      "acceptance": "高德地图已在前台（com.autonavi.minimap）且已开始导航",
       "probes": [
         "foreground"
       ],
-      "plan": "- [ ] 打开高德地图并导航到 杭州西湖\n  - verify: 高德地图已在前台 [probe: foreground][app: com.autonavi.minimap]\n  - path 1 [cost=5 kind=primary]: open_app 高德地图 → 等首页加载 → 搜索框输入 杭州西湖 → 点第一条地点结果 → 点「路线」→ 选出出行方式 → 点「开始导航」\n  - path 2 [cost=6 kind=alternative]: open_app 高德地图 → 点「路线」入口 → 输入终点 杭州西湖 → 选出行方式 → 「开始导航」",
+      "plan": "- [ ] 打开高德地图并导航到 杭州西湖\n  - verify: 高德地图已在前台且已开始前往杭州西湖的导航 [probe: foreground][app: com.autonavi.minimap]\n  - path 1 [cost=5 kind=primary]: open_app 高德地图 → 等首页加载 → 搜索框输入 杭州西湖 → 点第一条地点结果 → 点「路线」→ 选出出行方式 → 点「开始导航」\n  - path 2 [cost=6 kind=alternative]: open_app 高德地图 → 点「路线」入口 → 输入终点 杭州西湖 → 选出行方式 → 「开始导航」",
       "pitfalls": [
         "本 recipe 是具体实例（杭州西湖）；真实会话由 VLM 从用户指令里提取目标并替换，不要把示例值照抄进新计划。",
         "首次打开可能弹定位权限 / 登录引导 / 广告——先关掉再操作。",
@@ -682,11 +682,11 @@
       "status": "unverified",
       "verified_on": "",
       "goal": "Taobao app in the foreground showing search results for the requested product.",
-      "acceptance": "淘宝已在前台（com.taobao.taobao）",
+      "acceptance": "淘宝已在前台（com.taobao.taobao）且搜索结果已加载",
       "probes": [
         "foreground"
       ],
-      "plan": "- [ ] 打开淘宝并搜索 蓝牙耳机\n  - verify: 淘宝已在前台 [probe: foreground][app: com.taobao.taobao]\n  - path 1 [cost=4 kind=primary]: open_app 淘宝 → 顶部搜索框输入 蓝牙耳机 → 点搜索 → 等待结果列表加载\n  - path 2 [cost=5 kind=alternative]: open_app 淘宝 → 首页点顶部搜索框 → 语音/键盘输入 蓝牙耳机 → 回车搜索",
+      "plan": "- [ ] 打开淘宝并搜索 蓝牙耳机\n  - verify: 淘宝已在前台且搜索结果已加载 [probe: foreground][app: com.taobao.taobao]\n  - path 1 [cost=4 kind=primary]: open_app 淘宝 → 顶部搜索框输入 蓝牙耳机 → 点搜索 → 等待结果列表加载\n  - path 2 [cost=5 kind=alternative]: open_app 淘宝 → 首页点顶部搜索框 → 语音/键盘输入 蓝牙耳机 → 回车搜索",
       "pitfalls": [
         "本 recipe 是具体实例（蓝牙耳机）；真实会话由 VLM 从用户指令里提取目标并替换，不要把示例值照抄进新计划。",
         "淘宝启动有开屏广告和首页秒杀弹窗——先关弹窗再点搜索框。",
@@ -712,11 +712,11 @@
       "status": "unverified",
       "verified_on": "",
       "goal": "JD app in the foreground showing search results for the requested product.",
-      "acceptance": "京东已在前台（com.jingdong.app.mall）",
+      "acceptance": "京东已在前台（com.jingdong.app.mall）且搜索结果已加载",
       "probes": [
         "foreground"
       ],
-      "plan": "- [ ] 打开京东并搜索 机械键盘\n  - verify: 京东已在前台 [probe: foreground][app: com.jingdong.app.mall]\n  - path 1 [cost=4 kind=primary]: open_app 京东 → 顶部搜索框输入 机械键盘 → 点搜索 → 等结果列表\n  - path 2 [cost=5 kind=alternative]: open_app 京东 → 点搜索框 → 输入 机械键盘 → 回车",
+      "plan": "- [ ] 打开京东并搜索 机械键盘\n  - verify: 京东已在前台且搜索结果已加载 [probe: foreground][app: com.jingdong.app.mall]\n  - path 1 [cost=4 kind=primary]: open_app 京东 → 顶部搜索框输入 机械键盘 → 点搜索 → 等结果列表\n  - path 2 [cost=5 kind=alternative]: open_app 京东 → 点搜索框 → 输入 机械键盘 → 回车",
       "pitfalls": [
         "本 recipe 是具体实例（机械键盘）；真实会话由 VLM 从用户指令里提取目标并替换，不要把示例值照抄进新计划。",
         "京东有开屏广告和领红包弹窗——先关掉再搜。",
@@ -810,7 +810,7 @@
       "probes": [
         "foreground"
       ],
-      "plan": "- [ ] 用微信给 妈妈 发送 我到家了\n  - verify: 微信已在前台 [probe: foreground][app: com.tencent.mm]\n  - path 1 [cost=5 kind=primary]: open_app 微信 → 顶部搜索框输入 妈妈 → 点进聊天 → 输入 我到家了 → 点发送\n  - path 2 [cost=6 kind=alternative]: open_app 微信 → 通讯录找到 妈妈 → 进聊天 → 输入 我到家了 → 发送",
+      "plan": "- [ ] 用微信给 妈妈 发送 我到家了\n  - verify: 微信已在前台且聊天页消息已发送 [probe: foreground][app: com.tencent.mm]\n  - path 1 [cost=5 kind=primary]: open_app 微信 → 顶部搜索框输入 妈妈 → 点进聊天 → 输入 我到家了 → 点发送\n  - path 2 [cost=6 kind=alternative]: open_app 微信 → 通讯录找到 妈妈 → 进聊天 → 输入 我到家了 → 发送",
       "pitfalls": [
         "本 recipe 是具体实例（给妈妈发『我到家了』）；真实会话由 VLM 从用户指令里提取目标并替换，不要把示例值照抄进新计划。",
         "发送后必须亲眼看到气泡出现在聊天里才算成，而不是只输完文字。",
@@ -837,11 +837,11 @@
       "status": "unverified",
       "verified_on": "",
       "goal": "Douyin app in the foreground showing search results for the requested query.",
-      "acceptance": "抖音已在前台（com.ss.android.ugc.aweme）",
+      "acceptance": "抖音已在前台（com.ss.android.ugc.aweme）且搜索结果已加载",
       "probes": [
         "foreground"
       ],
-      "plan": "- [ ] 打开抖音并搜索 美食教程\n  - verify: 抖音已在前台 [probe: foreground][app: com.ss.android.ugc.aweme]\n  - path 1 [cost=4 kind=primary]: open_app 抖音 → 顶部点搜索图标 → 输入 美食教程 → 点搜索\n  - path 2 [cost=5 kind=alternative]: open_app 抖音 → 底部/顶部搜索入口 → 输入 美食教程 → 选联想词",
+      "plan": "- [ ] 打开抖音并搜索 美食教程\n  - verify: 抖音已在前台且搜索结果已加载 [probe: foreground][app: com.ss.android.ugc.aweme]\n  - path 1 [cost=4 kind=primary]: open_app 抖音 → 顶部点搜索图标 → 输入 美食教程 → 点搜索\n  - path 2 [cost=5 kind=alternative]: open_app 抖音 → 底部/顶部搜索入口 → 输入 美食教程 → 选联想词",
       "pitfalls": [
         "本 recipe 是具体实例（美食教程）；真实会话由 VLM 从用户指令里提取目标并替换，不要把示例值照抄进新计划。",
         "抖音启动常有开屏广告/青少年模式弹窗——先关掉。",
@@ -867,11 +867,11 @@
       "status": "unverified",
       "verified_on": "",
       "goal": "Meituan app in the foreground showing results for the requested merchant/food.",
-      "acceptance": "美团已在前台（com.sankuai.meituan）",
+      "acceptance": "美团已在前台（com.sankuai.meituan）且搜索结果已加载",
       "probes": [
         "foreground"
       ],
-      "plan": "- [ ] 打开美团并搜索 附近的火锅\n  - verify: 美团已在前台 [probe: foreground][app: com.sankuai.meituan]\n  - path 1 [cost=4 kind=primary]: open_app 美团 → 顶部搜索框输入 附近的火锅 → 点搜索 → 等结果列表\n  - path 2 [cost=5 kind=alternative]: open_app 美团 → 首页点搜索框 → 输入 附近的火锅 → 回车",
+      "plan": "- [ ] 打开美团并搜索 附近的火锅\n  - verify: 美团已在前台且搜索结果已加载 [probe: foreground][app: com.sankuai.meituan]\n  - path 1 [cost=4 kind=primary]: open_app 美团 → 顶部搜索框输入 附近的火锅 → 点搜索 → 等结果列表\n  - path 2 [cost=5 kind=alternative]: open_app 美团 → 首页点搜索框 → 输入 附近的火锅 → 回车",
       "pitfalls": [
         "本 recipe 是具体实例（附近的火锅）；真实会话由 VLM 从用户指令里提取目标并替换，不要把示例值照抄进新计划。",
         "美团启动有定位权限弹窗和红包弹窗——先关掉再点搜索框。",
@@ -898,11 +898,11 @@
       "status": "unverified",
       "verified_on": "",
       "goal": "Xiaohongshu app in the foreground showing results for the requested query.",
-      "acceptance": "小红书已在前台（com.xingin.xhs）",
+      "acceptance": "小红书已在前台（com.xingin.xhs）且搜索结果已加载",
       "probes": [
         "foreground"
       ],
-      "plan": "- [ ] 打开小红书并搜索 露营攻略\n  - verify: 小红书已在前台 [probe: foreground][app: com.xingin.xhs]\n  - path 1 [cost=4 kind=primary]: open_app 小红书 → 顶部/底部搜索图标 → 输入 露营攻略 → 点搜索\n  - path 2 [cost=5 kind=alternative]: open_app 小红书 → 点搜索框 → 输入 露营攻略 → 选联想词",
+      "plan": "- [ ] 打开小红书并搜索 露营攻略\n  - verify: 小红书已在前台且搜索结果已加载 [probe: foreground][app: com.xingin.xhs]\n  - path 1 [cost=4 kind=primary]: open_app 小红书 → 顶部/底部搜索图标 → 输入 露营攻略 → 点搜索\n  - path 2 [cost=5 kind=alternative]: open_app 小红书 → 点搜索框 → 输入 露营攻略 → 选联想词",
       "pitfalls": [
         "本 recipe 是具体实例（露营攻略）；真实会话由 VLM 从用户指令里提取目标并替换，不要把示例值照抄进新计划。",
         "小红书启动有开屏广告/新用户引导——先关掉。",
@@ -928,11 +928,11 @@
       "status": "unverified",
       "verified_on": "",
       "goal": "Pinduoduo app in the foreground showing results for the requested product.",
-      "acceptance": "拼多多已在前台（com.xunmeng.pinduoduo）",
+      "acceptance": "拼多多已在前台（com.xunmeng.pinduoduo）且搜索结果已加载",
       "probes": [
         "foreground"
       ],
-      "plan": "- [ ] 打开拼多多并搜索 蓝牙音箱\n  - verify: 拼多多已在前台 [probe: foreground][app: com.xunmeng.pinduoduo]\n  - path 1 [cost=4 kind=primary]: open_app 拼多多 → 顶部搜索框输入 蓝牙音箱 → 点搜索 → 等结果\n  - path 2 [cost=5 kind=alternative]: open_app 拼多多 → 点搜索框 → 输入 蓝牙音箱 → 回车",
+      "plan": "- [ ] 打开拼多多并搜索 蓝牙音箱\n  - verify: 拼多多已在前台且搜索结果已加载 [probe: foreground][app: com.xunmeng.pinduoduo]\n  - path 1 [cost=4 kind=primary]: open_app 拼多多 → 顶部搜索框输入 蓝牙音箱 → 点搜索 → 等结果\n  - path 2 [cost=5 kind=alternative]: open_app 拼多多 → 点搜索框 → 输入 蓝牙音箱 → 回车",
       "pitfalls": [
         "本 recipe 是具体实例（蓝牙音箱）；真实会话由 VLM 从用户指令里提取目标并替换，不要把示例值照抄进新计划。",
         "拼多多有开屏广告和领现金弹窗——先关掉再搜。",
@@ -958,11 +958,11 @@
       "status": "unverified",
       "verified_on": "",
       "goal": "Bilibili app in the foreground showing results for the requested video query.",
-      "acceptance": "哔哩哔哩已在前台（tv.danmaku.bili）",
+      "acceptance": "哔哩哔哩已在前台（tv.danmaku.bili）且搜索结果已加载",
       "probes": [
         "foreground"
       ],
-      "plan": "- [ ] 打开哔哩哔哩并搜索 琅琊榜\n  - verify: 哔哩哔哩已在前台 [probe: foreground][app: tv.danmaku.bili]\n  - path 1 [cost=4 kind=primary]: open_app 哔哩哔哩 → 顶部搜索框输入 琅琊榜 → 点搜索 → 等结果\n  - path 2 [cost=5 kind=alternative]: open_app 哔哩哔哩 → 点搜索入口 → 输入 琅琊榜 → 选联想词",
+      "plan": "- [ ] 打开哔哩哔哩并搜索 琅琊榜\n  - verify: 哔哩哔哩已在前台且搜索结果已加载 [probe: foreground][app: tv.danmaku.bili]\n  - path 1 [cost=4 kind=primary]: open_app 哔哩哔哩 → 顶部搜索框输入 琅琊榜 → 点搜索 → 等结果\n  - path 2 [cost=5 kind=alternative]: open_app 哔哩哔哩 → 点搜索入口 → 输入 琅琊榜 → 选联想词",
       "pitfalls": [
         "本 recipe 是具体实例（琅琊榜）；真实会话由 VLM 从用户指令里提取目标并替换，不要把示例值照抄进新计划。",
         "B站有开屏广告/青少年模式弹窗——先关掉。",
@@ -988,11 +988,11 @@
       "status": "unverified",
       "verified_on": "",
       "goal": "Weibo app in the foreground showing results for the requested query.",
-      "acceptance": "微博已在前台（com.sina.weibo）",
+      "acceptance": "微博已在前台（com.sina.weibo）且搜索结果已加载",
       "probes": [
         "foreground"
       ],
-      "plan": "- [ ] 打开微博并搜索 演唱会\n  - verify: 微博已在前台 [probe: foreground][app: com.sina.weibo]\n  - path 1 [cost=4 kind=primary]: open_app 微博 → 顶部/发现页搜索框输入 演唱会 → 点搜索\n  - path 2 [cost=5 kind=alternative]: open_app 微博 → 点搜索图标 → 输入 演唱会 → 选热词",
+      "plan": "- [ ] 打开微博并搜索 演唱会\n  - verify: 微博已在前台且搜索结果已加载 [probe: foreground][app: com.sina.weibo]\n  - path 1 [cost=4 kind=primary]: open_app 微博 → 顶部/发现页搜索框输入 演唱会 → 点搜索\n  - path 2 [cost=5 kind=alternative]: open_app 微博 → 点搜索图标 → 输入 演唱会 → 选热词",
       "pitfalls": [
         "本 recipe 是具体实例（演唱会）；真实会话由 VLM 从用户指令里提取目标并替换，不要把示例值照抄进新计划。",
         "微博搜索入口在首页顶部或「发现」Tab，登录弹窗先关掉。",
@@ -1017,11 +1017,11 @@
       "status": "unverified",
       "verified_on": "",
       "goal": "Kuaishou app in the foreground showing results for the requested query.",
-      "acceptance": "快手已在前台（com.smile.gifmaker）",
+      "acceptance": "快手已在前台（com.smile.gifmaker）且搜索结果已加载",
       "probes": [
         "foreground"
       ],
-      "plan": "- [ ] 打开快手并搜索 农村美食\n  - verify: 快手已在前台 [probe: foreground][app: com.smile.gifmaker]\n  - path 1 [cost=4 kind=primary]: open_app 快手 → 顶部搜索图标 → 输入 农村美食 → 点搜索\n  - path 2 [cost=5 kind=alternative]: open_app 快手 → 点搜索入口 → 输入 农村美食 → 选联想词",
+      "plan": "- [ ] 打开快手并搜索 农村美食\n  - verify: 快手已在前台且搜索结果已加载 [probe: foreground][app: com.smile.gifmaker]\n  - path 1 [cost=4 kind=primary]: open_app 快手 → 顶部搜索图标 → 输入 农村美食 → 点搜索\n  - path 2 [cost=5 kind=alternative]: open_app 快手 → 点搜索入口 → 输入 农村美食 → 选联想词",
       "pitfalls": [
         "本 recipe 是具体实例（农村美食）；真实会话由 VLM 从用户指令里提取目标并替换，不要把示例值照抄进新计划。",
         "快手启动有开屏广告/青少年模式弹窗——先关掉。",
@@ -1046,11 +1046,11 @@
       "status": "unverified",
       "verified_on": "",
       "goal": "iQiyi app in the foreground showing results for the requested title.",
-      "acceptance": "爱奇艺已在前台（com.qiyi.video）",
+      "acceptance": "爱奇艺已在前台（com.qiyi.video）且搜索结果已加载",
       "probes": [
         "foreground"
       ],
-      "plan": "- [ ] 打开爱奇艺并搜索 琅琊榜\n  - verify: 爱奇艺已在前台 [probe: foreground][app: com.qiyi.video]\n  - path 1 [cost=4 kind=primary]: open_app 爱奇艺 → 顶部搜索框输入 琅琊榜 → 点搜索 → 等结果\n  - path 2 [cost=5 kind=alternative]: open_app 爱奇艺 → 点搜索入口 → 输入 琅琊榜 → 回车",
+      "plan": "- [ ] 打开爱奇艺并搜索 琅琊榜\n  - verify: 爱奇艺已在前台且搜索结果已加载 [probe: foreground][app: com.qiyi.video]\n  - path 1 [cost=4 kind=primary]: open_app 爱奇艺 → 顶部搜索框输入 琅琊榜 → 点搜索 → 等结果\n  - path 2 [cost=5 kind=alternative]: open_app 爱奇艺 → 点搜索入口 → 输入 琅琊榜 → 回车",
       "pitfalls": [
         "本 recipe 是具体实例（琅琊榜）；真实会话由 VLM 从用户指令里提取目标并替换，不要把示例值照抄进新计划。",
         "爱奇艺有开屏广告和会员弹窗——先关掉再搜。",
