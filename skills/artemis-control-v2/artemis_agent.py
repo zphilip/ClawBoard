@@ -1254,9 +1254,28 @@ def _take_screenshot(adb_path: str, device: Optional[str], dest: Path,
             _log("Screenshot capture failed — waking screen and retrying")
             try:
                 ensure_screen_on(adb_path, device)
+                # The device may need a moment after waking before it can
+                # accept a screenshot command. Without this settle delay
+                # the retry often fails too, producing a tight failure loop.
+                time.sleep(1.0)
             except Exception as e:
                 _log(f"Screen wake failed: {e}")
 
+    # Both attempts failed. Log diagnostic detail from the last result.
+    _detail = ""
+    if result is not None:
+        if result.returncode != 0:
+            _detail = f" (rc={result.returncode}"
+            _stderr = (result.stderr or b"").decode("utf-8", "replace").strip()[:120]
+            _stdout = (result.stdout or b"").decode("utf-8", "replace").strip()[:120]
+            if _stderr:
+                _detail += f" stderr={_stderr}"
+            if _stdout:
+                _detail += f" stdout={_stdout}"
+            _detail += ")"
+        elif not result.stdout:
+            _detail = " (stdout empty)"
+    _log(f"Screenshot capture failed after 2 attempts{_detail}")
     return False
 
 # ---------------------------------------------------------------------------
@@ -1443,6 +1462,7 @@ def _run_reactive_fallback(
     last_coords: list[str] = []
     last_action_types: list[str] = []  # Track recent action types for loop detection
     consecutive_finish = 0  # Operator "finish" verdicts with pending milestones in a row
+    consecutive_screenshot_failures = 0  # circuit-breaker for ADB-connection loss
     previous_post_shot: Optional[Path] = None  # For screenshot similarity detection
     targeted_indices: dict[int, int] = {}  # element index → tap count (anti-loop)
     last_target_info: tuple[int, str] | None = None  # (idx, desc) of last targeted element
@@ -1553,7 +1573,20 @@ def _run_reactive_fallback(
         t_shot = time.time()
         if not _take_screenshot(adb_path, device, shot_path):
             _log("Screenshot capture failed")
+            consecutive_screenshot_failures += 1
+            if consecutive_screenshot_failures >= 5:
+                fail_reason = (
+                    "ADB screenshot capture failed 5 times consecutively — "
+                    "device may be disconnected, adbd may have crashed, or "
+                    "the screen state is preventing capture"
+                )
+                _log(f"[fatal] {fail_reason}")
+                status = "fail"
+                end_reason = "flash_screenshot_capture_failed"
+                break
+            time.sleep(2.0)
             continue
+        consecutive_screenshot_failures = 0
         _log(f"[timing] step {step} screenshot  → {time.time() - t_shot:.2f}s  (total {time.time() - t_step:.2f}s)")
 
         # 2. Index UI elements
@@ -1989,6 +2022,7 @@ def _run_plan_guided_fallback(
     blocked_targets: list[int] = []  # element indices rejected by validator
     last_action_types: list[str] = []  # Track recent action types for loop detection
     consecutive_finish = 0  # Operator "finish" verdicts with pending milestones in a row
+    consecutive_screenshot_failures = 0  # circuit-breaker for ADB-connection loss
     fail_reason: str = ""  # why the task failed (only set on a terminal fail)
     open_fail_count: int = 0  # consecutive open_app failures that never launched
     failure_hint: str = ""  # structured launch-failure note fed to the next Operator call
@@ -2212,7 +2246,26 @@ def _run_plan_guided_fallback(
             t_shot = time.time()
             if not _take_screenshot(adb_path, device, shot_path):
                 _log("Screenshot capture failed")
+                consecutive_screenshot_failures += 1
+                # After 5 consecutive screenshot failures the ADB connection is
+                # likely broken (device unplugged, adbd crashed, screencap hung).
+                # Continuing just burns max_steps in a tight failure loop — fail
+                # the run with a clear diagnostic instead.
+                if consecutive_screenshot_failures >= 5:
+                    fail_reason = (
+                        "ADB screenshot capture failed 5 times consecutively — "
+                        "device may be disconnected, adbd may have crashed, or "
+                        "the screen state is preventing capture"
+                    )
+                    _log(f"[fatal] {fail_reason}")
+                    status = "fail"
+                    end_reason = "screenshot_capture_failed"
+                    break
+                # Back off between failures — without this the loop spins at
+                # wall-clock speed and burns through max_steps almost instantly.
+                time.sleep(2.0)
                 continue
+            consecutive_screenshot_failures = 0
             _log(f"[timing] step {step} screenshot  → {time.time() - t_shot:.2f}s  (total {time.time() - t_step:.2f}s)")
 
             t_index = time.time()
@@ -2282,7 +2335,34 @@ def _run_plan_guided_fallback(
                     cur_item, cur_path, cur_ladder = _active_path(_snap_now, path_cursor)
                     if cur_item is not None and cur_path is not None:
                         used = path_steps.get(cur_item.key, 0)
-                        if used >= max_steps_per_path:
+                        # Deterministic guard: when the ring stream is already at its
+                        # hardware minimum (a ROM quirk observable on gm1910_sdk30 where
+                        # STREAM_RING is clamped to >=1 in NORMAL mode), volume-key paths
+                        # can never satisfy a "silent" criterion. Skip them immediately
+                        # instead of burning the per-path step budget on ineffectual
+                        # keyevents that the probe will contradict every time.
+                        _ring_clamped = (
+                            baseline is not None
+                            and getattr(baseline, 'ring_is_at_minimum', False)
+                            and (
+                                'volume_down' in (cur_path.text or '')
+                                or 'volume_mute' in (cur_path.text or '')
+                                or 'volume_up' in (cur_path.text or '')
+                            )
+                        )
+                        if _ring_clamped and used == 0 and len(cur_ladder) > 1:
+                            _advance_path(
+                                cur_item, cur_ladder, path_cursor, path_steps,
+                                max_steps_per_path,
+                                "ring stream clamped at minimum — volume keys cannot "
+                                "reach silent mode on this ROM; use DND or Settings instead",
+                            )
+                            cur_path = cur_ladder[path_cursor[cur_item.key]]
+                            _log(
+                                f"[path] '{cur_item.text[:30]}' ring clamped — skipping "
+                                f"volume path, now on {path_cursor[cur_item.key] + 1}/{len(cur_ladder)}"
+                            )
+                        elif used >= max_steps_per_path:
                             if _advance_path(
                                 cur_item, cur_ladder, path_cursor, path_steps,
                                 max_steps_per_path,
@@ -2798,6 +2878,31 @@ def _run_plan_guided_fallback(
                             " — milestone completed by device state"
                         )
                         path_steps[cur_item.key] = 0
+                elif verdict is False:
+                    # The acceptance probe decisively contradicts the goal — this
+                    # action did NOT advance us toward the desired state. Mark it
+                    # as ineffective in memory so the fastpath degrades its replay
+                    # score instead of replaying it with score=1.00 on the next step
+                    # (e.g. system_button volume_mute on a ROM where keyevent 164
+                    # has no effect on STREAM_RING).
+                    try:
+                        mem.mark_ineffective(action_type, action_args)
+                    except Exception as e:
+                        _debug(f"memory mark_ineffective error: {e}")
+                    # Also pre-exhaust this path's step budget: if the probe shows
+                    # the state hasn't moved after 2 steps, continuing this path
+                    # for 4 more identical steps is pure waste. Jump to the next
+                    # path immediately rather than burning the full per-path budget.
+                    used = path_steps.get(cur_item.key, 0)
+                    if used >= 2 and len(cur_ladder) > 1:
+                        _advance_path(
+                            cur_item, cur_ladder, path_cursor, path_steps,
+                            max_steps_per_path,
+                            f"acceptance probe contradicted after {used} steps",
+                        )
+                        # Reset ineffective-scrolls counter on path switch so the
+                        # new path doesn't inherit a stale "scroll has no effect" hint.
+                        ineffective_scrolls = 0
 
             _emit_progress(
                 step, action_desc,

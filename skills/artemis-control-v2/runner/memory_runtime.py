@@ -633,6 +633,10 @@ class MemoryRuntime:
                         f"(bare coordinate) — aborting replay"
                     )
                     self._plan_store.increment_plan_fail(self._intent_key)
+                    try:
+                        self._plan_store.increment_step_fail(self._intent_key, i)
+                    except Exception:
+                        pass
                     return {"status": "failed", "at_step": i}
                 el = find_element_by_compound(
                     elements,
@@ -657,6 +661,12 @@ class MemoryRuntime:
                     )
                     self.log(f"[MEMORY] replay step {i}: target '{key}' missing — abort")
                     self._plan_store.increment_plan_fail(self._intent_key)
+                    # Deprecate the stale step so it doesn't dominate future plan
+                    # lookups (a plan whose first step can never replay is dead).
+                    try:
+                        self._plan_store.increment_step_fail(self._intent_key, i)
+                    except Exception:
+                        pass
                     return {"status": "failed", "at_step": i}
 
             self.execute_fn(step.action_type, args, elements)
@@ -684,6 +694,10 @@ class MemoryRuntime:
                             f"expected {step.post_pkg!r} got {post_pkg!r} — abort"
                         )
                         self._plan_store.increment_plan_fail(self._intent_key)
+                        try:
+                            self._plan_store.increment_step_fail(self._intent_key, i)
+                        except Exception:
+                            pass
                         return {"status": "failed", "at_step": i}
 
             actions.append(step.description or f"{step.action_type}")
