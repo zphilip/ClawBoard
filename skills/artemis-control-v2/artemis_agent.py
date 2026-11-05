@@ -65,13 +65,21 @@ from runner.explorer import (
 from runner.context import ContextBudget, HistoryStore, StepRecord
 from runner.planner import (
     apply_plan_updates,
+    apply_finding_lines,
     build_operator_plan_system_prompt,
     generate_plan,
     is_task_complete,
+    missing_check_items,
     parse_plan,
+    restore_missing_check_items,
+    revert_subgoal_status,
 )
 from runner.validator import call_validator
-from runner.checker import call_checker
+from runner.checker import (
+    call_checker,
+    normalize_checker_result,
+    verdicts_allow_release,
+)
 from runner.probes import (
     build_probe_argv,
     derive_probes,
@@ -1974,6 +1982,8 @@ def _run_plan_guided_fallback(
     step = 0
     status = "timeout"
     end_reason = "pro_started"
+    checker_attempts = 0
+    _final_check_max_attempts = 2  # re-enter loop at most this many times
     last_coords: list[str] = []
     blocked_coords: list[str] = []  # device-px coordinate taps rejected by validator
     blocked_targets: list[int] = []  # element indices rejected by validator
@@ -2175,260 +2185,414 @@ def _run_plan_guided_fallback(
                     _debug(f"diagnoser note save error: {e}")
         _log(f"[diagnoser] hints delivered ({len(diag.get('recovery_hints') or [])})")
 
-    # ── Phase 2: Operator → Validator → SafetyNet → Execute ─────────────
-    _log("Pro Phase 2: Operator → Validator → SafetyNet → Execute loop")
+    # ── Outer re-entry loop (checker-guided repair) ─────────────────────────
+    # The Checker can re-open failed milestones and re-enter the operator loop
+    # up to ``_final_check_max_attempts`` times, so the agent gets a second
+    # chance when the final audit finds unmet verify criteria.
+    while True:
 
-    while status != "success" and step < max_steps and (time.time() - start) < timeout:
-        step += 1
-        t_step = time.time()
-        _debug(f"Pro Step {step}/{max_steps}")
+            # ── Phase 2: Operator → Validator → SafetyNet → Execute ─────────────
+        _log("Pro Phase 2: Operator → Validator → SafetyNet → Execute loop")
 
-        # Milestone completion check
-        if plan_text and is_task_complete(plan_text):
-            _log("All milestones complete — proceeding to Checker")
-            status = "success"
-            end_reason = "all_milestones_done"
-            break
+        while status != "success" and step < max_steps and (time.time() - start) < timeout:
+            step += 1
+            t_step = time.time()
+            _debug(f"Pro Step {step}/{max_steps}")
 
-        # 1. Screenshot + element index
-        ts = datetime.now().strftime('%Y%m%d_%H%M%S_%f')[:19]
-        shot_path = screenshots_dir / f"step_{step:03d}_{ts}_pre.png"
-        t_shot = time.time()
-        if not _take_screenshot(adb_path, device, shot_path):
-            _log("Screenshot capture failed")
-            continue
-        _log(f"[timing] step {step} screenshot  → {time.time() - t_shot:.2f}s  (total {time.time() - t_step:.2f}s)")
+            # Milestone completion check
+            if plan_text and is_task_complete(plan_text):
+                _log("All milestones complete — proceeding to Checker")
+                status = "success"
+                end_reason = "all_milestones_done"
+                break
 
-        t_index = time.time()
-        try:
-            elements = indexer.build_index(shot_path)
-            _debug(f"Indexed {len(elements)} UI elements")
-        except Exception as e:
-            _debug(f"Element indexing skipped: {e}")
-            elements = []
-        _log(f"[timing] step {step} index       → {time.time() - t_index:.2f}s  (total {time.time() - t_step:.2f}s)")
+            # 1. Screenshot + element index
+            ts = datetime.now().strftime('%Y%m%d_%H%M%S_%f')[:19]
+            shot_path = screenshots_dir / f"step_{step:03d}_{ts}_pre.png"
+            t_shot = time.time()
+            if not _take_screenshot(adb_path, device, shot_path):
+                _log("Screenshot capture failed")
+                continue
+            _log(f"[timing] step {step} screenshot  → {time.time() - t_shot:.2f}s  (total {time.time() - t_step:.2f}s)")
 
-        # 1.5 Draw indexed dots and check screenshot similarity
-        vlm_shot_path = shot_path
-        if elements:
-            t_dots = time.time()
-            annotated = screenshots_dir / f"step_{step:03d}_{ts}_annotated.jpg"
-            if draw_indexed_dots(str(shot_path), elements, str(annotated)):
-                vlm_shot_path = annotated
-                _debug(f"Annotated screenshot with {len(elements)} dots")
-                _log(f"[timing] step {step} dots        → {time.time() - t_dots:.2f}s  (total {time.time() - t_step:.2f}s)")
-
-        similarity_note = ""
-        if previous_post_shot and previous_post_shot.exists():
-            diff = screenshot_diff_count(str(previous_post_shot), str(shot_path))
-            if diff <= 3:
-                if last_target_info:
-                    tidx, tdesc = last_target_info
-                    similarity_note = (
-                        f"\n⚠️  STALE SCREEN: Element [{tidx}] '{tdesc}' was tapped → "
-                        f"screen is pixel-identical. Do NOT target [{tidx}] again. "
-                        f"Use a DIFFERENT element, coordinate tap, or action (type/swipe/back).\n"
-                    )
-                else:
-                    similarity_note = "\n⚠️  NOTE: The screen is pixel-identical to the previous step. Your last action had NO visible effect. Try a DIFFERENT approach.\n"
-                _log(f"[loop] Screen unchanged detected (diff={diff}px)")
-
-        # Action-type loop detection — warn VLM about repeated same actions
-        action_loop_note = ""
-        if len(last_action_types) >= 4 and len(set(last_action_types[-4:])) == 1:
-            repeated = last_action_types[-1]
-            count = len([a for a in last_action_types if a == repeated])
-            action_loop_note = (f"\n⚠️  ACTION LOOP: {repeated} ×{count} consecutive. "
-                               f"Screen may not be changing. Use a DIFFERENT action type.\n")
-            _log(f"[LOOP] Same action {repeated} repeated {count} consecutive times")
-
-        # ── 2. Operator Node: memory fastpath first, then VLM ────────────
-        t_oper = time.time()
-        # Never replay from memory while a loop / stale-screen / launch-failure
-        # signal is active: force a deliberate VLM decision instead.
-        loop_signal = bool(action_loop_note or similarity_note or failure_hint)
-        mem_state = mem.describe_state(elements) if mem.enabled else None
-        fast = None
-        if loop_signal:
-            _log("[memory] loop/stale-screen signal active — skipping fastpath, VLM will decide")
-        else:
-            fast = mem.fastpath(mem_state, elements)
-        # ── Strategy ladder: decide which path this step belongs to ──────
-        # A path that burned its step budget without satisfying the acceptance
-        # probe is abandoned here, so the Operator is always told exactly one
-        # approach to follow instead of improvising.
-        path_directive = ""
-        cur_item = cur_path = None
-        cur_ladder: tuple = ()
-        if plan_text:
+            t_index = time.time()
             try:
-                _snap_now = parse_plan(plan_text)
-                cur_item, cur_path, cur_ladder = _active_path(_snap_now, path_cursor)
-                if cur_item is not None and cur_path is not None:
-                    used = path_steps.get(cur_item.key, 0)
-                    if used >= max_steps_per_path:
-                        if _advance_path(
-                            cur_item, cur_ladder, path_cursor, path_steps,
-                            max_steps_per_path,
-                            f"{used} steps without meeting acceptance",
-                        ):
-                            cur_path = cur_ladder[path_cursor[cur_item.key]]
-                            _log(
-                                f"[path] '{cur_item.text[:30]}' now on path "
-                                f"{path_cursor[cur_item.key] + 1}/{len(cur_ladder)}"
-                            )
-                    path_directive = _render_path_directive(
-                        cur_item, cur_path,
-                        path_cursor.get(cur_item.key, 0), len(cur_ladder),
-                    )
+                elements = indexer.build_index(shot_path)
+                _debug(f"Indexed {len(elements)} UI elements")
             except Exception as e:
-                _debug(f"[path] directive skipped: {e}")
+                _debug(f"Element indexing skipped: {e}")
+                elements = []
+            _log(f"[timing] step {step} index       → {time.time() - t_index:.2f}s  (total {time.time() - t_step:.2f}s)")
 
-        if fast:
-            action_type, action_args, action_desc = fast
-            plan_updates = None
-            notes_updates = None
-            from_memory = True
-            _log(f"[memory] step {step} fastpath hit: {action_desc}")
-            _log(f"[timing] step {step} operator    → 0.00s (memory fastpath)  (total {time.time() - t_step:.2f}s)")
-        else:
-            from_memory = False
-            action_type, action_args, action_desc, plan_updates, notes_updates = _decide_action_plan_guided(
-                instruction, step, elements, incident_tracker, last_coords,
-                str(vlm_shot_path), actions, plan_text, history=history,
-                scratchpad=scratchpad, similarity_note=similarity_note,
-                targeted_indices=targeted_indices,
-                action_loop_note=action_loop_note,
-                blocked_coords=blocked_coords,
-                blocked_targets=blocked_targets,
-                failure_hint=failure_hint,
-                path_directive=path_directive,
-            )
-            _log(f"[timing] step {step} operator    → {time.time() - t_oper:.2f}s  (total {time.time() - t_step:.2f}s)")
-        failure_hint = ""  # consumed by the decision above
+            # 1.5 Draw indexed dots and check screenshot similarity
+            vlm_shot_path = shot_path
+            if elements:
+                t_dots = time.time()
+                annotated = screenshots_dir / f"step_{step:03d}_{ts}_annotated.jpg"
+                if draw_indexed_dots(str(shot_path), elements, str(annotated)):
+                    vlm_shot_path = annotated
+                    _debug(f"Annotated screenshot with {len(elements)} dots")
+                    _log(f"[timing] step {step} dots        → {time.time() - t_dots:.2f}s  (total {time.time() - t_step:.2f}s)")
 
-        # Merge any notes written by the VLM into the scratchpad
-        if notes_updates and isinstance(notes_updates, dict):
-            scratchpad.update(notes_updates)
+            similarity_note = ""
+            if previous_post_shot and previous_post_shot.exists():
+                diff = screenshot_diff_count(str(previous_post_shot), str(shot_path))
+                if diff <= 3:
+                    if last_target_info:
+                        tidx, tdesc = last_target_info
+                        similarity_note = (
+                            f"\n⚠️  STALE SCREEN: Element [{tidx}] '{tdesc}' was tapped → "
+                            f"screen is pixel-identical. Do NOT target [{tidx}] again. "
+                            f"Use a DIFFERENT element, coordinate tap, or action (type/swipe/back).\n"
+                        )
+                    else:
+                        similarity_note = "\n⚠️  NOTE: The screen is pixel-identical to the previous step. Your last action had NO visible effect. Try a DIFFERENT approach.\n"
+                    _log(f"[loop] Screen unchanged detected (diff={diff}px)")
 
-        # Snapshot the plan BEFORE applying this turn's plan_updates. The finish
-        # gate below uses this pre-update view so a ``finish`` turn cannot mark
-        # its own remaining milestones done and bypass independent verification.
-        plan_before_updates = plan_text
-        if plan_updates and plan_text and action_type != "fail":
-            new_plan_text, changed = apply_plan_updates(plan_text, plan_updates)
-            if changed:
-                # Anti self-certification: the Operator may NOT declare a
-                # milestone complete while the read-only probes contradict it.
-                # Without this, "finish + mark_done" ended the run as a success
-                # even though the phone had done nothing.
-                contradicted = _self_declared_done_rejected(
-                    plan_updates, new_plan_text, step_probes, baseline
+            # Action-type loop detection — warn VLM about repeated same actions
+            action_loop_note = ""
+            if len(last_action_types) >= 4 and len(set(last_action_types[-4:])) == 1:
+                repeated = last_action_types[-1]
+                count = len([a for a in last_action_types if a == repeated])
+                action_loop_note = (f"\n⚠️  ACTION LOOP: {repeated} ×{count} consecutive. "
+                                   f"Screen may not be changing. Use a DIFFERENT action type.\n")
+                _log(f"[LOOP] Same action {repeated} repeated {count} consecutive times")
+
+            # ── 2. Operator Node: memory fastpath first, then VLM ────────────
+            t_oper = time.time()
+            # Never replay from memory while a loop / stale-screen / launch-failure
+            # signal is active: force a deliberate VLM decision instead.
+            loop_signal = bool(action_loop_note or similarity_note or failure_hint)
+            mem_state = mem.describe_state(elements) if mem.enabled else None
+            fast = None
+            if loop_signal:
+                _log("[memory] loop/stale-screen signal active — skipping fastpath, VLM will decide")
+            else:
+                fast = mem.fastpath(mem_state, elements)
+            # ── Strategy ladder: decide which path this step belongs to ──────
+            # A path that burned its step budget without satisfying the acceptance
+            # probe is abandoned here, so the Operator is always told exactly one
+            # approach to follow instead of improvising.
+            path_directive = ""
+            cur_item = cur_path = None
+            cur_ladder: tuple = ()
+            if plan_text:
+                try:
+                    _snap_now = parse_plan(plan_text)
+                    cur_item, cur_path, cur_ladder = _active_path(_snap_now, path_cursor)
+                    if cur_item is not None and cur_path is not None:
+                        used = path_steps.get(cur_item.key, 0)
+                        if used >= max_steps_per_path:
+                            if _advance_path(
+                                cur_item, cur_ladder, path_cursor, path_steps,
+                                max_steps_per_path,
+                                f"{used} steps without meeting acceptance",
+                            ):
+                                cur_path = cur_ladder[path_cursor[cur_item.key]]
+                                _log(
+                                    f"[path] '{cur_item.text[:30]}' now on path "
+                                    f"{path_cursor[cur_item.key] + 1}/{len(cur_ladder)}"
+                                )
+                        path_directive = _render_path_directive(
+                            cur_item, cur_path,
+                            path_cursor.get(cur_item.key, 0), len(cur_ladder),
+                        )
+                except Exception as e:
+                    _debug(f"[path] directive skipped: {e}")
+
+            if fast:
+                action_type, action_args, action_desc = fast
+                plan_updates = None
+                notes_updates = None
+                from_memory = True
+                _log(f"[memory] step {step} fastpath hit: {action_desc}")
+                _log(f"[timing] step {step} operator    → 0.00s (memory fastpath)  (total {time.time() - t_step:.2f}s)")
+            else:
+                from_memory = False
+                action_type, action_args, action_desc, plan_updates, notes_updates = _decide_action_plan_guided(
+                    instruction, step, elements, incident_tracker, last_coords,
+                    str(vlm_shot_path), actions, plan_text, history=history,
+                    scratchpad=scratchpad, similarity_note=similarity_note,
+                    targeted_indices=targeted_indices,
+                    action_loop_note=action_loop_note,
+                    blocked_coords=blocked_coords,
+                    blocked_targets=blocked_targets,
+                    failure_hint=failure_hint,
+                    path_directive=path_directive,
                 )
-                if contradicted:
-                    _log(
-                        f"[plan] ignored Operator's mark_done for "
-                        f"{contradicted[:40]!r} — device state contradicts it"
+                _log(f"[timing] step {step} operator    → {time.time() - t_oper:.2f}s  (total {time.time() - t_step:.2f}s)")
+            failure_hint = ""  # consumed by the decision above
+
+            # Merge any notes written by the VLM into the scratchpad
+            if notes_updates and isinstance(notes_updates, dict):
+                scratchpad.update(notes_updates)
+
+            # Snapshot the plan BEFORE applying this turn's plan_updates. The finish
+            # gate below uses this pre-update view so a ``finish`` turn cannot mark
+            # its own remaining milestones done and bypass independent verification.
+            plan_before_updates = plan_text
+            if plan_updates and plan_text and action_type != "fail":
+                new_plan_text, changed = apply_plan_updates(plan_text, plan_updates)
+                if changed:
+                    # Anti self-certification: the Operator may NOT declare a
+                    # milestone complete while the read-only probes contradict it.
+                    # Without this, "finish + mark_done" ended the run as a success
+                    # even though the phone had done nothing.
+                    contradicted = _self_declared_done_rejected(
+                        plan_updates, new_plan_text, step_probes, baseline
                     )
-                    failure_hint = (
-                        f"\n\u26a0\ufe0f  You marked {contradicted!r} as done but the "
-                        "device state says otherwise. Do NOT mark a milestone "
-                        "complete until its acceptance probe passes.\n"
-                    )
-                else:
-                    plan_text = new_plan_text
-                    snap = parse_plan(plan_text)
-                    _trace(f"[pro-plan] step {step}: {snap.done_count}/{snap.total_count} done")
-
-        # If the Operator deems the task impossible (e.g. required app is not
-        # installed), terminate with an explicit failure — skipping validator,
-        # safety net and checker (there is nothing left to audit).
-        if action_type == "fail":
-            reason = (action_args or {}).get("reason", "") or (action_desc if action_desc else "")
-            _log(f"Operator reports task cannot be completed: {reason}")
-            fail_reason = reason or "task cannot be completed"
-            status = "fail"
-            end_reason = "pro_task_failed"
-            break
-
-        # An unrecognised action is a model error, not a completion signal.
-        # Re-prompt with the exact schema instead of executing or finishing.
-        if action_type == "invalid":
-            _raw = (action_args or {}).get("raw_action", "?")
-            _log(f"[action] rejected unsupported action {_raw!r} — re-prompting")
-            incident_tracker.add_incident(
-                category="invalid_action",
-                reason=f"unsupported action {_raw!r}",
-                action=str(_raw), step=step, action_args=action_args or {},
-                kind="safety_net",
-            )
-            failure_hint = (
-                f"\n\u26a0\ufe0f  YOUR LAST RESPONSE USED AN UNSUPPORTED ACTION: {_raw!r}. "
-                "Nothing was executed. Reply with ONE of the documented actions "
-                "only: tap, long_press, swipe, scroll, set_slider, type, "
-                "open_app, system_button (button=back|home|enter|recent_apps|"
-                "volume_up|volume_down|volume_mute), finish, fail. "
-                "To press a volume key use {\"action\":\"system_button\","
-                "\"button\":\"volume_down\"}.\n"
-            )
-            continue
-
-        # If operator says finish, check milestone completion
-        if action_type == "finish":
-            gate_plan = plan_before_updates if plan_before_updates else plan_text
-            if gate_plan and not is_task_complete(gate_plan):
-                snapshot = parse_plan(gate_plan)
-                if snapshot.pending_count == 0:
-                    # No [ ] milestones left. Before declaring success, check the
-                    # acceptance probes: a plan that only *claims* completion must
-                    # not end the run.
-                    _blocked = ""
-                    for _it in snapshot.top_level:
-                        _checks = [ci.text for ci in snapshot.check_items_of(_it)
-                                   if ci.kind == "verify"]
-                        if _checks and _acceptance_from_probes(
-                            _checks, step_probes, baseline
-                        ) is False:
-                            _blocked = _it.text
-                            break
-                    if _blocked:
+                    if contradicted:
                         _log(
-                            f"[plan] finish refused — probes contradict "
-                            f"{_blocked[:40]!r}; keeping the milestone open"
+                            f"[plan] ignored Operator's mark_done for "
+                            f"{contradicted[:40]!r} — device state contradicts it"
                         )
                         failure_hint = (
-                            f"\n\u26a0\ufe0f  You reported completion, but the device "
-                            f"probe contradicts the acceptance criteria of "
-                            f"{_blocked!r}. Keep working on it.\n"
+                            f"\n\u26a0\ufe0f  You marked {contradicted!r} as done but the "
+                            "device state says otherwise. Do NOT mark a milestone "
+                            "complete until its acceptance probe passes.\n"
                         )
-                        consecutive_finish = 0
+                    else:
+                        plan_text = new_plan_text
+                        snap = parse_plan(plan_text)
+                        _trace(f"[pro-plan] step {step}: {snap.done_count}/{snap.total_count} done")
+
+            # If the Operator deems the task impossible (e.g. required app is not
+            # installed), terminate with an explicit failure — skipping validator,
+            # safety net and checker (there is nothing left to audit).
+            if action_type == "fail":
+                reason = (action_args or {}).get("reason", "") or (action_desc if action_desc else "")
+                _log(f"Operator reports task cannot be completed: {reason}")
+                fail_reason = reason or "task cannot be completed"
+                status = "fail"
+                end_reason = "pro_task_failed"
+                break
+
+            # An unrecognised action is a model error, not a completion signal.
+            # Re-prompt with the exact schema instead of executing or finishing.
+            if action_type == "invalid":
+                _raw = (action_args or {}).get("raw_action", "?")
+                _log(f"[action] rejected unsupported action {_raw!r} — re-prompting")
+                incident_tracker.add_incident(
+                    category="invalid_action",
+                    reason=f"unsupported action {_raw!r}",
+                    action=str(_raw), step=step, action_args=action_args or {},
+                    kind="safety_net",
+                )
+                failure_hint = (
+                    f"\n\u26a0\ufe0f  YOUR LAST RESPONSE USED AN UNSUPPORTED ACTION: {_raw!r}. "
+                    "Nothing was executed. Reply with ONE of the documented actions "
+                    "only: tap, long_press, swipe, scroll, set_slider, type, "
+                    "open_app, system_button (button=back|home|enter|recent_apps|"
+                    "volume_up|volume_down|volume_mute), finish, fail. "
+                    "To press a volume key use {\"action\":\"system_button\","
+                    "\"button\":\"volume_down\"}.\n"
+                )
+                continue
+
+            # If operator says finish, check milestone completion
+            if action_type == "finish":
+                gate_plan = plan_before_updates if plan_before_updates else plan_text
+                if gate_plan and not is_task_complete(gate_plan):
+                    snapshot = parse_plan(gate_plan)
+                    if snapshot.pending_count == 0:
+                        # No [ ] milestones left. Before declaring success, check the
+                        # acceptance probes: a plan that only *claims* completion must
+                        # not end the run.
+                        _blocked = ""
+                        for _it in snapshot.top_level:
+                            _checks = [ci.text for ci in snapshot.check_items_of(_it)
+                                       if ci.kind == "verify"]
+                            if _checks and _acceptance_from_probes(
+                                _checks, step_probes, baseline
+                            ) is False:
+                                _blocked = _it.text
+                                break
+                        if _blocked:
+                            _log(
+                                f"[plan] finish refused — probes contradict "
+                                f"{_blocked[:40]!r}; keeping the milestone open"
+                            )
+                            failure_hint = (
+                                f"\n\u26a0\ufe0f  You reported completion, but the device "
+                                f"probe contradicts the acceptance criteria of "
+                                f"{_blocked!r}. Keep working on it.\n"
+                            )
+                            consecutive_finish = 0
+                            continue
+                        _log("Operator says finish with 0 pending milestones — auto-completing plan")
+                        plan_text = _force_complete_plan(plan_text)
+                        if is_task_complete(plan_text):
+                            _log("Plan auto-completed successfully")
+                            status = "success"
+                            end_reason = "operator_finished_auto"
+                            break
+                    pending = snapshot.pending_count
+                    consecutive_finish += 1
+                    _log(f"Operator says finish but {pending} milestones pending "
+                         f"(attempt {consecutive_finish}/{FINISH_ARBITRATION_ATTEMPTS}) — continuing")
+                    if pending > 0 and consecutive_finish < FINISH_ARBITRATION_ATTEMPTS:
                         continue
-                    _log("Operator says finish with 0 pending milestones — auto-completing plan")
-                    plan_text = _force_complete_plan(plan_text)
-                    if is_task_complete(plan_text):
-                        _log("Plan auto-completed successfully")
-                        status = "success"
-                        end_reason = "operator_finished_auto"
-                        break
-                pending = snapshot.pending_count
-                consecutive_finish += 1
-                _log(f"Operator says finish but {pending} milestones pending "
-                     f"(attempt {consecutive_finish}/{FINISH_ARBITRATION_ATTEMPTS}) — continuing")
-                if pending > 0 and consecutive_finish < FINISH_ARBITRATION_ATTEMPTS:
-                    continue
-                # Repeated finish with stale plan bookkeeping: arbitrate with the
-                # independent Checker instead of looping forever.
-                if pending > 0:
-                    _log("Operator insists task is done — invoking Checker to arbitrate")
-                    final_shot = screenshots_dir / f"pro_arbitrate_{step}.png"
-                    _take_screenshot(adb_path, device, final_shot)
+                    # Repeated finish with stale plan bookkeeping: arbitrate with the
+                    # independent Checker instead of looping forever.
+                    if pending > 0:
+                        _log("Operator insists task is done — invoking Checker to arbitrate")
+                        final_shot = screenshots_dir / f"pro_arbitrate_{step}.png"
+                        _take_screenshot(adb_path, device, final_shot)
+                        try:
+                            arb = _call_checker_with_probes(
+                                instruction=instruction,
+                                plan_text=plan_text,
+                                actions=actions,
+                                steps=step,
+                                screenshot_path=str(final_shot) if final_shot.exists() else "",
+                                adb_path=adb_path,
+                                device=device,
+                            )
+                        except Exception as ex:
+                            arb = {}
+                            _log(f"Checker arbitration failed: {ex}")
+                        if _checker_confirmed(arb):
+                            _log("Checker confirms goal achieved — auto-completing remaining milestones")
+                            plan_text = _force_complete_plan(plan_text)
+                            status = "success"
+                            end_reason = "operator_finished_arbitrated"
+                            break
+                        else:
+                            _log("Checker says goal NOT achieved — resuming execution")
+                            if arb.get("summary"):
+                                incident_tracker.add_recovery_hint(
+                                    f"Checker: {arb.get('summary')}"
+                                )
+                            consecutive_finish = 0
+                            continue
+                status = "success"
+                end_reason = "operator_finished"
+                break
+
+            # ── 3. Validator Node: independent judgment ─────────────────
+            t_vali = time.time()
+            incident_context = ""
+            if incident_tracker.has_active_incident:
+                incident_context = incident_tracker.render_for_prompt()
+
+            # Feed the Validator the RAW screenshot (annotated dots bloat the
+            # thinking model's token budget and produced empty content) plus the
+            # same bounded element index the Operator saw, so it can still judge
+            # target correctness instead of being blind.
+            validator_elements_text = ""
+            if elements:
+                validator_elements_text = "\n".join(
+                    el.render_index_line()
+                    for el in order_elements_for_vlm(elements, 80)
+                )
+
+            # Deterministic gesture check BEFORE spending a Validator call: a swipe
+            # whose endpoints collapsed onto the same point cannot do anything, and
+            # the model needs to be told why (coordinate space), not just "invalid".
+            gesture_problem = _degenerate_gesture_reason(action_type, action_args)
+            if gesture_problem:
+                _log(f"[gesture] skipped {action_type}: {gesture_problem}")
+                incident_tracker.add_incident(
+                    category="invalid_gesture",
+                    reason=gesture_problem,
+                    action=action_type, step=step, action_args=action_args,
+                    kind="safety_net",
+                )
+                _emit_incident(step, "invalid_gesture", gesture_problem, action_type,
+                               incident_tracker.consecutive_failures)
+                # A rejected gesture still burns this path's step budget, otherwise a
+                # path that only produces bad swipes never falls through to the next.
+                if cur_item is not None:
+                    path_steps[cur_item.key] = path_steps.get(cur_item.key, 0) + 1
+                failure_hint = (
+                    "YOUR LAST SWIPE WAS REJECTED BEFORE EXECUTION: " + gesture_problem
+                    + " Both endpoints must differ by at least "
+                    f"{MIN_SWIPE_TRAVEL}px and stay inside the screen."
+                )
+                _maybe_diagnose()
+                continue
+
+            validation = call_validator(
+                instruction=instruction,
+                plan_text=plan_text,
+                proposed_action=action_desc,
+                action_type=action_type,
+                action_args=action_args,
+                screenshot_path=str(shot_path),
+                vlm_caller=_call_vlm_simple,
+                previous_incidents=incident_context,
+                element_index=validator_elements_text,
+                device_resolution=_device_resolution_text(),
+                target_resolution=_describe_validator_target(
+                    action_type, action_args, elements
+                ),
+            )
+            _log(f"[timing] step {step} validator   → {time.time() - t_vali:.2f}s  (total {time.time() - t_step:.2f}s)")
+
+            verdict = validation.get("verdict", "approve")
+            _trace(f"[pro-validator] step {step}: verdict={verdict} reason={validation.get('reason', '')[:100]}")
+
+            if verdict == "reject":
+                _log(f"Validator REJECTED: {validation.get('reason', '')[:120]}")
+                validator_stats["rejected"] += 1
+                # Exhaust this action's replay budget: a rejected gesture/tap must
+                # not be replayed by the memory fastpath on the next step. Swipe
+                # stays a cacheable action — only THIS signature is retired.
+                try:
+                    mem.mark_ineffective(action_type, action_args)
+                except Exception as e:
+                    _debug(f"memory mark_ineffective error: {e}")
+                incident_tracker.add_incident(
+                    category="validator_rejected",
+                    reason=validation.get("reason", "Validator rejected the action"),
+                    action=action_type,
+                    step=step,
+                    action_args=action_args,
+                    action_description=action_desc,
+                    kind="safety_net",
+                )
+                _emit_incident(
+                    step, "validator_rejected",
+                    validation.get("reason", "Validator rejected"),
+                    action_type,
+                    incident_tracker.consecutive_failures,
+                )
+                # Feed suggestion back to next Operator call via incident
+                suggestion = validation.get("suggestion", "")
+                if suggestion:
+                    incident_tracker.add_recovery_hint(suggestion)
+                # Remember rejected coordinate taps so the Operator can be told
+                # exactly which points NOT to re-propose (device-pixel space).
+                if action_type == "tap" and isinstance(action_args.get("coordinate"), (list, tuple)):
+                    c = action_args["coordinate"]
+                    blocked_coords.append(f"tap [{int(c[0])},{int(c[1])}]")
+                    if len(blocked_coords) > 20:
+                        blocked_coords = blocked_coords[-20:]
+                # Remember rejected element indices so the Operator won't keep
+                # outputting the same target=N that the validator already rejected.
+                if action_type == "tap" and isinstance(action_args.get("target"), int):
+                    ti = action_args["target"]
+                    if ti not in blocked_targets:
+                        blocked_targets.append(ti)
+                    if len(blocked_targets) > 20:
+                        blocked_targets = blocked_targets[-20:]
+                    # Also mark it "tried" so the STUCK-DETECTED markers render.
+                    targeted_indices[ti] = targeted_indices.get(ti, 0) + 1
+                _maybe_diagnose()
+                # Stuck-tap arbitration: a long burst of consecutive rejections on
+                # the same screen usually means the goal is ALREADY met but the
+                # Operator keeps proposing taps. Let the independent Checker decide.
+                if incident_tracker.consecutive_failures >= STUCK_ARBITRATION_THRESHOLD:
+                    _log("Stuck: consecutive rejections threshold reached — invoking Checker to arbitrate")
+                    arb_shot = screenshots_dir / f"pro_arbitrate_{step}.png"
+                    _take_screenshot(adb_path, device, arb_shot)
                     try:
                         arb = _call_checker_with_probes(
                             instruction=instruction,
                             plan_text=plan_text,
                             actions=actions,
                             steps=step,
-                            screenshot_path=str(final_shot) if final_shot.exists() else "",
+                            screenshot_path=str(arb_shot) if arb_shot.exists() else "",
                             adb_path=adb_path,
                             device=device,
                         )
@@ -2436,503 +2600,420 @@ def _run_plan_guided_fallback(
                         arb = {}
                         _log(f"Checker arbitration failed: {ex}")
                     if _checker_confirmed(arb):
-                        _log("Checker confirms goal achieved — auto-completing remaining milestones")
+                        _log("Checker confirms goal already achieved — auto-completing plan")
                         plan_text = _force_complete_plan(plan_text)
                         status = "success"
-                        end_reason = "operator_finished_arbitrated"
+                        end_reason = "stuck_arbitrated_success"
                         break
                     else:
-                        _log("Checker says goal NOT achieved — resuming execution")
+                        _log("Checker says goal NOT achieved — feeding correction and continuing")
                         if arb.get("summary"):
-                            incident_tracker.add_recovery_hint(
-                                f"Checker: {arb.get('summary')}"
-                            )
-                        consecutive_finish = 0
-                        continue
-            status = "success"
-            end_reason = "operator_finished"
-            break
+                            incident_tracker.add_recovery_hint(f"Checker: {arb.get('summary')}")
+                        # Cap the burst so arbitration can fire again later if needed,
+                        # but don't loop forever on a single burst.
+                        incident_tracker.clear_on_success()
+                continue
 
-        # ── 3. Validator Node: independent judgment ─────────────────
-        t_vali = time.time()
-        incident_context = ""
-        if incident_tracker.has_active_incident:
-            incident_context = incident_tracker.render_for_prompt()
+            elif verdict == "warn":
+                validator_stats["warned"] += 1
+                _log(f"Validator warned: {validation.get('concern', '')[:120]}")
+                # Execute anyway but log the concern
+                concern = validation.get("concern", "")
+                if concern:
+                    incident_tracker.add_recovery_hint(f"Validator concern: {concern}")
+            else:
+                validator_stats["approved"] += 1
 
-        # Feed the Validator the RAW screenshot (annotated dots bloat the
-        # thinking model's token budget and produced empty content) plus the
-        # same bounded element index the Operator saw, so it can still judge
-        # target correctness instead of being blind.
-        validator_elements_text = ""
-        if elements:
-            validator_elements_text = "\n".join(
-                el.render_index_line()
-                for el in order_elements_for_vlm(elements, 80)
-            )
+            # ── 4. Safety Net: deterministic XML + pixel check ───────────
+            if action_type in ("tap", "long_press", "type"):
+                passed, category, reason = safety_net.validate(
+                    action_type, action_args, shot_path
+                )
+                if not passed:
+                    incident_tracker.add_incident(
+                        category=category, reason=reason,
+                        action=action_type, step=step, action_args=action_args,
+                    )
+                    _emit_incident(step, category, reason, action_type,
+                                   incident_tracker.consecutive_failures)
+                    _log(f"Safety net blocked: {category} — {reason}")
+                    _maybe_diagnose()
+                    continue
+                else:
+                    incident_tracker.clear_on_success()
+                safety_check = "xml_passed"
+            else:
+                safety_check = None
 
-        # Deterministic gesture check BEFORE spending a Validator call: a swipe
-        # whose endpoints collapsed onto the same point cannot do anything, and
-        # the model needs to be told why (coordinate space), not just "invalid".
-        gesture_problem = _degenerate_gesture_reason(action_type, action_args)
-        if gesture_problem:
-            _log(f"[gesture] skipped {action_type}: {gesture_problem}")
-            incident_tracker.add_incident(
-                category="invalid_gesture",
-                reason=gesture_problem,
-                action=action_type, step=step, action_args=action_args,
-                kind="safety_net",
-            )
-            _emit_incident(step, "invalid_gesture", gesture_problem, action_type,
-                           incident_tracker.consecutive_failures)
-            # A rejected gesture still burns this path's step budget, otherwise a
-            # path that only produces bad swipes never falls through to the next.
-            if cur_item is not None:
+            # ── 5. Execute ──────────────────────────────────────────────
+            t_exec = time.time()
+            open_error = _execute_action_adb(adb_path, device, action_type, action_args, elements=elements)
+            actions.append(action_desc)
+            if open_error:
+                _log(f"[open] FAILED: {open_error}")
+                if "not installed" in open_error or "could not resolve" in open_error:
+                    fail_reason = open_error
+                    status = "fail"
+                    end_reason = "pro_app_launch_failed"
+                    break
+                open_fail_count += 1
+                failure_hint = (
+                    f"\n⚠️  The last open_app action FAILED: {open_error}. "
+                    f"Do NOT retry the same open_app. If the target app cannot "
+                    f"be opened at all, output {{\"action\":\"fail\"}} with a reason.\n"
+                )
+                if open_fail_count >= OPEN_LAUNCH_RETRIES:
+                    fail_reason = open_error
+                    status = "fail"
+                    end_reason = "pro_app_launch_failed"
+                    break
+            else:
+                open_fail_count = 0
+            # A successful execute ends any failure burst (validator rejections and
+            # safety-net blocks both converge here), so the Diagnoser can fire again
+            # if a fresh burst starts later.
+            incident_tracker.clear_on_success()
+            diag_fired_this_burst = False
+            consecutive_finish = 0  # a real action landed — reset the finish-vs-plan counter
+            # Anti-loop: track which element indices we've targeted
+            if action_type == "tap" and isinstance(action_args.get("target"), int):
+                tidx = action_args["target"]
+                targeted_indices[tidx] = targeted_indices.get(tidx, 0) + 1
+                last_target_info = (tidx, action_desc)
+            time.sleep(1.2)
+            _log(f"[timing] step {step} execute     → {time.time() - t_exec:.2f}s  (total {time.time() - t_step:.2f}s)")
+
+            # Memory: record the successful step (action + task plan)
+            if mem.enabled and not open_error:
+                try:
+                    target_el = None
+                    target_rid = ""
+                    if action_type == "tap" and isinstance(action_args.get("target"), int):
+                        ti = action_args["target"]
+                        if 0 <= ti < len(elements):
+                            target_el = elements[ti]
+                            target_rid = getattr(target_el, "resource_id", "") or ""
+                    mem.record_action(
+                        mem_state, action_type, action_args, action_desc,
+                        target_rid=target_rid, post_pkg=mem.fg_pkg(elements),
+                        target_el=target_el,
+                    )
+                except Exception as e:
+                    _debug(f"memory record error: {e}")
+
+            # Record in history
+            try:
+                history.add(StepRecord(
+                    step=step, action=action_desc,
+                    action_type=action_type, action_args=action_args,
+                    safety_check=safety_check or "",
+                ))
+                # Context budget monitoring
+                warning = context_budget.check(history)
+                if warning and warning.usage_pct >= last_budget_warning_pct + 0.1:
+                    last_budget_warning_pct = warning.usage_pct
+                    _log(f"Context budget: {warning.usage_pct:.0%} used ({warning.used_tokens}/{warning.limit_tokens} tokens)")
+                    _emit({
+                        "type": "budget_warning",
+                        "usage_pct": round(warning.usage_pct, 2),
+                        "used_tokens": warning.used_tokens,
+                        "limit_tokens": warning.limit_tokens,
+                        "message": warning.message,
+                    })
+            except Exception:
+                pass
+
+            # (plan updates are applied before the finish gate, above)
+
+            # Verification screenshot
+            t_post = time.time()
+            vshot_path = screenshots_dir / f"step_{step:03d}_{ts}_post.png"
+            _take_screenshot(adb_path, device, vshot_path)
+            previous_post_shot = vshot_path  # save for next step's similarity check
+            _log(f"[timing] step {step} post-shot   → {time.time() - t_post:.2f}s  (total {time.time() - t_step:.2f}s)")
+
+            # Did the gesture actually move the screen? A scroll/swipe that leaves the
+            # pixels identical is either past the end of the list or landing on a
+            # non-scrollable region — either way repeating it wastes the path budget.
+            # EXCEPTION: a slider drag (``kind == "slider"``) changes STATE, not
+            # pixels — dragging the volume bar to zero leaves the screenshot almost
+            # identical, so pixel-diff here wrongly marks it "no effect" and the hint
+            # tells the Operator to stop scrolling. Sliders are judged by their own
+            # acceptance probe below, never by pixel diff.
+            if action_type == "swipe" and action_args.get("kind") != "slider":
+                _move_px = screenshot_diff_count(str(shot_path), str(vshot_path))
+                if _move_px <= 3:
+                    ineffective_scrolls += 1
+                    _log(
+                        f"[scroll] gesture had no visual effect (diff={_move_px}px, "
+                        f"consecutive={ineffective_scrolls})"
+                    )
+                    if from_memory:
+                        try:
+                            mem.mark_ineffective(action_type, action_args)
+                        except Exception as e:
+                            _debug(f"memory mark_ineffective error: {e}")
+                    if ineffective_scrolls >= 2:
+                        failure_hint = (
+                            "\n⚠️  SCROLLING HAS NO EFFECT: your last "
+                            f"{ineffective_scrolls} gestures left the screen "
+                            "unchanged. The content is either already at its edge or "
+                            "that area is not scrollable. Do NOT scroll again — the "
+                            "control you need is already visible on the current "
+                            "screen, or reachable by tapping what IS visible.\n"
+                        )
+                else:
+                    ineffective_scrolls = 0
+
+            # Mid-run read-only state probe for the plan's verify items. Cheap, and
+            # it makes device state visible in the log every step instead of only in
+            # the final Checker verdict.
+            step_probes = _probe_state_mid_run(plan_text, adb_path, device, step)
+
+            # Strategy ladder: if the current path's acceptance probe is now
+            # satisfied, the milestone is DONE — the operator no longer has to hunt
+            # for a control that may not exist (this is the whole point of judging
+            # by device state instead of by a button's presence).
+            if cur_item is not None and cur_path is not None:
                 path_steps[cur_item.key] = path_steps.get(cur_item.key, 0) + 1
-            failure_hint = (
-                "YOUR LAST SWIPE WAS REJECTED BEFORE EXECUTION: " + gesture_problem
-                + " Both endpoints must differ by at least "
-                f"{MIN_SWIPE_TRAVEL}px and stay inside the screen."
-            )
-            _maybe_diagnose()
-            continue
+                try:
+                    _snap_acc = parse_plan(plan_text)
+                    verify_texts = [
+                        ci.text for ci in _snap_acc.check_items_of(cur_item)
+                        if ci.kind == "verify"
+                    ]
+                    verdict = _acceptance_from_probes(verify_texts, step_probes, baseline)
+                except Exception as e:
+                    _debug(f"[path] acceptance eval skipped: {e}")
+                    verdict = None
+                if verdict is True:
+                    new_plan, changed = apply_plan_updates(
+                        plan_text, {"mark_done": cur_item.text}
+                    )
+                    if changed:
+                        plan_text = new_plan
+                        _log(
+                            f"[path] '{cur_item.text[:30]}' acceptance MET on path "
+                            f"{path_cursor.get(cur_item.key, 0) + 1}/{len(cur_ladder)}"
+                            " — milestone completed by device state"
+                        )
+                        path_steps[cur_item.key] = 0
 
-        validation = call_validator(
+            _emit_progress(
+                step, action_desc,
+                f"Step {step}: {action_desc} [validator: {verdict}]",
+                screenshot=str(vshot_path) if vshot_path.exists() else None,
+                verified=(safety_check is not None),
+                safety_check=safety_check,
+                step_start_s=t_step,
+            )
+            _log(f"[timing] step {step} TOTAL       → {time.time() - t_step:.2f}s")
+
+            # Loop detection — bucketed coordinates
+            if action_type == "tap" and "coordinate" in action_args:
+                bx = round(action_args["coordinate"][0] / 100) * 100
+                by = round(action_args["coordinate"][1] / 100) * 100
+                coord_bucket = f"{bx},{by}"
+                last_coords.append(coord_bucket)
+                if len(last_coords) > LOOP_THRESHOLD:
+                    last_coords = last_coords[-LOOP_THRESHOLD:]
+                if len(last_coords) == LOOP_THRESHOLD and len(set(last_coords)) == 1:
+                    _log(f"[LOOP] Same coordinate bucket {coord_bucket} tapped {LOOP_THRESHOLD}+ times — STUCK, need different approach!")
+                    incident_tracker.add_recovery_hint(
+                        "Same coordinate tapped repeatedly. Try a different approach."
+                    )
+            else:
+                last_coords = []
+
+            # Loop detection — repeated open_app + dismiss cycles
+            last_action_types.append(action_type)
+            if len(last_action_types) > 6:
+                last_action_types = last_action_types[-6:]
+            recent = last_action_types[-4:]
+            if (
+                len(recent) >= 4
+                and recent.count("open_app") >= 2
+                and any(a in ("press", "system_button") for a in recent)
+            ):
+                _log("Action loop detected — repeated open_app + dismiss cycle")
+                incident_tracker.add_recovery_hint(
+                    "ACTION LOOP: You are repeatedly opening and leaving the app. "
+                    "The app may already be open. Look at the current screen carefully."
+                )
+
+        # ── Phase 3: Checker Node — final audit ──────────────────────────────
+        if status == "fail":
+            # No achievement audit for a definitively impossible task; surface the
+            # failure directly instead of letting the Checker overwrite the verdict.
+            _emit_progress(step, "failed", f"Task failed: {fail_reason}")
+            mem.on_run_end(status)
+            fail_report_path = _finalize_run(
+                mem=mem, scratchpad=scratchpad, plan_text=plan_text,
+                profile="pro", instruction=instruction, status=status,
+                end_reason=end_reason, step=step, actions=actions, start=start,
+                validator_stats=validator_stats,
+                incident_count=incident_tracker.count,
+                checker=None,
+                fail_reason=fail_reason,
+            )
+            try:
+                if screenshots_dir.exists():
+                    shutil.rmtree(screenshots_dir, ignore_errors=True)
+            except Exception:
+                pass
+            fail_snapshot = parse_plan(plan_text) if plan_text else None
+            fail_done = fail_snapshot.done_count if fail_snapshot else 0
+            fail_total = fail_snapshot.total_count if fail_snapshot else 0
+            return {
+                "type": "result",
+                "status": "fail",
+                "steps": step,
+                "last_action": actions[-1] if actions else "",
+                "reason": fail_reason,
+                "message": (
+                    f"Pro graph: fail after {step} steps — {fail_reason} "
+                    f"[reason: {end_reason}]"
+                ),
+                "actions": actions,
+                "verification": {"passed": fail_done, "failed": 1, "inconclusive": max(0, fail_total - fail_done)},
+                "debug": {
+                    "end_reason": end_reason,
+                    "profile": "pro",
+                    "plan_milestones_total": fail_total,
+                    "plan_milestones_done": fail_done,
+                    "incidents": incident_tracker.count,
+                    "post_run_report": str(fail_report_path) if fail_report_path else None,
+                },
+                "plan": {
+                    "text": plan_text,
+                    "milestones_done": fail_done,
+                    "milestones_total": fail_total,
+                } if plan_text else None,
+            }
+
+        _log("Pro Phase 3: Checker node — auditing goal achievement...")
+        _emit_progress(step, "checking", "Checker node: auditing task completion...")
+
+        # Take final screenshot for checker
+        final_shot = screenshots_dir / "pro_checker_final.png"
+        _take_screenshot(adb_path, device, final_shot)
+
+        final_snapshot = parse_plan(plan_text) if plan_text else None
+        plan_done = final_snapshot.done_count if final_snapshot else 0
+        plan_total = final_snapshot.total_count if final_snapshot else 0
+
+        # Build verification summary
+        verification_summary = (
+            f"Milestones: {plan_done}/{plan_total} complete\n"
+            f"Validator stats: {validator_stats['approved']} approved, "
+            f"{validator_stats['warned']} warned, "
+            f"{validator_stats['rejected']} rejected\n"
+            f"Safety incidents: {incident_tracker.count}"
+        )
+
+        # Declared acceptance criteria + read-only device-state evidence.
+        check_items = _snapshot_check_items(plan_text)
+        probe_results = _run_check_probes(check_items, adb_path, device) if check_items else {}
+        if check_items:
+            _log(f"Checker probes: {len(probe_results)}/{len(check_items)} check items probed")
+
+        checker_result = call_checker(
             instruction=instruction,
             plan_text=plan_text,
-            proposed_action=action_desc,
-            action_type=action_type,
-            action_args=action_args,
-            screenshot_path=str(shot_path),
+            actions=actions,
+            steps=step,
+            screenshot_path=str(final_shot) if final_shot.exists() else "",
             vlm_caller=_call_vlm_simple,
-            previous_incidents=incident_context,
-            element_index=validator_elements_text,
-            device_resolution=_device_resolution_text(),
-            target_resolution=_describe_validator_target(
-                action_type, action_args, elements
-            ),
+            text_llm_caller=_get_text_llm_caller(),
+            verification_summary=verification_summary,
+            check_items=check_items,
+            probe_results=probe_results,
         )
-        _log(f"[timing] step {step} validator   → {time.time() - t_vali:.2f}s  (total {time.time() - t_step:.2f}s)")
 
-        verdict = validation.get("verdict", "approve")
-        _trace(f"[pro-validator] step {step}: verdict={verdict} reason={validation.get('reason', '')[:100]}")
+        _emit({
+            "type": "checker_result",
+            "goal_achieved": checker_result.get("goal_achieved", True),
+            "confidence": checker_result.get("confidence", 0.5),
+            "summary": checker_result.get("summary", ""),
+            "evidence": checker_result.get("evidence", []),
+            "concerns": checker_result.get("concerns", []),
+            "recommendation": checker_result.get("recommendation", ""),
+            "check_items": checker_result.get("check_items", []),
+        })
 
-        if verdict == "reject":
-            _log(f"Validator REJECTED: {validation.get('reason', '')[:120]}")
-            validator_stats["rejected"] += 1
-            # Exhaust this action's replay budget: a rejected gesture/tap must
-            # not be replayed by the memory fastpath on the next step. Swipe
-            # stays a cacheable action — only THIS signature is retired.
-            try:
-                mem.mark_ineffective(action_type, action_args)
-            except Exception as e:
-                _debug(f"memory mark_ineffective error: {e}")
-            incident_tracker.add_incident(
-                category="validator_rejected",
-                reason=validation.get("reason", "Validator rejected the action"),
-                action=action_type,
-                step=step,
-                action_args=action_args,
-                action_description=action_desc,
-                kind="safety_net",
-            )
-            _emit_incident(
-                step, "validator_rejected",
-                validation.get("reason", "Validator rejected"),
-                action_type,
-                incident_tracker.consecutive_failures,
-            )
-            # Feed suggestion back to next Operator call via incident
-            suggestion = validation.get("suggestion", "")
-            if suggestion:
-                incident_tracker.add_recovery_hint(suggestion)
-            # Remember rejected coordinate taps so the Operator can be told
-            # exactly which points NOT to re-propose (device-pixel space).
-            if action_type == "tap" and isinstance(action_args.get("coordinate"), (list, tuple)):
-                c = action_args["coordinate"]
-                blocked_coords.append(f"tap [{int(c[0])},{int(c[1])}]")
-                if len(blocked_coords) > 20:
-                    blocked_coords = blocked_coords[-20:]
-            # Remember rejected element indices so the Operator won't keep
-            # outputting the same target=N that the validator already rejected.
-            if action_type == "tap" and isinstance(action_args.get("target"), int):
-                ti = action_args["target"]
-                if ti not in blocked_targets:
-                    blocked_targets.append(ti)
-                if len(blocked_targets) > 20:
-                    blocked_targets = blocked_targets[-20:]
-                # Also mark it "tried" so the STUCK-DETECTED markers render.
-                targeted_indices[ti] = targeted_indices.get(ti, 0) + 1
-            _maybe_diagnose()
-            # Stuck-tap arbitration: a long burst of consecutive rejections on
-            # the same screen usually means the goal is ALREADY met but the
-            # Operator keeps proposing taps. Let the independent Checker decide.
-            if incident_tracker.consecutive_failures >= STUCK_ARBITRATION_THRESHOLD:
-                _log("Stuck: consecutive rejections threshold reached — invoking Checker to arbitrate")
-                arb_shot = screenshots_dir / f"pro_arbitrate_{step}.png"
-                _take_screenshot(adb_path, device, arb_shot)
-                try:
-                    arb = _call_checker_with_probes(
-                        instruction=instruction,
-                        plan_text=plan_text,
-                        actions=actions,
-                        steps=step,
-                        screenshot_path=str(arb_shot) if arb_shot.exists() else "",
-                        adb_path=adb_path,
-                        device=device,
-                    )
-                except Exception as ex:
-                    arb = {}
-                    _log(f"Checker arbitration failed: {ex}")
-                if _checker_confirmed(arb):
-                    _log("Checker confirms goal already achieved — auto-completing plan")
-                    plan_text = _force_complete_plan(plan_text)
-                    status = "success"
-                    end_reason = "stuck_arbitrated_success"
-                    break
-                else:
-                    _log("Checker says goal NOT achieved — feeding correction and continuing")
-                    if arb.get("summary"):
-                        incident_tracker.add_recovery_hint(f"Checker: {arb.get('summary')}")
-                    # Cap the burst so arbitration can fire again later if needed,
-                    # but don't loop forever on a single burst.
-                    incident_tracker.clear_on_success()
-            continue
+        checker_verdict = checker_result.get("goal_achieved", True)
+        if not checker_verdict:
+            _log(f"Checker verdict: GOAL NOT ACHIEVED — {checker_result.get('summary', '')[:120]}")
+            # Task completed execution but goal was not met
+            if status == "success":
+                status = "checker_failed"
 
-        elif verdict == "warn":
-            validator_stats["warned"] += 1
-            _log(f"Validator warned: {validation.get('concern', '')[:120]}")
-            # Execute anyway but log the concern
-            concern = validation.get("concern", "")
-            if concern:
-                incident_tracker.add_recovery_hint(f"Validator concern: {concern}")
-        else:
-            validator_stats["approved"] += 1
+        # Report VERIFIED outcomes, not the plan's self-reported bookkeeping. The
+        # plan can look 1/1 complete while the Checker says the goal was not met,
+        # and printing "passed: 1" in that case is actively misleading.
+        _items = checker_result.get("check_items") or []
+        _passed = sum(1 for v in _items if str(v.get("status", "")).lower() == "passed")
+        _failed = sum(1 for v in _items if str(v.get("status", "")).lower() == "failed")
+        _incon = sum(1 for v in _items
+                     if str(v.get("status", "")).lower() not in ("passed", "failed"))
+        if not _items:
+            # No declared criteria: fall back to the plan, but never claim a pass
+            # for a run the Checker did not accept.
+            _passed = plan_done if checker_verdict else 0
+            _failed = 0 if checker_verdict else 1
+            _incon = max(0, plan_total - _passed - _failed)
 
-        # ── 4. Safety Net: deterministic XML + pixel check ───────────
-        if action_type in ("tap", "long_press", "type"):
-            passed, category, reason = safety_net.validate(
-                action_type, action_args, shot_path
-            )
-            if not passed:
-                incident_tracker.add_incident(
-                    category=category, reason=reason,
-                    action=action_type, step=step, action_args=action_args,
-                )
-                _emit_incident(step, category, reason, action_type,
-                               incident_tracker.consecutive_failures)
-                _log(f"Safety net blocked: {category} — {reason}")
-                _maybe_diagnose()
-                continue
-            else:
-                incident_tracker.clear_on_success()
-            safety_check = "xml_passed"
-        else:
-            safety_check = None
+        message = (
+            f"Pro graph: {status} after {step} steps. "
+            f"Plan: {plan_done}/{plan_total} milestones. "
+            f"Checker: {'✓ passed' if checker_verdict else '✗ FAILED'} "
+            f"(confidence: {checker_result.get('confidence', 0):.0%}) "
+            f"— {_passed} passed / {_failed} failed / {_incon} inconclusive. "
+            f"[reason: {end_reason}]"
+        )
+        if not checker_verdict:
+            message += " Do not report this task as done to the user."
 
-        # ── 5. Execute ──────────────────────────────────────────────
-        t_exec = time.time()
-        open_error = _execute_action_adb(adb_path, device, action_type, action_args, elements=elements)
-        actions.append(action_desc)
-        if open_error:
-            _log(f"[open] FAILED: {open_error}")
-            if "not installed" in open_error or "could not resolve" in open_error:
-                fail_reason = open_error
-                status = "fail"
-                end_reason = "pro_app_launch_failed"
-                break
-            open_fail_count += 1
-            failure_hint = (
-                f"\n⚠️  The last open_app action FAILED: {open_error}. "
-                f"Do NOT retry the same open_app. If the target app cannot "
-                f"be opened at all, output {{\"action\":\"fail\"}} with a reason.\n"
-            )
-            if open_fail_count >= OPEN_LAUNCH_RETRIES:
-                fail_reason = open_error
-                status = "fail"
-                end_reason = "pro_app_launch_failed"
-                break
-        else:
-            open_fail_count = 0
-        # A successful execute ends any failure burst (validator rejections and
-        # safety-net blocks both converge here), so the Diagnoser can fire again
-        # if a fresh burst starts later.
-        incident_tracker.clear_on_success()
-        diag_fired_this_burst = False
-        consecutive_finish = 0  # a real action landed — reset the finish-vs-plan counter
-        # Anti-loop: track which element indices we've targeted
-        if action_type == "tap" and isinstance(action_args.get("target"), int):
-            tidx = action_args["target"]
-            targeted_indices[tidx] = targeted_indices.get(tidx, 0) + 1
-            last_target_info = (tidx, action_desc)
-        time.sleep(1.2)
-        _log(f"[timing] step {step} execute     → {time.time() - t_exec:.2f}s  (total {time.time() - t_step:.2f}s)")
+        # ── Re-entry decision ────────────────────────────────────────────
+        _can_release = verdicts_allow_release(check_items, checker_result.get("check_items"))
+        _log(f"[checker] releases_ok={_can_release}, attempt={checker_attempts + 1}/{_final_check_max_attempts}")
+        if _can_release:
+            _log("[checker] Checker allows release — exiting outer loop")
+            break
+        if checker_attempts >= _final_check_max_attempts:
+            _log(f"[checker] Re-entry budget exhausted ({_final_check_max_attempts}) — releasing")
+            break
+        if step >= max_steps or (time.time() - start) >= timeout:
+            _log("[checker] No step/time budget remaining — releasing")
+            break
 
-        # Memory: record the successful step (action + task plan)
-        if mem.enabled and not open_error:
-            try:
-                target_el = None
-                target_rid = ""
-                if action_type == "tap" and isinstance(action_args.get("target"), int):
-                    ti = action_args["target"]
-                    if 0 <= ti < len(elements):
-                        target_el = elements[ti]
-                        target_rid = getattr(target_el, "resource_id", "") or ""
-                mem.record_action(
-                    mem_state, action_type, action_args, action_desc,
-                    target_rid=target_rid, post_pkg=mem.fg_pkg(elements),
-                    target_el=target_el,
-                )
-            except Exception as e:
-                _debug(f"memory record error: {e}")
-
-        # Record in history
-        try:
-            history.add(StepRecord(
-                step=step, action=action_desc,
-                action_type=action_type, action_args=action_args,
-                safety_check=safety_check or "",
-            ))
-            # Context budget monitoring
-            warning = context_budget.check(history)
-            if warning and warning.usage_pct >= last_budget_warning_pct + 0.1:
-                last_budget_warning_pct = warning.usage_pct
-                _log(f"Context budget: {warning.usage_pct:.0%} used ({warning.used_tokens}/{warning.limit_tokens} tokens)")
-                _emit({
-                    "type": "budget_warning",
-                    "usage_pct": round(warning.usage_pct, 2),
-                    "used_tokens": warning.used_tokens,
-                    "limit_tokens": warning.limit_tokens,
-                    "message": warning.message,
-                })
-        except Exception:
-            pass
-
-        # (plan updates are applied before the finish gate, above)
-
-        # Verification screenshot
-        t_post = time.time()
-        vshot_path = screenshots_dir / f"step_{step:03d}_{ts}_post.png"
-        _take_screenshot(adb_path, device, vshot_path)
-        previous_post_shot = vshot_path  # save for next step's similarity check
-        _log(f"[timing] step {step} post-shot   → {time.time() - t_post:.2f}s  (total {time.time() - t_step:.2f}s)")
-
-        # Did the gesture actually move the screen? A scroll/swipe that leaves the
-        # pixels identical is either past the end of the list or landing on a
-        # non-scrollable region — either way repeating it wastes the path budget.
-        # EXCEPTION: a slider drag (``kind == "slider"``) changes STATE, not
-        # pixels — dragging the volume bar to zero leaves the screenshot almost
-        # identical, so pixel-diff here wrongly marks it "no effect" and the hint
-        # tells the Operator to stop scrolling. Sliders are judged by their own
-        # acceptance probe below, never by pixel diff.
-        if action_type == "swipe" and action_args.get("kind") != "slider":
-            _move_px = screenshot_diff_count(str(shot_path), str(vshot_path))
-            if _move_px <= 3:
-                ineffective_scrolls += 1
-                _log(
-                    f"[scroll] gesture had no visual effect (diff={_move_px}px, "
-                    f"consecutive={ineffective_scrolls})"
-                )
-                if from_memory:
-                    try:
-                        mem.mark_ineffective(action_type, action_args)
-                    except Exception as e:
-                        _debug(f"memory mark_ineffective error: {e}")
-                if ineffective_scrolls >= 2:
-                    failure_hint = (
-                        "\n⚠️  SCROLLING HAS NO EFFECT: your last "
-                        f"{ineffective_scrolls} gestures left the screen "
-                        "unchanged. The content is either already at its edge or "
-                        "that area is not scrollable. Do NOT scroll again — the "
-                        "control you need is already visible on the current "
-                        "screen, or reachable by tapping what IS visible.\n"
-                    )
-            else:
-                ineffective_scrolls = 0
-
-        # Mid-run read-only state probe for the plan's verify items. Cheap, and
-        # it makes device state visible in the log every step instead of only in
-        # the final Checker verdict.
-        step_probes = _probe_state_mid_run(plan_text, adb_path, device, step)
-
-        # Strategy ladder: if the current path's acceptance probe is now
-        # satisfied, the milestone is DONE — the operator no longer has to hunt
-        # for a control that may not exist (this is the whole point of judging
-        # by device state instead of by a button's presence).
-        if cur_item is not None and cur_path is not None:
-            path_steps[cur_item.key] = path_steps.get(cur_item.key, 0) + 1
-            try:
-                _snap_acc = parse_plan(plan_text)
-                verify_texts = [
-                    ci.text for ci in _snap_acc.check_items_of(cur_item)
-                    if ci.kind == "verify"
-                ]
-                verdict = _acceptance_from_probes(verify_texts, step_probes, baseline)
-            except Exception as e:
-                _debug(f"[path] acceptance eval skipped: {e}")
-                verdict = None
-            if verdict is True:
-                new_plan, changed = apply_plan_updates(
-                    plan_text, {"mark_done": cur_item.text}
-                )
-                if changed:
+        # ── Re-enter: revert unmet subgoals, inject findings ─────────────
+        checker_attempts += 1
+        unmet = checker_result.get("unmet_subgoals") or []
+        if unmet and plan_text:
+            _log(f"[re-entry] Reverting {len(unmet)} unmet subgoal(s): {unmet}")
+            for sg_key in unmet:
+                new_plan, reverted = revert_subgoal_status(plan_text, sg_key)
+                if reverted:
                     plan_text = new_plan
-                    _log(
-                        f"[path] '{cur_item.text[:30]}' acceptance MET on path "
-                        f"{path_cursor.get(cur_item.key, 0) + 1}/{len(cur_ladder)}"
-                        " — milestone completed by device state"
-                    )
-                    path_steps[cur_item.key] = 0
+                    _log(f"[re-entry]   reverted: {sg_key}")
+        # Inject checker findings as plan annotations so the Operator sees them
+        concerns = checker_result.get("concerns") or []
+        if concerns and plan_text:
+            finding_lines = "\n".join(f"- finding: [Checker] {c}" for c in concerns[-5:])
+            plan_text = plan_text.rstrip() + "\n\n## Checker Audit Findings\n" + finding_lines + "\n"
+        # Reset state for re-entry into the operator loop
+        status = "running"
+        end_reason = "checker_re_entry"
+        if concerns:
+            failure_hint = "Checker audit found issues:\n" + "\n".join(f"- {c}" for c in concerns[-5:])
+        _emit_progress(step, "recovering",
+                       f"Checker re-entry {checker_attempts}/{_final_check_max_attempts}: "
+                       f"{len(unmet)} subgoals reverted, {len(concerns)} concerns injected")
+        continue
 
-        _emit_progress(
-            step, action_desc,
-            f"Step {step}: {action_desc} [validator: {verdict}]",
-            screenshot=str(vshot_path) if vshot_path.exists() else None,
-            verified=(safety_check is not None),
-            safety_check=safety_check,
-            step_start_s=t_step,
-        )
-        _log(f"[timing] step {step} TOTAL       → {time.time() - t_step:.2f}s")
-
-        # Loop detection — bucketed coordinates
-        if action_type == "tap" and "coordinate" in action_args:
-            bx = round(action_args["coordinate"][0] / 100) * 100
-            by = round(action_args["coordinate"][1] / 100) * 100
-            coord_bucket = f"{bx},{by}"
-            last_coords.append(coord_bucket)
-            if len(last_coords) > LOOP_THRESHOLD:
-                last_coords = last_coords[-LOOP_THRESHOLD:]
-            if len(last_coords) == LOOP_THRESHOLD and len(set(last_coords)) == 1:
-                _log(f"[LOOP] Same coordinate bucket {coord_bucket} tapped {LOOP_THRESHOLD}+ times — STUCK, need different approach!")
-                incident_tracker.add_recovery_hint(
-                    "Same coordinate tapped repeatedly. Try a different approach."
-                )
-        else:
-            last_coords = []
-
-        # Loop detection — repeated open_app + dismiss cycles
-        last_action_types.append(action_type)
-        if len(last_action_types) > 6:
-            last_action_types = last_action_types[-6:]
-        recent = last_action_types[-4:]
-        if (
-            len(recent) >= 4
-            and recent.count("open_app") >= 2
-            and any(a in ("press", "system_button") for a in recent)
-        ):
-            _log("Action loop detected — repeated open_app + dismiss cycle")
-            incident_tracker.add_recovery_hint(
-                "ACTION LOOP: You are repeatedly opening and leaving the app. "
-                "The app may already be open. Look at the current screen carefully."
-            )
-
-    # ── Phase 3: Checker Node — final audit ──────────────────────────────
-    if status == "fail":
-        # No achievement audit for a definitively impossible task; surface the
-        # failure directly instead of letting the Checker overwrite the verdict.
-        _emit_progress(step, "failed", f"Task failed: {fail_reason}")
-        mem.on_run_end(status)
-        fail_report_path = _finalize_run(
-            mem=mem, scratchpad=scratchpad, plan_text=plan_text,
-            profile="pro", instruction=instruction, status=status,
-            end_reason=end_reason, step=step, actions=actions, start=start,
-            validator_stats=validator_stats,
-            incident_count=incident_tracker.count,
-            checker=None,
-            fail_reason=fail_reason,
-        )
-        try:
-            if screenshots_dir.exists():
-                shutil.rmtree(screenshots_dir, ignore_errors=True)
-        except Exception:
-            pass
-        fail_snapshot = parse_plan(plan_text) if plan_text else None
-        fail_done = fail_snapshot.done_count if fail_snapshot else 0
-        fail_total = fail_snapshot.total_count if fail_snapshot else 0
-        return {
-            "type": "result",
-            "status": "fail",
-            "steps": step,
-            "last_action": actions[-1] if actions else "",
-            "reason": fail_reason,
-            "message": (
-                f"Pro graph: fail after {step} steps — {fail_reason} "
-                f"[reason: {end_reason}]"
-            ),
-            "actions": actions,
-            "verification": {"passed": fail_done, "failed": 1, "inconclusive": max(0, fail_total - fail_done)},
-            "debug": {
-                "end_reason": end_reason,
-                "profile": "pro",
-                "plan_milestones_total": fail_total,
-                "plan_milestones_done": fail_done,
-                "incidents": incident_tracker.count,
-                "post_run_report": str(fail_report_path) if fail_report_path else None,
-            },
-            "plan": {
-                "text": plan_text,
-                "milestones_done": fail_done,
-                "milestones_total": fail_total,
-            } if plan_text else None,
-        }
-
-    _log("Pro Phase 3: Checker node — auditing goal achievement...")
-    _emit_progress(step, "checking", "Checker node: auditing task completion...")
-
-    # Take final screenshot for checker
-    final_shot = screenshots_dir / "pro_checker_final.png"
-    _take_screenshot(adb_path, device, final_shot)
-
-    final_snapshot = parse_plan(plan_text) if plan_text else None
-    plan_done = final_snapshot.done_count if final_snapshot else 0
-    plan_total = final_snapshot.total_count if final_snapshot else 0
-
-    # Build verification summary
-    verification_summary = (
-        f"Milestones: {plan_done}/{plan_total} complete\n"
-        f"Validator stats: {validator_stats['approved']} approved, "
-        f"{validator_stats['warned']} warned, "
-        f"{validator_stats['rejected']} rejected\n"
-        f"Safety incidents: {incident_tracker.count}"
-    )
-
-    # Declared acceptance criteria + read-only device-state evidence.
-    check_items = _snapshot_check_items(plan_text)
-    probe_results = _run_check_probes(check_items, adb_path, device) if check_items else {}
-    if check_items:
-        _log(f"Checker probes: {len(probe_results)}/{len(check_items)} check items probed")
-
-    checker_result = call_checker(
-        instruction=instruction,
-        plan_text=plan_text,
-        actions=actions,
-        steps=step,
-        screenshot_path=str(final_shot) if final_shot.exists() else "",
-        vlm_caller=_call_vlm_simple,
-        text_llm_caller=_get_text_llm_caller(),
-        verification_summary=verification_summary,
-        check_items=check_items,
-        probe_results=probe_results,
-    )
-
-    _emit({
-        "type": "checker_result",
-        "goal_achieved": checker_result.get("goal_achieved", True),
-        "confidence": checker_result.get("confidence", 0.5),
-        "summary": checker_result.get("summary", ""),
-        "evidence": checker_result.get("evidence", []),
-        "concerns": checker_result.get("concerns", []),
-        "recommendation": checker_result.get("recommendation", ""),
-        "check_items": checker_result.get("check_items", []),
-    })
-
-    checker_verdict = checker_result.get("goal_achieved", True)
-    if not checker_verdict:
-        _log(f"Checker verdict: GOAL NOT ACHIEVED — {checker_result.get('summary', '')[:120]}")
-        # Task completed execution but goal was not met
-        if status == "success":
-            status = "checker_failed"
-
-    # Memory: persist task plan only when the run ultimately succeeded
+    # ── Finalize (outside re-entry loop — runs exactly once) ─────────────────
+    # Memory: persist task plan with the final verdict.
     mem.on_run_end("success" if checker_verdict else "failed")
 
     # Persist cross-run notes + write the deterministic post-run report.
@@ -2946,38 +3027,13 @@ def _run_plan_guided_fallback(
         fail_reason=fail_reason,
     )
 
-    # Cleanup
+    # Cleanup screenshots
     try:
         if screenshots_dir.exists():
             shutil.rmtree(screenshots_dir, ignore_errors=True)
     except Exception:
         pass
 
-    # Report VERIFIED outcomes, not the plan's self-reported bookkeeping. The
-    # plan can look 1/1 complete while the Checker says the goal was not met,
-    # and printing "passed: 1" in that case is actively misleading.
-    _items = checker_result.get("check_items") or []
-    _passed = sum(1 for v in _items if str(v.get("status", "")).lower() == "passed")
-    _failed = sum(1 for v in _items if str(v.get("status", "")).lower() == "failed")
-    _incon = sum(1 for v in _items
-                 if str(v.get("status", "")).lower() not in ("passed", "failed"))
-    if not _items:
-        # No declared criteria: fall back to the plan, but never claim a pass
-        # for a run the Checker did not accept.
-        _passed = plan_done if checker_verdict else 0
-        _failed = 0 if checker_verdict else 1
-        _incon = max(0, plan_total - _passed - _failed)
-
-    message = (
-        f"Pro graph: {status} after {step} steps. "
-        f"Plan: {plan_done}/{plan_total} milestones. "
-        f"Checker: {'✓ passed' if checker_verdict else '✗ FAILED'} "
-        f"(confidence: {checker_result.get('confidence', 0):.0%}) "
-        f"— {_passed} passed / {_failed} failed / {_incon} inconclusive. "
-        f"[reason: {end_reason}]"
-    )
-    if not checker_verdict:
-        message += " Do not report this task as done to the user."
     return {
         "type": "result",
         "status": "success" if checker_verdict else "checker_failed",

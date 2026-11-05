@@ -396,7 +396,8 @@ def main() -> int:
     ap.add_argument("--all", action="store_true", help="run every task in the playbook")
     ap.add_argument("--device", "-s", default=None, help="adb serial")
     ap.add_argument("--max-steps", type=int, default=30)
-    ap.add_argument("--timeout", type=int, default=60)
+    ap.add_argument("--timeout", type=int, default=300,
+                    help="per-task wall-clock limit in seconds (default: 300)")
     ap.add_argument("--verification", choices=["final", "checkpoints", "strict"],
                     default="checkpoints")
     ap.add_argument("--min-successes", type=int, default=2,

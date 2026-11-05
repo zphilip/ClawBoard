@@ -78,10 +78,14 @@ You MUST respond with a single JSON object. No other text.
   "recommendation": "What to tell the user (if failed, suggest next steps)",
   "check_items": [
     {"text": "the check-item text, quoted verbatim", "kind": "verify", "status": "passed|failed|inconclusive", "evidence": "probe output / observation"}
-  ]
+  ],
+  "unmet_subgoals": []
 }
 ```
 
+- **`unmet_subgoals`** (final check only): plan milestone texts (verbatim) that are
+  marked `[x]` but whose verify criteria are demonstrably unmet.  Empty `[]` when
+  all completed milestones' verify items passed or are inconclusive.
 - Check the example first — do NOT use leading spaces, newline is not allowed in expected JSON schema
 - **`check_items` is REQUIRED when "Declared check items" appear in the prompt**:
   one entry per item, status ∈ passed/failed/inconclusive, each with concrete
@@ -280,7 +284,8 @@ def call_checker(
     # Backfill missing per-item verdicts so callers can always read check_items.
     if parsed.get("check_items") is None:
         parsed["check_items"] = _unjudged_check_items(check_items)
-    return parsed
+    # Post-process: downgrade hallucinated failures, backfill missing items.
+    return normalize_checker_result(parsed, check_items)
 
 
 def _unjudged_check_items(check_items: list[dict] | None) -> list[dict]:
@@ -294,3 +299,78 @@ def _unjudged_check_items(check_items: list[dict] | None) -> list[dict]:
         }
         for ci in (check_items or [])
     ]
+
+
+# ── Verdict hygiene (computed outside the model) ────────────────────────────
+
+
+def normalize_checker_result(parsed: dict,
+                             check_items: list[dict] | None = None) -> dict:
+    """Post-process a Checker's output to fix common model errors.
+
+    1. A ``failed`` verdict with blank/trivial evidence is downgraded to
+       ``inconclusive`` — the model hallucinated a failure.
+    2. Every declared check item is guaranteed a verdict (missing → inconclusive).
+    3. Duplicate verdicts for the same item text are removed (first wins).
+
+    Returns a new dict (does not mutate the input).
+    """
+    result = dict(parsed)
+    items = check_items or []
+    declared = {(ci.get("text", ""), ci.get("kind", "verify")): ci for ci in items}
+    seen: set[tuple[str, str]] = set()
+    cleaned: list[dict] = []
+
+    for v in result.get("check_items") or []:
+        key = (v.get("text", ""), v.get("kind", "verify"))
+        if key in seen:
+            continue  # duplicate
+        seen.add(key)
+        status = str(v.get("status", "")).lower()
+        evidence = str(v.get("evidence", "")).strip()
+        # Downgrade: a failed verdict with no concrete evidence is not reliable
+        if status == "failed" and (
+            not evidence
+            or evidence.lower() in ("none", "n/a", "无", "无证据")
+        ):
+            v = dict(v)
+            v["status"] = "inconclusive"
+            v["evidence"] = (
+                evidence + " [downgraded: no concrete evidence provided]"
+                if evidence else "[downgraded: no concrete evidence provided]"
+            )
+        cleaned.append(v)
+
+    # Backfill: every declared item that was not addressed
+    for key, ci in declared.items():
+        if key not in seen:
+            cleaned.append({
+                "text": ci.get("text", ""),
+                "kind": ci.get("kind", "verify"),
+                "status": "inconclusive",
+                "evidence": "no verdict produced for this item",
+            })
+
+    result["check_items"] = cleaned
+    return result
+
+
+def verdicts_allow_release(check_items: list[dict] | None,
+                           verdicts: list[dict] | None = None) -> bool:
+    """Fail-open release: every ``verify`` item must be passed or inconclusive.
+
+    - ``assert`` failures never block release (they are preconditions, not
+      goal-achievement criteria).
+    - ``inconclusive`` is not a blocker (benefit of the doubt goes to releasing).
+    - Release is computed OUTSIDE the model — a hallucinated ``failed`` that
+      was downgraded by ``normalize_checker_result`` does not block release.
+
+    Returns True when the task is safe to release/complete.
+    """
+    items = verdicts if verdicts else (check_items or [])
+    for v in items:
+        if str(v.get("kind", "verify")).lower() != "assert":
+            status = str(v.get("status", "")).lower()
+            if status not in ("passed", "inconclusive"):
+                return False
+    return True

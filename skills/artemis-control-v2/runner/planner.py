@@ -1236,3 +1236,167 @@ def is_task_complete(plan_text: str) -> bool:
     """Check if all top-level milestones are done."""
     snapshot = parse_plan(plan_text)
     return snapshot.all_top_level_done
+
+
+# ── Finding lines (system-authored, single-direction projection) ────────────
+
+FINDING_LINE_RE = re.compile(r"^(?P<indent>\s*)-\s*finding\s*:\s*(?P<text>.*)$")
+
+
+def strip_finding_lines(content: str) -> str:
+    """Remove every ``- finding: ...`` line (hygiene before re-projection)."""
+    return "\n".join(
+        line for line in (content or "").splitlines()
+        if not FINDING_LINE_RE.match(line)
+    )
+
+
+def render_finding_line(text: str, indent: int = 2) -> str:
+    """Format a single finding line at the given indent."""
+    return f"{' ' * indent}- finding: {text}"
+
+
+def apply_finding_lines(content: str,
+                        findings_by_parent_key: dict[str, str]) -> str:
+    """Re-project standing findings into the plan under their parent subgoals.
+
+    Strips all existing ``- finding:`` lines, then inserts one per entry under
+    the top-level milestone whose ``subgoal_hash`` matches the parent key.
+    Idempotent — the model deleting a finding only makes it grow back.
+    """
+    stripped = strip_finding_lines(content or "")
+    if not findings_by_parent_key:
+        return stripped
+    snapshot = parse_plan(stripped)
+    # Build a map: subgoal_hash → line_no of its text line (not the checkbox)
+    key_to_line = {}
+    for item in snapshot.top_level:
+        key_to_line[item.key] = item.line_no
+    # Sort inserts from bottom to top so earlier inserts don't shift later line
+    # numbers.
+    inserts: dict[int, list[str]] = {}
+    for parent_key, text in findings_by_parent_key.items():
+        line_no = key_to_line.get(parent_key)
+        if line_no is not None:
+            inserts.setdefault(line_no, []).append(render_finding_line(text))
+    if not inserts:
+        return stripped
+    lines = stripped.splitlines()
+    result: list[str] = []
+    for i, line in enumerate(lines):
+        result.append(line)
+        # Insert findings AFTER the milestone's text line (line_no is 0-based
+        # in our parsed representation, but we iterate 0-based too)
+        for finding in inserts.get(i, []):
+            result.append(finding)
+    return "\n".join(result)
+
+
+# ── Subgoal revert (forward-looking state change, not rollback) ──────────────
+
+
+def revert_subgoal_status(plan_text: str, subgoal_key: str) -> tuple[str, bool]:
+    """Flip a top-level ``[x]`` back to ``[/]`` whose ``subgoal_hash`` matches.
+
+    Returns ``(new_plan_text, changed)``.  This is a forward-looking state
+    change (never a rollback of history) — it re-opens a milestone for the
+    repair loop so the operator can re-attempt it.
+    """
+    if not plan_text or not subgoal_key:
+        return plan_text or "", False
+    snapshot = parse_plan(plan_text)
+    target: PlanItem | None = None
+    for item in snapshot.top_level:
+        if item.key == subgoal_key and item.is_done:
+            target = item
+            break
+    if target is None:
+        return plan_text, False
+    lines = plan_text.splitlines()
+    if target.line_no < 0 or target.line_no >= len(lines):
+        return plan_text, False
+    old = lines[target.line_no]
+    lines[target.line_no] = old.replace("[x]", "[/]", 1).replace("[X]", "[/]", 1)
+    return "\n".join(lines), True
+
+
+# ── Check-item mutation guards ──────────────────────────────────────────────
+
+
+def check_items_changed(before: "PlanSnapshot",
+                        after: "PlanSnapshot") -> bool:
+    """True when any declared check item was added, removed, or rewritten."""
+    from collections import Counter
+    before_set = Counter(
+        (ci.kind, ci.when, ci.text, ci.parent_key)
+        for ci in before.all_check_items
+    )
+    after_set = Counter(
+        (ci.kind, ci.when, ci.text, ci.parent_key)
+        for ci in after.all_check_items
+    )
+    return before_set != after_set
+
+
+def missing_check_items(before: "PlanSnapshot",
+                        after: "PlanSnapshot") -> list["CheckItem"]:
+    """Check items present in ``before`` but absent from ``after``."""
+    after_keys = {
+        (ci.kind, ci.when, ci.text, ci.parent_key)
+        for ci in after.all_check_items
+    }
+    return [
+        ci for ci in before.all_check_items
+        if (ci.kind, ci.when, ci.text, ci.parent_key) not in after_keys
+    ]
+
+
+def restore_missing_check_items(
+    content_before: str,
+    content_after: str,
+    items: list["CheckItem"] | None = None,
+) -> str | None:
+    """Deterministic merge: re-anchor deleted check lines under their parent.
+
+    Returns the merged text, or ``None`` when nothing needs restoring.
+    """
+    before = parse_plan(content_before)
+    after = parse_plan(content_after)
+    missing = missing_check_items(before, after) if items is None else list(items)
+    if not missing:
+        return None
+    # Re-anchor each missing item under its parent subgoal.  If the parent
+    # still exists, insert after the parent's first path line (if any) or
+    # after the checkbox line itself.  Orphan items (parent removed) are
+    # converted to task-level ``@end`` items and appended at the end.
+    orphan: list[CheckItem] = []
+    inserts: dict[int, list[str]] = {}
+    top_keys = {it.key: it for it in after.top_level}
+    for ci in missing:
+        parent = top_keys.get(ci.parent_key) if ci.parent_key else None
+        if parent is not None:
+            # Find the last path line under this milestone
+            insert_at = parent.line_no
+            for path in after.paths_of(parent):
+                if path.line_no > insert_at:
+                    insert_at = path.line_no
+            inserts.setdefault(insert_at, []).append(
+                f"  - {ci.kind}: {ci.text}"
+                + (f" [probe: {ci.parent_key}]" if ci.parent_key else "")
+            )
+        else:
+            orphan.append(ci)
+    if not inserts and not orphan:
+        return None
+    lines = content_after.splitlines()
+    result: list[str] = []
+    for i, line in enumerate(lines):
+        result.append(line)
+        for extra in inserts.get(i, []):
+            result.append(extra)
+    if orphan:
+        result.append("")
+        for ci in orphan:
+            when_tag = f"@end" if ci.when == "at_end" else ""
+            result.append(f"- {ci.kind}{when_tag}: {ci.text}")
+    return "\n".join(result)
