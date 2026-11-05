@@ -461,6 +461,10 @@ def main() -> int:
                 print(f"  ↺ restored to baseline: {', '.join(notes[:12])}{'…' if len(notes) > 12 else ''}")
             except Exception as e:  # pragma: no cover
                 print(f"  ↺ restore failed: {e}")
+            try:
+                _shell(device, "input", "keyevent", "3")  # KEYCODE_HOME
+            except Exception:
+                pass
 
         with RUNS_PATH.open("a", encoding="utf-8") as f:
             f.write(json.dumps(rec, ensure_ascii=False) + "\n")
