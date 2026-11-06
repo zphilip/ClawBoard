@@ -359,7 +359,7 @@
     },
     {
       "id": "bluetooth-connect-device",
-      "intent": "用蓝牙连接指定设备",
+      "intent": "用蓝牙连接小爱音箱",
       "aliases": [
         "连接蓝牙设备",
         "蓝牙连接",
@@ -376,7 +376,7 @@
         "setting global bluetooth_on",
         "bluetooth"
       ],
-      "plan": "- [ ] 用蓝牙连接目标设备\n  - verify: 目标蓝牙设备已连接（出现在「已连接」列表）[probe: bluetooth][probe: setting global bluetooth_on]\n  - path 1 [cost=4 kind=primary]: 设置 → 蓝牙 → 打开蓝牙开关 → 在已配对列表里点目标设备名 → 确认已连接\n  - path 2 [cost=4 kind=primary]: 顶部下滑展开快捷面板 → 长按蓝牙磁贴进蓝牙设置 → 点目标设备连接",
+      "plan": "- [ ] 用蓝牙连接小爱音箱\n  - verify: 目标蓝牙设备已连接（出现在「已连接」列表）[probe: bluetooth][probe: setting global bluetooth_on]\n  - path 1 [cost=4 kind=primary]: 设置 → 蓝牙 → 打开蓝牙开关 → 在已配对列表里点目标设备名 → 确认已连接\n  - path 2 [cost=4 kind=primary]: 顶部下滑展开快捷面板 → 长按蓝牙磁贴进蓝牙设置 → 点目标设备连接",
       "pitfalls": [
         "设备名来自运行前测到的蓝牙列表（device_profile 的 bt_devices），连接哪个名字由指令指定，不要臆测。",
         "『已连接』和『已配对』是两回事：配对过的不一定已连接——验收看「已连接」/connected，而不是已配对。",
