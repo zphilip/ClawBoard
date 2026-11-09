@@ -1453,7 +1453,9 @@ def _verify_plan_replay(mem, baseline, adb_path: str, device: str) -> bool:
     if baseline is None:
         _log("[MEMORY] replay verify: no baseline — cannot judge relative criteria")
         return False
-    probe_results = _run_check_probes(verify_items, adb_path, device)
+    probe_results = _run_check_probes(
+        [{"text": ci.text} for ci in verify_items], adb_path, device,
+    )
     verdict = _acceptance_from_probes(
         [ci.text for ci in verify_items], probe_results, baseline,
     )
