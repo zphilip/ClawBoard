@@ -1424,6 +1424,49 @@ def _render_notes_for_diagnoser(mem) -> str:
     return "\n\n".join(parts)
 
 
+def _verify_plan_replay(mem, baseline, adb_path: str, device: str) -> bool:
+    """Run acceptance probes after a plan replay completed.
+
+    Returns True only when the probes *decisively* confirm the goal was
+    achieved.  False and inconclusive (None) both count as "not verified"
+    — the caller should fall through to the normal VLM loop.
+    """
+    try:
+        plan_text = mem.read_note("task_plan") or ""
+    except Exception:
+        plan_text = ""
+    if not plan_text:
+        _log("[MEMORY] replay verify: no stored plan text — skipping verification")
+        return False
+    try:
+        snapshot = parse_plan(plan_text)
+    except Exception as e:
+        _log(f"[MEMORY] replay verify: plan parse error: {e}")
+        return False
+    verify_items = [
+        ci for ci in snapshot.all_check_items
+        if getattr(ci, 'kind', '') == 'verify'
+    ]
+    if not verify_items:
+        _log("[MEMORY] replay verify: no verify items in stored plan — skipping verification")
+        return False
+    if baseline is None:
+        _log("[MEMORY] replay verify: no baseline — cannot judge relative criteria")
+        return False
+    probe_results = _run_check_probes(verify_items, adb_path, device)
+    verdict = _acceptance_from_probes(
+        [ci.text for ci in verify_items], probe_results, baseline,
+    )
+    if verdict is True:
+        _log("[MEMORY] replay verify: acceptance probes satisfied ✓")
+        return True
+    elif verdict is False:
+        _log("[MEMORY] replay verify: acceptance probes contradicted ✗ — plan is stale")
+    else:
+        _log("[MEMORY] replay verify: acceptance inconclusive — deferring to VLM")
+    return False
+
+
 def _memory_replay_shortcut(screenshots_dir: Path, profile: str, replay: dict) -> dict:
     """Build the success result emitted when a stored plan was replayed."""
     try:
@@ -1531,8 +1574,17 @@ def _run_reactive_fallback(
             emit_fn=lambda i, act, msg: _emit_progress(i, act, msg)
         )
         if replay.get("status") == "completed":
-            _log(f"Flash: task replayed from memory ({replay.get('steps', 0)} steps) — skipping VLM")
-            return _memory_replay_shortcut(screenshots_dir, "flash", replay)
+            _log(f"Flash: plan replay completed ({replay.get('steps', 0)} steps) — verifying acceptance...")
+            _fb_baseline = _capture_device_baseline(adb_path, device)
+            if _verify_plan_replay(mem, _fb_baseline, adb_path, device):
+                _log("Flash: replay verified — returning success")
+                return _memory_replay_shortcut(screenshots_dir, "flash", replay)
+            _log("Flash: replay acceptance not satisfied — falling through to VLM loop")
+            try:
+                if hasattr(mem, '_plan_store') and mem._plan_store is not None:
+                    mem._plan_store.increment_plan_fail(mem._intent_key)
+            except Exception:
+                pass
 
     history = HistoryStore(
         max_stored_screenshots=_ctx_cfg.get("max_stored_screenshots", 6),
@@ -2139,6 +2191,11 @@ def _run_plan_guided_fallback(
             scratchpad.update(persisted)
             _log(f"[MEMORY] loaded persisted scratchpad ({len(persisted)} keys)")
 
+    # ── Phase 0: Device baseline ───────────────────────────────────────
+    # Must be captured BEFORE plan replay so acceptance probes can judge
+    # relative criteria ("调低亮度" = lower than this value).
+    baseline = _capture_device_baseline(adb_path, device)
+
     # Replay a stored task plan before spending any VLM budget
     # (skips Planner → Operator → Validator → Checker on a clean replay).
     if mem.enforce and not disable_replay:
@@ -2146,20 +2203,20 @@ def _run_plan_guided_fallback(
             emit_fn=lambda i, act, msg: _emit_progress(i, act, msg)
         )
         if replay.get("status") == "completed":
-            _log(f"Pro: task replayed from memory ({replay.get('steps', 0)} steps) — skipping VLM")
-            return _memory_replay_shortcut(screenshots_dir, "pro", replay)
+            _log(f"Pro: plan replay completed ({replay.get('steps', 0)} steps) — verifying acceptance...")
+            if _verify_plan_replay(mem, baseline, adb_path, device):
+                _log("Pro: replay verified — returning success")
+                return _memory_replay_shortcut(screenshots_dir, "pro", replay)
+            _log("Pro: replay acceptance not satisfied — falling through to VLM loop")
+            try:
+                if hasattr(mem, '_plan_store') and mem._plan_store is not None:
+                    mem._plan_store.increment_plan_fail(mem._intent_key)
+            except Exception:
+                pass
 
     # ── Phase 1: Planner Node ──────────────────────────────────────────
     _emit_progress(0, "planning", "Pro: Planner node — generating task plan...")
     _log("Pro Phase 1: Planner node")
-
-    # Read-only baseline BEFORE planning. Two uses, both general:
-    #   1. it makes RELATIVE criteria judgeable ("调低亮度" = lower than this),
-    #   2. it tells the Planner what the device's state actually IS.
-    # A VLM cannot know a device-specific quirk (e.g. this ROM clamps the ring
-    # stream to >= 1 in NORMAL mode, and DND is what really silences it); that
-    # is measured state, not general knowledge, so measure it instead of asking.
-    baseline = _capture_device_baseline(adb_path, device)
 
     plan_shot = screenshots_dir / "pro_plan_initial.png"
     t_plan = time.time()
