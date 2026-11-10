@@ -26,6 +26,9 @@ Things like:
 - **image_info** — Read image metadata (format, dimensions, size) and attach the image to vision-capable models
 - Use when: you need to actually look at a screenshot/PNG/photo, or verify an image file.
 - Don't use when: you only need to verify on-screen UI text (use `adb shell uiautomator dump` + `grep` instead).
+- **Always use absolute paths** — `image_info` resolves relative paths from the server's CWD,
+  NOT the workspace root.  Use `/var/lib/zeroclaw/.zeroclaw/workspace/skills/artemis-control-v2/screenshots/…`
+  (or whatever absolute path the artemis JSONL reports), never bare `skills/…`.
 - **file_write** — Write file contents
 - Use when: applying focused edits, scaffolding files, or updating docs/code.
 - Don't use when: unsure about side effects or when the file should remain user-owned.

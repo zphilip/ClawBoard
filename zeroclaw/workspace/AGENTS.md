@@ -66,8 +66,17 @@ take screenshots, search within apps, set alarms, or any UI task on the phone:
   ```bash
   /opt/clawboard/venv/bin/python3 skills/artemis-control-v2/artemis_agent.py --instruction "<task>" --profile flash --daemon
   # → {"type":"run_started","log_file":"<LOG>",…}
-  adb shell sleep 30; tail -n 80 <LOG> | grep '"type"'
+  adb shell sleep 30; tail -n 80 <LOG> | grep '"type"' || true
   ```
+  **grep note**: Append `|| true` so grep exiting with code 1 (no matches yet) doesn't look like
+  a shell error.  The log is clean JSONL now — but during planning gaps the tail may not contain
+  a `"type"` line yet.
+
+- **image_info paths must be absolute** — the `image_info` tool resolves relative paths from the
+  server's CWD, not the workspace root.  Always use the absolute path the artemis JSONL reports
+  (e.g. `/var/lib/zeroclaw/.zeroclaw/workspace/skills/artemis-control-v2/screenshots/run_…/step_…png`)
+  or the absolute workspace root prefix.  Relative paths like `skills/…` will fail with
+  "File not found".
 
 - **Task type → profile**: follow the SKILL taxonomy — linear flows use `flash`;
   state-change / menu-hunt (find a setting and flip it, e.g. mute) use

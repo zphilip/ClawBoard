@@ -512,12 +512,10 @@ def _log(msg: str) -> None:
     _now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     line = f"[{_now}] [artemis-control] {msg}"
     print(line, file=sys.stderr, flush=True)
-    if _LOG_FILE:
-        try:
-            _LOG_FILE.write(line + "\n")
-            _LOG_FILE.flush()
-        except Exception:
-            pass
+    # NOTE: _LOG_FILE is a structured JSONL stream (one JSON object per line).
+    # Raw human-log lines must NOT be written there — they break consumers that
+    # `grep '"type"'` or `jq` the file.  If a log-worthy event should be
+    # machine-readable, emit a structured JSON event via _emit() instead.
 
 def _debug(msg: str) -> None:
     if _DEBUG:
@@ -569,7 +567,7 @@ def needs_clarification(instruction: str) -> bool:
 # Screenshot capture
 # ---------------------------------------------------------------------------
 
-SCREENSHOTS_ROOT = Path(__file__).parent / "screenshots"
+SCREENSHOTS_ROOT = (Path(__file__).parent / "screenshots").resolve()
 
 def _make_run_screenshots_dir() -> Path:
     _ts = datetime.now().strftime("%Y%m%d_%H%M%S")
