@@ -11,7 +11,7 @@
 # Usage:
 #   clawberry-workspace-sync.sh [OPTIONS]
 #
-#   -config <target>   Also sync the specified config file(s).
+#   -config <target>   Also sync the specified dashboard config file(s).
 #                      Targets: all | config.json | config.toml | security.yml
 #                      May be repeated: -config config.json -config config.toml
 #
@@ -19,15 +19,27 @@
 #                      are otherwise only created if absent. Supported:
 #                      memory (workspace MEMORY.md).
 #
-#   Without -config the three protected files (config.json, config.toml,
-#   .security.yml) are NEVER touched; only workspace/dashboard/binary files
-#   are updated. Agent memory files (MEMORY.md) are created only if missing —
+#   --renew-config     Run config migration for the agent binaries (zeroclaw
+#                      config migrate, etc.).  Without this flag agent config
+#                      files under /var/lib/<agent>/.<agent>/ are NEVER touched
+#                      by the sync script — they are only created on first
+#                      install (if absent).
+#
+#   -h, --help         Show this help message and exit.
+#
+#   Without -config the three dashboard config files (config.json, config.toml,
+#   .security.yml under /opt/clawboard/config/) are NEVER touched; only
+#   workspace/dashboard/binary files are updated.  Without --renew-config the
+#   agent runtime configs (e.g. /var/lib/zeroclaw/.zeroclaw/config.toml) are
+#   also left alone — only the workspace contents are synced.
+#   Agent memory files (MEMORY.md) are created only if missing —
 #   they are never overwritten unless --include memory is given.
 #
 # Examples:
 #   clawberry-workspace-sync.sh
 #   clawberry-workspace-sync.sh -config all
 #   clawberry-workspace-sync.sh -config config.json -config security.yml
+#   clawberry-workspace-sync.sh --renew-config
 #
 # Strategy:
 #   • Clone repo into a temp dir (sparse, no history, saves bandwidth)
@@ -72,10 +84,19 @@ SYNC_CONFIG_JSON=no
 SYNC_CONFIG_TOML=no
 SYNC_SECURITY_YML=no
 FORCE_MEMORY=no
+RENEW_CONFIG=no
 
 parse_args() {
     while [[ $# -gt 0 ]]; do
         case "$1" in
+            -h|--help)
+                sed -n '2,/^$/p' "$0" | sed 's/^# //' || true
+                exit 0
+                ;;
+            --renew-config)
+                RENEW_CONFIG=yes
+                shift
+                ;;
             -config)
                 [[ $# -ge 2 ]] || die "-config requires an argument (all|config.json|config.toml|security.yml or comma-separated)"
                 IFS=',' read -ra _targets <<< "$2"
@@ -338,36 +359,55 @@ if [[ -f "$WORK_DIR/picoclaw/picoclaw-launcher-linux-arm64" ]]; then
 fi
 
 if [[ -f "$WORK_DIR/zeroclaw/zeroclaw" ]]; then
-    log "Installing zeroclaw binary to /opt/zeroclaw/zeroclaw"
-    mkdir -p /opt/zeroclaw
     _zc_dst="/opt/zeroclaw/zeroclaw"
     _zc_tmp="/opt/zeroclaw/zeroclaw.new"
 
-    # Ensure zeroclaw is fully stopped before replacing binary.
-    if command -v systemctl >/dev/null 2>&1; then
-        systemctl stop zeroclaw 2>/dev/null || true
-    fi
-    if pgrep -x zeroclaw >/dev/null 2>&1 || pgrep -f "/opt/zeroclaw/zeroclaw" >/dev/null 2>&1; then
-        log "zeroclaw process still running, killing it..."
-        pkill -9 -x zeroclaw 2>/dev/null || true
-        pkill -9 -f "/opt/zeroclaw/zeroclaw" 2>/dev/null || true
-    fi
-
-    # Write to a temp file first, then atomically swap into place.
-    if cp "$WORK_DIR/zeroclaw/zeroclaw" "$_zc_tmp" 2>&1 && mv -f "$_zc_tmp" "$_zc_dst" 2>&1; then
-        chmod +x "$_zc_dst" || true
-        log "zeroclaw installed to /opt/zeroclaw/zeroclaw"
-        
-        # Run config migration as zeroclaw user
-        log "Running zeroclaw config migrate as zeroclaw user..."
-        if id -u zeroclaw >/dev/null 2>&1 && sudo -u zeroclaw /opt/zeroclaw/zeroclaw config migrate 2>&1; then
-            log "zeroclaw config migration completed successfully"
+    # Compare hashes — skip replacement (and the config migrate that follows)
+    # when the binary hasn't changed.  This keeps agent config.toml safe across
+    # repeated sync runs unless --renew-config is explicitly passed.
+    _zc_src_hash=$(sha256sum "$WORK_DIR/zeroclaw/zeroclaw" | cut -d' ' -f1)
+    _zc_dst_hash=$(sha256sum "$_zc_dst" 2>/dev/null | cut -d' ' -f1 || echo "none")
+    if [[ "$_zc_src_hash" == "$_zc_dst_hash" ]]; then
+        log "zeroclaw binary unchanged (hash $_zc_src_hash) — skipping replacement"
+        if [[ "$RENEW_CONFIG" == "yes" ]]; then
+            log "--renew-config set: running config migrate anyway"
+            if id -u zeroclaw >/dev/null 2>&1 && sudo -u zeroclaw /opt/zeroclaw/zeroclaw config migrate 2>&1; then
+                log "zeroclaw config migration completed successfully"
+            else
+                log "WARNING: zeroclaw config migration failed or zeroclaw user missing — check logs"
+            fi
         else
-            log "WARNING: zeroclaw config migration failed or zeroclaw user missing — check logs"
+            log "config migrate skipped (use --renew-config to run it)"
         fi
     else
-        rm -f "$_zc_tmp" 2>/dev/null || true
-        log "WARNING: failed to install zeroclaw binary — check process locks and /opt/zeroclaw permissions"
+        log "Installing zeroclaw binary to /opt/zeroclaw/zeroclaw (hash changed)"
+
+        # Ensure zeroclaw is fully stopped before replacing binary.
+        if command -v systemctl >/dev/null 2>&1; then
+            systemctl stop zeroclaw 2>/dev/null || true
+        fi
+        if pgrep -x zeroclaw >/dev/null 2>&1 || pgrep -f "/opt/zeroclaw/zeroclaw" >/dev/null 2>&1; then
+            log "zeroclaw process still running, killing it..."
+            pkill -9 -x zeroclaw 2>/dev/null || true
+            pkill -9 -f "/opt/zeroclaw/zeroclaw" 2>/dev/null || true
+        fi
+
+        # Write to a temp file first, then atomically swap into place.
+        if cp "$WORK_DIR/zeroclaw/zeroclaw" "$_zc_tmp" 2>&1 && mv -f "$_zc_tmp" "$_zc_dst" 2>&1; then
+            chmod +x "$_zc_dst" || true
+            log "zeroclaw installed to /opt/zeroclaw/zeroclaw"
+
+            # Run config migration as zeroclaw user (binary changed → migrate needed)
+            log "Running zeroclaw config migrate as zeroclaw user..."
+            if id -u zeroclaw >/dev/null 2>&1 && sudo -u zeroclaw /opt/zeroclaw/zeroclaw config migrate 2>&1; then
+                log "zeroclaw config migration completed successfully"
+            else
+                log "WARNING: zeroclaw config migration failed or zeroclaw user missing — check logs"
+            fi
+        else
+            rm -f "$_zc_tmp" 2>/dev/null || true
+            log "WARNING: failed to install zeroclaw binary — check process locks and /opt/zeroclaw permissions"
+        fi
     fi
 fi
 
